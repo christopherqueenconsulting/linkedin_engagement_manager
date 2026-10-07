@@ -1054,6 +1054,35 @@ def clause_hook(thesis: str) -> str:
     return _sentence_cased([*subject_np[-1:], verbs[-1]])
 
 
+# Showcase round 5: rhythm_6 printed "85 %" because the source wrote a NARROW no-break space
+# between the number and its unit, and every hook path copies the source's own spelling.
+_GAP = r"[\s    ]+"
+_FIGURE_GAPS = (
+    (re.compile(rf"(\d){_GAP}(%)"), r"\1\2"),
+    (re.compile(rf"([$€£]){_GAP}(\d)"), r"\1\2"),
+    (re.compile(r"(\d)[    ]+([KkMmBb]n?)(?![A-Za-z])"), r"\1\2"),
+)
+_ODD_SPACES = re.compile(r"[    ]")
+
+
+def tidy_figures(text: Optional[str]) -> str:
+    """``text`` with every number set tight to its unit: "85 %" -> "85%", "$ 30K" -> "$30K".
+
+    Typography only — nothing is added, dropped or reworded, and any remaining no-break or thin
+    space becomes a plain one so a drawn line never carries an invisible glyph.
+
+    Args:
+        text: A hook, label or headline.
+
+    Returns:
+        The tidied text ('' for None).
+    """
+    out = str(text or "")
+    for pattern, repl in _FIGURE_GAPS:
+        out = pattern.sub(repl, out)
+    return _ODD_SPACES.sub(" ", out)
+
+
 def restore_number_casing(hook: str, source: str) -> str:
     """Every number token in ``hook`` spelled exactly as the source spells it ("$30K", not "$30k").
 
@@ -1070,7 +1099,7 @@ def restore_number_casing(hook: str, source: str) -> str:
                           re.IGNORECASE)
         return found.group(0) if found else token
 
-    return _HOOK_NUMBER.sub(restore, hook or "")
+    return tidy_figures(_HOOK_NUMBER.sub(restore, hook or ""))
 
 
 def fit_hook(hook: str, thesis: str) -> str:
@@ -1973,6 +2002,131 @@ def _enforce_stat(concept: ImageConcept, payload: Any, source: str, title: Optio
                                hook_options={**(concept.hook_options or {}), "number_claim": hook})
 
 
+# Showcase round 5: a title-derived headline may run to the title's own length up to this cap — it
+# is the author's headline, not a generated one, so the 6-word hook rule does not bind it.
+TITLE_HOOK_MAX_WORDS = 8
+_LEADING_ARTICLES = frozenset({"the", "a", "an", "our", "my", "how", "why", "what"})
+
+
+def _title_word(word: str, source: str) -> str:
+    """A Title-Cased word in sentence case, unless the source capitalises it mid-sentence."""
+    if not (word[:1].isupper() and word[1:].islower()):
+        return word  # "LinkedIn", "AI", "$30K": the author's own casing
+    for match in re.finditer(rf"\b{re.escape(word)}\b", source or ""):
+        before = (source or "")[:match.start()].rstrip()
+        if before and before[-1] not in ".!?:\n\"'“":
+            return word  # a proper noun the body also capitalises
+    return word.lower()
+
+
+def title_claim(title: Optional[str], source: str = "") -> tuple[str, str, str]:
+    """The title's lead figure, its claim, and the title as a headline: ``(figure, claim, hook)``.
+
+    Showcase round 5: ed18's title said "53.7% of LinkedIn Posts Miss Their Mark" and its cover
+    drew 45%; ed16's said "The $30K We Nearly Squandered" and its cover said "$30K saved per
+    quarter". The claim is the title's OWN words beside the figure — after it when two or more
+    follow ("of LinkedIn posts miss their mark", "we nearly squandered"), else before it — so the
+    label can never flip what the title says.
+
+    Args:
+        title: The piece's title.
+        source: The analysed text, for proper-noun casing.
+
+    Returns:
+        ``('', '', '')`` when the title states no stat; else the figure as the title writes it,
+        the claim in sentence case, and the whole title in sentence case ('' when it is longer than
+        ``TITLE_HOOK_MAX_WORDS``).
+    """
+    body = source or ""
+    if title and body.startswith(title):
+        source = body[len(title):]  # the title's own Title Case is not evidence of a proper noun
+    title = tidy_figures(" ".join((title or "").split()))
+    numbers = stat_numbers(title)
+    if not numbers:
+        return "", "", ""
+    figure = tidy_figures(numbers[0])
+    at = title.find(numbers[0])
+    after = title[at + len(numbers[0]):].strip(" ,:;.-–—").split()
+    before = [w for w in title[:at].strip(" ,:;-–—").split()]
+    while before and before[0].lower() in _LEADING_ARTICLES:
+        before.pop(0)
+    words = after if len(after) >= 2 else before
+    claim = " ".join(_title_word(w, source) for w in words[:TITLE_HOOK_MAX_WORDS])
+    claim = claim.strip(" ,:;.?!")
+    hook_words = [_title_word(w, source) if n else w for n, w in enumerate(title.split())]
+    hook = " ".join(hook_words).rstrip(" .")
+    if len(hook_words) > TITLE_HOOK_MAX_WORDS:
+        hook = ""
+    return figure, claim, (hook[:1].upper() + hook[1:]) if hook else ""
+
+
+def _shares_claim(hook: str, figure: str, claim: str) -> bool:
+    """Does ``hook``, carrying ``figure``, say what the title's ``claim`` says (a shared word)?"""
+    rest = hook.replace(figure, " ")
+    claim_roots = {_root(t) for t in _content_tokens(claim) if t not in _HOOK_FREE_WORDS}
+    return bool(claim_roots & {_root(t) for t in _content_tokens(rest)})
+
+
+def apply_title_stat(concept: ImageConcept, title: Optional[str], source: str) -> ImageConcept:
+    """When the title states a figure, the cover's number IS that figure, labelled as the title.
+
+    Runs LAST on a hooked surface, after every hook path (round 5: #2273's ``thesis_number``
+    preference only steered the HOOK, while the stat card drew Stage 1's ``thesis_stat`` — the
+    45% under ed18's 53.7% title came through ``graphic.stat``, a path the title rule never saw).
+
+    - The drawn stat becomes the title's figure with the title's claim as its label, traced to the
+      title itself (``image_graphics.validate_fact``), so ``assert_traceable`` still holds.
+    - The headline becomes the title in sentence case when it fits ``TITLE_HOOK_MAX_WORDS``. A
+      longer title keeps the current hook only when it carries no other number and, if it carries
+      the title's figure, says the same thing about it; otherwise the hook is cleared and the
+      cover falls back to the title as its headline (``newsletter_cover.cover_headline``).
+
+    Args:
+        concept: The concept after ``_final_hook``.
+        title: The piece's title.
+        source: The analysed text (title first).
+
+    Returns:
+        The concept, unchanged when the title states no figure.
+    """
+    from cqc_lem.utilities.ai.image_graphics import NO_SOURCE_LINE, validate_fact
+
+    figure, claim, title_hook = title_claim(title, source)
+    if not figure or not claim:
+        return concept
+    graphic = dict(concept.graphic or {})
+    stat, reason = validate_fact({"label": claim, "value": figure, "unit": "",
+                                  "source_sentence": tidy_figures(title)}, source)
+    if stat:
+        old = graphic.get("stat") or {}
+        name = str(graphic.get("source_line") or "").removeprefix("Source: ").strip()
+        cited = bool(name) and any(
+            figure.lower() in tidy_figures(s).lower() and name.lower() in s.lower()
+            for s in source_sentences(source))
+        if old.get("display") != stat["display"] and not cited:
+            graphic["source_line"] = NO_SOURCE_LINE  # the old source cited a different number
+        graphic["stat"] = stat
+    else:
+        log_debug("Title stat could not be traced — no stat card from it", reason=reason,
+                  action_type="image_concept")
+        graphic.pop("stat", None)  # never a card whose number contradicts the title above it
+    hook = concept.hook_phrase or ""
+    if title_hook:
+        hook = title_hook
+    else:
+        numbers = [tidy_figures(n) for n in stat_numbers(hook)]
+        other = [n for n in numbers if n.lower() != figure.lower()]
+        if other or (numbers and not _shares_claim(hook, figure, claim)):
+            hook = ""
+    changed = dict(graphic=graphic or None)
+    if hook != concept.hook_phrase:
+        changed.update(hook_phrase=hook, hook_shape=hook_shape_of(hook) if hook else "",
+                       hook_verified=hook,
+                       hook_options={**(concept.hook_options or {}), "title": hook} if hook
+                       else concept.hook_options)
+    return dataclasses.replace(concept, **changed)
+
+
 def check_hook_against_thesis(hook: str, thesis: str, cited: str = "") -> tuple[bool, str, str]:
     """ONE ``lem-simple`` call judging the hook: claim, grammar, length, truth and valence.
 
@@ -2391,6 +2545,8 @@ def analyze_content_for_image(text: str, *, title: Optional[str] = None,
         concept = _enforce_stat(concept, payload, source, title, surface, user_id)
         concept = _hook_asserts_thesis(concept, payload, source, title, surface, user_id)
         concept = _final_hook(concept, payload, source, title, surface, user_id)
+        # Round 5: a figure in the title outranks every hook and graphic path above.
+        concept = apply_title_stat(concept, title, source)
         # A code-drawn graphic needs the FINAL headline; re-rank against it (deterministic).
         concept = select_archetype(concept, surface, recent_archetypes)
     return assign_layout_and_cast(concept, surface, recent_layouts, recent_casts, recent_shots)

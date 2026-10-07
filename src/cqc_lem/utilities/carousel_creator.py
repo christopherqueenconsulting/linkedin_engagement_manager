@@ -25,6 +25,7 @@ layout rather than crashing carousel generation.
 """
 import os
 import random
+import re
 import tempfile
 import urllib.request
 from collections.abc import Iterator
@@ -2580,7 +2581,7 @@ def _theme_brand_style(theme: Any) -> Any:
 
 
 def _slide_element(title: str, body: str, theme: Any, post_id: Optional[int],
-                   slide_index: int) -> Optional[_SlideElement]:
+                   slide_index: int, evidence: Optional[str] = None) -> Optional[_SlideElement]:
     """Draw the code-drawn element this body slide earns from its own text, or None.
 
     ``image_graphics.slide_graphic`` decides (a figure, a from→to change, or a 3-5 point list,
@@ -2594,6 +2595,7 @@ def _slide_element(title: str, body: str, theme: Any, post_id: Optional[int],
         theme: The deck's ``DeckTheme``.
         post_id: For the log line.
         slide_index: For the log line.
+        evidence: The post the deck accompanies, or None (``image_graphics.figure_in_evidence``).
 
     Returns:
         The element, or None.
@@ -2606,7 +2608,7 @@ def _slide_element(title: str, body: str, theme: Any, post_id: Optional[int],
     )
     from cqc_lem.utilities.logger import log_debug
 
-    picked = slide_graphic(title, body)
+    picked = slide_graphic(title, body, evidence)
     if picked is None:
         return None
     archetype, graphic = picked
@@ -2638,6 +2640,82 @@ DECK_COVER_TREATMENTS = (DECK_COVER_POSTER, DECK_COVER_DRAWN, DECK_COVER_NUMBER,
 DECK_COVER_TEMPLATE = "template"      # the template's own cover: the last resort, never rotated to
 DECK_MOTIFS = ("arc", "bracket", "dots", "stripes")
 _DECK_HISTORY = 6
+# Showcase round 5: slot_142/143 ran the numbered-circle badge on two decks in a row. The badge is
+# recorded on the deck receipt and retired for the next deck whenever the previous one drew it.
+BADGE_NUMBERED_CIRCLE = "numbered_circle"
+BADGE_RULE = "rule"
+_LISTICLE_TEMPLATES = frozenset({"bold_listicle"})
+
+
+def slide_counter(idx: int, total: int) -> str:
+    """The page counter every slide of a deck prints: ``idx / total`` of the FINAL slide count.
+
+    Showcase round 5: the stat cover read "1/5" while its inner slides read "1/3" and "2/3" — each
+    template counted something different (reveals, parts, items). Every counter is now the page
+    number over the deck's final length, computed after any trimming.
+
+    Args:
+        idx: The 1-based slide number.
+        total: The number of slides the deck renders.
+
+    Returns:
+        The counter text.
+    """
+    return f"{idx} / {total}"
+
+
+_COUNT_WORDS = ("one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+                "eleven", "twelve")
+_SLIDE_COUNT_COPY = re.compile(
+    rf"\b(\d{{1,2}}|{'|'.join(_COUNT_WORDS)})([\s-]+)(slides?|pages?)\b", re.IGNORECASE)
+
+
+def fix_slide_count_copy(text: Optional[str], total: int) -> str:
+    """Slide copy that names a slide count ("4 slides.") rewritten to the deck's FINAL count.
+
+    slot_142's cover said "4 slides" over a 6-slide deck: the writer counted before the deck was
+    trimmed or padded. The number is the only thing that changes; a digit stays a digit and a word
+    stays a word.
+
+    Args:
+        text: A slide title or body.
+        total: The number of slides the deck renders.
+
+    Returns:
+        The text with every slide-count claim equal to ``total``.
+    """
+    def fix(match: "re.Match[str]") -> str:
+        written, gap, noun = match.groups()
+        if written.isdigit():
+            count = str(total)
+        else:
+            count = _COUNT_WORDS[total - 1] if 1 <= total <= len(_COUNT_WORDS) else str(total)
+            count = count.capitalize() if written[:1].isupper() else count
+        noun = noun if total != 1 else noun.rstrip("sS")
+        if total != 1 and not noun.lower().endswith("s"):
+            noun += "s"
+        return f"{count}{gap}{noun}"
+
+    return _SLIDE_COUNT_COPY.sub(fix, text or "")
+
+
+def deck_badge(template: str, recent_badges: list) -> str:
+    """The inside-slide badge for one deck: the numbered circle, unless the LAST deck drew it.
+
+    Only the listicle layout draws a numbered circle at all. A receipt from before this rule names
+    no badge; a listicle receipt is read as having drawn the circle, which is what it did.
+
+    Args:
+        template: The deck's template key.
+        recent_badges: Recent decks' badges, most recent first (None where unrecorded).
+
+    Returns:
+        ``BADGE_NUMBERED_CIRCLE`` or ``BADGE_RULE``.
+    """
+    if template not in _LISTICLE_TEMPLATES:
+        return BADGE_RULE
+    last = next((b for b in recent_badges if b), None)
+    return BADGE_RULE if last == BADGE_NUMBERED_CIRCLE else BADGE_NUMBERED_CIRCLE
 
 
 def recent_deck_choices(root_dir: Optional[str], user_id: Optional[int],
@@ -2653,11 +2731,12 @@ def recent_deck_choices(root_dir: Optional[str], user_id: Optional[int],
         limit: How many decks to read.
 
     Returns:
-        ``{"cover_treatment": [...], "motif": [...]}``.
+        ``{"cover_treatment": [...], "motif": [...], "badge": [...]}``. A receipt from before the
+        round-5 badge rule names no badge; a listicle one is read as the numbered circle it drew.
     """
     import json
 
-    out: dict = {"cover_treatment": [], "motif": []}
+    out: dict = {"cover_treatment": [], "motif": [], "badge": []}
     if not root_dir or user_id is None:
         return out
     found = []
@@ -2679,6 +2758,10 @@ def recent_deck_choices(root_dir: Optional[str], user_id: Optional[int],
     for _stamp, _path, receipt in found[:max(0, int(limit))]:
         out["cover_treatment"].append(receipt.get("cover_treatment"))
         out["motif"].append(receipt.get("motif"))
+        badge = receipt.get("badge")
+        if badge is None and receipt.get("template") in _LISTICLE_TEMPLATES:
+            badge = BADGE_NUMBERED_CIRCLE
+        out["badge"].append(badge)
     return out
 
 
@@ -2805,6 +2888,7 @@ def create_carousel_slide_images(
     cover_treatment: Optional[str] = None,
     motif: Optional[str] = None,
     cover_image_path: Optional[str] = None,
+    evidence: Optional[str] = None,
 ) -> list[str]:
     """Render carousel slides as 1080x1080 PNG images using Pillow.
 
@@ -2843,6 +2927,8 @@ def create_carousel_slide_images(
         motif: Force one ``DECK_MOTIFS`` value; rotated from receipts when None.
         cover_image_path: An editorial render to use for an ``ai_concept`` cover (offline samples);
             rendered on demand when None and the rotation picks it.
+        evidence: The post the deck accompanies. When given, a slide's code-drawn figure must be
+            stated, with its label, in one sentence of it (showcase round 5).
 
     Returns:
         The slide PNG paths, in order.
@@ -2973,7 +3059,8 @@ def create_carousel_slide_images(
     # The deck's rotated rhythm (showcase round 4), decided once below.
     history = recent_deck_choices(os.path.dirname(output_dir), user_id)
     deck_rhythm = {"motif": motif if motif in DECK_MOTIFS
-                   else deck_motif(history["motif"], f"{post_id}:{template}")}
+                   else deck_motif(history["motif"], f"{post_id}:{template}"),
+                   "badge": deck_badge(template_key, history["badge"])}
 
     def _new_draw(img):
         draw = make_ink_draw(img)
@@ -3088,7 +3175,7 @@ def create_carousel_slide_images(
         for row in range(H):
             draw.line([(0, row), (W, row)], fill=(*cover_accent, int(25 * (1 - row / H))))
         draw.rectangle([(0, 0), (10, H)], fill=cover_accent)
-        pill = f"1 of {total}"
+        pill = slide_counter(1, total)
         pw = int(draw.textlength(pill, font=f_l)) + 36
         _rrect(draw, (50, 52, 50 + pw, 96), radius=22, fill=(*cover_accent, 200))
         draw.text((68, 60), pill, font=f_l, fill=_ink_on(cover_accent))
@@ -3116,12 +3203,18 @@ def create_carousel_slide_images(
         panel, band_top = _prep_band(image_path, BAR, draw=draw, accent=badge_color)
         draw.rectangle([(0, 0), (W, 10)], fill=badge_color)
         cx, cy, cr = 118, 155, 68
-        draw.ellipse([(cx - cr, cy - cr), (cx + cr, cy + cr)], fill=badge_color)
-        num_str = str(idx - 1)
-        nw = int(draw.textlength(num_str, font=f_n))
-        bb = draw.textbbox((0, 0), num_str, font=f_n)
-        nh = bb[3] - bb[1]
-        draw.text((cx - nw // 2, cy - nh // 2 - 3), num_str, font=f_n, fill=_ink_on(badge_color))
+        if deck_rhythm["badge"] == BADGE_NUMBERED_CIRCLE:
+            draw.ellipse([(cx - cr, cy - cr), (cx + cr, cy + cr)], fill=badge_color)
+            num_str = str(idx - 1)
+            nw = int(draw.textlength(num_str, font=f_n))
+            bb = draw.textbbox((0, 0), num_str, font=f_n)
+            nh = bb[3] - bb[1]
+            draw.text((cx - nw // 2, cy - nh // 2 - 3), num_str, font=f_n,
+                      fill=_ink_on(badge_color))
+        else:
+            # Round 5: the circle is retired for this deck (the last one drew it) — a short,
+            # heavy brand rule holds the same corner, with no number to repeat the counter.
+            draw.rectangle([(cx - cr, cy - 10), (cx - cr + 150, cy + 10)], fill=badge_color)
         PAD = 62
         t_lines, f_t = _fit(title, f_t, W - PAD * 2, draw,
                             max_lines=2 if band_top else 3, spacing=12)
@@ -3135,7 +3228,7 @@ def create_carousel_slide_images(
             _place_band(img, draw, panel, band_top, badge_color)
         draw.rectangle([(0, H - BAR), (W, H)], fill=bottom_bar)
         draw.rectangle([(0, H - BAR), (int(W * idx / total), H - BAR + 5)], fill=badge_color)
-        cnt = f"{idx} / {total}"
+        cnt = slide_counter(idx, total)
         cw = int(draw.textlength(cnt, font=f_l))
         draw.text((W - cw - 36, H - 52), cnt, font=f_l, fill=(*badge_color, 210))
         return _save(img, idx)
@@ -3274,7 +3367,7 @@ def create_carousel_slide_images(
         draw.rectangle([(0, H - 220), (W, H)], fill=(*cover_accent, 30))
         # Showcase round 4: the giant "?" watermark is gone — it undercut every case study.
         # Slide counter pill top-center
-        pill = f"1 of {total} reveals"
+        pill = slide_counter(1, total)
         pw = int(draw.textlength(pill, font=f_l)) + 36
         _rrect(draw, ((W - pw) // 2, 52, (W + pw) // 2, 96), radius=22, fill=(*cover_accent, 200))
         draw.text(((W - pw) // 2 + 18, 60), pill, font=f_l, fill=_ink_on(cover_accent))
@@ -3294,17 +3387,13 @@ def create_carousel_slide_images(
         f_huge = _load_font(100, bold=True)  # title as massive centered text
         f_body = _load_font(36, bold=False)
         f_l    = _load_font(24, bold=False)
-        f_num  = _load_font(22, bold=True)
         title, body = _norm(title), _norm(body)
         img = Image.new("RGB", (W, H), color=content_bg)
         draw = _new_draw(img)
         panel, band_top = _prep_band(image_path, 60, draw=draw, accent=badge_color)
-        # Top color band
+        # Top color band. Round 5: no "#n" label in it — "#1" over "Step 1" read twice, and its
+        # numbering (idx - 1) disagreed with the deck's page counter.
         draw.rectangle([(0, 0), (W, 90)], fill=badge_color)
-        # Step number in top band
-        step_label = f"#{idx - 1}"
-        draw.text((W // 2 - int(draw.textlength(step_label, font=f_num)) // 2, 30),
-                  step_label, font=f_num, fill=(*_ink_on(badge_color), 230))
         PAD = 60
         # HUGE title — centered vertically in upper 65%; lifted to the top band when
         # an image occupies the lower third.
@@ -3324,9 +3413,9 @@ def create_carousel_slide_images(
             _place_band(img, draw, panel, band_top, badge_color)
         # Bottom strip
         draw.rectangle([(0, H - 60), (W, H)], fill=bottom_bar)
-        progress_w = int(W * (idx - 1) / max(total - 2, 1))
+        progress_w = int(W * idx / max(total, 1))
         draw.rectangle([(0, H - 60), (progress_w, H - 55)], fill=badge_color)
-        cnt = f"{idx - 1} / {total - 2}"
+        cnt = slide_counter(idx, total)
         cw = int(draw.textlength(cnt, font=f_l))
         draw.text((W - cw - 36, H - 42), cnt, font=f_l, fill=(*badge_color, 200))
         return _save(img, idx)
@@ -3563,7 +3652,7 @@ def create_carousel_slide_images(
             draw.rectangle([(W - 14, band_top), (W, H)], fill=badge_color)
         # Bottom: issue label
         draw.rectangle([(0, H - 60), (W - 14, H)], fill=bottom_bar)
-        cnt = f"Part {idx - 1} of {total - 2}"
+        cnt = f"Part {idx} of {total}"
         draw.text((PAD, H - 44), cnt, font=f_l, fill=(*badge_color, 200))
         return _save(img, idx)
 
@@ -3605,7 +3694,8 @@ def create_carousel_slide_images(
 
     def _cover_footer(draw, total):
         f_l = _load_font(24, bold=False)
-        draw.text((70, H - 80), f"SWIPE  >   1 / {total}", font=f_l, fill=(*cover_accent, 170))
+        draw.text((70, H - 80), f"SWIPE  >   {slide_counter(1, total)}", font=f_l,
+                  fill=(*cover_accent, 170))
 
     def _poster_cover(idx, total, title, body) -> Optional[str]:
         title, body = _norm(title), _norm(body)
@@ -3775,6 +3865,9 @@ def create_carousel_slide_images(
     scope = _CarouselImageScope(
         "\n".join(t for pair in slides_data for t in pair if t and t.strip()), user_id)
     total = len(slides_data)
+    # Round 5: any "N slides" the writer put in the copy names the count the deck REALLY renders.
+    slides_data = [(fix_slide_count_copy(t, total), fix_slide_count_copy(c, total))
+                   for t, c in slides_data]
     image_paths = []
     slide_receipts: list[dict] = []
 
@@ -3782,7 +3875,7 @@ def create_carousel_slide_images(
         """The first code-drawn element the deck's own text earns: the cover's, then a body's."""
         candidates = [slides_data[0]] + slides_data[1:-1] if slides_data else []
         for n, (t, b) in enumerate(candidates):
-            element = _slide_element(t, b, theme, post_id, n + 1)
+            element = _slide_element(t, b, theme, post_id, n + 1, evidence)
             if element is not None:
                 return element
         return None
@@ -3837,7 +3930,7 @@ def create_carousel_slide_images(
             role = SLIDE_ROLE_BODY
             bc = badge_colors[(idx - 2) % len(badge_colors)]
             # The slide's OWN figures/points, drawn in code (#2241) — before any picture source.
-            element = _slide_element(title, body, theme, post_id, idx)
+            element = _slide_element(title, body, theme, post_id, idx, evidence)
             drawn_body = body
             if element is not None:
                 slide_band["h"] = element.band_h
@@ -3875,7 +3968,8 @@ def create_carousel_slide_images(
     write_deck_render_receipt(output_dir, post_id, template_key, slide_receipts,
                               extra={"user_id": user_id,
                                      "cover_treatment": deck_rhythm.get("cover_treatment"),
-                                     "motif": deck_rhythm["motif"]})
+                                     "motif": deck_rhythm["motif"],
+                                     "badge": deck_rhythm["badge"]})
     # Cover + first body slide, copied from what just shipped (#1704) — the render receipt has the
     # text-fit numbers; R2/R8 need pixels, and this is the only moment the slides and a grader are
     # both in the room before purge_post_assets clears the directory.

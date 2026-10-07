@@ -1405,7 +1405,9 @@ def render_typeset_card(hook: str, *, surface: str = "post_image", kicker: str =
     pal = _card_colors(brand, panel)
     region = _Canvas(size, pal["ground"], min(size))
     drawer = _CARD_DRAWERS.get(card_layout or CARD_POSTER, _draw_card_poster)
-    drawer(region, " ".join(hook.split()), kicker or "", signature or "", pal)
+    from cqc_lem.utilities.ai.image_concept import tidy_figures
+
+    drawer(region, " ".join(tidy_figures(hook).split()), kicker or "", signature or "", pal)
     if out_path is None:
         handle, out_path = tempfile.mkstemp(suffix=".png", prefix="lem_typeset_card_")
         os.close(handle)
@@ -1631,7 +1633,33 @@ def _slide_points(body: str) -> list[str]:
     return [_POINT_MARKER.sub("", line).strip(" .") for line in lines]
 
 
-def slide_graphic(title: Optional[str], body: Optional[str]) -> Optional[tuple[str, dict]]:
+def figure_in_evidence(raw: dict, evidence: Optional[str]) -> bool:
+    """Does ONE sentence of ``evidence`` state ``raw``'s figure AND every word of its label?
+
+    Showcase round 5: slot_144's slide said "63 recipients were execs" and its card drew exactly
+    that — the slide was the card's only source, and the slide writer had paired the story's 63
+    recipients with the claim about the 51 executives emailed. The post says neither. A slide's
+    figure is now drawn only when the post itself states the number and its label in the same
+    sentence; no evidence (``None``) keeps the slide-only rule.
+
+    Args:
+        raw: ``{label, value, unit}`` as the slide states it.
+        evidence: The post (or deck source) text, or None.
+
+    Returns:
+        Whether a single evidence sentence carries both.
+    """
+    if evidence is None:
+        return True
+    for sentence in _SLIDE_SENTENCE.split(_norm(evidence)):
+        if (verbatim_figure(raw.get("value"), raw.get("unit"), sentence)
+                and label_grounded(raw.get("label"), sentence)):
+            return True
+    return False
+
+
+def slide_graphic(title: Optional[str], body: Optional[str],
+                  evidence: Optional[str] = None) -> Optional[tuple[str, dict]]:
     """The code-drawn element one carousel body slide earns from its OWN text, or None.
 
     Deterministic and in priority order:
@@ -1648,6 +1676,8 @@ def slide_graphic(title: Optional[str], body: Optional[str]) -> Optional[tuple[s
     Args:
         title: The slide title.
         body: The slide body.
+        evidence: The post the deck accompanies; when given, a figure is drawn only if one of
+            its sentences states the number and the label together (``figure_in_evidence``).
 
     Returns:
         ``(archetype, graphic)`` ready for ``render_slide_graphic``, or None for a typographic
@@ -1669,7 +1699,9 @@ def slide_graphic(title: Optional[str], body: Optional[str]) -> Optional[tuple[s
         pair = _from_to(sentence, figures)
         if pair:
             graphic = validate_graphic_facts({"before_after": pair}, source)
-            if graphic.get("before_after"):
+            halves = graphic.get("before_after") or {}
+            if halves and all(figure_in_evidence(halves[k], evidence)
+                              for k in ("before", "after")):
                 return BEFORE_AFTER, graphic
     for sentence in sentences:
         for figure in _slide_figures(sentence):
@@ -1677,7 +1709,8 @@ def slide_graphic(title: Optional[str], body: Optional[str]) -> Optional[tuple[s
                 continue
             raw = {k: figure[k] for k in ("label", "value", "unit", "source_sentence")}
             graphic = validate_graphic_facts({"thesis_stat": raw}, source)
-            if graphic.get("stat"):
+            # The DRAWN label (its complete-context phrase) is what the post must state.
+            if graphic.get("stat") and figure_in_evidence(graphic["stat"], evidence):
                 return STAT_CARD, graphic
     return None
 
