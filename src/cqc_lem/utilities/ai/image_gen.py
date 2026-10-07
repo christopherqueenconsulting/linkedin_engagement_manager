@@ -38,7 +38,7 @@ from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 
 # gpt-image accepts exactly these; anything else falls back to square. 4:5 is NOT a gpt-image size
 # (gpt-image-2 may take other multiples of 16, but nothing here relies on that): it renders at the
-# portrait size and `conform_to_ratio` centre-crops the result before the judge ever sees it.
+# portrait size and `conform_to_ratio` crops the result (top-protecting) before the judge sees it.
 _SIZE_BY_RATIO = {
     "1:1": "1024x1024",
     "16:9": "1536x1024",
@@ -50,6 +50,12 @@ _SIZE_BY_RATIO = {
 _CROP_RATIOS = {"4:5": (4, 5)}
 # A render already within this of the target aspect is left alone (FLUX takes "4:5" natively).
 _CROP_TOLERANCE = 0.01
+# Where a portrait render loses its excess height (#2249 gauntlet): post images put the hook in the
+# top third, and a CENTRED 1024x1536 -> 1024x1280 crop cut 128px off the top — the headline's top
+# line on 2 of 5 renders. So the top loses 48px and the bottom 208px; on any other height the excess
+# is split in the same 48:208 proportion. Width trims (too-wide renders) stay centred.
+_CROP_TOP_PX = 48
+_CROP_BOTTOM_PX = 208
 
 # Replicate renders are bounded so a hung prediction can't stall a Celery worker forever.
 _REPLICATE_TIMEOUT_SECONDS = int(os.getenv("REPLICATE_TIMEOUT_SECONDS", "300"))
@@ -228,10 +234,12 @@ def size_for_ratio(ratio: str) -> str:
 
 
 def conform_to_ratio(path: Optional[str], ratio: str) -> Optional[str]:
-    """Centre-crop a render in place to ``ratio`` when that ratio is one no backend renders natively.
+    """Crop a render in place to ``ratio`` when that ratio is one no backend renders natively.
 
-    Deterministic: the largest centred box of the target aspect, so a 1024x1536 gpt-image render
-    becomes exactly 1024x1280 for 4:5. Only ratios in ``_CROP_RATIOS`` are touched, and a render
+    Deterministic: the largest box of the target aspect, so a 1024x1536 gpt-image render becomes
+    exactly 1024x1280 for 4:5 — TOP-PROTECTING, not centred: 48px off the top and 208px off the
+    bottom (``_CROP_TOP_PX`` / ``_CROP_BOTTOM_PX``), because the hook sits in the top third. A
+    too-wide render is trimmed evenly from both sides. Only ratios in ``_CROP_RATIOS`` are touched, and a render
     already at the aspect (FLUX/Replicate takes ``aspect_ratio="4:5"``) is left as it is. Runs
     before the vision judge, so the judge grades what will ship.
 
@@ -258,7 +266,9 @@ def conform_to_ratio(path: Optional[str], ratio: str) -> Optional[str]:
                 new_w, new_h = int(round(height * target)), height
             else:
                 new_w, new_h = width, int(round(width / target))
-            left, top = (width - new_w) // 2, (height - new_h) // 2
+            excess = height - new_h
+            left = (width - new_w) // 2
+            top = excess * _CROP_TOP_PX // (_CROP_TOP_PX + _CROP_BOTTOM_PX)
             image_format = img.format
             cropped = img.crop((left, top, left + new_w, top + new_h))
             cropped.load()

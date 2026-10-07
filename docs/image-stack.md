@@ -305,8 +305,10 @@ the five live editions of #1992 that put four of five covers on the deterministi
 
 Ratios map to the three sizes gpt-image accepts (`1:1`, `16:9`, `9:16`); anything else falls back to
 square. **4:5** (post images) is the exception: gpt-image renders it at 1024x1536 and
-`conform_to_ratio` centre-crops the file to exactly 1024x1280 — deterministic, before the judge sees
-it, on the gpt-image, FLUX and avatar paths alike. FLUX/Replicate is asked for `aspect_ratio="4:5"`
+`conform_to_ratio` crops the file to exactly 1024x1280 — deterministic, before the judge sees
+it, on the gpt-image, FLUX and avatar paths alike. The crop PROTECTS THE TOP, where the hook sits:
+48px off the top and 208px off the bottom (`_CROP_TOP_PX` / `_CROP_BOTTOM_PX`; other heights split
+the excess 48:208). A centred crop cut 128px off the top and clipped headlines on the #2249 gauntlet. FLUX/Replicate is asked for `aspect_ratio="4:5"`
 natively, and a render already at the aspect is left alone. Replicate renders are bounded (`REPLICATE_TIMEOUT_SECONDS`, 300s, 2 attempts) so a hung
 prediction can't stall a Celery worker forever. The run uses `wait=False`, so the create request
 returns at once and GET polls do the waiting inside that bound — the SDK's held-open create (60.5s

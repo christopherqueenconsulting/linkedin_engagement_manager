@@ -242,6 +242,58 @@ class TestStagedGateLoop:
         assert info["gate_failing"] == ["no_cliche"]
         assert info["gate_blind_description"] == "A brass valve."
 
+    def test_a_rejected_video_frame_retries_with_the_rubric_repair(self, monkeypatch):
+        """#2249 video gauntlet: attempt 2 carries the rubric repair exactly as covers do.
+
+        ``enforce=True`` holds even where the env list omits ``video``.
+        """
+        monkeypatch.delenv("IMAGE_GATE_CANDIDATES", raising=False)
+        bad = QualityVerdict(acceptable=False, failing=["specificity"],
+                             issues=["specificity 2/5"], rubric={"specificity": 2})
+        info: dict = {}
+        with patch.object(image_gen, "IMAGE_QUALITY_GATE_SURFACES", ("newsletter",)), \
+             patch.object(image_gen, "IMAGE_GATE_MAX_ATTEMPTS", 2), \
+             patch.object(image_gen, "_render_with_backend",
+                          side_effect=[("/tmp/1.png", "gpt-image"),
+                                       ("/tmp/2.png", "gpt-image")]) as render, \
+             patch.object(image_gen, "inspect_render_quality",
+                          side_effect=[bad, QualityVerdict(acceptable=True)]):
+            path = render_image_gated("base", surface="video", concept=_CONCEPT,
+                                      render_info=info, enforce=True)
+        assert render.call_count == 2 and path == "/tmp/2.png"
+        assert render.call_args_list[0][0][0] == "base"
+        retry = render.call_args_list[1][0][0]
+        assert retry == "base\n\n" + rubric_repair_directive(bad, "gpt-image", _CONCEPT, None)
+        assert "specificity" in retry
+        assert info["gate_verdict"] == "accepted"
+
+    def test_the_avatar_video_frame_retries_with_the_flux_rubric_repair(self, monkeypatch):
+        monkeypatch.delenv("IMAGE_GATE_CANDIDATES", raising=False)
+        bad = QualityVerdict(acceptable=False, failing=["no_cliche"], issues=["no_cliche 1/5"],
+                             rubric={"no_cliche": 1})
+        with patch.object(image_gen, "IMAGE_QUALITY_GATE_SURFACES", ("newsletter",)), \
+             patch.object(image_gen, "IMAGE_GATE_MAX_ATTEMPTS", 2), \
+             patch("cqc_lem.utilities.avatar.replicate_avatar.generate_image_with_avatar",
+                   side_effect=[("/tmp/1.png", True), ("/tmp/2.png", True)]) as lora, \
+             patch("cqc_lem.utilities.ai.ai_helper._record_avatar_media"), \
+             patch.object(image_gen, "conform_to_ratio", side_effect=lambda p, _r: p), \
+             patch.object(image_gen, "inspect_render_quality",
+                          side_effect=[bad, QualityVerdict(acceptable=True)]):
+            image_gen.render_avatar_image_gated(
+                "base", avatar={"model_ref": "o/l:v", "trigger_word": "TOK"}, user_id=1,
+                surface="video", concept=_CONCEPT, enforce=True)
+        assert lora.call_count == 2
+        assert "Render this scene again with the whole frame built on" in lora.call_args[0][0]
+
+    def test_without_enforce_a_surface_off_the_list_gets_one_advisory_look(self):
+        bad = QualityVerdict(acceptable=False, failing=["specificity"], rubric={"specificity": 2})
+        with patch.object(image_gen, "IMAGE_QUALITY_GATE_SURFACES", ("newsletter",)), \
+             patch.object(image_gen, "_render_with_backend",
+                          return_value=("/tmp/1.png", "gpt-image")) as render, \
+             patch.object(image_gen, "inspect_render_quality", return_value=bad):
+            render_image_gated("base", surface="video", concept=_CONCEPT)
+        assert render.call_count == 1
+
     def test_two_candidates_per_attempt_keep_the_better(self, monkeypatch):
         monkeypatch.setenv("IMAGE_GATE_CANDIDATES", "2")
         worse = QualityVerdict(acceptable=False, failing=["craft"], rubric={"craft": 2})
