@@ -47,8 +47,15 @@ CLI:
   --render RESULTS.json    Pure render: write the report + update the leaderboard. No network.
   --print-suites           Validate and summarise the suites. No network.
 Options:
-  --models a,b             Candidate models (bare Ollama tags). Empty = champions only (baseline).
+  --models a,b             Candidate models. A bare tag is Ollama Cloud; a provider-qualified id
+                           (`openai/gpt-5.4-mini`) is METERED (#2256, scripts/benchmark_routed.py).
+                           Empty = champions only (baseline).
   --champions t=model,…    Override the champion per tier (default: read from --config).
+  --champion-source S      `ollama` (default): each tier's first Ollama deployment. `metered`: its
+                           first non-Ollama deployment, provider-qualified (`openai/gpt-4o`).
+  --text-provider P        Where metered ids go: `openrouter` (default, OPENROUTER_API_KEY) or
+                           `openai` (OPENAI_API_KEY, openai/* only). Default $BENCHMARK_TEXT_PROVIDER.
+                           Benchmark-only: production routing stays on the LiteLLM proxy.
   --tiers a,b              Tiers to run (default: every suite found).
   --suite-dir DIR          Suite fixtures (default tests/benchmarks/model_tiers).
   --config PATH            LiteLLM config the champions are read from (default .litellm/config.yaml).
@@ -74,7 +81,9 @@ Media tiers (issue #2251, logic in scripts/benchmark_media.py) - `--tiers lem-vi
   --image-quality Q        gpt-image quality to render at (default medium, production's default).
   --prices PATH            Pinned cost map (default .litellm/model_prices_snapshot.json).
   --provider-snapshot PATH Provider scan snapshot (default .litellm/provider_models_snapshot.json).
-  --dry-run                For media tiers: print the roster's planned spend and exit. No calls.
+  --dry-run                For media tiers, and for a text run naming a metered model: print the
+                           planned spend and exit. No calls. --max-spend-usd caps metered text runs
+                           too, and on OpenRouter the key's `limit_remaining` is a second cap.
 Every render into a README that carries the model-registry block regenerates that block
 (scripts/model_registry.py).
 Exit: 0 ran / nothing recommended, 2 at least one swap recommendation, 1 error.
@@ -93,6 +102,8 @@ from typing import Callable, Optional
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_HERE, "..", "src"))
 sys.path.insert(0, _HERE)  # model_health_check is a sibling script, not a package module
+
+import benchmark_routed as routed  # noqa: E402 - sibling script (#2256 metered candidates)
 
 # Purpose-scoped personal key (issue #1453). This lane is a host cron, not a hand-run script, so its
 # key is a STORED credential — it gets its own purpose rather than riding the app's runtime key.
@@ -743,8 +754,23 @@ def usage_level(entry: Optional[dict]) -> Optional[int]:
     return level if 1 <= level <= 4 else None
 
 
+def _metered_price(entry: Optional[dict]) -> Optional[tuple]:
+    """`(in, out)` USD per token for a METERED model's usage entry (#2256), else None."""
+    pin, pout = (entry or {}).get("price_in"), (entry or {}).get("price_out")
+    if all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (pin, pout)):
+        return float(pin), float(pout)
+    return None
+
+
+def _price_label(price: tuple) -> str:
+    return f"metered ${price[0] * 1e6:.2f}/${price[1] * 1e6:.2f} per 1M"
+
+
 def usage_name(entry: Optional[dict]) -> str:
     """`{level, label}` → "High (3)". An unreadable level is `unknown`, never a guessed middle."""
+    price = _metered_price(entry)
+    if price:
+        return _price_label(price)
     level = usage_level(entry)
     label = (" ".join(str((entry or {}).get("label") or "").split()).capitalize()
              or USAGE_LEVEL_NAMES.get(level))
@@ -803,7 +829,15 @@ def usage_delta(candidate: Optional[dict], champion: Optional[dict], *,
 
     `unknown` is NOT `flat`. A swap whose quota cost cannot be read is a quota RISK, so it renders
     with the same warning an increase gets — the failure mode this exists to prevent is a HIGH model
-    being adopted as if it were free because nobody could see its level."""
+    being adopted as if it were free because nobody could see its level.
+
+    Two METERED models (#2256 - an OpenAI id measured through OpenRouter or OpenAI) have no level;
+    their delta is the pinned per-token PRICE instead, with the same up/flat/down/unknown meaning,
+    so the standing spend policy reads a 5x price rise exactly as it reads a quota increase."""
+    cand_price, champ_price = _metered_price(candidate), _metered_price(champion)
+    if cand_price and champ_price:
+        return price_delta(cand_price, champ_price, candidate_model=candidate_model,
+                           champion_model=champion_model)
     cand_level = usage_level(candidate)
     champ_level = usage_level(champion)
     cand_name = usage_name(candidate)
@@ -840,6 +874,38 @@ def usage_delta(candidate: Optional[dict], champion: Optional[dict], *,
             "direction": direction, "steps": steps, "summary": summary}
 
 
+def price_delta(candidate: tuple, champion: tuple, *, candidate_model: str = "",
+                champion_model: str = "") -> dict:
+    """`usage_delta`'s shape for two metered models, compared on pinned per-token price.
+
+    Either rate rising counts as an increase: a cheaper input does not pay for a 7x output rate on
+    a tier whose calls are output-heavy, and the policy should see the rise rather than a blend.
+    """
+    ups = [c > h for c, h in zip(candidate, champion)]
+    downs = [c < h for c, h in zip(candidate, champion)]
+    if any(ups):
+        direction = USAGE_UP
+    elif any(downs):
+        direction = USAGE_DOWN
+    else:
+        direction = USAGE_FLAT
+    ratios = " / ".join(f"{c / h:.1f}x {side}" if h else f"n/a {side}"
+                        for c, h, side in zip(candidate, champion, ("in", "out")))
+    champ_ref = f"champion `{champion_model}`" if champion_model else "the champion"
+    cand_name, champ_name = _price_label(candidate), _price_label(champion)
+    if direction == USAGE_UP:
+        summary = (f"⚠️ **price increase** — {cand_name} vs {champ_ref} {champ_name} ({ratios}). "
+                   f"Every call on this tier costs more; this is a spend decision, not a free "
+                   f"upgrade.")
+    elif direction == USAGE_DOWN:
+        summary = f"price decrease — {cand_name} vs {champ_ref} {champ_name} ({ratios})."
+    else:
+        summary = f"flat on price — {cand_name} on both sides."
+    return {"candidate_level": None, "candidate_label": cand_name, "champion_level": None,
+            "champion_label": champ_name, "direction": direction, "steps": None,
+            "summary": summary}
+
+
 # Standing owner policy (#842 decision `2A`): a quality win that RAISES the Ollama Cloud usage level
 # is adoptable only on `lem-complex` — long-form is the one tier where quality IS the product — and
 # only on a STRICT judge-rate win. A tie does not buy +1 usage level on every call that tier serves.
@@ -860,7 +926,8 @@ def quota_policy(tier: str, delta: Optional[dict], candidate: Optional[dict] = N
     tiers = ", ".join(f"`{t}`" for t in QUOTA_INCREASE_TIERS)
     if direction in (USAGE_FLAT, USAGE_DOWN):
         return {"decision": POLICY_ADOPT,
-                "reason": "no usage-level increase — the quality gate is the whole decision."}
+                "reason": ("no usage-level or price increase — the quality gate is the whole "
+                           "decision.")}
     if direction == USAGE_UNKNOWN:
         # An unconfirmed level is treated as an increase, so it cannot clear a policy written about
         # increases: the level has to be READ before the policy can say anything true about it.
@@ -870,8 +937,9 @@ def quota_policy(tier: str, delta: Optional[dict], candidate: Optional[dict] = N
                            "unattended run) and re-render before adopting.")}
     if tier not in QUOTA_INCREASE_TIERS:
         return {"decision": POLICY_HOLD,
-                "reason": (f"a usage-level increase is adoptable only on {tiers}; `{tier}` would "
-                           f"pay the extra quota without the long-form quality it buys.")}
+                "reason": (f"a usage-level or price increase is adoptable only on {tiers}; "
+                           f"`{tier}` would pay the extra quota without the long-form quality it "
+                           "buys.")}
     cand_judge = (candidate or {}).get("judge_pass_rate")
     champ_judge = (champion or {}).get("judge_pass_rate")
     if not isinstance(cand_judge, (int, float)) or not isinstance(champ_judge, (int, float)):
@@ -1171,6 +1239,13 @@ def render_report(run: dict) -> str:
         f"- **Judge calls spent:** {run.get('judge_calls', 0)}"
         f" (cap {run.get('judge_call_cap', 0)})",
     ]
+    if run.get("metered") or {}:
+        metered = run["metered"]
+        lines.append(f"- **Metered models:** via `{metered.get('route')}` — actual spend "
+                     f"${float(metered.get('spent_usd') or 0):.4f} of a "
+                     f"${float(metered.get('cap_usd') or 0):.2f} cap (planned ceiling "
+                     f"${float(metered.get('planned_usd') or 0):.4f}); the in-runner judge is "
+                     "billed through the proxy and not included")
     if unmeasured:
         # In the header, not only under the per-case ❌ details: a scorecard of zeros reads as a
         # quality verdict, and how much of this run is a measurement at all is the first thing that
@@ -1614,6 +1689,22 @@ def champions_from_config(config_text: str, tiers: list) -> dict:
     return champions
 
 
+def metered_champions_from_config(config_text: str, tiers: list) -> dict:
+    """Each tier's FIRST non-Ollama deployment as a provider-qualified id (#2256).
+
+    The comparison `--champion-source metered` asks for: `lem-complex`'s `openai/gpt-4o` and the
+    `openai/gpt-4o-mini` fallbacks of `lem-simple` / `lem-medium` / `lem-router` - the deployments a
+    newer OpenAI model would displace, which the Ollama-champion default can never measure.
+    """
+    from model_health_check import load_config_text, parse_deployments  # noqa: WPS433
+    champions: dict = {}
+    for row in parse_deployments(load_config_text(config_text)):
+        if not row["is_ollama"] and row["group"] in tiers and row["group"] not in champions \
+                and "/" in row["model"]:
+            champions[row["group"]] = row["model"]
+    return champions
+
+
 def parse_champion_overrides(raw: Optional[str]) -> dict:
     out: dict = {}
     for chunk in str(raw or "").split(","):
@@ -1653,6 +1744,12 @@ class ProviderClient:
                                          timeout=self.timeout)
         return self._client
 
+    def _create(self, model: str, messages: list, call_params: dict):
+        """ONE attempt. The seam the metered client (`benchmark_routed`) overrides to translate
+        params, meter spend and redact errors without forking the retry loop below."""
+        return self._openai().chat.completions.create(model=model, messages=messages,
+                                                      **call_params)
+
     def complete(self, model: str, messages: list, params: Optional[dict] = None, *,
                  allow_budget_escalation: bool = True) -> dict:
         """One case's completion.
@@ -1677,8 +1774,7 @@ class ProviderClient:
             # retry exists to measure — and those numbers go into the rolling leaderboard forever.
             started = time.time()
             try:
-                response = self._openai().chat.completions.create(
-                    model=model, messages=messages, **call_params)
+                response = self._create(model, messages, call_params)
             except Exception as exc:  # noqa: BLE001 - a provider failure is a case result, not a crash
                 return {"text": None, "error": str(exc)[:200], "budget_escalations": escalations,
                         "repeats": repeats, "budget_locked": budget_locked,
@@ -1924,6 +2020,29 @@ def _canned(case: dict) -> dict:
     return case.get("canned") if isinstance(case.get("canned"), dict) else {}
 
 
+def plan_targets(suites: dict, models: list, champions: dict,
+                 log: Optional[Callable[[str], None]] = None) -> list:
+    """`[(tier, model, role)]` a run measures: each tier's champion, then every candidate.
+
+    Shared by the run and the metered spend plan (#2256), so what is priced is exactly what runs.
+    """
+    targets: list = []
+    for tier in sorted(suites):
+        champion = champions.get(tier)
+        if champion:
+            targets.append((tier, champion, "champion"))
+        for model in models:
+            if model == champion:
+                # Benchmarking a model against ITSELF ties every expectation, which the gate reads
+                # as meets-or-beats and would emit as a `X -> X` swap recommendation straight into
+                # the retirement-map block. It is not a comparison; skip the tier.
+                if log:
+                    log(f"  {model} already serves {tier} — skipping it as a candidate there")
+                continue
+            targets.append((tier, model, "candidate"))
+    return targets
+
+
 def run_benchmark(suites: dict, models: list, champions: dict, *, run_id: str, today: str,
                   provider: Optional[ProviderClient] = None,
                   evals: Optional["PostHogEvals"] = None,
@@ -1935,20 +2054,8 @@ def run_benchmark(suites: dict, models: list, champions: dict, *, run_id: str, t
     `dry_run` scores each suite against the case's committed `canned` output and verdict: a full
     report with zero network calls, labelled as such so canned scores can never be mistaken for
     measurements."""
-    targets: list = []
-    for tier in sorted(suites):
-        champion = champions.get(tier)
-        if champion:
-            targets.append((tier, champion, "champion"))
-        for model in models:
-            if model == champion:
-                # Benchmarking a model against ITSELF ties every expectation, which the gate reads
-                # as meets-or-beats and would emit as a `X -> X` swap recommendation straight into
-                # the retirement-map block. It is not a comparison; skip the tier.
-                print(f"  {model} already serves {tier} — skipping it as a candidate there",
-                      file=sys.stderr)
-                continue
-            targets.append((tier, model, "candidate"))
+    targets = plan_targets(suites, models, champions,
+                           log=lambda m: print(m, file=sys.stderr))
 
     scoring_mode = SCORING_DRY_RUN if dry_run else (
         SCORING_DETERMINISTIC if not judge_enabled else
@@ -2247,6 +2354,65 @@ def _media_publish(run: dict, args: argparse.Namespace) -> int:
     return 2 if recommended else 0
 
 
+def _text_provider(args: argparse.Namespace) -> str:
+    """The metered route: `--text-provider`, else `BENCHMARK_TEXT_PROVIDER`, else OpenRouter."""
+    return args.text_provider or os.environ.get("BENCHMARK_TEXT_PROVIDER") or routed.ROUTE_OPENROUTER
+
+
+def _metered_preflight(args: argparse.Namespace, suites: dict, targets: list) -> dict:
+    """Plan, cap and wire the metered (provider-qualified) half of a text run (#2256).
+
+    Everything that can refuse happens here, BEFORE the first completion: an id the route cannot
+    reach, an unpriced model, a plan over the cap, a missing key, and on OpenRouter a plan over -
+    or an unreadable - `limit_remaining`. A dry run prints the plan and stops: no network at all.
+
+    Returns:
+        ``{}`` when the run has no metered model; ``{"exit": rc}`` when it must stop now; otherwise
+        ``{"client", "meter", "plan", "prices", "route"}``.
+    """
+    names = sorted({m for _, m, _ in targets if routed.is_routed(m)})
+    if not names:
+        return {}
+    route = _text_provider(args)
+    problem = routed.route_problem(names, route)
+    if problem:
+        print(problem, file=sys.stderr)
+        return {"exit": 1}
+    try:
+        prices = json.loads(_read_text(args.prices)).get("models") or {}
+    except (OSError, ValueError) as exc:
+        print(f"could not read the pinned prices: {exc}", file=sys.stderr)
+        return {"exit": 1}
+    cap = args.max_spend_usd if args.max_spend_usd is not None else routed.max_spend_usd()
+    judge_cap = args.max_judge_calls if args.max_judge_calls is not None else max_judge_calls()
+    plan = routed.plan_text_spend(suites, targets, prices, judge_enabled=not args.no_judge,
+                                  judge_cap=judge_cap, judge_tokens=judge_max_tokens())
+    if args.dry_run:
+        print(routed.render_plan(plan, cap, route, None))
+        refusal = routed.spend_refusal(plan, cap, route, None, check_limit=False)
+        if refusal:
+            print(refusal, file=sys.stderr)
+            return {"exit": 1}
+        print("dry run: no provider was called and nothing was written")
+        return {"exit": 0}
+    key_env = routed.KEY_ENV[route]
+    api_key = (os.environ.get(key_env) or "").strip()
+    if not api_key:
+        print(f"{key_env} must be set to benchmark {', '.join(names)} via {route}",
+              file=sys.stderr)
+        return {"exit": 1}
+    key_limit = routed.fetch_key_limit(api_key) if route == routed.ROUTE_OPENROUTER else None
+    print(routed.render_plan(plan, cap, route, key_limit))
+    refusal = routed.spend_refusal(plan, cap, route, key_limit)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return {"exit": 1}
+    meter = routed.SpendMeter(routed.effective_cap(cap, route, key_limit))
+    client = routed.build_routed_client(ProviderClient, route=route, api_key=api_key,
+                                        prices=prices, meter=meter)
+    return {"client": client, "meter": meter, "plan": plan, "prices": prices, "route": route}
+
+
 def main(argv: Optional[list] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -2274,6 +2440,8 @@ def main(argv: Optional[list] = None) -> int:
     ap.add_argument("--image-quality", default="medium", choices=("low", "medium", "high"))
     ap.add_argument("--prices", default=".litellm/model_prices_snapshot.json")
     ap.add_argument("--provider-snapshot", default=".litellm/provider_models_snapshot.json")
+    ap.add_argument("--text-provider", default=None, choices=("openrouter", "openai"))
+    ap.add_argument("--champion-source", default="ollama", choices=("ollama", "metered"))
     args = ap.parse_args(argv)
 
     today = args.today or _today()
@@ -2331,21 +2499,32 @@ def main(argv: Optional[list] = None) -> int:
     models = parse_models(args.models)
     champions = parse_champion_overrides(args.champions)
     if not champions:
+        reader = (metered_champions_from_config if args.champion_source == "metered"
+                  else champions_from_config)
         try:
-            champions = champions_from_config(_read_text(args.config), list(suites))
+            champions = reader(_read_text(args.config), list(suites))
         except OSError as exc:
             print(f"could not read {args.config}: {exc}", file=sys.stderr)
             return 1
 
+    targets = plan_targets(suites, models, champions)
+    metered = _metered_preflight(args, suites, targets)
+    if metered.get("exit") is not None:
+        return metered["exit"]
+
     provider = evals = None
     if not args.dry_run:
-        base_url = os.environ.get("OLLAMA_CLOUD_URL", "")
-        api_key = os.environ.get("OLLAMA_CLOUD_API_KEY", "")
-        if not base_url or not api_key:
-            print("OLLAMA_CLOUD_URL / OLLAMA_CLOUD_API_KEY must be set to run the benchmark",
-                  file=sys.stderr)
-            return 1
-        provider = ProviderClient(base_url, api_key)
+        ollama = None
+        if any(not routed.is_routed(m) for _, m, _ in targets):
+            base_url = os.environ.get("OLLAMA_CLOUD_URL", "")
+            api_key = os.environ.get("OLLAMA_CLOUD_API_KEY", "")
+            if not base_url or not api_key:
+                print("OLLAMA_CLOUD_URL / OLLAMA_CLOUD_API_KEY must be set to run the benchmark",
+                      file=sys.stderr)
+                return 1
+            ollama = ProviderClient(base_url, api_key)
+        provider = (routed.DispatchingProvider(ollama, metered["client"])
+                    if metered.get("client") is not None else ollama)
         personal_key = resolve_posthog_key("benchmark")
         project_key = (os.environ.get("POSTHOG_API_KEY") or "").strip()
         # BOTH keys or neither: the personal key reads the evaluation API, the project key emits the
@@ -2371,9 +2550,13 @@ def main(argv: Optional[list] = None) -> int:
     if not args.dry_run and not args.no_usage_levels:
         from model_health_check import fetch_usage_level  # noqa: WPS433 - sibling script
         fetch = fetch_usage_level
+    # A metered model has no ollama.com page to scrape; its "usage" is its pinned price (#2256).
     usage_levels = collect_usage_levels(
-        measured, fetch=fetch,
+        [m for m in measured if not routed.is_routed(m)], fetch=fetch,
         overrides=parse_usage_overrides(args.usage_levels or usage_levels_env_default()))
+    for model in measured:
+        if routed.is_routed(model):
+            usage_levels[model] = routed.metered_usage(model, metered.get("prices") or {})
 
     cap = args.max_judge_calls if args.max_judge_calls is not None else max_judge_calls()
     run = run_benchmark(suites, models, champions,
@@ -2381,6 +2564,10 @@ def main(argv: Optional[list] = None) -> int:
                         provider=provider, evals=evals, judge_cap=cap,
                         dry_run=bool(args.dry_run), judge_enabled=not args.no_judge,
                         usage_levels=usage_levels)
+    if metered.get("meter") is not None:
+        run["metered"] = {"route": metered["route"], "cap_usd": metered["meter"].cap,
+                          "spent_usd": round(metered["meter"].spent, 6),
+                          "planned_usd": metered["plan"]["routed_usd"]}
 
     if args.results_out:
         with open(args.results_out, "w") as f:

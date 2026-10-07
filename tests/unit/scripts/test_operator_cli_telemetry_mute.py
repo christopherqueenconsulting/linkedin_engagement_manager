@@ -31,6 +31,7 @@ OPERATOR_CLIS = [
     "scripts/measure_proof_gate_impact.py",
     "scripts/audit_outbound_drafts.py",
     "scripts/simulate_post_rhythm.py",
+    "scripts/probe_research.py",
 ]
 
 _MUTE = re.compile(r'^os\.environ\.setdefault\(\s*"LEM_TELEMETRY_MUTED"\s*,\s*"1"\s*\)',

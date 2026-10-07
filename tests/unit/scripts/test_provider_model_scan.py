@@ -423,3 +423,43 @@ class TestCli:
                  "openai": None, "perplexity": None, "deprecations_page": False}})))
         assert mhc.main(["--provider-scan", "--plan-file", "-"]) == 0
         assert "nothing to report" in capsys.readouterr().out
+
+
+class TestResearchPresets:
+    """#2255: `lem-research` moved off sunset Sonar onto Agent API presets."""
+
+    _LIVE = pathlib.Path(__file__).resolve().parents[3] / ".litellm" / "config.yaml"
+
+    def test_a_preset_is_not_a_model_id(self):
+        assert pms.is_preset("perplexity", "preset/fast")
+        assert not pms.is_preset("perplexity", "sonar")
+        assert not pms.is_preset("openai", "preset/fast")
+
+    def test_the_live_config_reports_no_sunset_or_unlisted_row_for_lem_research(self):
+        """The scan that filed #2255, replayed against the committed config.
+
+        Perplexity's /v1/models lists Agent API models and never `sonar`, and the curated Sonar
+        notices still stand - neither may surface a lem-research row any more.
+        """
+        deployments = mhc.parse_deployments(mhc.load_config_text(self._LIVE.read_text()))
+        plan = pms.build_provider_plan(
+            deployments, today="2026-10-07", openai_models=OPENAI_IDS,
+            openai_source=pms.SOURCE_OPENAI_API,
+            perplexity_models=["openai/gpt-5.6-luna", "anthropic/claude-sonnet-5"],
+            deprecations=list(pms.PERPLEXITY_NOTICES))
+        research = [r for r in plan["sunsets"] + plan["vanished"] if "lem-research" in r["groups"]]
+        assert research == []
+        configured = pms.configured_provider_models(deployments)
+        assert ("perplexity", "preset/fast") in configured
+        assert not any(model == "sonar" for _, model in configured)
+
+    def test_a_retired_sonar_deployment_would_still_be_reported(self):
+        """The preset skip is narrow: a model id the provider stopped listing is still caught."""
+        config = ("model_list:\n  - model_name: lem-research\n    litellm_params:\n"
+                  "      model: perplexity/sonar\n")
+        plan = pms.build_provider_plan(
+            mhc.parse_deployments(mhc.load_config_text(config)), today="2026-10-07",
+            openai_models=None, openai_source=None, perplexity_models=["openai/gpt-5.6-luna"],
+            deprecations=list(pms.PERPLEXITY_NOTICES))
+        assert [v["model"] for v in plan["vanished"]] == ["sonar"]
+        assert [s["model"] for s in plan["sunsets"]] == ["sonar"]

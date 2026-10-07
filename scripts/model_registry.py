@@ -98,7 +98,12 @@ def price_text(row: dict, prices: dict) -> str:
         return "unpriced"
     if not cout:
         return f"{_per_million(float(cin))} per 1M in"
-    return f"{_per_million(float(cin))} / {_per_million(float(cout))} per 1M in/out"
+    text = f"{_per_million(float(cin))} / {_per_million(float(cout))} per 1M in/out"
+    # A Perplexity preset also bills each web search it runs, a fee no token rate can express.
+    per_call = spec.get("cost_per_request")
+    if isinstance(per_call, (int, float)) and per_call > 0:
+        text += f" + ${float(per_call):.4f}/call"
+    return text
 
 
 def last_verdicts(readme_text: str) -> dict:
@@ -175,11 +180,17 @@ def build_registry(deployments: list, *, prices: dict, catalog: dict, provider_s
     for d in deployments:
         order[d["group"]] = order.get(d["group"], 0) + 1
         provider = provider_label(d)
-        verdict = verdicts.get((d["group"], d["bare"]))
+        # A metered model is measured under its provider-qualified id (#2256), an Ollama tag bare.
+        found = [v for v in (verdicts.get((d["group"], d["bare"])),
+                             None if d["is_ollama"] else verdicts.get((d["group"], d["model"])))
+                 if v]
+        verdict = max(found) if found else None
         sunset = sunsets.get((pms.provider_of(d["model"]), d["bare"])) if not d["is_ollama"] else None
         candidate = newer.get((provider, d["bare"]))
         if candidate:
             newer_text = f"yes: `{candidate}`"
+        elif pms.is_preset(provider, d["bare"]):
+            newer_text = "n/a (preset: Perplexity re-points it)"
         elif provider == "perplexity":
             newer_text = "n/a (unversioned ids)"
         elif not scanned.get(provider):

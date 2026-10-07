@@ -1,0 +1,46 @@
+{
+  "id": "resp_f854ed0a-f0e2-4ee8-b5ea-8582956910f2",
+  "created_at": 1791417600,
+  "completed_at": 1791417603,
+  "model": "openai/gpt-5.6-luna",
+  "status": "completed",
+  "object": "response",
+  "output": [
+    {
+      "type": "search_results",
+      "queries": ["small business AI agents back-office 2026"],
+      "results": [
+        {"id": 1, "title": "State of Small Business AI 2026", "url": "https://research.example.com/smb-ai-2026",
+         "snippet": "41% of small businesses now run at least one AI agent in finance or ops.", "date": "2026-08-14"},
+        {"id": 2, "title": "Back-office automation survey", "url": "https://survey.example.org/backoffice",
+         "snippet": "Invoice processing time fell 38% in firms using agents.", "date": "2026-07-02"}
+      ]
+    },
+    {
+      "type": "message",
+      "id": "msg_1",
+      "role": "assistant",
+      "status": "completed",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "41% of small businesses ran at least one AI agent in finance or operations by August 2026 (State of Small Business AI 2026). Firms using agents cut invoice processing time by 38% (Back-office automation survey, July 2026).",
+          "annotations": [
+            {"type": "url_citation", "url": "https://research.example.com/smb-ai-2026", "title": "State of Small Business AI 2026", "start_index": 0, "end_index": 60},
+            {"type": "url_citation", "url": "https://news.example.net/agents-ops", "title": "Agents in ops", "start_index": 61, "end_index": 120}
+          ],
+          "logprobs": []
+        }
+      ]
+    }
+  ],
+  "usage": {
+    "input_tokens": 412,
+    "output_tokens": 188,
+    "total_tokens": 600,
+    "cost": {"currency": "USD", "input_cost": 0.00008, "output_cost": 0.00023, "request_cost": 0.0025, "total_cost": 0.00281}
+  },
+  "parallel_tool_calls": false,
+  "tool_choice": "auto",
+  "tools": []
+}

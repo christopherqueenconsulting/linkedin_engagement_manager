@@ -169,15 +169,32 @@ model_list:
   # (scripts/benchmark_models.py), never a config edit — and it needs ANTHROPIC_API_KEY set FIRST,
   # because an unkeyed deployment does not sit idle here, it wins.
 
-  # ── RESEARCH: web-grounded current facts via Perplexity Sonar ────────────────
-  # Used by newsletter_research.research_newsletter_topic (one call per edition) to ground
-  # editions in current stats/examples. Falls back in code to the direct Perplexity helper.
+  # ── RESEARCH: web-grounded current facts via Perplexity's Agent API ──────────
+  # Used by utilities/ai/content_research.research_topic (newsletters, posts, opt-in comments) to
+  # ground content in current stats/examples. Falls back in code to the direct Perplexity helper.
+  # #2255: Sonar Chat Completions (`perplexity/sonar`) was SUNSET 2026-09-27 and `sonar` left
+  # Perplexity's /v1/models; calls only worked while Perplexity reformulated them. The successor is
+  # the Agent API (`/v1/responses`) with a PRESET, which LiteLLM's perplexity provider sends as
+  # `{"preset": ...}` for a `perplexity/preset/<name>` model. That is a RESPONSES-API route, so the
+  # caller uses `client.responses.create` — a chat-completions call to this alias would not reach
+  # it. `fast` (Sonar's named successor, one web search) leads; `low` (the old `pro-search`: search
+  # plus fetch, ~2x the tokens) is the in-group fallback for when `fast` errors or is renamed.
+  # `order` keeps `low` idle until then.
   - model_name: lem-research
     litellm_params:
-      model: perplexity/sonar
+      model: perplexity/preset/fast
       api_key: os.environ/PERPLEXITY_API_KEY
       request_timeout: 60
       rpm: 20
+      order: 1
+
+  - model_name: lem-research
+    litellm_params:
+      model: perplexity/preset/low
+      api_key: os.environ/PERPLEXITY_API_KEY
+      request_timeout: 90
+      rpm: 20
+      order: 2
 
   # ── IMAGE generation — no Ollama Cloud equivalent; OpenAI GPT-Image ─────────
   # gpt-image-2 is the hero renderer for every non-avatar image (covers, post images,

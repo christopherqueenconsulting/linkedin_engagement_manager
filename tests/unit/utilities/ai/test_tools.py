@@ -16,12 +16,33 @@ class TestSearchWithPerplexity:
         if citations is None:
             citations = ["https://example.com/1", "https://example.com/2"]
         mock_resp = MagicMock()
+        # Perplexity's Agent API shape (#2255): a typed `output` list, not a chat choice.
         mock_resp.json.return_value = {
-            "choices": [{"message": {"content": answer}}],
-            "citations": citations,
+            "object": "response", "status": "completed",
+            "output": [
+                {"type": "search_results", "results": [{"url": u} for u in citations]},
+                {"type": "message", "role": "assistant",
+                 "content": [{"type": "output_text", "text": answer, "annotations": []}]},
+            ],
         }
         mock_resp.raise_for_status = MagicMock()
         return mock_resp
+
+    def test_calls_the_agent_api_with_the_fast_preset(self):
+        """Sonar Chat Completions was sunset 2026-09-27; the direct route is the Agent API."""
+        mock_resp = self._make_mock_response()
+        with patch.dict("os.environ", {"PERPLEXITY_API_KEY": "test-key"}):
+            with patch("cqc_lem.utilities.ai.tools.requests.post",
+                       return_value=mock_resp) as post:
+                from cqc_lem.utilities.ai.tools import search_with_perplexity
+
+                search_with_perplexity("AI trends")
+
+        assert post.call_args.args[0] == "https://api.perplexity.ai/v1/agent"
+        body = post.call_args.kwargs["json"]
+        assert body["preset"] == "fast"
+        assert body["input"] == "AI trends"
+        assert "messages" not in body and "model" not in body
 
     def test_raises_runtime_error_when_key_missing(self):
         with patch.dict("os.environ", {}, clear=True):

@@ -2,10 +2,12 @@
 current, factual findings (recent stats with rough dates, real examples, trends, credible contrarian
 data) for a subject + blueprint, so writers weave specifics instead of vague claims.
 
-Routing: prefer the LiteLLM proxy alias `lem-research` (Perplexity Sonar, see .litellm/config.yaml)
-via the shared client; fall back to the direct `search_with_perplexity` helper when the proxy route
-is unavailable. Every failure path degrades to empty findings — generation NEVER breaks because
-research did.
+Routing: prefer the LiteLLM proxy alias `lem-research` via the shared client's RESPONSES endpoint
+(`client.responses.create`). Since #2255 that alias is Perplexity's Agent API (`/v1/responses`, the
+`fast` preset; Sonar Chat Completions was sunset 2026-09-27), so the answer arrives as a typed
+`output` list rather than a chat choice — `parse_agent_response` is the ONE reader of that shape.
+Fall back to the direct `search_with_perplexity` helper when the proxy route is unavailable. Every
+failure path degrades to empty findings — generation NEVER breaks because research did.
 
 COST POLICY (per-type toggles, all under the CONTENT_RESEARCH_ENABLED master switch):
 - newsletter — NEWSLETTER_RESEARCH_ENABLED, default ON. Weekly cadence; one call per edition is cheap
@@ -21,6 +23,7 @@ COST POLICY (per-type toggles, all under the CONTENT_RESEARCH_ENABLED master swi
 """
 
 import os
+from typing import Any
 
 from cqc_lem.utilities.flags import COMMENT_RESEARCH, flag_enabled
 from cqc_lem.utilities.logger import log_debug, log_warning
@@ -106,19 +109,91 @@ def _build_research_query(subject: str, content_type: str, blueprint: dict = Non
     return " ".join(parts)
 
 
+def _field(obj: Any, name: str) -> Any:
+    """`obj[name]` for a dict, `obj.name` for an SDK object, None when it carries neither."""
+    if isinstance(obj, dict):
+        return obj.get(name)
+    return getattr(obj, name, None)
+
+
+def _as_list(value: Any) -> list:
+    return list(value) if isinstance(value, (list, tuple)) else []
+
+
+def _add_url(urls: list, candidate: Any) -> None:
+    if isinstance(candidate, str) and candidate.startswith(("http://", "https://")) \
+            and candidate not in urls:
+        urls.append(candidate)
+
+
+def parse_agent_response(response: Any, max_sources: int = 5) -> tuple[str, list]:
+    """Read findings text and source URLs off a Perplexity Agent API response.
+
+    Accepts the OpenAI SDK's parsed `Response` (the proxy path) or the raw JSON dict (the direct
+    path), because both carry the same `output` list: `message` items whose `output_text` parts hold
+    the answer and `url_citation` annotations, plus a `search_results` item listing what was read.
+    Search results come first (they are what the answer was grounded on), then inline citations,
+    then the legacy top-level `citations` / `search_results` a converted Sonar answer still carries.
+    Anything unrecognised is skipped rather than raised on — the caller treats empty findings as
+    "no research", never as a failure to surface.
+
+    Args:
+        response: The Agent API response, as an SDK object or a dict.
+        max_sources: Upper bound on the URLs returned.
+
+    Returns:
+        `(findings, sources)` where sources is `[{"url": ...}]`, de-duplicated in reading order.
+    """
+    texts: list = []
+    urls: list = []
+    annotation_urls: list = []
+    for item in _as_list(_field(response, "output")):
+        kind = _field(item, "type")
+        if kind == "search_results":
+            for result in _as_list(_field(item, "results")):
+                _add_url(urls, _field(result, "url"))
+        elif kind == "message":
+            for part in _as_list(_field(item, "content")):
+                if _field(part, "type") not in ("output_text", "text"):
+                    continue
+                text = _field(part, "text")
+                if isinstance(text, str) and text.strip():
+                    texts.append(text.strip())
+                for note in _as_list(_field(part, "annotations")):
+                    _add_url(annotation_urls, _field(note, "url"))
+    findings = "\n\n".join(texts)
+    if not findings:
+        shortcut = _field(response, "output_text")
+        findings = shortcut.strip() if isinstance(shortcut, str) else ""
+    for url in annotation_urls:
+        _add_url(urls, url)
+    for url in _as_list(_field(response, "citations")):
+        _add_url(urls, url)
+    for result in _as_list(_field(response, "search_results")):
+        _add_url(urls, _field(result, "url"))
+    return findings, [{"url": u} for u in urls[:max(0, int(max_sources))]]
+
+
 def _research_via_litellm(query: str, max_sources: int) -> dict:
+    """One research call through the proxy's `/v1/responses` route.
+
+    Args:
+        query: The research query `_build_research_query` produced.
+        max_sources: Upper bound on the source URLs kept.
+
+    Returns:
+        `{"findings", "sources"}`.
+
+    Raises:
+        RuntimeError: The proxy answered but the response carried no findings text.
+    """
     from cqc_lem.utilities.ai.client import client
-    response = client.chat.completions.create(
-        model="lem-research",
-        messages=[{"role": "system", "content": _RESEARCH_SYSTEM},
-                  {"role": "user", "content": query}],
-        temperature=0.2, max_tokens=900)
-    findings = (response.choices[0].message.content or "").strip()
+    response = client.responses.create(
+        model="lem-research", instructions=_RESEARCH_SYSTEM, input=query,
+        max_output_tokens=900)
+    findings, sources = parse_agent_response(response, max_sources)
     if not findings:
         raise RuntimeError("Empty research response from lem-research")
-    # Perplexity via LiteLLM surfaces citations as an extra response field when available.
-    citations = getattr(response, "citations", None) or []
-    sources = [{"url": u} for u in list(citations)[:max_sources] if isinstance(u, str)]
     return {"findings": findings, "sources": sources}
 
 
