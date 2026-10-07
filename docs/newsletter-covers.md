@@ -253,6 +253,14 @@ are dropped at parse time, the anchor checks are advisory only, and the avatar r
 the concept fit rule says the piece is about the author (`docs/image-stack.md`, "Split layouts,
 square scenes, no screens").
 
+### Gauntlet round 8 → no painted labels
+
+Split covers held (three of four accepted); ed17 failed on a painted poster caption and two
+covers had no kicker. Renders now refuse every label-carrying surface, the brief describes people
+by appearance rather than by group caption, a missing kicker is derived from the piece, and a
+comparative hook must say "than" or carry a number (`docs/image-stack.md`, "No labels, a kicker
+always, anchored comparatives").
+
 ### Rejections land for review, with their reason
 
 A definite judge failure on `no_cliche` or `specificity` after the attempt budget returns verdict

@@ -921,8 +921,8 @@ class TestTheChosenIdeaAndTheEmotion:
 
     def test_the_people_template_demands_a_visible_specific_reaction(self):
         template = _TREATMENT_TEMPLATES["people_scene"]
-        assert "a wince at a number, mid-laugh relief, a raised eyebrow at a draft" in template
-        assert "face reads at thumbnail size" in template and "A laptop is at most a prop" in template
+        assert "a wince at a number, mid-laugh relief, a raised eyebrow at a colleague" in template
+        assert "face reads at thumbnail size" in template and "no laptop or screen in frame" in template
 
     @pytest.mark.parametrize("text", [
         "a founder looking at a laptop", "a marketer typing on her laptop",
@@ -1323,7 +1323,8 @@ class TestRoundSevenBrief:
         with patch(_LLM, return_value=_resp(_GROUNDED)) as llm:
             build_image_brief("c", surface="carousel", concept=concept)
         assert ("VALENCE: positive — a quiet, satisfied half-smile and relaxed shoulders, eyes "
-                "open — never eyes closed, never a hand on the chest") in \
+                "open, engaged with the other person or the task — never eyes closed, never a "
+                "hand on the chest, head or face") in \
             llm.call_args[1]["messages"][1]["content"]
 
     def test_lower_third_keeps_every_subject_up_top(self):
@@ -1370,3 +1371,69 @@ class TestRoundEightBrief:
                                 concept=_COVER_CONCEPT, treatment="people_scene")
         assert "Compose to compose" not in brief.prompt
         assert "Compose a SQUARE frame with the subject centred" in brief.prompt
+
+
+@pytest.mark.unit
+class TestRoundNineBrief:
+    @pytest.mark.parametrize("label", ["Founders & Content Teams in conversation",
+                                       "a poster for Engineering and Security",
+                                       "founders and content teams around a table"])
+    def test_a_group_caption_is_refused(self, label):
+        bad = dict(_GROUNDED_COVER, prompt=f"{_GROUNDED_COVER['prompt']} {label}.")
+        with patch(_LLM, side_effect=[_resp(bad), _resp(_GROUNDED_COVER)]) as llm:
+            build_image_brief("c", surface="newsletter", concept=_concept())
+        reason = llm.call_args_list[1][1]["messages"][1]["content"]
+        assert "group caption" in reason or "posters" in reason
+
+    def test_the_author_is_told_to_describe_people_by_appearance(self):
+        from cqc_lem.utilities.ai.image_brief import PROPS_DIRECTIVE
+        assert "by APPEARANCE and ACTION" in PROPS_DIRECTIVE
+        assert "founders and content teams" in PROPS_DIRECTIVE
+
+    @pytest.mark.parametrize("prop", ["a PRICING CONTRACT sheet", "a signed agreement",
+                                      "a name badge on a lanyard", "a poster on the wall",
+                                      "warehouse signage"])
+    def test_label_carrying_props_are_refused(self, prop):
+        from cqc_lem.utilities.ai.image_brief import prop_failure
+        assert prop_failure(f"A man in a grey jumper beside {prop}."), prop
+
+    def test_a_video_frame_refuses_a_contract_and_gets_the_props_directive(self):
+        papered = dict(_GROUNDED_COVER,
+                       prompt=_GROUNDED_COVER["prompt"] + " A pricing contract on the table.")
+        with patch(_LLM, side_effect=[_resp(papered), _resp(_GROUNDED_COVER)]) as llm:
+            brief = build_image_brief("c", surface="video", concept=_concept())
+        first = llm.call_args_list[0][1]["messages"][1]["content"]
+        assert "PROPS: no paper of any kind" in first
+        assert "no screens at all" in first
+        reason = llm.call_args_list[1][1]["messages"][1]["content"]
+        assert "'contract'" in reason
+        assert "contract" not in brief.prompt.lower()
+
+    @pytest.mark.parametrize("scene", ["a man turning a safe dial", "a heavy bank vault door",
+                                       "a padlock on the cabinet", "her hand on a light switch",
+                                       "a combination lock", "pulling a lever"])
+    def test_security_hardware_is_a_cliche(self, scene):
+        from cqc_lem.utilities.ai.image_brief import cliche_hit
+        assert cliche_hit(scene), scene
+
+    def test_safe_as_an_adjective_is_not_a_cliche(self):
+        from cqc_lem.utilities.ai.image_brief import cliche_hit
+        assert cliche_hit("she looks relieved and safe in the meeting room") is None
+
+    @pytest.mark.parametrize("pain", ["holding his head", "his head in his hands",
+                                      "hands on his temples", "a hand over her face",
+                                      "rubbing her forehead"])
+    def test_positive_valence_never_touches_the_head(self, pain):
+        concept = _concept(valence="positive", emotional_beat="relief")
+        bad = dict(_GROUNDED, prompt=_GROUNDED["prompt"] + f" He sits, {pain}.")
+        with patch(_LLM, side_effect=[_resp(bad), _resp(_GROUNDED)]) as llm:
+            build_image_brief("c", surface="post_image", concept=concept)
+        reason = llm.call_args_list[1][1]["messages"][1]["content"]
+        assert "good news reads as pain" in reason
+        assert "engaged with the other person or the task" in reason
+
+    def test_a_fallback_never_interpolates_a_contract_thesis(self):
+        concept = _concept(thesis="The pricing contract hides the real cost", chosen_idea="")
+        brief = _fallback_brief("c", surface="video", ratio="16:9", context="", concept=concept,
+                                treatment="people_scene")
+        assert "contract" not in brief.prompt.lower()

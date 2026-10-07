@@ -51,6 +51,30 @@ judge rightly scored specificity 1 on all four covers. So Stage 1 returns two li
   down. Briefs, Stage 3 and the vision judge's specificity all work from `usable_anchors()` — the
   anchors, or for a concept with none, its plain common-noun facts.
 
+## No labels, a kicker always, anchored comparatives (round 9)
+
+- **No painted captions.** gpt-image rendered the brief's role and group nouns as labels — a
+  poster reading "Founders & Content Teams In Conversation", badges reading "SECURITY". Both
+  `with_no_marks` constraints now end "No captions, titles, posters, signage, name badges,
+  lanyards with text, or labels of any kind." `PROPS_DIRECTIVE` tells the author to describe
+  people by appearance and action, and `_deterministic_failure` refuses a group caption
+  (`_GROUP_LABEL`: "X & Y", capitalised "X and Y", "x and y teams"). Posters, signage, badges,
+  lanyards, labels, contracts and agreements joined the prop list, so no visual idea or anchor
+  can carry one either.
+- **Video frames.** The props directive and rejection already ran on `surface="video"`; the leak
+  was the word "contract", which the prop list did not know, and the fallback interpolating a
+  thesis that named one. The fallback now drops a thesis or audience that names a prop or a
+  group caption. Security hardware is a cliché: a safe dial, vault, combination lock, padlock,
+  dial, light switch, toggle switch, lever ("safe" alone stays an adjective).
+- **A kicker always.** When Stage 1's kicker fails `valid_kicker`, `derive_kicker` takes the 1-2
+  most frequent topic words (title words first, 4+ letters or an allowed acronym), uppercased.
+  `concept_kicker` covers a caller's concept with no kicker, so every composite carries one.
+- **Comparatives need a reference.** `vague_comparative` refuses a hook like "Verification is
+  much cheaper"; "than" or a number anchors it ("45% less engagement").
+- **Positive valence never touches the head.** Hands on the head, face, temples or forehead and
+  "head in hands" are refused for positive valence; the directive asks for eyes open, engaged with
+  the other person or the task.
+
 ## Split layouts, square scenes, no screens (round 8)
 
 Every overlay layout still put type over a face or a torso, whatever the brief asked for, so the

@@ -717,3 +717,52 @@ class TestRoundEightAnchors:
                                    "the warehouse floor"], source, ())
         assert "a laptop" not in anchors and "a printed checklist" not in anchors
         assert "a marketing lead" in anchors and "the warehouse floor" in anchors
+
+
+@pytest.mark.unit
+class TestRoundNineKickerAndHooks:
+    def test_a_failed_kicker_is_derived_title_first(self):
+        from cqc_lem.utilities.ai.image_concept import derive_kicker
+        source = ("Verification catches errors. Verification costs little. Teams that verify "
+                  "their AI output ship fewer errors.")
+        assert derive_kicker(source, "Why AI verification pays") == "AI VERIFICATION"
+
+    def test_a_derived_kicker_is_never_empty(self):
+        from cqc_lem.utilities.ai.image_concept import derive_kicker
+        assert derive_kicker("", None) == "INSIGHT"
+        assert derive_kicker("the and of", "") == "INSIGHT"
+
+    def test_a_derived_kicker_keeps_a_lone_word_when_nothing_else_recurs(self):
+        from cqc_lem.utilities.ai.image_concept import derive_kicker
+        assert derive_kicker("Pricing pricing pricing once twice", None) == "PRICING"
+
+    def test_parse_concept_always_yields_a_kicker(self):
+        from cqc_lem.utilities.ai.image_concept import parse_concept
+        source = "Content audits find waste. A content audit pays for itself in a month."
+        concept = parse_concept({"thesis": "Content audits pay for themselves",
+                                 "kicker": "QUANTUM FINANCE"}, source, title="Content audits")
+        assert concept is not None and concept.kicker == "CONTENT AUDITS"
+
+    def test_concept_kicker_derives_for_a_caller_concept(self):
+        from cqc_lem.utilities.ai.image_concept import ImageConcept, concept_kicker
+        concept = ImageConcept(thesis="Payroll audits catch payroll errors", audience="",
+                               specific_entities=(), emotional_beat="", hook_phrase="Who pays?",
+                               treatment="people_scene", treatment_rationale="", weak=False)
+        assert concept_kicker(concept) == "PAYROLL"
+        assert concept_kicker(None) == ""
+
+    @pytest.mark.parametrize("hook,vague", [("Verification is much cheaper", "cheaper"),
+                                            ("Audits work better", "better"),
+                                            ("Fewer meetings now", "fewer"),
+                                            ("45% less engagement", None),
+                                            ("Cheaper than a hire", None),
+                                            ("Hidden buyers cost you deals", None)])
+    def test_a_comparative_needs_its_reference(self, hook, vague):
+        from cqc_lem.utilities.ai.image_concept import vague_comparative
+        assert vague_comparative(hook) == vague
+
+    def test_a_vague_comparative_hook_is_refused(self):
+        from cqc_lem.utilities.ai.image_concept import _valid_hook
+        source = "verification is much cheaper than a rework"
+        assert _valid_hook("Verification is much cheaper", None, source, source) == ""
+        assert _valid_hook("Verification is cheaper than rework", None, source, source)

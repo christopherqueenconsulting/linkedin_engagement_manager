@@ -60,11 +60,16 @@ _GENERATED_SUBDIR = os.path.join("images", "generated")
 # explicit prohibition works. FLUX has no negative prompting and largely ignores negation —
 # naming "logos" in a FLUX prompt can SUMMON one — so FLUX renders get the same constraint
 # phrased positively instead.
+# Round 9 (#2241): gpt-image painted the brief's role and group nouns as labels — a poster
+# reading "Founders & Content Teams In Conversation", badges saying "SECURITY" — so both
+# backends now refuse every label-carrying surface by name.
+_NO_LABELS = (" No captions, titles, posters, signage, name badges, lanyards with text, or labels "
+              "of any kind.")
 _NO_MARKS_GPT = (" Absolutely no text, letters, words, numbers, captions, watermarks, logos, "
                  "brand marks, app icons, social-media icons, charts, or UI elements anywhere "
-                 "in the image.")
+                 "in the image." + _NO_LABELS)
 _NO_MARKS_FLUX = (" Every garment and surface is plain and unbranded, screens are blank, walls "
-                  "clean and unmarked.")
+                  "clean and unmarked." + _NO_LABELS)
 
 # No render carries text — not even a headline (issue #2241, round 6): ``image_compose`` typesets
 # the hook onto the finished render, so this constraint holds on every surface without exception.
@@ -842,6 +847,13 @@ def _scene_ratio(ratio: str, hook_text: Optional[str], surface: str) -> str:
     return "1:1" if hook_text and surface in COMPOSE_SURFACES else ratio
 
 
+def _kicker_for(concept: Any) -> str:
+    """Every composite carries a kicker: Stage 1's, else one derived from the concept (round 9)."""
+    from cqc_lem.utilities.ai.image_concept import concept_kicker
+
+    return concept_kicker(concept)
+
+
 def _composite(raw_path: str, hook_text: Optional[str], surface: str, layout: Optional[str],
                brand_kit: Optional[str], kicker: Optional[str] = None,
                signature: Optional[str] = None) -> Optional[str]:
@@ -899,7 +911,7 @@ def _gate_loop(render_once, *, prompt: str, surface: str, focal_concept: Optiona
             if not cand_path:
                 return None
             composite = _composite(cand_path, hook_text, surface, layout, brand_kit,
-                                   kicker=getattr(concept, "kicker", "") or None,
+                                   kicker=_kicker_for(concept) or None,
                                    signature=signature)
             gate_kwargs = ({"concept": concept, "hook_text": hook_text,
                             "composite_path": composite} if concept is not None else {})

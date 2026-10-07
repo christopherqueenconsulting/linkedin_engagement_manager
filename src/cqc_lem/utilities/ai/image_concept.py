@@ -412,6 +412,74 @@ def hook_is_faithful(hook: str, source: str) -> bool:
 
 _KICKER_ACRONYMS = frozenset({"ai", "llm", "llms", "b2b", "b2c", "saas", "seo", "crm", "roi"})
 _KICKER_MAX_WORDS = 3
+# Round 9 (#2241): words a derived kicker never uses — they name no topic.
+_KICKER_SKIP = frozenset({
+    "about", "after", "also", "because", "been", "before", "being", "between", "both", "does",
+    "doing", "each", "every", "have", "having", "here", "just", "like", "many", "more", "most",
+    "much", "only", "other", "over", "same", "should", "some", "such", "than", "then", "there",
+    "these", "they", "this", "those", "through", "very", "what", "when", "where", "which",
+    "while", "will", "with", "would", "your", "yours", "into", "them", "were", "make", "made",
+    "really", "still", "even", "back", "well", "good", "better", "best", "need", "needs",
+})
+
+
+def derive_kicker(source: str, title: Optional[str] = None) -> str:
+    """A deterministic kicker for when Stage 1's fails ``valid_kicker``: never ''.
+
+    The 1-2 most frequent topic words of the piece, title words first (a title word outranks any
+    body word), uppercased. A word is 4+ letters, or a ``_KICKER_ACRONYMS`` acronym of any length,
+    so "AI" survives where "the" never does. Two words only when the second also recurs.
+
+    Args:
+        source: The analysed text.
+        title: The piece's title, if any.
+
+    Returns:
+        The uppercase kicker; "INSIGHT" when the piece has no usable word at all.
+    """
+    counts: dict[str, int] = {}
+    first_seen: dict[str, int] = {}
+    in_title = set()
+    for position, token in enumerate(re.findall(r"[a-z0-9]+", f"{title or ''} {source or ''}"
+                                                .lower())):
+        if token.isdigit() or token in _KICKER_SKIP or token in _STOPWORDS:
+            continue
+        if len(token) < 4 and token not in _KICKER_ACRONYMS:
+            continue
+        counts[token] = counts.get(token, 0) + 1
+        first_seen.setdefault(token, position)
+    for token in re.findall(r"[a-z0-9]+", (title or "").lower()):
+        if token in counts:
+            in_title.add(token)
+    ranked = sorted(counts, key=lambda t: (t not in in_title, -counts[t], first_seen[t]))
+    if not ranked:
+        return "INSIGHT"
+    chosen = ranked[:1]
+    if len(ranked) > 1 and (counts[ranked[1]] >= 2 or ranked[1] in in_title):
+        chosen.append(ranked[1])
+    chosen.sort(key=lambda t: first_seen[t])
+    return " ".join(chosen).upper()
+
+
+def concept_kicker(concept: Any) -> str:
+    """The concept's kicker, derived from its own thesis and hook when Stage 1 gave none.
+
+    Args:
+        concept: An ``ImageConcept`` (or None).
+
+    Returns:
+        The kicker; '' only when there is no concept.
+    """
+    if concept is None:
+        return ""
+    kicker = str(getattr(concept, "kicker", "") or "")
+    if kicker:
+        return kicker
+    # The hook is body text here, never a title: "Who pays?" must not outrank the thesis topic.
+    return derive_kicker(" ".join((getattr(concept, "thesis", "") or "",
+                                   *(getattr(concept, "visual_anchors", ()) or ()),
+                                   getattr(concept, "hook_phrase", "") or "")))
+
 
 
 def valid_kicker(kicker: Any, source: str) -> str:
@@ -486,8 +554,36 @@ def _valid_hook(hook: str, title: Optional[str], topic_text: str = "",
         return ""  # a number with no subject says how much, never of what
     if source is not None and not hook_is_faithful(hook, source):
         return ""  # a number or noun the piece never says
+    if vague_comparative(hook):
+        return ""  # "much cheaper" than what?
     # Sentence case: the first letter up (round 7: "audit stops AI waste"); acronyms untouched.
     return hook[:1].upper() + hook[1:] if hook[:1].islower() else hook
+
+
+# Round 9: "Verification is much cheaper" — cheaper than what? A comparative needs its reference.
+_COMPARATIVES = frozenset({
+    "cheaper", "faster", "slower", "better", "worse", "more", "less", "fewer", "higher", "lower",
+    "bigger", "smaller", "greater", "larger", "longer", "shorter", "easier", "harder", "safer",
+    "riskier", "quicker", "smarter", "stronger", "weaker", "richer", "poorer", "cleaner",
+    "clearer", "simpler", "leaner", "deeper", "wider", "tighter", "sooner", "earlier", "newer",
+    "older", "costlier", "pricier", "busier", "louder", "quieter", "sharper", "slimmer",
+})
+
+
+def vague_comparative(hook: str) -> Optional[str]:
+    """The comparative in ``hook`` that has no reference — no "than" and no number — or None.
+
+    Args:
+        hook: The hook.
+
+    Returns:
+        The comparative word, or None when the hook has none or anchors it ("45% less
+        engagement", "cheaper than a hire").
+    """
+    tokens = re.findall(r"[a-z]+", (hook or "").lower())
+    if "than" in tokens or any(ch.isdigit() for ch in hook or ""):
+        return None
+    return next((t for t in tokens if t in _COMPARATIVES), None)
 
 
 def is_title_case(text: str) -> bool:
@@ -734,7 +830,7 @@ def parse_concept(payload: Optional[dict[str, Any]], source: str,
                  if _clean(payload.get("valence"), 20).lower() in VALENCES else "mixed"),
         hook_shape=hook_shape_of(hook) if hook else "",
         hook_options=options or None,
-        kicker=valid_kicker(payload.get("kicker"), source),
+        kicker=valid_kicker(payload.get("kicker"), source) or derive_kicker(source, title),
         hook_phrase=hook,
         treatment=treatment,
         treatment_rationale=_clean(payload.get("treatment_rationale")),

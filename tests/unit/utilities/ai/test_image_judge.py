@@ -684,3 +684,20 @@ class TestRoundEightJudge:
     def test_an_uncomposited_surface_keeps_its_ratio(self):
         from cqc_lem.utilities.ai.image_gen import _scene_ratio
         assert _scene_ratio("16:9", "Who buys?", "video") == "16:9"
+
+
+@pytest.mark.unit
+class TestRoundNineNoLabels:
+    @pytest.mark.parametrize("backend", ["gpt-image", "flux"])
+    def test_every_backend_refuses_captions_badges_and_signage(self, backend):
+        from cqc_lem.utilities.ai.image_gen import with_no_marks
+        marked = with_no_marks("A woman in a green jumper pointing at a shelf.", backend)
+        assert ("No captions, titles, posters, signage, name badges, lanyards with text, or "
+                "labels of any kind.") in marked
+
+    def test_every_composite_gets_a_kicker(self):
+        from cqc_lem.utilities.ai.image_gen import _kicker_for
+        concept = ImageConcept(thesis="Payroll audits catch payroll errors", audience="",
+                               specific_entities=(), emotional_beat="", hook_phrase="Who pays?",
+                               treatment="people_scene", treatment_rationale="", weak=False)
+        assert _kicker_for(concept) == "PAYROLL"

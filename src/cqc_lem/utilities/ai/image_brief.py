@@ -80,11 +80,12 @@ _TREATMENT_TEMPLATES: dict[str, str] = {
         "TREATMENT people_scene: a photorealistic, candid documentary photograph of the piece's "
         "audience in the exact situation it describes, built from the chosen visual idea. The "
         "emotional beat is VISIBLE as a specific human reaction — a wince at a number, mid-laugh "
-        "relief, a raised eyebrow at a draft, arms crossed in a tense meeting — in a close or "
+        "relief, a raised eyebrow at a colleague, arms crossed in a tense meeting — in a close or "
         "medium framing where the face reads at thumbnail size — clearly readable but authentic "
-        "and restrained, the face a real person would make, never cartoonish or crying. A laptop "
-        "is at most a prop. The emotion's direction follows the piece's valence: a saving or a "
-        "win is a quiet, satisfied half-smile with relaxed shoulders, eyes open; a risk or a "
+        "and restrained, the face a real person would make, never cartoonish or crying. There is "
+        "no laptop or screen in frame. The emotion's direction follows the piece's valence: a saving or a "
+        "win is a quiet, satisfied half-smile with relaxed shoulders, eyes open and engaged with "
+        "the other person or the task, hands away from head and face; a risk or a "
         "loss reads concerned, skeptical or frustrated — never shock or despair for good news. "
         "The image is BRIGHT — high-key or warm daylight with strong subject contrast — never a "
         "dark, moody, low-key scene unless the emotional beat itself is dark (dread, crisis). Real "
@@ -148,6 +149,10 @@ CLICHE_OBJECTS: tuple[str, ...] = (
     # Round 8: "the soft blue glow of a server room" reached a post render, racks and all.
     "server room", "server rack", "server cabinet", "servers", "racks", "rack of servers",
     "data center", "data centre",
+    # Round 9: a video frame turned a safe dial and touched a wall switch — security as hardware.
+    # "safe" alone is an everyday adjective ("feels safe"), so the object is matched by phrase.
+    "safe dial", "wall safe", "steel safe", "office safe", "safe door", "vault", "combination lock",
+    "padlock", "dial", "light switch", "toggle switch", "lever",
     # Stock office (issue #1992).
     "person at laptop", "man at laptop", "woman at laptop", "professional at laptop",
     "typing hands", "hands typing", "hands on keyboard", "coffee and notebook",
@@ -374,7 +379,18 @@ _PAPER_PROPS = re.compile(
     r"folders|binder|binders|printout|printouts|printed|statement|statements|memo|memos|page|"
     r"pages|receipt|receipts|notebook|notebooks|draft|drafts|manuscript|letter|letters|"
     r"whiteboard|whiteboards|chart|charts|graph|graphs|flip[\s\-]chart|code|console|terminal|"
-    r"spreadsheet|spreadsheets|sticky\s+notes?|post-it)\b", re.IGNORECASE)
+    r"spreadsheet|spreadsheets|sticky\s+notes?|post-it|contract|contracts|agreement|agreements|"
+    # Round 9: gpt-image paints role and group nouns as captions — "Founders & Content Teams In
+    # Conversation" on a poster, "SECURITY" on a badge — so anything that carries a label goes.
+    r"poster|posters|signage|signboard|signboards|placard|placards|banner|banners|badge|badges|"
+    r"lanyard|lanyards|label|labels|nameplate|nameplates|caption|captions)\b", re.IGNORECASE)
+# Round 9: a capitalised group caption ("Founders & Content Teams", "Engineering and Security")
+# or a group-noun label ("founders and content teams") is exactly what the renderer paints onto
+# a poster or a badge. People are described by appearance and action instead.
+_GROUP_LABEL = re.compile(
+    r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\s+(?:&|and)\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\b|"
+    r"\b\w+\s*&\s*\w+\b|"
+    r"\b\w+\s+and\s+\w+\s+(?:teams|groups|departments|staff|leads|leaders|crews)\b")
 # Round 8: gpt-4.1 flagged "person at laptop" on most scenes, so screens are gone entirely —
 # laptops, monitors, keyboards, tablets, displays, computers — on every surface. A phone may
 # appear only face-down.
@@ -391,7 +407,10 @@ PROPS_DIRECTIVE = (
     "or code content — and no screens at all: no laptop, monitor, keyboard, tablet or computer. "
     "Hands hold nothing, or a mug, pen or phone held face-down. Tell the story with people "
     "interacting and gesturing in a real environment — a warehouse, a shop floor, a meeting room, "
-    "a hallway, a kitchen table, a workshop.\n")
+    "a hallway, a kitchen table, a workshop. Describe each person by APPEARANCE and ACTION (\"a "
+    "woman in a green jumper pointing at the shelf\"), never by a role or group caption such as "
+    "\"founders and content teams\" or \"engineering lead\" — the renderer paints those onto "
+    "posters and badges. No posters, signage, name badges, lanyards or labels.\n")
 # Kept for the call sites that name it: covers and posts were the first surfaces with the rule.
 COVER_PROPS_DIRECTIVE = {PAPER_FORBID: PROPS_DIRECTIVE}
 
@@ -533,7 +552,13 @@ _DARK_SCENE = re.compile(
 # Round 7: "relief" rendered as eyes squeezed shut and a hand on the chest — good news as pain.
 _PAINED_RELIEF = re.compile(
     r"\beyes\s+(?:closed|shut|squeezed)\b|\b(?:closed|squeezed|shut)\s+eyes\b|"
-    r"\bhand\s+(?:on|over|to)\s+(?:her|his|their|the)\s+(?:chest|heart)\b",
+    r"\bhand\s+(?:on|over|to)\s+(?:her|his|their|the)\s+(?:chest|heart)\b|"
+    # Round 9: "Right model, right time" rendered a man holding his head, eyes shut — a headache.
+    r"\bhands?\s+(?:on|over|to|against|pressed\s+to|cradling|rubbing|covering)\s+"
+    r"(?:her|his|their|the)\s+(?:head|face|temples?|forehead|brow|eyes)\b|"
+    r"\b(?:holding|clutching|cradling|rubbing|massaging)\s+(?:her|his|their)\s+"
+    r"(?:head|face|temples?|forehead|brow)\b|"
+    r"\b(?:head|face)\s+in\s+(?:her|his|their)\s+hands\b",
     re.IGNORECASE)
 _DARK_BEAT = re.compile(r"\b(?:dread|crisis|fear|grief|panic|despair|dark|ominous|loss)\b",
                         re.IGNORECASE)
@@ -778,7 +803,12 @@ def _deterministic_failure(prompt: str, *, anchors: list[str], weak: bool,
     pained = _PAINED_RELIEF.search(unhooked) if positive else None
     if pained:
         return (f"good news reads as pain ({pained.group(0)!r}) — a quiet, satisfied half-smile "
-                f"with relaxed shoulders, eyes open")
+                f"with relaxed shoulders, eyes open, engaged with the other person or the task, "
+                f"hands away from the head and face")
+    label = _GROUP_LABEL.search(unhooked)
+    if label:
+        return (f"the prompt names a group caption ({label.group(0)!r}) — the renderer paints "
+                f"those onto posters and badges; describe people by appearance and action")
     dark = _DARK_SCENE.search(unhooked) if bright else None
     if dark:
         return (f"the prompt asks for a dark scene ({dark.group(0)!r}) — light it bright, high-key "
@@ -958,6 +988,9 @@ def _fallback_brief(content: str, *, surface: str, ratio: str, context: str,
     anchors = [a for a in anchors if a]
     use = _USE_LABELS.get(surface, _USE_LABELS[_DEFAULT_PRESET])
     summary = _plain_words(concept.thesis if concept else content)[:240]
+    if prop_failure(summary) or _GROUP_LABEL.search(summary):
+        # Round 9: a thesis about "the pricing contract" rendered a sheet reading PRICING CONTRACT.
+        summary = "the people this piece is about, working it through together"
     hook = (concept.hook_phrase if concept and concept.hook_phrase
             and carries_hook(surface, treatment) else None)
     accent = sorted(brand_colors(brand_kit) & {"gold", "golden"}) or sorted(brand_colors(brand_kit))
@@ -979,6 +1012,8 @@ def _fallback_brief(content: str, *, surface: str, ratio: str, context: str,
                   f"on a 50mm lens at f/2.8, visible skin pores, {finish}{layout}")
     elif treatment == TREATMENT_PEOPLE:
         who = _plain_words(concept.audience) if concept and concept.audience else ""
+        if _GROUP_LABEL.search(who):
+            who = ""  # "founders and content teams" is painted on a poster, never shown (round 9)
         who = who or "a small working team"
         around = _join(anchors[:3]) if anchors else f"the situation this describes: {summary}"
         prompt = (f"{context}A photorealistic candid documentary photograph for a {use}: {who} "
@@ -1005,8 +1040,9 @@ def _fallback_brief(content: str, *, surface: str, ratio: str, context: str,
 
 
 _VALENCE_FACES = {
-    "positive": ("a quiet, satisfied half-smile and relaxed shoulders, eyes open — never eyes "
-                 "closed, never a hand on the chest"),
+    "positive": ("a quiet, satisfied half-smile and relaxed shoulders, eyes open, engaged with "
+                 "the other person or the task — never eyes closed, never a hand on the chest, "
+                 "head or face"),
     "negative": "concerned, skeptical or frustrated — restrained, never despair",
     "mixed": "wry or thoughtful",
 }

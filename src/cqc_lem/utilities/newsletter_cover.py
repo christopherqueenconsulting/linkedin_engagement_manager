@@ -367,7 +367,9 @@ def _resolve_cover_avatar(user_id: int, use_avatar: Optional[bool], title: Optio
     from cqc_lem.utilities.avatar.guardrails import AVATAR_SURFACE_NEWSLETTER, resolve_avatar_for
 
     fit_rule = getattr(guardrails, "resolve_avatar_for_concept", None)
-    if fit_rule is not None:
+    # The fit rule judges a CONCEPT; with none (Stage 1 down) it has nothing to read, so the
+    # guardrails + classifier conjunction decides, exactly as before the rule existed.
+    if fit_rule is not None and concept is not None:
         return fit_rule(user_id, surface=AVATAR_SURFACE_NEWSLETTER, concept=concept,
                         source_text=_edition_full_text(subtitle, body))
     avatar = resolve_avatar_for(user_id, surface=AVATAR_SURFACE_NEWSLETTER)

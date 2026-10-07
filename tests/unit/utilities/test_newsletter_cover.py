@@ -872,3 +872,13 @@ class TestCoverAvatarFitRule:
         monkeypatch.setattr(guardrails, "resolve_avatar_for_concept",
                             lambda *a, **k: _USABLE_AVATAR, raising=False)
         assert nc._resolve_cover_avatar(3, False, "T", "S", "B", concept="C") is None
+
+    def test_without_a_concept_the_classifier_conjunction_still_decides(self, monkeypatch):
+        """A merged tree with the fit rule must keep the no-concept behaviour (PR #2249)."""
+        from cqc_lem.utilities.avatar import guardrails
+        monkeypatch.setattr(guardrails, "resolve_avatar_for_concept",
+                            lambda *a, **k: None, raising=False)
+        with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for",
+                   return_value=_USABLE_AVATAR), \
+             patch.object(nc, "classify_avatar_relevance", return_value=True):
+            assert nc._resolve_cover_avatar(3, None, "T", "S", "B") == _USABLE_AVATAR
