@@ -92,6 +92,7 @@ from cqc_lem.utilities.connection_targeting import (
     ScoredCandidate,
     target_terms_from_prefs,
 )
+from cqc_lem.utilities.curated_collectors import record_linkedin_candidate
 from cqc_lem.utilities.db import (
     ENGAGEMENT_TARGET_BLOCKED_BADGE_STREAK,
     ENGAGEMENT_TARGET_CONNECT_TERMINAL,
@@ -2687,6 +2688,8 @@ def comment_on_roster_posts(ctx: FeedRunContext, max_posts: int) -> dict:
                          f"user's focus topics", user_id=user_id, action_type="comment",
                          task_name="comment_on_roster_posts")
                 continue
+            record_linkedin_candidate(user_id, card, author, content, driver=driver,
+                                      profile_url=profile_url)
             if not _engage_card(ctx, card, key, content, author):
                 _count_drop(target_drops, "engage_failed")
             else:
@@ -3080,6 +3083,11 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
             # one comment per post per user, across the pre-post run, the golden-hour run, and retries.
             # On group feeds the composer is resolved before generation (issue #1084), so a miss is
             # counted separately instead of being folded into "examined but not commented".
+            if not ctx.is_group_feed:
+                # Curated outside sources (docs/curated-sources.md): a post that cleared every gate
+                # above is one this user's audience would care about. Flag-gated, never raises,
+                # and reads only the card's own container URN.
+                record_linkedin_candidate(user_id, card, author, content, driver=ctx.driver)
             engaged = _engage_card(ctx, card, key, content, author,
                                    is_group_feed=ctx.is_group_feed)
             if engaged:

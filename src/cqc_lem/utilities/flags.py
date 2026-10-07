@@ -81,6 +81,7 @@ VIDEO_MOTION_LINT_HOLD = "video-motion-lint-hold"
 VIDEO_CAPTIONS = "video-captions-enabled"
 OCCASION_NATIVE_PUBLISH = "occasion-native-publish-enabled"
 ANIMATED_POST = "animated-post-enabled"
+CURATED_SOURCES = "curated-sources-enabled"
 
 FLAGS: Dict[str, FlagSpec] = {
     spec.key: spec for spec in (
@@ -195,6 +196,18 @@ FLAGS: Dict[str, FlagSpec] = {
                          "Images API in place of the still. OFF by default — it spends a render "
                          "per post and there is no evidence yet that loops out-perform stills, so "
                          "a rollout-% here is the A/B. Any loop failure ships the still."),
+        ),
+        FlagSpec(
+            key=CURATED_SOURCES,
+            env_var="CURATED_SOURCES_ENABLED",
+            default=False,
+            owner="content",
+            description=("Curated outside sources (utilities/curated_sources.py, "
+                         "docs/curated-sources.md): collect candidates from the feed, the RSS "
+                         "allowlist and the government-data watchlist, and draft at most one post "
+                         "in three as a reshare, re-chart or link post crediting the source. OFF "
+                         "by default. Every curated draft lands PENDING and publishes only after "
+                         "an owner approval — this flag never approves anything."),
         ),
     )
 }

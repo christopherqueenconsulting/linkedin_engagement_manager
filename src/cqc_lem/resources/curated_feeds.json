@@ -1,0 +1,29 @@
+{
+  "_status": "PROPOSAL - starter allowlist for curated outside sources (docs/curated-sources.md). The owner edits this file; nothing here is endorsed. Every feed URL answered 200 with an RSS/Atom body on 2026-10-07. Point CURATED_FEEDS_PATH at an edited copy to override it without a release.",
+  "_fields": "feeds: name, url, publisher, licence (editorial | facts_only | public_domain | cc_by | cc_by_sa | cc_by_nd | cc_nc | unknown), paywalled (true skips every item). gov_series: BLS series_id, label (the sentence subject), unit ($ | % | ''), title, publisher.",
+  "feeds": [
+    {"name": "OpenAI News", "url": "https://openai.com/news/rss.xml", "publisher": "OpenAI", "licence": "editorial"},
+    {"name": "Google: AI", "url": "https://blog.google/technology/ai/rss/", "publisher": "Google", "licence": "editorial"},
+    {"name": "Google DeepMind blog", "url": "https://deepmind.google/blog/rss.xml", "publisher": "Google DeepMind", "licence": "editorial"},
+    {"name": "Microsoft 365 blog", "url": "https://www.microsoft.com/en-us/microsoft-365/blog/feed/", "publisher": "Microsoft", "licence": "editorial"},
+    {"name": "AWS Machine Learning blog", "url": "https://aws.amazon.com/blogs/machine-learning/feed/", "publisher": "Amazon Web Services", "licence": "editorial"},
+    {"name": "NVIDIA blog", "url": "https://blogs.nvidia.com/feed/", "publisher": "NVIDIA", "licence": "editorial"},
+    {"name": "Hugging Face blog", "url": "https://huggingface.co/blog/feed.xml", "publisher": "Hugging Face", "licence": "editorial"},
+    {"name": "Shopify News", "url": "https://news.shopify.com/feed", "publisher": "Shopify", "licence": "editorial"},
+    {"name": "HubSpot Marketing blog", "url": "https://blog.hubspot.com/marketing/rss.xml", "publisher": "HubSpot", "licence": "editorial"},
+    {"name": "Salesforce News", "url": "https://www.salesforce.com/news/feed/", "publisher": "Salesforce", "licence": "editorial"},
+    {"name": "Zapier blog", "url": "https://zapier.com/blog/feeds/latest/", "publisher": "Zapier", "licence": "editorial"},
+    {"name": "Intercom blog", "url": "https://www.intercom.com/blog/feed/", "publisher": "Intercom", "licence": "editorial"},
+    {"name": "Stripe blog", "url": "https://stripe.com/blog/feed.rss", "publisher": "Stripe", "licence": "editorial"},
+    {"name": "One Useful Thing (Ethan Mollick)", "url": "https://www.oneusefulthing.org/feed", "publisher": "One Useful Thing", "licence": "facts_only"},
+    {"name": "Import AI (Jack Clark)", "url": "https://importai.substack.com/feed", "publisher": "Import AI", "licence": "facts_only"},
+    {"name": "Simon Willison's Weblog", "url": "https://simonwillison.net/atom/everything/", "publisher": "Simon Willison", "licence": "facts_only"},
+    {"name": "Lenny's Newsletter", "url": "https://www.lennysnewsletter.com/feed", "publisher": "Lenny's Newsletter", "licence": "facts_only"},
+    {"name": "BLS latest releases", "url": "https://www.bls.gov/feed/bls_latest.rss", "publisher": "U.S. Bureau of Labor Statistics", "licence": "public_domain"},
+    {"name": "Census economic indicators", "url": "https://www.census.gov/economic-indicators/indicator.xml", "publisher": "U.S. Census Bureau", "licence": "public_domain"}
+  ],
+  "gov_series": [
+    {"series_id": "CES0500000003", "label": "Average hourly pay for private-sector employees", "unit": "$", "title": "Average hourly earnings of all employees, total private (CES0500000003)", "publisher": "U.S. Bureau of Labor Statistics"},
+    {"series_id": "LNS14000000", "label": "The US unemployment rate", "unit": "%", "title": "Unemployment rate, seasonally adjusted (LNS14000000)", "publisher": "U.S. Bureau of Labor Statistics"}
+  ]
+}

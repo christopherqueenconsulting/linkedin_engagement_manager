@@ -118,6 +118,13 @@ app.conf.update(
             'task': 'cqc_lem.app.run_content_plan.auto_generate_content',
             'schedule': crontab(hour='1', minute='0')  # Run every day at 1:00 AM
         },
+        # Curated outside sources (docs/curated-sources.md): the RSS allowlist + gov-data watchlist,
+        # read once a day BEFORE the 01:30 content run so its drafter sees fresh candidates. A
+        # no-op unless CURATED_SOURCES_ENABLED is on for some active user.
+        'collect-curated-sources': {
+            'task': 'cqc_lem.app.run_curated_sources.collect_curated_sources',
+            'schedule': crontab(hour='0', minute='45')
+        },
         'create-content-from-plan': {
             'task': 'cqc_lem.app.run_content_plan.auto_create_weekly_content',
             'schedule': crontab(hour='1', minute='30')  # Run every day at 1:30 AM
