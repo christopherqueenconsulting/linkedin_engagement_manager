@@ -17,6 +17,7 @@ history — the DB reads live in `utilities.db`, the wiring in `app.run_content_
 """
 
 import json
+import math
 from typing import Optional
 
 from cqc_lem.utilities.ai.content_framework import smb_audience_text
@@ -45,7 +46,7 @@ def _clean_share(value) -> float:
         share = float(value)
     except (TypeError, ValueError):
         return 0.0
-    if share != share:  # NaN
+    if math.isnan(share):
         return 0.0
     return round(min(1.0, max(0.0, share)), 2)
 
