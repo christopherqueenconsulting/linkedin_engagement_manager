@@ -487,6 +487,9 @@ def headline_parts(hook: str, kicker: Optional[str] = None,
     Returns:
         The parts.
     """
+    from cqc_lem.utilities.ai.image_concept import tidy_figures
+
+    hook = tidy_figures(hook)  # round 5: never "85 %" — a number sits tight to its unit
     if not hero:
         return HeadlineParts(kicker=" ".join((kicker or "").upper().split()),
                              rest=sentence_case(hook),

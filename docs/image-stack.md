@@ -369,6 +369,59 @@ and an inside accent motif from `DECK_MOTIFS`, both least-recently-used from the
 `deck_render.json` receipts. A treatment that cannot draw falls through to the template's own
 cover; every one draws the writer's title and subtitle whole.
 
+## Showcase round 5 — numbers match their claim, decks count truly, settings rotate
+
+The critic (`gauntlet/critic5/critic_scores.json`) failed text accuracy. The title card half is in
+`docs/content-quality-audits/video.md` § F3c.
+
+**A figure in the title IS the cover's number** (`image_concept.apply_title_stat`, the LAST step
+of hook selection on a hooked surface). ed18's title said "53.7% of LinkedIn Posts Miss Their Mark"
+and its cover drew 45%; ed16's said "The $30K We Nearly Squandered" and its cover said "$30K saved
+per quarter". #2273's title preference only steered the HOOK (`thesis_number`), while the stat
+card drew Stage 1's `graphic_facts.thesis_stat` — a path the title rule never saw. Now
+`title_claim` reads the title's lead figure and its claim from the title's OWN words (the words
+after the figure, else before it), and:
+- the drawn stat is that figure labelled with that claim, traced to the title (`validate_fact`, so
+  `assert_traceable` still holds); a source line that cited a different number is dropped;
+- the headline is the title in sentence case when it is at most `TITLE_HOOK_MAX_WORDS` (8);
+  a longer title keeps the current hook only if it carries no other number and, carrying the
+  title's figure, shares a word with the title's claim — otherwise the hook is cleared and the
+  cover's headline falls back to the title (`cover_headline`).
+
+**One sentence per drawn figure, and the post must say it.** slot_144's slide wrote "63 recipients
+were execs" — the story's 63 recipients welded onto the claim about the 51 executives emailed —
+and its card drew the slide's sentence faithfully. A deck slide's figure now also needs ONE
+sentence of the post to state both the number and the drawn label
+(`image_graphics.figure_in_evidence`, via `create_carousel_slide_images(evidence=post_text)`); a
+from→to pair needs both halves. The cover/edition graphics were already one-sentence-per-fact
+(`validate_fact`).
+
+**Number + unit typography.** rhythm_6 printed "85 %": the source wrote a narrow no-break space,
+and the hook copied it. `image_concept.tidy_figures` sets every number tight to its unit and runs on
+the final hook (`restore_number_casing`), every composited headline (`headline_parts`) and every
+typeset card.
+
+**Deck counters are the final page count** (`carousel_creator.slide_counter`). The stat cover read
+"1/5" while its inside slides read "1/3" — each template counted reveals, parts or items. Every
+counter is `idx / total` of the slides actually rendered (story decks: "Part idx of total"), and
+the stat template's "#n" strip label is gone. Any "N slides" the writer put in the copy is rewritten
+to that count (`fix_slide_count_copy`) — slot_142's cover promised "4 slides" over six.
+
+**The numbered circle rotates out.** slot_142 and 143 were consecutive listicles, both with the
+numbered-circle badge. The deck receipt now records `badge`; a listicle after a deck that drew the
+circle draws a heavy brand rule in its place (`deck_badge`; a pre-rule listicle receipt reads as
+the circle it drew).
+
+**The setting gate holds across processes.** rhythm_3 and rhythm_4 were warehouse scenes in a row.
+The gate already read the receipts on disk, but rhythm_3 briefed "an e-commerce fulfillment
+center", which no keyword matched, so it recorded no setting — and it had no Stage 1 concept, so
+the re-roll never ran. Now: the warehouse class covers fulfillment / distribution centres, loading
+bays, sorting and packing areas, logistics hubs and plurals; the receipt classifies the PROMPT
+first (what rendered); `rhythm_history` re-reads an unclassified AI scene's prompt; the re-roll
+runs without a concept and rides the brief's `extra_direction`; and `blocked_settings` caps any
+class at `SETTING_CAP` (2) per `SETTING_CAP_WINDOW` (6) classified renders on top of
+never-twice-in-a-row.
+
 ## Post rhythm — treatments, panels, grades and the sameness gate (anti-monotony round)
 
 Every post image was the same composite — a photograph beside a charcoal type panel — so an

@@ -6,8 +6,10 @@ elderly couple in a snowy doorway, and a VARCHAR story got two hands reaching fo
 read as automated. The fallback is now this card, drawn by code:
 
 - the brand ground (charcoal, or off-white), the post's hook in Montserrat — gold on charcoal —
-  revealed word by word, the kicker above it, a gold rule that draws in under it, and the byline;
-- a slow drift of one large brand slab behind the type, so the clip moves for its whole length;
+  COMPLETE on the first frame (LinkedIn's thumbnail; showcase round 5), the kicker, a gold rule
+  under it and the byline, in one of three rotated layouts (``TITLE_CARD_VARIANTS``);
+- a slow drift of one large brand slab behind the type and a rule that extends, so the clip moves
+  for its whole length while every word stays put;
 - 6-8 seconds (``VIDEO_TITLE_CARD_SECONDS``) at the tier's ratio (1:1 standard, 9:16 premium),
   piped frame by frame from Pillow into ffmpeg's libx264 — no drawtext, libass or system font;
 - stored and captioned exactly like any other video (the caller's store path), named
@@ -27,7 +29,7 @@ import os
 import secrets
 import subprocess
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 from cqc_lem.utilities.env_constants import isTrue
 from cqc_lem.utilities.logger import log_debug, log_info, log_warning
@@ -177,19 +179,31 @@ class _Word:
     text: str
     x: int
     y: int
-    start: float
+
+
+# Showcase round 5: LinkedIn shows a video's FIRST frame as its thumbnail, and the card revealed
+# its hook word by word — slot_123/135/141 sat in the feed as a lone "AI", "What" and "Is". Every
+# variant now draws its COMPLETE hook on frame 0; only secondary elements move (the brand slab
+# drifts, the rule extends). And three layouts rotate from the author's own card history, so two
+# consecutive videos never open on the same composition.
+VARIANT_POSTER = "statement_poster"   # the whole hook at poster scale, left-aligned
+VARIANT_NUMBER = "number_led"         # the hook's LEADING figure as the hero, the rest beneath
+VARIANT_QUESTION = "question_kicker"  # the kicker on a gold tag, the hook centred beneath it
+TITLE_CARD_VARIANTS = (VARIANT_POSTER, VARIANT_NUMBER, VARIANT_QUESTION)
+_VARIANT_HISTORY = 6
+# How far the rule extends over the clip, as a share of its frame-0 length.
+_RULE_GROWTH = 0.35
 
 
 @dataclass(frozen=True)
 class TitleCardLayout:
-    """Everything a frame needs, decided once: sizes, positions and each word's reveal time."""
+    """Everything a frame needs, decided once: sizes and positions. Nothing is hidden at t=0."""
 
     size: tuple
     palette: TitleCardPalette
     hook_font: Any
     hook_size: int
     words: tuple
-    reveal_end: float
     rule_box: tuple
     kicker: str
     kicker_font: Any
@@ -200,6 +214,11 @@ class TitleCardLayout:
     lines: tuple
     seconds: float
     slab_top: int = 0
+    variant: str = VARIANT_POSTER
+    hero: str = ""
+    hero_font: Any = None
+    hero_xy: tuple = (0, 0)
+    kicker_box: tuple = ()
 
 
 def _medium_font(size: int) -> Any:
@@ -214,8 +233,113 @@ def _medium_font(size: int) -> Any:
         return load_font(size)
 
 
+def available_variants(hook: Optional[str]) -> tuple:
+    """The layouts this hook can take: ``number_led`` only when a figure LEADS it.
+
+    Args:
+        hook: The words the card sets.
+
+    Returns:
+        The variants, in ``TITLE_CARD_VARIANTS`` order.
+    """
+    from cqc_lem.utilities.ai.image_compose import split_hero
+
+    hero, rest = split_hero(hook or "")
+    return tuple(v for v in TITLE_CARD_VARIANTS
+                 if v != VARIANT_NUMBER or (hero and len(rest.split()) >= 2))
+
+
+def pick_variant(hook: Optional[str], recent: Sequence, seed: str = "") -> str:
+    """The layout for the next card: least-recently-used, so it never repeats the last one.
+
+    A question hook prefers ``question_kicker`` when that was not the last card's layout.
+
+    Args:
+        hook: The words the card sets.
+        recent: Recent cards' layouts, most recent first.
+        seed: Stable per-card text for the no-history case.
+
+    Returns:
+        One of ``TITLE_CARD_VARIANTS``.
+    """
+    from cqc_lem.utilities.ai.post_treatment import lru_order
+
+    options = available_variants(hook)
+    recent = [r for r in recent if r]
+    if (hook or "").rstrip().endswith("?") and (not recent or recent[0] != VARIANT_QUESTION):
+        return VARIANT_QUESTION
+    return lru_order(options, recent, seed)[0]
+
+
+def variant_history_path(user_id: int) -> str:
+    """Where one author's recent card layouts are kept (inside the assets volume)."""
+    return os.path.join(title_card_dir(), "history", f"{int(user_id)}.json")
+
+
+def recent_variants(user_id: Optional[int]) -> list:
+    """This author's recent title-card layouts, most recent first. Never raises.
+
+    Read from disk, not process state, so a rotation spans workers and restarts.
+
+    Args:
+        user_id: The author; None reads nothing.
+
+    Returns:
+        The layouts ([] when unknown or unreadable).
+    """
+    import json
+
+    if user_id is None:
+        return []
+    try:
+        with open(variant_history_path(user_id), "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return []
+    return [v for v in data if v in TITLE_CARD_VARIANTS] if isinstance(data, list) else []
+
+
+def record_variant(user_id: Optional[int], variant: str) -> None:
+    """Prepend ``variant`` to the author's card history. Never raises.
+
+    A lost write costs one repeated layout at most, so it logs at DEBUG.
+
+    Args:
+        user_id: The author; None records nothing.
+        variant: The layout that just rendered.
+    """
+    import json
+
+    if user_id is None:
+        return
+    path = variant_history_path(user_id)
+    history = [variant, *recent_variants(user_id)][:_VARIANT_HISTORY]
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(history, handle)
+    except OSError as e:
+        log_debug("Title card layout history not written", error=str(e), user_id=user_id,
+                  task_name=TASK_NAME)
+
+
+def _fit_lines(draw: Any, text: str, width: int, height: int, high: int, low: int,
+               max_lines: int) -> Optional[tuple]:
+    """``(font, size, lines, line_h)`` for the largest size ``text`` fits at, or None."""
+    from cqc_lem.utilities.ai.image_compose import _line_height, _wrap, load_font
+
+    for size_px in range(high, low - 1, -2):
+        font = load_font(size_px)
+        lines = _wrap(draw, text.split(), font, width)
+        line_h = _line_height(font, size_px)
+        if lines and len(lines) <= max_lines and line_h * len(lines) <= height:
+            return font, size_px, lines, line_h
+    return None
+
+
 def plan_title_card(hook: str, *, size: tuple, palette: TitleCardPalette, kicker: str = "",
-                    byline: str = "", seconds: float = 7.0) -> TitleCardLayout:
+                    byline: str = "", seconds: float = 7.0,
+                    variant: str = VARIANT_POSTER) -> TitleCardLayout:
     """Fit the hook and place every element. Raises ``ValueError`` when the hook cannot be set.
 
     Args:
@@ -225,63 +349,96 @@ def plan_title_card(hook: str, *, size: tuple, palette: TitleCardPalette, kicker
         kicker: The uppercase topic tag ('' for none).
         byline: The author's name ('' for none).
         seconds: The clip length.
+        variant: One of ``TITLE_CARD_VARIANTS``; ``number_led`` without a leading figure is set
+            as the poster.
 
     Returns:
         The layout.
     """
     from PIL import Image, ImageDraw
 
-    from cqc_lem.utilities.ai.image_compose import _line_height, _wrap, load_font
+    from cqc_lem.utilities.ai.image_compose import load_font, split_hero
+    from cqc_lem.utilities.ai.image_concept import tidy_figures
 
-    if not (hook or "").strip():
+    hook = " ".join(tidy_figures(hook).split())
+    if not hook:
         raise ValueError("a title card needs a hook")
     width, height = size
     margin = round(width * 0.09)
     draw = ImageDraw.Draw(Image.new("RGB", (8, 8)))
     usable_w = width - 2 * margin
     top_zone = round(height * 0.17)
-    usable_h = round(height * (1 - CAPTION_CLEARANCE)) - top_zone - round(height * 0.08)
-    fitted = None
-    for size_px in range(round(width * 0.105), round(width * 0.05) - 1, -2):
-        font = load_font(size_px)
-        lines = _wrap(draw, hook.split(), font, usable_w)
-        line_h = _line_height(font, size_px)
-        if lines and len(lines) <= 5 and line_h * len(lines) <= usable_h:
-            fitted = (font, size_px, lines, line_h)
-            break
+    floor_y = round(height * (1 - CAPTION_CLEARANCE)) - round(height * 0.08)
+    usable_h = floor_y - top_zone
+    kicker = (kicker or "").upper().strip()
+    kicker_font = load_font(max(18, round(width * 0.03)))
+    kicker_xy, kicker_box = (margin, round(height * 0.09)), ()
+    hero, hero_font, hero_xy = "", None, (0, 0)
+    centred = False
+    text = hook
+    if variant == VARIANT_NUMBER:
+        hero, rest = split_hero(hook)
+        if not hero or len(rest.split()) < 2:
+            variant, hero = VARIANT_POSTER, ""
+    if variant == VARIANT_NUMBER:
+        hero_fit = _fit_lines(draw, hero, usable_w, round(usable_h * 0.5), round(width * 0.26),
+                              round(width * 0.12), 1)
+        if hero_fit is None:
+            variant, hero = VARIANT_POSTER, ""
+        else:
+            hero_font, hero_size, _hero_lines, hero_h = hero_fit
+            hero_xy = (margin - draw.textbbox((0, 0), hero, font=hero_font)[0], top_zone)
+            text = rest
+            top_zone += hero_h + round(height * 0.01)
+            usable_h = floor_y - top_zone
+    if variant == VARIANT_QUESTION:
+        centred = True
+        if kicker:
+            pad = round(width * 0.018)
+            kw = draw.textlength(kicker, font=kicker_font)
+            kh = kicker_font.size
+            left = round((width - kw) / 2) - pad
+            top = round(height * 0.11)
+            kicker_box = (left, top - pad, round(left + kw + 2 * pad), top + kh + pad)
+            kicker_xy = (left + pad, top - round(kh * 0.1))
+            top_zone = max(top_zone, kicker_box[3] + round(height * 0.05))
+            usable_h = floor_y - top_zone
+    high = round(width * (0.08 if variant == VARIANT_NUMBER else 0.105))
+    fitted = _fit_lines(draw, text, usable_w, usable_h, high, round(width * 0.05), 5)
     if fitted is None:
         raise ValueError("the hook does not fit the title card legibly")
     font, size_px, lines, line_h = fitted
     block_h = line_h * len(lines)
-    y0 = top_zone + max(0, (usable_h - block_h) // 2)
-    total_words = sum(len(line.split()) for line in lines)
-    step = min(0.2, 1.7 / max(1, total_words))
+    y0 = top_zone + (0 if variant == VARIANT_NUMBER else max(0, (usable_h - block_h) // 2))
     words: list[_Word] = []
-    index = 0
     space = draw.textlength(" ", font=font)
     for row, line in enumerate(lines):
-        x = margin - draw.textbbox((0, 0), line, font=font)[0]
+        line_w = draw.textlength(line, font=font)
+        start = (width - line_w) / 2 if centred else margin
+        x = start - draw.textbbox((0, 0), line, font=font)[0]
         for word in line.split():
-            words.append(_Word(word, round(x), y0 + row * line_h, 0.35 + index * step))
+            words.append(_Word(word, round(x), y0 + row * line_h))
             x += draw.textlength(word, font=font) + space
-            index += 1
-    reveal_end = (words[-1].start + 0.35) if words else 0.6
     rule_y = y0 + block_h + round(line_h * 0.35)
     rule_h = max(6, round(width * 0.008))
-    rule_box = (margin, rule_y, margin + round(width * 0.22), rule_y + rule_h)
-    kicker_font = load_font(max(18, round(width * 0.03)))
+    rule_w = round(width * 0.22)
+    rule_x = round((width - rule_w) / 2) if centred else margin
+    rule_box = (rule_x, rule_y, rule_x + rule_w, rule_y + rule_h)
+    byline = (byline or "").strip()
     byline_font = _medium_font(max(18, round(width * 0.034)))
-    byline_xy = (margin, rule_y + rule_h + round(width * 0.035))
+    byline_x = (round((width - draw.textlength(byline, font=byline_font)) / 2) if centred
+                else margin)
+    byline_xy = (byline_x, rule_y + rule_h + round(width * 0.035))
     # The slab lives BELOW the type block, so it never sits under a word.
     slab_top = min(round(height * 0.80), max(round(height * 0.62),
                                              byline_xy[1] + round(height * 0.08)))
     return TitleCardLayout(size=(width, height), palette=palette, hook_font=font,
-                           hook_size=size_px, words=tuple(words), reveal_end=reveal_end,
-                           rule_box=rule_box, kicker=(kicker or "").upper().strip(),
-                           kicker_font=kicker_font, kicker_xy=(margin, round(height * 0.09)),
-                           byline=(byline or "").strip(), byline_font=byline_font,
-                           byline_xy=byline_xy, lines=tuple(lines), seconds=seconds,
-                           slab_top=slab_top)
+                           hook_size=size_px, words=tuple(words), rule_box=rule_box,
+                           kicker=kicker, kicker_font=kicker_font, kicker_xy=kicker_xy,
+                           byline=byline, byline_font=byline_font, byline_xy=byline_xy,
+                           lines=tuple(lines), seconds=seconds, slab_top=slab_top,
+                           variant=variant, hero=hero, hero_font=hero_font, hero_xy=hero_xy,
+                           kicker_box=kicker_box)
 
 
 def _ease(p: float) -> float:
@@ -289,12 +446,8 @@ def _ease(p: float) -> float:
     return 1 - (1 - p) ** 3
 
 
-def _mix(a: tuple, b: tuple, t: float) -> tuple:
-    return tuple(round(x + (y - x) * t) for x, y in zip(a, b))
-
-
 def render_title_card_frame(layout: TitleCardLayout, t: float) -> Any:
-    """One frame at ``t`` seconds, as a PIL RGB image.
+    """One frame at ``t`` seconds, as a PIL RGB image — complete at ``t=0`` (the thumbnail).
 
     Args:
         layout: ``plan_title_card`` output.
@@ -309,8 +462,8 @@ def render_title_card_frame(layout: TitleCardLayout, t: float) -> Any:
     width, height = layout.size
     image = Image.new("RGB", (width, height), pal.ground)
     draw = ImageDraw.Draw(image)
-    # The slab drifts left across the whole clip: the card moves even after the reveal ends. It
-    # sits below the type block with a gold edge, under where the caption band will burn.
+    # The slab drifts left across the whole clip: the card moves for its whole length. It sits
+    # below the type block with a gold edge, under where the caption band will burn.
     drift = t / max(0.1, layout.seconds)
     sx = round(width * (0.46 - 0.12 * drift))
     sy = (layout.slab_top or round(height * 0.66)) + round(height * 0.02 * (1 - drift))
@@ -318,26 +471,26 @@ def render_title_card_frame(layout: TitleCardLayout, t: float) -> Any:
     draw.rectangle((sx, sy, width, height), fill=pal.slab)
     draw.rectangle((sx, sy, width, sy + edge - 1), fill=pal.rule)
     if layout.kicker:
-        p = _ease(t / 0.4)
-        draw.text(layout.kicker_xy, layout.kicker, font=layout.kicker_font,
-                  fill=_mix(pal.ground, pal.kicker, p))
-    lift = layout.hook_size * 0.35
+        if layout.kicker_box:
+            draw.rectangle(layout.kicker_box, fill=pal.rule)
+            # The darker of the two inks reads on the gold tag on either ground.
+            ink = min(pal.ground, pal.hook, key=sum)
+            draw.text(layout.kicker_xy, layout.kicker, font=layout.kicker_font, fill=ink)
+        else:
+            draw.text(layout.kicker_xy, layout.kicker, font=layout.kicker_font, fill=pal.kicker)
+    if layout.hero and layout.hero_font is not None:
+        draw.text(layout.hero_xy, layout.hero, font=layout.hero_font, fill=pal.hook)
     for word in layout.words:
-        p = _ease((t - word.start) / 0.32)
-        if p <= 0:
-            continue
-        draw.text((word.x, word.y + round((1 - p) * lift)), word.text, font=layout.hook_font,
-                  fill=_mix(pal.ground, pal.hook, p))
-    grow = _ease((t - layout.reveal_end) / 0.5)
-    if grow > 0:
-        left, top, right, bottom = layout.rule_box
-        draw.rectangle((left, top, left + max(1, round((right - left) * grow)), bottom),
-                       fill=pal.rule)
+        draw.text((word.x, word.y), word.text, font=layout.hook_font, fill=pal.hook)
+    left, top, right, bottom = layout.rule_box
+    grow = 1 + _RULE_GROWTH * _ease(t / max(0.1, layout.seconds))
+    if layout.variant == VARIANT_QUESTION:
+        centre, half = (left + right) / 2, (right - left) * grow / 2
+        draw.rectangle((round(centre - half), top, round(centre + half), bottom), fill=pal.rule)
+    else:
+        draw.rectangle((left, top, left + round((right - left) * grow), bottom), fill=pal.rule)
     if layout.byline:
-        p = _ease((t - layout.reveal_end - 0.3) / 0.5)
-        if p > 0:
-            draw.text(layout.byline_xy, layout.byline, font=layout.byline_font,
-                      fill=_mix(pal.ground, pal.byline, p))
+        draw.text(layout.byline_xy, layout.byline, font=layout.byline_font, fill=pal.byline)
     return image
 
 
@@ -459,17 +612,24 @@ def create_title_card_video(text: Optional[str], *, user_id: Optional[int] = Non
         from cqc_lem.utilities.utils import create_folder_if_not_exists
 
         palette = title_card_palette(_brand_for(user_id), pick_ground(f"{post_id}:{hook}"))
+        variant = pick_variant(hook, recent_variants(user_id), f"{post_id}:{hook}")
+        kicker = concept_kicker(concept)
+        if variant == VARIANT_QUESTION and not kicker:
+            from cqc_lem.utilities.ai.image_concept import derive_kicker
+
+            kicker = derive_kicker(text or hook)
         layout = plan_title_card(hook, size=TITLE_CARD_SIZES.get(ratio, TITLE_CARD_SIZES["1:1"]),
-                                 palette=palette, kicker=concept_kicker(concept),
-                                 byline=byline or "", seconds=title_card_seconds())
+                                 palette=palette, kicker=kicker, byline=byline or "",
+                                 seconds=title_card_seconds(), variant=variant)
         directory = title_card_dir()
         create_folder_if_not_exists(directory)
         out_path = os.path.join(directory,
                                 f"{TITLE_CARD_PREFIX}{post_id or 0}_{secrets.token_hex(6)}.mp4")
         if not write_title_card_video(layout, out_path):
             return None
+        record_variant(user_id, layout.variant)
         log_info("Rendered the branded title card video", user_id=user_id, post_id=post_id,
-                 task_name=TASK_NAME, ratio=ratio)
+                 task_name=TASK_NAME, ratio=ratio, variant=layout.variant)
         return out_path
     except Exception as e:
         # The card is the fallback's fallback: a fault here is a defect worth an alert, and the

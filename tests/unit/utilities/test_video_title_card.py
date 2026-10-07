@@ -2,7 +2,8 @@
 
 ffmpeg is mocked everywhere except the one ``slow`` test, which encodes a real clip when an ffmpeg
 binary is on the PATH. What these pin: the card sets the post's OWN words, the stock query can never
-be a raw homonym, the frames actually animate, and every encoder failure leaves no file behind.
+be a raw homonym, frame 0 (LinkedIn's thumbnail) carries the whole hook while the clip still moves,
+the three layouts rotate, and every encoder failure leaves no file behind.
 """
 import shutil
 import subprocess
@@ -104,8 +105,6 @@ class TestPaletteAndLayout:
         bottom = max(w.y for w in layout.words) + layout.hook_size
         assert bottom < size[1] * (1 - tc.CAPTION_CLEARANCE)
         assert all(0 < w.x < size[0] for w in layout.words)
-        starts = [w.start for w in layout.words]
-        assert starts == sorted(starts) and layout.reveal_end > starts[-1]
 
     def test_an_unsettable_hook_is_refused(self):
         with pytest.raises(ValueError):
@@ -114,22 +113,126 @@ class TestPaletteAndLayout:
             tc.plan_title_card("Supercalifragilisticexpialidocious" * 4, size=(1080, 1080),
                                palette=tc.title_card_palette())
 
-    def test_the_frames_reveal_word_by_word_and_keep_moving(self):
+    def test_frame_zero_shows_the_whole_hook_and_the_clip_still_moves(self):
+        # Round 5: LinkedIn's thumbnail IS frame 0 — slot_123 sat in the feed as a lone "AI".
         layout = tc.plan_title_card("Our cron caught a retired model", size=(540, 540),
                                     palette=tc.title_card_palette(), kicker="OPS",
                                     byline="Jane Doe", seconds=7.0)
         first = tc.render_title_card_frame(layout, 0.0)
-        mid = tc.render_title_card_frame(layout, layout.words[2].start + 0.4)
-        end = tc.render_title_card_frame(layout, 5.0)
+        later = tc.render_title_card_frame(layout, 3.0)
         last = tc.render_title_card_frame(layout, 6.9)
-        gold = tuple(layout.palette.hook)
+        for word in layout.words:  # every word's box is inked on frame 0 exactly as later
+            box = (word.x, word.y, word.x + layout.hook_size, word.y + layout.hook_size)
+            assert first.crop(box).tobytes() == later.crop(box).tobytes()
+            assert len(set(first.crop(box).getdata())) > 1
+        byline_box = (*layout.byline_xy, layout.byline_xy[0] + 60, layout.byline_xy[1] + 20)
+        assert len(set(first.crop(byline_box).getdata())) > 1  # the byline is there at t=0
+        assert list(later.getdata()) != list(last.getdata())  # the slab drifts, the rule extends
 
-        def gold_pixels(img):
-            return sum(1 for px in img.getdata() if px == gold)
+    def test_the_rule_extends_from_its_full_frame_zero_length(self):
+        layout = tc.plan_title_card("Our cron caught a retired model", size=(540, 540),
+                                    palette=tc.title_card_palette(), seconds=7.0)
+        left, top, right, _ = layout.rule_box
+        y = top + 1
 
-        # The rule is gold too, so only compare the hook's growth before the rule draws in.
-        assert gold_pixels(first) < gold_pixels(mid) < gold_pixels(end)
-        assert list(end.getdata()) != list(last.getdata())  # the slab still drifts
+        def rule_end(img):
+            return max(x for x in range(img.size[0]) if img.getpixel((x, y)) == layout.palette.rule)
+
+        assert rule_end(tc.render_title_card_frame(layout, 0.0)) >= right - 1
+        assert rule_end(tc.render_title_card_frame(layout, 6.9)) > right + 10
+
+
+class TestVariants:
+    def test_number_led_needs_a_leading_figure(self):
+        assert tc.VARIANT_NUMBER in tc.available_variants("30% of AI spend buys nothing")
+        assert tc.VARIANT_NUMBER not in tc.available_variants("We saved $30K per quarter")
+        assert tc.VARIANT_NUMBER not in tc.available_variants("30%")
+
+    def test_number_led_lifts_the_hero_and_sets_the_rest(self):
+        layout = tc.plan_title_card("30% of AI spend buys nothing you can see", size=(540, 540),
+                                    palette=tc.title_card_palette(), variant=tc.VARIANT_NUMBER)
+        assert layout.variant == tc.VARIANT_NUMBER and layout.hero == "30%"
+        assert " ".join(w.text for w in layout.words) == "Of AI spend buys nothing you can see"
+        assert min(w.y for w in layout.words) > layout.hero_xy[1]
+        frame = tc.render_title_card_frame(layout, 0.0)
+        assert frame.size == (540, 540)
+
+    def test_number_led_without_a_figure_is_the_poster(self):
+        layout = tc.plan_title_card("Our cron caught a retired model", size=(540, 540),
+                                    palette=tc.title_card_palette(), variant=tc.VARIANT_NUMBER)
+        assert layout.variant == tc.VARIANT_POSTER and layout.hero == ""
+
+    def test_an_unfittable_hero_falls_back_to_the_poster(self):
+        real = tc._fit_lines
+        calls = []
+
+        def hero_never_fits(draw, text, *args):
+            calls.append(text)
+            return None if len(calls) == 1 else real(draw, text, *args)
+
+        with patch(f"{_MOD}._fit_lines", side_effect=hero_never_fits):
+            layout = tc.plan_title_card("30% of AI spend buys nothing", size=(320, 320),
+                                        palette=tc.title_card_palette(),
+                                        variant=tc.VARIANT_NUMBER)
+        assert calls[0] == "30%" and layout.variant == tc.VARIANT_POSTER and not layout.hero
+        assert " ".join(w.text for w in layout.words) == "30% of AI spend buys nothing"
+
+    @pytest.mark.parametrize("ground", tc.GROUNDS)
+    def test_question_kicker_centres_the_hook_under_a_tag(self, ground):
+        layout = tc.plan_title_card("What is your AI budget buying?", size=(540, 540),
+                                    palette=tc.title_card_palette(None, ground), kicker="budget",
+                                    byline="Jane Doe", variant=tc.VARIANT_QUESTION)
+        assert layout.kicker_box and layout.kicker_box[3] < min(w.y for w in layout.words)
+        left = min(w.x for w in layout.words)
+        right = max(w.x for w in layout.words)
+        assert abs((540 - left) - right) < 540 * 0.6  # not hard left like the poster
+        frame = tc.render_title_card_frame(layout, 0.0)
+        x0, y0, x1, y1 = layout.kicker_box
+        assert frame.getpixel((x0 + 1, y0 + 1)) == layout.palette.rule
+
+    def test_a_question_hook_prefers_the_question_layout_unless_it_just_ran(self):
+        hook = "What is your AI budget buying?"
+        assert tc.pick_variant(hook, []) == tc.VARIANT_QUESTION
+        assert tc.pick_variant(hook, [tc.VARIANT_QUESTION]) != tc.VARIANT_QUESTION
+
+    def test_consecutive_cards_never_repeat_a_layout(self):
+        hook = "30% of AI spend buys nothing you can see"
+        recent: list = []
+        picks = []
+        for _ in range(6):
+            pick = tc.pick_variant(hook, recent, "seed")
+            picks.append(pick)
+            recent.insert(0, pick)
+        assert all(a != b for a, b in zip(picks, picks[1:]))
+        assert set(picks) == set(tc.TITLE_CARD_VARIANTS)
+
+    def test_history_round_trips_on_disk_and_is_capped(self):
+        assert tc.recent_variants(None) == [] and tc.recent_variants(5) == []
+        tc.record_variant(None, tc.VARIANT_POSTER)  # no author: a no-op
+        for variant in (tc.VARIANT_POSTER, tc.VARIANT_NUMBER, tc.VARIANT_QUESTION) * 3:
+            tc.record_variant(5, variant)
+        history = tc.recent_variants(5)
+        assert history[0] == tc.VARIANT_QUESTION and len(history) == 6
+
+    def test_unreadable_or_alien_history_reads_as_none(self):
+        path = tc.variant_history_path(6)
+        import os
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
+            fh.write("{not json")
+        assert tc.recent_variants(6) == []
+        with open(path, "w") as fh:
+            fh.write('{"a": 1}')
+        assert tc.recent_variants(6) == []
+        with open(path, "w") as fh:
+            fh.write('["number_led", "spiral"]')
+        assert tc.recent_variants(6) == [tc.VARIANT_NUMBER]
+
+    def test_an_unwritable_history_never_raises(self):
+        with patch("os.makedirs", side_effect=OSError("ro")), \
+                patch(f"{_MOD}.log_debug") as debug:
+            tc.record_variant(7, tc.VARIANT_POSTER)
+        debug.assert_called_once()
 
 
 class TestEncode:
@@ -200,6 +303,24 @@ class TestCreate:
         layout = write.call_args[0][0]
         assert layout.size == (1080, 1920) and layout.byline == "Jane Doe"
         assert " ".join(w.text for w in layout.words) == "Our cron caught it"
+
+    def test_the_layout_rotates_per_author_and_is_recorded(self):
+        concept = _concept(hook_phrase="30% of AI spend buys nothing you can see")
+        layouts = []
+        with patch(f"{_MOD}.write_title_card_video", return_value=True) as write:
+            for _ in range(3):
+                tc.create_title_card_video(POST, user_id=11, post_id=7, concept=concept)
+                layouts.append(write.call_args[0][0].variant)
+        assert len(set(layouts)) == 3
+        assert tc.recent_variants(11) == layouts[::-1]
+
+    def test_a_question_card_without_a_kicker_derives_one(self):
+        concept = _concept(hook_phrase="What is your AI budget buying?", kicker="")
+        with patch(f"{_MOD}.write_title_card_video", return_value=True) as write:
+            tc.create_title_card_video("Your AI budget is leaking. " + POST, user_id=12,
+                                       post_id=8, concept=concept)
+        layout = write.call_args[0][0]
+        assert layout.variant == tc.VARIANT_QUESTION
 
     def test_no_hook_no_card(self):
         with patch(f"{_MOD}.write_title_card_video") as write:

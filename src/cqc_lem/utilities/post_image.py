@@ -738,6 +738,12 @@ def _render_ai_post(concept, text: str, rhythm, treatment: str, *, user_id: int,
 
     grade_direction = (f"Photo grade for this image: {PHOTO_GRADES[rhythm.grade]}."
                        if rhythm.grade in PHOTO_GRADES else None)
+    if concept is None and getattr(rhythm, "setting", ""):
+        # Round 5: with no Stage 1 concept to carry it, the re-rolled setting rides the brief's
+        # own direction — otherwise the brief author picks freely, which is how two warehouse
+        # scenes ran back to back (rhythm_3/rhythm_4).
+        grade_direction = " ".join(p for p in (grade_direction,
+                                               f"Setting for this image: {rhythm.setting}.") if p)
 
     def brief_for(with_avatar):
         brief = build_image_brief(text, surface="post_image", ratio=ratio, profile=profile,
@@ -838,9 +844,10 @@ def _rhythm_receipt(treatment: str, rhythm, done: _Rendered, card_share: float,
         "panel": (rhythm.panel if has_panel else None),
         "shot": (getattr(concept, "shot", "") or None) if people else None,
         "grade": (rhythm.grade or None) if ai_scene else None,
-        # The setting CLASS the shipped scene is in, read off what was briefed (#2241 B).
-        "setting": ((setting_class(getattr(concept, "setting", ""))
-                     or setting_class(getattr(done.brief, "prompt", ""))) or None)
+        # The setting CLASS the shipped scene is in. Round 5: read off the PROMPT first — it is
+        # what rendered; the concept's setting is only what Stage 1 asked for.
+        "setting": ((setting_class(getattr(done.brief, "prompt", ""))
+                     or setting_class(getattr(concept, "setting", ""))) or None)
         if ai_scene else None,
         # The visual style that shipped (showcase round 4) — the gate's newest dimension.
         "style": style_of(treatment, archetype or getattr(concept, "archetype", ""),
