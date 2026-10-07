@@ -84,7 +84,10 @@ directly with its own key.
 Set `LEM_TELEMETRY_MUTED=0` to opt a run back in, and add the same `setdefault` line to any new
 operator CLI that reads production data — `test_operator_cli_telemetry_mute.py` fails the build on
 one that does not, because that sentence used to be prose nothing checked. It DISCOVERS every
-`scripts/*.py` crossing the DB facade and requires it in exactly one of two lists: muted, or
+`scripts/*.py` crossing the DB facade — or documented to run in a **prod-image sidecar**, which hands
+it the production env file whatever it imports (#2266: `simulate_post_rhythm.py` reached
+`get_brand_kit` through `post_image`, ran ahead of the `brand_kit` migration, and filed
+`Unknown column 'brand_kit'` against production code that never ran it) — and requires it in exactly one of two lists: muted, or
 allowlisted with the reason its telemetry is wanted. The four allowlisted today all run INSIDE a
 production container or as a production cron (`linkedin_live_validation.py`,
 `linkedin_post_stats_api_probe.py`, `linkedin_version_check.py`, `reseed_own_post_comments.py`), so

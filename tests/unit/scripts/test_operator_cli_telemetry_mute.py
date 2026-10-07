@@ -30,11 +30,14 @@ OPERATOR_CLIS = [
     "scripts/sample_shipped_videos.py",
     "scripts/measure_proof_gate_impact.py",
     "scripts/audit_outbound_drafts.py",
+    "scripts/simulate_post_rhythm.py",
 ]
 
 _MUTE = re.compile(r'^os\.environ\.setdefault\(\s*"LEM_TELEMETRY_MUTED"\s*,\s*"1"\s*\)',
                    re.MULTILINE)
-_CQC_IMPORT = re.compile(r"^(?:from|import)\s+cqc_lem\b", re.MULTILINE)
+#: Indented too: a harness that imports `cqc_lem` lazily inside its functions still builds the Logs
+#: handler on that first import, so the mute has to precede it just the same.
+_CQC_IMPORT = re.compile(r"^\s*(?:from|import)\s+cqc_lem\b", re.MULTILINE)
 
 
 @pytest.mark.parametrize("path", OPERATOR_CLIS)
@@ -114,10 +117,21 @@ TELEMETRY_IS_THE_POINT = {
 _DB_SEAM = re.compile(r"cqc_lem\.(?:utilities\.db|platform\.db\.repositories)\b")
 
 
+#: The other way in (#2266): a script documented to run in a prod-image sidecar gets the production
+#: env file — the real `POSTHOG_API_KEY` and the real database — whether or not it imports the
+#: facade itself. `simulate_post_rhythm.py` reached `get_brand_kit` through `post_image`, read a
+#: column its branch was ahead of, and filed `Unknown column 'brand_kit'` against production.
+_SIDECAR = re.compile(r"prod-image\s+sidecar", re.IGNORECASE)
+
+
 def _scripts_reading_production_data() -> set:
-    """Every `scripts/*.py` that imports the DB facade, discovered rather than listed."""
-    return {str(path) for path in sorted(pathlib.Path("scripts").glob("*.py"))
-            if _DB_SEAM.search(path.read_text(encoding="utf-8"))}
+    """Every `scripts/*.py` that imports the DB facade or runs in a prod-image sidecar."""
+    found = set()
+    for path in sorted(pathlib.Path("scripts").glob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        if _DB_SEAM.search(source) or _SIDECAR.search(source):
+            found.add(str(path))
+    return found
 
 
 class TestEveryDbReadingScriptHasMadeTheChoice:
@@ -146,7 +160,8 @@ class TestEveryDbReadingScriptHasMadeTheChoice:
         for path in list(OPERATOR_CLIS) + list(TELEMETRY_IS_THE_POINT):
             assert pathlib.Path(path).is_file(), f"{path} is listed but does not exist"
             assert path in reading, (
-                f"{path} no longer imports the DB facade — drop it from the list rather than "
+                f"{path} no longer imports the DB facade or runs in a sidecar — drop it from the "
+                f"list rather than "
                 f"leaving a guard that pins nothing (#1661)."
             )
 
