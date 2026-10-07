@@ -555,12 +555,12 @@ def _titled(prefix: str, items: list) -> str:
 
 _FOOTER_SCOPE = [
     "## Scope",
-    "- Decide per model: keep, swap, or remove. A swap is a deliberate `.litellm/config.yaml` "
-    "change - never an entry in `.litellm/model_upgrades.yaml`, which is the Ollama RETIREMENT map "
-    "and auto-swaps whatever lands in it.",
-    "- For `lem-vision` / `lem-image`, measure the candidate first: "
-    "`poetry run python scripts/benchmark_models.py --run --tiers lem-vision,lem-image` "
-    "(spend-capped, see docs/model-benchmarks/README.md).",
+    ("- Decide per model: keep, swap, or remove. A swap is a deliberate `.litellm/config.yaml` "
+     "change - never an entry in `.litellm/model_upgrades.yaml`, which is the Ollama RETIREMENT "
+     "map and auto-swaps whatever lands in it."),
+    ("- For `lem-vision` / `lem-image`, measure the candidate first: "
+     "`poetry run python scripts/benchmark_models.py --run --tiers lem-vision,lem-image` "
+     "(spend-capped, see docs/model-benchmarks/README.md)."),
     "- Regenerate the registry in the same PR: `poetry run python scripts/model_registry.py --write`.",
     "",
     "## Acceptance",

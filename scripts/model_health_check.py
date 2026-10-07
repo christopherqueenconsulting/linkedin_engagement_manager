@@ -1573,8 +1573,8 @@ def _file_issues(plan: dict, github: GitHubIssues, kinds: tuple = CATALOG_ISSUE_
 
 def _file_provider_issues(plan: dict, github: "GitHubIssues") -> int:
     """File/append the provider-scan issues with the same dedup rule as the catalog issues."""
-    from provider_model_scan import PROVIDER_ISSUE_KINDS  # noqa: WPS433 - sibling script
-    return _file_issues(plan, github, kinds=PROVIDER_ISSUE_KINDS)
+    import provider_model_scan as pms  # noqa: WPS433 - sibling script
+    return _file_issues(plan, github, kinds=pms.PROVIDER_ISSUE_KINDS)
 
 
 def _provider_main(args: argparse.Namespace) -> int:

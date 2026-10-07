@@ -928,17 +928,17 @@ def render_media_report(run: dict) -> str:
              f"**Image quality:** {run.get('quality')} · **Spend:** "
              f"${spend.get('actual_usd', 0):.4f} of a ${spend.get('cap_usd', 0):.2f} cap"
              + (f" · ⛔ stopped early: {spend['stopped']}" if spend.get("stopped") else ""), "",
-             "Synthetic fixtures only (issue #2251). Produced by `scripts/benchmark_models.py "
-             "--tiers lem-vision,lem-image`; a `recommend` is advisory and is never applied to "
-             "`.litellm/config.yaml` automatically.", ""]
+             ("Synthetic fixtures only (issue #2251). Produced by `scripts/benchmark_models.py "
+              "--tiers lem-vision,lem-image`; a `recommend` is advisory and is never applied to "
+              "`.litellm/config.yaml` automatically."), ""]
     for tier in run["roster"]:
         cards = [c for c in run["scorecards"] if c["tier"] == tier]
         if not cards:
             continue
         lines += [f"## {tier}", ""]
         if tier == "lem-vision":
-            lines += ["| Model | Role | Agreement | Stray text | Cliché | Emotion | Exact cases | "
-                      "Unparsed | Errors | p50 | Cost | Verdict |",
+            lines += [("| Model | Role | Agreement | Stray text | Cliché | Emotion | Exact cases | "
+                       "Unparsed | Errors | p50 | Cost | Verdict |"),
                       "|---|---|---|---|---|---|---|---|---|---|---|---|"]
             for c in cards:
                 g = verdicts.get((tier, c["model"]))
@@ -1063,7 +1063,10 @@ def write_media_report(run: dict, out_dir: str) -> str:
     with open(path, "w") as fh:
         fh.write(body)
     readme = os.path.join(out_dir, "README.md")
-    existing = open(readme).read() if os.path.exists(readme) else ""
+    existing = ""
+    if os.path.exists(readme):
+        with open(readme) as fh:
+            existing = fh.read()
     with open(readme, "w") as fh:
         fh.write(update_media_leaderboard(existing, media_leaderboard_rows(run)))
     return path

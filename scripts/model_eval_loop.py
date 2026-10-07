@@ -130,9 +130,9 @@ def pr_comment_body(number: int, sha: str, rc: int, report: Optional[str], outpu
         status = ("**recommends a swap**" if rc == 2 else "ran - no swap recommended")
     lines = [COMMENT_MARKER,
              f"### Media-tier benchmark for `{sha[:10]}` - {status}", "",
-             "Advisory only (issue #2251): this is NOT a check and never blocks a merge. The PR's "
-             "`.litellm/config.yaml` was benchmarked on `lem-vision` / `lem-image` against main's "
-             "pinned prices and spend cap.", ""]
+             ("Advisory only (issue #2251): this is NOT a check and never blocks a merge. The "
+              "PR's `.litellm/config.yaml` was benchmarked on `lem-vision` / `lem-image` against "
+              "main's pinned prices and spend cap."), ""]
     if report:
         lines += ["<details><summary>Report</summary>", "", report.strip(), "", "</details>"]
     tail = "\n".join(output.strip().splitlines()[-25:])
