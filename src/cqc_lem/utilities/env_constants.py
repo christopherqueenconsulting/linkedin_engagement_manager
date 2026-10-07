@@ -124,13 +124,14 @@ VIDEO_CAPTION_RENDER_COST_PER_MINUTE = float(
     get_constant_from_env('VIDEO_CAPTION_RENDER_COST_PER_MINUTE', default_value='0.01'))
 
 # --- Carousel content-slide imagery ---
-# Content (middle) carousel slides carry a relevant image so they don't render as
-# text-on-blank. Sourcing is deterministic and cheap-first: Pexels stock (just an
-# API call) is the default source; Replicate generation is OFF by default (costs
-# money + only adds value with the user's active avatar). Rates are 0..1 fractions
-# applied against a per-(post_id, slide) deterministic seed so regeneration is stable.
+# A body slide's picture is a code-drawn element of its OWN figures/points, else a typographic
+# slide (#2241 showcase). Pexels stock is an explicit OPT-IN (CAROUSEL_PEXELS_ENABLED, default
+# off): keyword stock put a hand on a button and a keyboard with a "ZOOM" logo on real decks.
+# Replicate generation is OFF by default (costs money + only adds value with the user's active
+# avatar). Rates are 0..1 fractions applied against a per-(post_id, slide) deterministic seed so
+# regeneration is stable.
 CAROUSEL_IMAGES_ENABLED = isTrue(get_constant_from_env('CAROUSEL_IMAGES_ENABLED', default_value='True'))
-CAROUSEL_PEXELS_ENABLED = isTrue(get_constant_from_env('CAROUSEL_PEXELS_ENABLED', default_value='True'))
+CAROUSEL_PEXELS_ENABLED = isTrue(get_constant_from_env('CAROUSEL_PEXELS_ENABLED', default_value='False'))
 CAROUSEL_REPLICATE_ENABLED = isTrue(get_constant_from_env('CAROUSEL_REPLICATE_ENABLED', default_value='False'))
 # Fraction of eligible content slides that MAY use Replicate generation (only when
 # CAROUSEL_REPLICATE_ENABLED and the user has an active, relevant avatar). Low by default.

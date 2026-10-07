@@ -141,10 +141,56 @@ _TREATMENT_TEMPLATES: dict[str, str] = {
 # The fallback style when a concept carries none.
 _DEFAULT_ART_STYLE = "editorial_photo"
 # Archetype round: an editorial concept shows nobody — refused deterministically, not requested.
+# #2241 showcase: a cover chose editorial_concept and shipped a woman on the phone — the role
+# nouns ("CFO", "engineering manager") and portrait words were never refused, and a role reads
+# to a renderer as a person to draw.
 _PERSON_WORDS = re.compile(
     r"\b(?:person|people|man|men|woman|women|face|faces|hand|hands|finger|fingers|figure|"
     r"figures|silhouette|silhouettes|worker|workers|employee|employees|owner|founder|"
-    r"customer|customers|client|clients|team|crowd|he|she|his|her|their)\b", re.IGNORECASE)
+    r"customer|customers|client|clients|team|crowd|he|she|his|her|their|portrait|selfie|"
+    r"smile|smiling|ceo|cfo|cto|coo|cmo|leader|leaders|manager|managers|engineer|engineers|"
+    r"developer|developers|marketer|marketers|executive|executives|officer|officers|"
+    r"colleague|colleagues|boss|staff|buyer|buyers|consultant|consultants|audience)\b",
+    re.IGNORECASE)
+
+
+def person_word(text: Optional[str]) -> Optional[str]:
+    """The first word in ``text`` that puts a person in frame, or None.
+
+    The deterministic refusal an ``editorial_concept`` prompt must pass — authored, fallback or
+    repaired alike — so the archetype renders OBJECT-ONLY.
+
+    Args:
+        text: A render prompt or a fragment of one.
+
+    Returns:
+        The word as written, or None.
+    """
+    match = _PERSON_WORDS.search(text or "")
+    return match.group(0) if match else None
+
+
+def editorial_objects(concept: Optional[ImageConcept]) -> list[str]:
+    """The object nouns an editorial concept may be built from: no person, name, number or cliché.
+
+    Stage 1's ``idea_nouns`` (the Idea Miner's concrete nouns), then the usable anchors, each kept
+    only when it names no person (``person_word``) and survives ``_plain_words``.
+
+    Args:
+        concept: Stage 1's concept.
+
+    Returns:
+        Distinct object phrases, in order.
+    """
+    if concept is None:
+        return []
+    out: list[str] = []
+    for raw in tuple(concept.idea_nouns or ()) + tuple(usable_anchors(concept)):
+        noun = _plain_words(raw)
+        if (noun and not person_word(noun) and not prop_failure(noun) and not tech_hardware(noun)
+                and noun.lower() not in (o.lower() for o in out)):
+            out.append(noun)
+    return out
 
 
 def treatment_text(treatment: str, concept: Optional[ImageConcept] = None) -> str:
@@ -505,8 +551,52 @@ PROPS_DIRECTIVE = (
 # lens worst. ``NO_NEAR_FOREGROUND`` is the clause the motion prompt (``MOTION_DISCIPLINE``,
 # PR #2249) appends too.
 NO_NEAR_FOREGROUND = "no hands or objects close to the camera"
+# #2241 showcase: two of three video frames failed text_accuracy on a clock face's numerals, an
+# "O" and a "pause" button label, and fell back to Pexels; frames also lacked any brand mark. So a
+# frame carries no clock, sign or labelled button at all, and ONE gold or charcoal accent object
+# or wardrobe piece — enforced deterministically (``video_frame_failure``, ``VIDEO_ACCENT_COLORS``).
 VIDEO_FRAME_DIRECTIVE = (f"VIDEO FRAME: {NO_NEAR_FOREGROUND} — people at mid-distance, hands "
-                         f"well away from the lens, nothing in the near foreground.\n")
+                         f"well away from the lens, nothing in the near foreground. No clocks, no "
+                         f"signs, no labelled buttons or keypads anywhere in frame. Include ONE "
+                         f"gold or charcoal accent object or wardrobe piece, named by its colour.\n")
+VIDEO_ACCENT_COLORS = frozenset({"gold", "golden", "charcoal"})
+_VIDEO_TEXT_PROPS = re.compile(
+    r"\b(?:clocks?|wall[\s\-]clock|wristwatch(?:es)?|watch[\s\-]face|signage|signboards?|"
+    r"(?:street|wall|door|neon|shop|office|exit|road)\s+signs?|buttons?(?![\s\-]*(?:down|up)\b)|keypads?|"
+    r"control\s+panels?|remote\s+controls?)\b", re.IGNORECASE)
+
+
+_LIGHT_NEUTRALS = frozenset({"off-white", "white", "cream", "ivory", "beige", "sand"})
+
+
+def video_accent_colors(colors: frozenset[str]) -> frozenset[str]:
+    """The colour words a video frame's accent may be named by: the kit's accents, never a neutral.
+
+    Args:
+        colors: ``brand_colors`` of the brief's brand clause.
+
+    Returns:
+        Gold/charcoal when the kit names them; else the kit's non-light colours; else gold and
+        charcoal (the reference brand).
+    """
+    return (colors & VIDEO_ACCENT_COLORS) or frozenset(colors - _LIGHT_NEUTRALS) \
+        or VIDEO_ACCENT_COLORS
+
+
+def video_frame_failure(prompt: Optional[str]) -> Optional[str]:
+    """Why a video frame prompt names a prop the judge reads as stray text, or None.
+
+    Args:
+        prompt: The authored render prompt.
+
+    Returns:
+        The refusal sent back to the author, or None when the prompt is clean.
+    """
+    match = _VIDEO_TEXT_PROPS.search(prompt or "")
+    if not match:
+        return None
+    return (f"the frame names {match.group(0)!r} — clocks, signs and buttons carry numerals and "
+            f"labels the text check fails; show the moment without them")
 # Kept for the call sites that name it: covers and posts were the first surfaces with the rule.
 COVER_PROPS_DIRECTIVE = {PAPER_FORBID: PROPS_DIRECTIVE}
 # An editorial concept keeps every prop rule and drops the people: the objects carry the idea.
@@ -1379,17 +1469,22 @@ def _fallback_brief(content: str, *, surface: str, ratio: str, context: str,
     context = ""
     idea = _plain_words(concept.chosen_idea) if concept and concept.chosen_idea else ""
 
-    if treatment == TREATMENT_EDITORIAL and idea:
-        style = ART_STYLES.get(concept.art_style or "", ART_STYLES[_DEFAULT_ART_STYLE])
-        prompt = (f"{context}{style[:1].upper()}{style[1:]}: {idea}. Objects only, one focal "
+    if treatment == TREATMENT_EDITORIAL:
+        # #2241 showcase: with no surviving idea this used to become a CONCRETE scene of "the
+        # everyday objects at the heart of this: not AI" — and the gate's emotion repair then
+        # put a person in it. An editorial concept stays editorial and OBJECT-ONLY: its idea
+        # when that names nobody, else a still life of the Idea Miner's own object nouns.
+        style = ART_STYLES.get(getattr(concept, "art_style", "") or "", ART_STYLES[_DEFAULT_ART_STYLE])
+        objects = editorial_objects(concept)
+        if idea and not person_word(idea):
+            subject = idea
+        elif objects:
+            subject = f"a still life of {_join(objects[:3])}, one of them oddly out of scale"
+        else:
+            subject = "a single everyday object from the reader's working world, oddly out of scale"
+        prompt = (f"{context}{style[:1].upper()}{style[1:]}: {subject}. Objects only, one focal "
                   f"point centred on a flat calm ground with generous space around it, one "
                   f"deliberate {accent[0]} accent, composed for a {ratio} aspect ratio.{layout}")
-    elif treatment == TREATMENT_EDITORIAL:
-        # No surviving idea: a plain object photograph of the piece, never a person.
-        treatment = TREATMENT_CONCRETE
-        prompt = (f"{context}A photorealistic editorial still-life photograph of the everyday "
-                  f"objects at the heart of this: {summary}. One clear focal object, shot on a "
-                  f"50mm lens at f/2.8, {finish}{layout}")
     elif idea:
         who = (f", the person {cast_phrase(concept.cast)}"
                if concept and concept.cast and not avatar else "")
@@ -1584,6 +1679,10 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
     colors = brand_colors(brand_kit)
     # Deterministically enforced on covers; requested on every surface.
     gate_colors = colors if surface in BRAND_GATE_SURFACES else None
+    if surface == "video":
+        # A frame's accent must be a brand ACCENT — gold or charcoal — never the off-white
+        # neutral that any wall already satisfies (#2241 showcase).
+        gate_colors = video_accent_colors(colors)
     paper_rule = PAPER_FORBID  # every surface since round 7
     positive = concept is not None and concept.valence == "positive"
     bright = surface in HOOK_SURFACES and not (
@@ -1669,6 +1768,8 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
                                    names=names, colors=gate_colors, paper_rule=paper_rule,
                                    bright=bright, positive=positive, avatar=bool(avatar),
                                    no_people=no_people)
+            if not rejection and surface == "video":
+                rejection = video_frame_failure(str(parsed.get("prompt") or ""))
             if not rejection and hook:
                 rejection = render_framing_failure(str(parsed.get("prompt") or ""), hook,
                                                    kicker, anchors)

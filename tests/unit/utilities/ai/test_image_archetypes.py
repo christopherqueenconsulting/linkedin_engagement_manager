@@ -100,7 +100,9 @@ class TestSelection:
     def test_the_hint_only_breaks_a_tie(self):
         ranked = rank_archetypes(["stat_card", "people_scene", "highlight_chart"],
                                  hint="people_scene")
-        assert [a for a, _ in ranked] == ["highlight_chart", "people_scene", "stat_card"]
+        # People is 2.5: the analyst's +0.5 can only TIE a validated 3.0 graphic, and a tie goes
+        # code-drawn first (#2241 showcase — people 3.5 beat a real checklist on every cover).
+        assert [a for a, _ in ranked] == ["highlight_chart", "stat_card", "people_scene"]
 
     def test_the_last_two_archetypes_are_penalised(self):
         ranked = rank_archetypes(["stat_card", "highlight_chart", "editorial_concept"],

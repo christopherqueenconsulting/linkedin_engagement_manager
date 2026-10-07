@@ -90,9 +90,53 @@ def _rotation_key(entry: dict) -> tuple:
     return (int(entry.get("used_count") or 0), stamp, int(entry.get("id") or 0))
 
 
+# A post "used" an entry when it echoes this many of the entry's checkable particulars (numbers,
+# months) — or, for an entry with fewer, this many of its TITLE's content words.
+STORY_ECHO_MIN_SPECIFICS = 2
+STORY_ECHO_MIN_TITLE_WORDS = 2
+# The user's last N generated posts an entry must not appear in (#2241 showcase).
+STORY_RECENT_POSTS = 3
+
+
+def entry_echoed_in(entry: dict, text: Optional[str]) -> bool:
+    """Does ``text`` (a generated post) carry this bank entry's material?
+
+    Deterministic: the post repeats at least ``STORY_ECHO_MIN_SPECIFICS`` of the entry's own
+    numbers/months ("429", "july", "20"), or — for an entry with fewer particulars — at least
+    ``STORY_ECHO_MIN_TITLE_WORDS`` of its title's content words. There is no per-post story
+    column, so this reads the anchor back off the published text itself.
+
+    Args:
+        entry: One story-bank row.
+        text: A post's content.
+
+    Returns:
+        Whether the post reads as anchored to this entry.
+    """
+    if not text or not entry_text(entry):
+        return False
+    specifics = specific_tokens(entry_text(entry))
+    if len(specifics) >= STORY_ECHO_MIN_SPECIFICS:
+        return len(specifics & specific_tokens(text)) >= STORY_ECHO_MIN_SPECIFICS
+    title = content_tokens(str(entry.get("title") or ""))
+    need = min(STORY_ECHO_MIN_TITLE_WORDS, len(title))
+    return bool(title) and len(title & content_tokens(text)) >= need
+
+
+def recently_used_ids(entries: Optional[list], recent_texts: Optional[list]) -> set:
+    """The ids of every entry echoed in any of ``recent_texts`` (``entry_echoed_in``)."""
+    used = set()
+    for entry in entries or []:
+        if isinstance(entry, dict) and entry.get("id") is not None and any(
+                entry_echoed_in(entry, t) for t in (recent_texts or [])):
+            used.add(entry["id"])
+    return used
+
+
 def select_story(entries: Optional[list], subject: Optional[str] = None,
                  focus_topics: Optional[list] = None,
-                 min_relevance: Optional[int] = None) -> Optional[dict]:
+                 min_relevance: Optional[int] = None,
+                 recent_texts: Optional[list] = None) -> Optional[dict]:
     """The one entry this post is anchored to, or None when the bank can't ground it.
 
     Relevance decides WHICH entries are eligible; rotation decides which eligible one is used, so
@@ -100,6 +144,12 @@ def select_story(entries: Optional[list], subject: Optional[str] = None,
     and for a bank whose entries share nothing with the post's subject or the user's focus topics —
     both cases mean the caller must fall back to a non-story archetype rather than invent
     experience the user never had.
+
+    ``recent_texts`` (the user's last ``STORY_RECENT_POSTS`` generated posts) adds a second
+    rotation guard (#2241 showcase: three decks in one run all anchored on the same "429 doom
+    loop" story, because ``used_count`` only advances once a post is written): an eligible entry
+    echoed in any of them is skipped while a fresh eligible one exists. When every eligible
+    entry is recent, the least-used one is still returned — a repeat beats a post with no anchor.
     """
     usable = [e for e in (entries or []) if isinstance(e, dict) and entry_text(e)
               and e.get("active", True)]
@@ -116,7 +166,9 @@ def select_story(entries: Optional[list], subject: Optional[str] = None,
                     if len(wanted & content_tokens(entry_text(e))) >= threshold]
     if not eligible:
         return None
-    return sorted(eligible, key=_rotation_key)[0]
+    recent = recently_used_ids(eligible, recent_texts)
+    fresh = [e for e in eligible if e.get("id") not in recent]
+    return sorted(fresh or eligible, key=_rotation_key)[0]
 
 
 def _happened_phrase(entry: dict) -> str:

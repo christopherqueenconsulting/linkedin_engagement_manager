@@ -73,8 +73,8 @@ of seven **archetypes**, and the people photo is the rarest of them.
 
 **Selection** (`image_concept.select_archetype`, deterministic). Candidates come from what
 VALIDATED, never from what Stage 1 hoped for; a code-drawn archetype also needs a headline. Score
-= evidence strength (`ARCHETYPE_BASE_SCORES`: chart/receipt/before-after 4, stat card/checklist/
-people 3, editorial 1) + 0.5 for Stage 1's own `archetype` pick (a TIEBREAK, never more) − 4 for
+= evidence strength (`ARCHETYPE_BASE_SCORES`: chart/receipt/before-after 4, stat card/checklist 3,
+people 2.5, editorial 1) + 0.5 for Stage 1's own `archetype` pick (a TIEBREAK, never more) − 4 for
 either of the last two archetypes the author shipped. Equal scores go to code-drawn first. The
 ranking becomes a fallback CHAIN that stops at the first AI archetype; that one sets the
 `treatment` (`editorial_concept`, or `people_scene` for a human moment), so the brief is always
@@ -148,6 +148,60 @@ folds into the existing seven criteria rather than adding an eighth: a total und
 `POP_SHIP_FLOOR` (9/14) caps `scroll_stop` at 3, a zero thesis fit caps `specificity` at 3, and
 a code-drawn graphic's credibility is 2 by construction. The scores ride on the receipt as
 `gate_pop`. A faceless archetype is never capped for a missing or mismatched emotion.
+
+## Showcase round — why the code-drawn archetypes lost, and the fixes
+
+A read-only showcase run generated four newsletter covers through the real path: all four were people
+or "editorial concept" photographs, although every article stated a thesis stat ($30K, 45%, 95%).
+The receipts (`cover_*.brief.json`) show the cause was never the rotation penalty or a cover
+exclusion. It was two things:
+
+1. **The validator refused true facts.** ed16's stat came back as value `"30K"`, unit `"$"` and was
+   refused as "30K$ is not in its source sentence"; ed18's 45% sentence was quoted with a U+2011
+   non-breaking hyphen ("human‑written") against the article's plain one; every step of ed18's
+   four-step list was refused for being over 8 words. Now `image_graphics.split_value` reads a value
+   that carries its own symbol or multiplier (the multiplier must still match the sentence's — the
+   drawn string is still the sentence's own); `_norm` folds every dash variant and soft hyphen and
+   strips markdown emphasis on BOTH sides; `fit_step` keeps a long step's first 2-8-word CLAUSE (a
+   run of its own words, so it traces exactly as the whole would). Nothing is reworded; a number or
+   multiplier that differs is still refused.
+2. **The score let people outrank a validated graphic.** People scored 3, the same as a checklist
+   or stat card, and Stage 1's +0.5 tiebreak (it hinted people on every human-moment edition) made
+   it 3.5 — ed19's validated checklist (3) lost. `ARCHETYPE_BASE_SCORES[people_scene]` is now
+   **2.5**: the tiebreak can at most TIE a 3.0 graphic, and ties go code-drawn first. People still
+   win when nothing validated, or when the graphic is one of the last two shipped.
+
+**`editorial_concept` is object-only on every path.** ed17/ed18 chose it and shipped a woman on a
+phone: the deterministic fallback, with no surviving idea, became a `concrete_scene` ("the everyday
+objects at the heart of this: not AI"), and the gate's emotion repair ("a closer framing where the
+emotion shows on the face") then asked for a person. Now the fallback stays editorial and builds a
+still life from Stage 1's `idea_nouns`/anchors filtered by `person_word`; `_PERSON_WORDS` also
+refuses role and portrait words (CFO, manager, engineer, buyer, smiling…); a faceless archetype is
+never `emotion_weak` and its repair table (`_FACELESS_REPAIRS`) never mentions a face.
+
+**A hero numeral lifts only a LEADING number.** "We saved $30K per quarter" became hero "$30K" over
+"We saved per quarter". `image_compose.split_hero` now splits only when the number opens the hook
+("45% less engagement…" → "Less engagement…"); otherwise the whole sentence is the headline, in the
+brand primary, with no hero.
+
+**Video frames.** Two of three fell back to Pexels on an "O", a "pause" label and clock numerals.
+`image_gen.trivial_mark` drops a 1-2 character NON-word token from the stray-text check unless the
+blind look calls it legible in the sentence that names it — words ("pause", "AI", "OK") stay strict.
+`VIDEO_FRAME_DIRECTIVE` asks for no clocks, signs or labelled buttons and ONE gold or charcoal
+accent object or wardrobe piece; `video_frame_failure` refuses a prompt naming a clock, sign,
+button or keypad, and the video brand gate accepts only an accent colour (`video_accent_colors`),
+never the off-white neutral any wall satisfies.
+
+**A stat card says its number once** (the `data_card` post treatment draws it). A panel headline
+that states the same AMOUNT as the hero ("Our routing change saved $12,000" beside "$12,000";
+`hook_repeats_figure`, so "$12K" counts too) is dropped and the panel keeps its kicker and byline.
+The context line under the hero is a COMPLETE phrase of the sentence (`complete_context`): Stage 1's
+label survives only as a contiguous run of the sentence's words that neither carries the figure nor
+dangles on a preposition; otherwise it is the words that follow the figure ("in model costs last
+quarter"); with neither, no stat card is drawn — never "Our routing change saved in model costs".
+
+**Carousel decks** follow the brand kit, draw their own figures in code and default to no stock —
+`docs/content-quality-audits/carousel.md` §8.
 
 ## Post rhythm — treatments, panels, grades and the sameness gate (anti-monotony round)
 
@@ -669,7 +723,7 @@ user's brand clause (`brand_kit.brand_clause_for_user`):
 | Newsletter cover (`newsletter_cover.generate_cover_for_edition`) | title + subtitle + full body | yes | base + avatar | 16:9 |
 | Post image (`post_image.generate_image_for_post`) | the post text | yes | base + avatar (avatar only when the post is about the author; one gpt-image retry if the avatar render is unusable); rubric + `render_path` on the receipt | `POST_IMAGE_RATIO`, default **4:5** |
 | Carousel slide (`carousel_creator`, avatar slides) | the WHOLE carousel, once per deck, lazily — only if a slide wants an image | yes | avatar-eligible slides (the likeness only when the deck is about the author) | 1:1 |
-| Carousel stock query (`derive_image_query`) | the same per-deck concept: its visual anchors (never its facts — a name or number is not a stock photo) ARE the Pexels query, so no per-slide `lem-simple` call | — | — | — |
+| Carousel stock query (`derive_image_query`) | the same per-deck concept: its visual anchors (never its facts — a name or number is not a stock photo) ARE the Pexels query, so no per-slide `lem-simple` call. Pexels is OPT-IN since the #2241 showcase (`CAROUSEL_PEXELS_ENABLED`, default off); with no opt-in source on, no query is derived at all | — | — | — |
 | Video source frame (`run_content_plan._generate_video_src`) | the post text | yes | every frame, ENFORCED (incl. the standard-tier no-avatar frame, which was ungated); a rejected frame is never animated; the judge reads the caption that will be burned on (`video_captions.burned_caption_text`) as its headline — judge-only, never composited; the likeness only when the post is about the author | tier's ratio |
 | Video motion prompt (`get_runway_ml_video_prompt_from_ai`) | the same concept: thesis + emotional beat reach the motion author, plus `MOTION_DISCIPLINE` | — | — | — |
 | Video clip (`utilities/video_clip_check.py`) | — | — | 3 sampled frames, one `lem-vision` call; a defect buys ONE re-render | — |

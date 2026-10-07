@@ -57,8 +57,12 @@ ARCHETYPE_SURFACES = frozenset({"newsletter", "post_image"})
 # verified data than a single stat, so it is the more specific image when the piece has it.
 ARCHETYPE_BASE_SCORES = {ARCHETYPE_HIGHLIGHT_CHART: 4.0, ARCHETYPE_RECEIPT: 4.0,
                          ARCHETYPE_BEFORE_AFTER: 4.0, ARCHETYPE_STAT_CARD: 3.0,
-                         ARCHETYPE_CHECKLIST: 3.0, ARCHETYPE_PEOPLE: 3.0,
+                         ARCHETYPE_CHECKLIST: 3.0, ARCHETYPE_PEOPLE: 2.5,
                          ARCHETYPE_EDITORIAL: 1.0}
+# People is 2.5, not 3 (#2241 showcase): at 3 the analyst's +0.5 tiebreak let a people scene
+# OUTRANK a validated checklist or stat card (3.5 > 3) on every human-moment edition, so no
+# cover drew its evidence. At 2.5 the tiebreak can at most TIE a 3.0 graphic, and ties go
+# code-drawn first — a people photo wins only when no graphic validated or one is rotated out.
 # The analyst's own pick only BREAKS a tie; it never outranks a stronger evidence score.
 ARCHETYPE_TIEBREAK = 0.5
 # Never the same archetype as either of the last two images (§6.3 step 4). The research's -2

@@ -188,7 +188,9 @@ class TestEditorialCoverSystem:
         ("$30K wasted on AI", "$30K", "Wasted on AI"),
         ("53.7% miss the mark", "53.7%", "Miss the mark"),
         ("45% less engagement on AI posts", "45%", "Less engagement on AI posts"),
-        ("AI posts: 45% less engagement", "45%", "AI posts: less engagement"),
+        # #2241 showcase: only a LEADING number lifts out; mid-sentence it would leave a hole.
+        ("AI posts: 45% less engagement", "", "AI posts: 45% less engagement"),
+        ("We saved $30K per quarter", "", "We saved $30K per quarter"),
         ("Who really buys your AI?", "", "Who really buys your AI?"),
     ])
     def test_the_hero_numeral_splits_from_the_hook(self, hook, hero, rest):

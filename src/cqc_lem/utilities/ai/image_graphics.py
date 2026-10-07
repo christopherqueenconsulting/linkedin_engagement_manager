@@ -147,7 +147,14 @@ class GraphicRender:
 # ---------------------------------------------------------------------------------------------
 
 _QUOTES = str.maketrans({"’": "'", "‘": "'", "“": '"', "”": '"', "–": "-", "—": "-",
-                         " ": " ", " ": " "})
+                         " ": " ", " ": " ",
+                         # #2241 showcase: Stage 1 copied "human-written" back as
+                         # "human\u2011written" and the 45% stat read as "not in the article".
+                         "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2212": "-",
+                         "\u00ad": None})
+# Markdown emphasis an LLM-written article carries around a figure ("**45%**") but the quoted
+# sentence does not, or the other way round. Stripped from BOTH sides before comparing.
+_MARKDOWN_MARKS = re.compile(r"\*\*|__|`")
 _VALUE = re.compile(r"\d[\d,]*(?:\.\d+)?")
 _NUM_END = r"(?![.,]?\d)"
 _NUM_START = r"(?<![\d.,])"
@@ -158,7 +165,40 @@ CURRENCIES = ("$", "€", "£")
 
 
 def _norm(text: Any) -> str:
-    return " ".join(str(text or "").translate(_QUOTES).split())
+    return " ".join(_MARKDOWN_MARKS.sub("", str(text or "").translate(_QUOTES)).split())
+
+
+# A figure Stage 1 wrote WITH its symbol or multiplier in the value — "$30K", "30K", "45%" —
+# instead of value "30" / unit "$". The showcase's ed16 stat ("We saved $30K per quarter") was
+# refused as "30K$ is not in its source sentence" for exactly that.
+_VALUE_PARTS = re.compile(r"^\s*([$€£])?\s*(\d[\d,]*(?:\.\d+)?)\s*([KkMmBb]n?|thousand|million|"
+                          r"billion)?\s*(%|x|×)?\s*$", re.IGNORECASE)
+
+
+def split_value(value: Any, unit: Any) -> tuple[str, str, str]:
+    """``(number, unit, multiplier)`` from a value that may carry its own symbol or multiplier.
+
+    Only splits what is unambiguous; anything else comes back as given, and ``verbatim_figure``
+    refuses it as before. The multiplier, when present, must ALSO be what the sentence wrote — the
+    drawn string is still the sentence's own match.
+
+    Args:
+        value: Stage 1's value, e.g. ``"$30K"``, ``"30K"`` or ``"30"``.
+        unit: Stage 1's unit.
+
+    Returns:
+        The bare number, the unit (a symbol the value carried wins only when ``unit`` is empty or
+        the same), and the multiplier the value carried (``""`` when none).
+    """
+    value, unit = str(value or "").strip(), str(unit or "").strip()
+    match = _VALUE_PARTS.match(value)
+    if not match:
+        return value, unit, ""
+    currency, number, mult, suffix = match.groups()
+    carried = currency or suffix or ""
+    if carried and unit and carried.lower() != unit.lower():
+        return value, unit, ""
+    return number, unit or carried, (mult or "")
 
 
 def _root(token: str) -> str:
@@ -187,25 +227,34 @@ def verbatim_figure(value: Any, unit: Any, sentence: Any) -> Optional[str]:
     The drawn string is built from the sentence's OWN match: a currency keeps its symbol and any
     K/M/B the sentence wrote, a percentage is set as ``N%``, a multiple as ``Nx``, a unit word as
     the sentence spells it. A number that is not in the sentence — or is in it with a different
-    unit — is refused, which is the deterministic fabrication guard.
+    unit, or a different multiplier than the value carried — is refused, which is the
+    deterministic fabrication guard. A value that carries its own symbol or multiplier ("$30K")
+    is split first (``split_value``).
 
     Args:
-        value: The number as written, e.g. ``"38.2"`` or ``"30,000"``.
+        value: The number as written, e.g. ``"38.2"``, ``"30,000"`` or ``"$30K"``.
         unit: ``$``/``€``/``£``, ``%``, ``x``, a unit word such as ``hours``, or ''.
         sentence: The source sentence.
 
     Returns:
         The display string, or None.
     """
-    value = str(value or "").strip()
-    unit = str(unit or "").strip()
+    value, unit, mult = split_value(value, unit)
     sentence = _norm(sentence)
     if not _VALUE.fullmatch(value) or not sentence:
         return None
     v = re.escape(value)
+
+    def same_mult(written: str) -> bool:
+        return not mult or written.strip().lower() == mult.lower()
+
     if unit in CURRENCIES:
         match = re.search(rf"{re.escape(unit)}\s?{v}{_NUM_END}({_MULT})", sentence)
-        return f"{unit}{value}{match.group(1).strip()}" if match else None
+        if not match or not same_mult(match.group(1)):
+            return None
+        return f"{unit}{value}{match.group(1).strip()}"
+    if mult and (unit in ("%", "x", "×") or unit.lower() == "times"):
+        return None  # "30K%" is not a figure any sentence writes
     if unit == "%":
         match = re.search(rf"{_NUM_START}{v}{_NUM_END}\s?(?:%|percent\b|per cent\b)", sentence,
                           re.IGNORECASE)
@@ -219,7 +268,14 @@ def verbatim_figure(value: Any, unit: Any, sentence: Any) -> Optional[str]:
             return None
         match = re.search(rf"(?<![\d.,$€£]){v}{_NUM_END}({_MULT})\s?-?\s?"
                           rf"({re.escape(_root(unit.lower()))}[a-z]*)", sentence, re.IGNORECASE)
-        return f"{value}{match.group(1).strip()} {match.group(2)}" if match else None
+        if not match or not same_mult(match.group(1)):
+            return None
+        return f"{value}{match.group(1).strip()} {match.group(2)}"
+    if mult:
+        match = re.search(rf"(?<![\d.,$€£]){v}{_NUM_END}({_MULT})", sentence)
+        if not match or not match.group(1).strip() or not same_mult(match.group(1)):
+            return None
+        return f"{value}{match.group(1).strip()}"
     match = re.search(rf"(?<![\d.,$€£]){v}{_NUM_END}(?!\s?(?:%|percent))", sentence,
                       re.IGNORECASE)
     return value if match else None
@@ -296,6 +352,8 @@ def validate_fact(raw: Any, source: str) -> tuple[Optional[dict], str]:
     display = verbatim_figure(value, unit, sentence)
     if not display:
         return None, f"{value}{unit} is not in its source sentence"
+    # The unit a value carried itself ("$30K") is its unit for like-with-like comparison.
+    unit = split_value(value, unit)[1]
     if not label_grounded(label, sentence):
         return None, f"label {label!r} is not grounded in its source sentence"
     amount = _amount(display)
@@ -340,6 +398,39 @@ def _is_cost_kind(kind: str) -> bool:
                                             any(kind[5:].startswith(w[:4]) for w in _TIME_WORDS))
 
 
+# Where a long step may be cut: a clause break, then a coordinating "and"/"so"/"then".
+_STEP_BREAKS = (re.compile(r"\s*(?:[,;:(]|\s-\s|\s—\s)\s*"),
+                re.compile(r"\s+(?:and|so|then|which|because)\s+", re.IGNORECASE))
+
+
+def fit_step(text: str, sentence: str) -> str:
+    """A checklist step that fits ``_STEP_MAX_WORDS`` and traces to ``sentence``, or ``""``.
+
+    #2241 showcase: every step of "Let AI handle the grunt work of research, outlining and basic
+    editing" shape was refused for its LENGTH, so an edition with four real steps drew no
+    checklist. A step over the cap is cut at its clause breaks (then a coordinating word) and the
+    FIRST clause of 2-8 words is kept. The kept clause is a run of the step's own words, so it
+    traces to the sentence exactly as the whole would — nothing is reworded, nothing added.
+
+    Args:
+        text: Stage 1's step.
+        sentence: Its source sentence.
+
+    Returns:
+        The step (possibly shortened), or ``""`` when no grounded 2-8 word clause exists.
+    """
+    text = _norm(text).strip(" .")
+    candidates = [text]
+    for pattern in _STEP_BREAKS:
+        for head in list(candidates):
+            candidates.extend(part.strip(" .") for part in pattern.split(head) if part.strip())
+    for candidate in candidates:
+        words = candidate.split()
+        if 2 <= len(words) <= _STEP_MAX_WORDS and label_grounded(candidate, sentence):
+            return candidate
+    return ""
+
+
 def validate_graphic_facts(raw: Any, source: str) -> dict:
     """Stage 1's ``graphic_facts`` reduced to what may be drawn — every item verbatim-checked.
 
@@ -362,7 +453,14 @@ def validate_graphic_facts(raw: Any, source: str) -> dict:
     stat, reason = validate_fact(raw.get("thesis_stat"), source) if raw.get("thesis_stat") \
         else (None, "")
     if stat:
-        out["stat"] = stat
+        # The context line under the hero must be a complete phrase, never the sentence with a
+        # hole where the figure was (#2241 data_card).
+        context = complete_context(stat["label"], stat["source_sentence"],
+                                   split_value(stat["value"], stat["unit"])[0])
+        if context and label_grounded(context, stat["source_sentence"]):
+            out["stat"] = dict(stat, label=context)
+        else:
+            rejected.append("thesis_stat: no complete context phrase in its sentence")
     elif reason:
         rejected.append(f"thesis_stat: {reason}")
 
@@ -414,9 +512,10 @@ def validate_graphic_facts(raw: Any, source: str) -> dict:
     for item in (raw.get("steps") if isinstance(raw.get("steps"), list) else []):
         text = _norm(item.get("text") if isinstance(item, dict) else "").strip(" .")
         sentence = _norm(item.get("source_sentence") if isinstance(item, dict) else "")
-        if (sentence_in_source(sentence, source) and 2 <= len(text.split()) <= _STEP_MAX_WORDS
-                and label_grounded(text, sentence)
-                and text.lower() not in (s["text"].lower() for s in steps)):
+        fitted = fit_step(text, sentence) if sentence_in_source(sentence, source) else ""
+        if fitted:
+            text = fitted
+        if (fitted and text.lower() not in (s["text"].lower() for s in steps)):
             steps.append({"text": text[:1].upper() + text[1:], "source_sentence": sentence})
         elif text:
             rejected.append(f"step {text[:40]!r} is not grounded")
@@ -567,6 +666,9 @@ class _Canvas:
         self.frame = frame
         self.offset = offset
         self.placements: list[Placement] = []
+        # A carousel slide element sits under the slide's own text, which IS its source: no
+        # "From the article" line (``render_slide_graphic``).
+        self.no_source = False
 
     def floor(self, fraction: float) -> int:
         return max(10, round(self.basis * fraction))
@@ -624,6 +726,8 @@ def _safe(c: _Canvas) -> tuple:
 def _source_line(c: _Canvas, text: str, safe: tuple, pal: _Palette) -> int:
     """Draw the source line at the safe area's bottom; returns its top y."""
     left, _, right, bottom = safe
+    if c.no_source:
+        return bottom
     fitted = _fit_block(c.draw, text, right - left, c.h, 1, c.floor(_SOURCE_MAX),
                         c.floor(SOURCE_MIN))
     if fitted is None and text != FROM_THE_ARTICLE:
@@ -1079,6 +1183,70 @@ _DRAWERS = {STAT_CARD: _draw_stat_card, HIGHLIGHT_CHART: _draw_highlight_chart,
             CHECKLIST: _draw_checklist}
 
 
+_HOOK_FIGURE = re.compile(r"[$€£]?\d[\d,]*(?:\.\d+)?\s?(?:[KkMmBb]n?(?![A-Za-z])|thousand\b|"
+                          r"million\b|billion\b)?%?")
+
+
+def hook_repeats_figure(hook: Optional[str], fact: dict) -> bool:
+    """Does the headline state the same amount the stat card draws as its hero?
+
+    Compared by AMOUNT, so "$12K" in the hook repeats a hero of "$12,000".
+
+    Args:
+        hook: The headline.
+        fact: The stat card's drawn fact (``amount`` or ``display``).
+
+    Returns:
+        True when any figure in ``hook`` equals the fact's amount.
+    """
+    amount = fact.get("amount")
+    if amount is None:
+        amount = _amount(str(fact.get("display") or ""))
+    if amount is None:
+        return False
+    return any(_amount(m.group(0)) == amount for m in _HOOK_FIGURE.finditer(hook or ""))
+
+
+_DANGLING = frozenset({"by", "to", "of", "for", "with", "in", "on", "at", "from", "the", "a",
+                       "an", "and", "or", "than", "about", "around", "nearly", "over", "under"})
+
+
+def complete_context(label: str, sentence: str, value: str) -> str:
+    """The stat card's context line as a COMPLETE phrase of ``sentence``, or ``""``.
+
+    #2241 data_card: Stage 1's label "Our routing change saved in model costs" is every word of
+    its sentence with the figure cut out — a sentence with a hole. A label is kept only when it is
+    a contiguous run of the sentence's own words that does not carry the figure; otherwise the
+    words that FOLLOW the figure ("in model costs") are the line. Nothing is reworded.
+
+    Args:
+        label: Stage 1's label.
+        sentence: The fact's source sentence.
+        value: The figure's number as written in the sentence.
+
+    Returns:
+        The context line, or ``""`` when no complete phrase of 2+ words exists.
+    """
+    def words(text: str) -> list[str]:
+        return re.findall(r"[a-z0-9$€£%'.,\-]+", _norm(text).lower().replace(",", ""))
+
+    want, have = [w.strip(".") for w in words(label)], [w.strip(".") for w in words(sentence)]
+    digits = re.sub(r"[^\d.]", "", str(value))
+    contiguous = bool(want) and any(have[i:i + len(want)] == want
+                                    for i in range(len(have) - len(want) + 1))
+    # "cut AI costs by" under a hero is contiguous but still dangles — its object was the figure.
+    dangling = bool(want) and want[-1] in _DANGLING
+    if contiguous and not dangling and not (digits and any(digits in w for w in want)):
+        return label
+    norm = _norm(sentence)
+    at = norm.find(str(value))
+    if at < 0:
+        return ""
+    tail = re.match(r"\s?(?:[KkMmBb]n?(?![A-Za-z])|%|x(?![A-Za-z])|percent\b|thousand\b|"
+                    r"million\b|billion\b)?", norm[at + len(str(value)):])
+    return _label_after(norm, at + len(str(value)) + (tail.end() if tail else 0))
+
+
 def render_graphic(archetype: str, graphic: dict, *, surface: str, hook: str,
                    kicker: str = "", signature: str = "", brand: Optional[BrandStyle] = None,
                    layout: Optional[str] = None, out_path: Optional[str] = None,
@@ -1113,6 +1281,10 @@ def render_graphic(archetype: str, graphic: dict, *, surface: str, hook: str,
     if not (hook or "").strip():
         raise GraphicError("a code-drawn graphic needs a headline")
     facts = assert_traceable(archetype, graphic)
+    if archetype == STAT_CARD and hook_repeats_figure(hook, facts[0]):
+        # #2241 data_card: "Our routing change saved $12,000" in the panel, then "$12,000" as the
+        # hero beside it. The stat card IS the claim; its panel keeps the kicker and byline only.
+        hook = ""
     brand = brand or BrandStyle()
     size = GRAPHIC_CANVAS.get(surface, GRAPHIC_CANVAS["newsletter"])
     layout = layout if layout in SPLIT_LAYOUTS else DEFAULT_LAYOUT.get(surface, LAYOUTS[0])
@@ -1144,4 +1316,193 @@ def render_graphic(archetype: str, graphic: dict, *, surface: str, hook: str,
     traced = tuple({k: v for k, v in fact.items() if k not in ("amount", "kind")}
                    for fact in facts)
     return GraphicRender(path=path, archetype=archetype, facts=traced,
+                         placements=tuple(region.placements), canvas=size)
+
+
+# ---------------------------------------------------------------------------------------------
+# Carousel slide elements (#2241 showcase): the slide's OWN figures, drawn — never stock.
+# ---------------------------------------------------------------------------------------------
+# Deck slides used to carry a random Pexels photo (a hand on a button, a keyboard with a ZOOM logo)
+# chosen by keyword. A body slide that states a figure, a from→to change or a short checklist now
+# gets that drawn by the same drawers and the same fact rules as a cover graphic; the slide's own
+# text is the source. Everything else is a typographic slide.
+
+_SLIDE_SENTENCE = re.compile(r"(?<=[.!?])\s+|\n+")
+_SLIDE_FIGURES = (
+    ("$", re.compile(r"([$€£])\s?(\d[\d,]*(?:\.\d+)?)(?:\s?(?:[KkMmBb]n?(?![A-Za-z])|thousand\b|"
+                     r"million\b|billion\b))?")),
+    ("%", re.compile(r"(?<![\d.,])(\d[\d,]*(?:\.\d+)?)\s?(?:%|percent\b)", re.IGNORECASE)),
+    ("x", re.compile(r"(?<![\d.,])(\d+(?:\.\d+)?)x(?![A-Za-z])", re.IGNORECASE)),
+    ("", re.compile(r"(?<![\d.,$€£\w#])(\d[\d,]*)(?![\d.,%]|\w|\s?(?:x|percent)\b)",
+                    re.IGNORECASE)),
+)
+_MONTHS = ("january", "february", "march", "april", "may", "june", "july", "august",
+           "september", "october", "november", "december", "jan", "feb", "mar", "apr", "jun",
+           "jul", "aug", "sep", "sept", "oct", "nov", "dec")
+# A plain count needs to be a quantity worth a hero numeral: not a year, a date or a step number.
+_MIN_COUNT = 10
+_LABEL_BREAK = re.compile(r"[,;:.!?()]|\s-\s|\s—\s|"
+                          r"\s(?:to|but|while|because|which|so|after|before|when|since|once)\s",
+                          re.IGNORECASE)
+_POINT_MARKER = re.compile(r"^\s*(?:[-*•+]|->|\d+[.)])\s*")
+SLIDE_BAND_H = {"stat_card": 360, "before_after": 360, "checklist": 520}
+
+
+def _label_after(sentence: str, end: int) -> str:
+    """The words right after a figure, up to a clause break and at most 8 words; ``""`` if < 2.
+
+    The context line under a hero figure: "45% | less engagement than human-written content",
+    "$30K | per quarter". Words that FOLLOW the figure keep the line a complete phrase; words that
+    precede it would leave a hole where the figure was ("We saved per quarter").
+    """
+    tail = _LABEL_BREAK.split(sentence[end:], maxsplit=1)[0]
+    words = tail.split()[:_LABEL_MAX_WORDS]
+    while words and words[-1].lower() in ("the", "a", "an", "and", "or", "of", "to", "in",
+                                          "for", "with", "on", "at", "by"):
+        words.pop()
+    return " ".join(words) if len(words) >= 2 else ""
+
+
+def _slide_figures(sentence: str) -> list[dict]:
+    """Every figure in one slide sentence as a raw ``{label, value, unit, source_sentence}``."""
+    found: list[dict] = []
+    taken: list[tuple[int, int]] = []
+    for unit, pattern in _SLIDE_FIGURES:
+        for match in pattern.finditer(sentence):
+            span = match.span()
+            if any(a < span[1] and span[0] < b for a, b in taken):
+                continue
+            if unit == "$":
+                value, fig_unit = match.group(2), match.group(1)
+            else:
+                value, fig_unit = match.group(1), unit
+            if unit == "":
+                before = re.findall(r"[A-Za-z]+", sentence[:span[0]])
+                number = float(value.replace(",", ""))
+                if (number < _MIN_COUNT or re.fullmatch(r"(?:19|20)\d\d", value)
+                        or (before and before[-1].lower() in _MONTHS + ("step", "no", "part"))):
+                    continue
+            taken.append(span)
+            found.append({"value": value, "unit": fig_unit, "start": span[0], "end": span[1],
+                          "label": _label_after(sentence, span[1]),
+                          "source_sentence": sentence})
+    return sorted(found, key=lambda f: f["start"])
+
+
+def _slide_points(body: str) -> list[str]:
+    """The body's points when it is written as a list — one per line, markers stripped."""
+    lines = [line.strip() for line in (body or "").split("\n") if line.strip()]
+    return [_POINT_MARKER.sub("", line).strip(" .") for line in lines]
+
+
+def slide_graphic(title: Optional[str], body: Optional[str]) -> Optional[tuple[str, dict]]:
+    """The code-drawn element one carousel body slide earns from its OWN text, or None.
+
+    Deterministic and in priority order:
+
+    1. ``checklist`` — the body is 3-5 points, each 2-8 words as written (never shortened: the
+       checklist REPLACES the body text, so a cut would lose words).
+    2. ``before_after`` — one sentence says "from <figure> … to <figure>" in the same unit.
+    3. ``stat_card`` — the first figure followed by a 2-8 word context phrase.
+
+    Every item goes through ``validate_graphic_facts`` with the slide text as the source — the
+    same sentence, figure and label rules a cover graphic obeys — so nothing is drawn that the
+    slide does not say verbatim.
+
+    Args:
+        title: The slide title.
+        body: The slide body.
+
+    Returns:
+        ``(archetype, graphic)`` ready for ``render_slide_graphic``, or None for a typographic
+        slide.
+    """
+    source = "\n".join(t for t in (title, body) if t)
+    if not source.strip():
+        return None
+    points = _slide_points(body or "")
+    if MIN_STEPS <= len(points) <= MAX_STEPS and all(
+            2 <= len(p.split()) <= _STEP_MAX_WORDS for p in points):
+        graphic = validate_graphic_facts(
+            {"steps": [{"text": p, "source_sentence": p} for p in points]}, source)
+        if graphic.get("steps") and len(graphic["steps"]) == len(points):
+            return CHECKLIST, graphic
+    sentences = [s.strip() for s in _SLIDE_SENTENCE.split(_norm(body or "")) if s.strip()]
+    for sentence in sentences:
+        figures = _slide_figures(sentence)
+        pair = _from_to(sentence, figures)
+        if pair:
+            graphic = validate_graphic_facts({"before_after": pair}, source)
+            if graphic.get("before_after"):
+                return BEFORE_AFTER, graphic
+    for sentence in sentences:
+        for figure in _slide_figures(sentence):
+            if not figure["label"]:
+                continue
+            raw = {k: figure[k] for k in ("label", "value", "unit", "source_sentence")}
+            graphic = validate_graphic_facts({"thesis_stat": raw}, source)
+            if graphic.get("stat"):
+                return STAT_CARD, graphic
+    return None
+
+
+def _from_to(sentence: str, figures: list[dict]) -> Optional[dict]:
+    """A ``before_after`` pair when ``sentence`` reads "from <A> … to <B>" in one unit."""
+    for first, second in zip(figures, figures[1:]):
+        if first["unit"] != second["unit"]:
+            continue
+        lead = sentence[:first["start"]].rstrip()
+        between = sentence[first["end"]:second["start"]]
+        if not re.search(r"\bfrom$", lead, re.IGNORECASE) or not re.search(
+                r"\bto\s*$", between, re.IGNORECASE):
+            continue
+        # Each half's own phrase ("a month"), else the measure the sentence names before "from"
+        # ("Monthly AI spend fell") — both are runs of the sentence's words, never a rewrite.
+        measure = " ".join(re.sub(r"\bfrom$", "", lead, flags=re.IGNORECASE).split()[-6:])
+        labels = [f["label"] or measure for f in (first, second)]
+        if any(len(label.split()) < 2 for label in labels):
+            continue
+        return {k: {"label": label, "value": f["value"], "unit": f["unit"],
+                    "source_sentence": sentence}
+                for k, f, label in (("before", first, labels[0]), ("after", second, labels[1]))}
+    return None
+
+
+def render_slide_graphic(archetype: str, graphic: dict, *, size: tuple[int, int],
+                         brand: Optional[BrandStyle] = None,
+                         out_path: Optional[str] = None) -> GraphicRender:
+    """Draw one slide element at exactly ``size`` — no headline panel, no source line. $0.
+
+    The same drawers, palette and legibility floors as ``render_graphic``, and the same
+    ``assert_traceable`` re-check immediately before drawing.
+
+    Args:
+        archetype: ``stat_card``, ``before_after`` or ``checklist`` (any code-drawn archetype).
+        graphic: ``slide_graphic``'s validated data.
+        size: The band the slide reserves, ``(width, height)``.
+        brand: The deck's colours; the reference brand by default.
+        out_path: Where to write; a temp file by default.
+
+    Returns:
+        The render, its drawn facts and every placement.
+
+    Raises:
+        UngroundedFactError: A string does not trace to its sentence.
+        GraphicLayoutError: The data cannot be set legibly in ``size``.
+        GraphicError: Not a code-drawn archetype.
+    """
+    if archetype not in _DRAWERS:
+        raise GraphicError(f"{archetype!r} is not a code-drawn archetype")
+    facts = assert_traceable(archetype, graphic)
+    pal = _palette(brand or BrandStyle())
+    region = _Canvas(size, pal.soft, size[0])
+    region.no_source = True
+    _DRAWERS[archetype](region, graphic, pal)
+    if out_path is None:
+        handle, out_path = tempfile.mkstemp(suffix=".png", prefix=f"lem_slide_{archetype}_")
+        os.close(handle)
+    region.image.convert("RGB").save(out_path, "PNG")
+    traced = tuple({k: v for k, v in fact.items() if k not in ("amount", "kind")}
+                   for fact in facts)
+    return GraphicRender(path=out_path, archetype=archetype, facts=traced,
                          placements=tuple(region.placements), canvas=size)

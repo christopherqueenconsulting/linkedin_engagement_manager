@@ -265,6 +265,194 @@ def describe_for_prompt(kit: Optional[BrandKit]) -> str:
     return text[0].upper() + text[1:] + "."
 
 
+# ── The deck theme: every carousel template is skinned from this ─────────────────────────────
+# Decks used to ship a navy/blue/green template palette in a system font, whatever the brand
+# (#2241 showcase). A template now keeps only its LAYOUT; every colour comes from here.
+# The neutral default is a kit-less author's deck: the same charcoal/off-white grounds with slate
+# accents, so no unbranded deck borrows another author's gold.
+NEUTRAL_DARK = "#1f1f1f"
+NEUTRAL_LIGHT = "#f7f5ef"
+NEUTRAL_ACCENT = "#94a3b8"
+NEUTRAL_ACCENT_DEEP = "#475569"
+# WCAG 2.x AA for body-size text.
+MIN_TEXT_CONTRAST = 4.5
+
+
+def hex_to_rgb(hex_value: str) -> tuple[int, int, int]:
+    """``#rrggbb`` → ``(r, g, b)``.
+
+    Args:
+        hex_value: A colour accepted by ``normalize_hex``.
+
+    Returns:
+        The channels.
+
+    Raises:
+        ValueError: The value is not a six-digit hex colour.
+    """
+    norm = normalize_hex(hex_value)
+    if not norm:
+        raise ValueError(f"not a hex colour: {hex_value!r}")
+    return int(norm[1:3], 16), int(norm[3:5], 16), int(norm[5:7], 16)
+
+
+def _luminance(rgb: tuple[int, int, int]) -> float:
+    def channel(c: int) -> float:
+        s = c / 255
+        return s / 12.92 if s <= 0.03928 else ((s + 0.055) / 1.055) ** 2.4
+    r, g, b = (channel(c) for c in rgb)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def contrast_ratio(fg: tuple[int, int, int], bg: tuple[int, int, int]) -> float:
+    """The WCAG contrast ratio of two colours, 1.0 (none) to 21.0 (black on white).
+
+    Args:
+        fg: Foreground RGB.
+        bg: Background RGB.
+
+    Returns:
+        The ratio.
+    """
+    hi, lo = sorted((_luminance(fg), _luminance(bg)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def mix(a: tuple[int, int, int], b: tuple[int, int, int], t: float) -> tuple[int, int, int]:
+    """``a`` moved a fraction ``t`` of the way to ``b``.
+
+    Args:
+        a: Start RGB.
+        b: End RGB.
+        t: 0 keeps ``a``, 1 is ``b``.
+
+    Returns:
+        The blended RGB.
+    """
+    return tuple(round(x + (y - x) * t) for x, y in zip(a, b))
+
+
+def readable_on(fg: tuple[int, int, int], bg: tuple[int, int, int],
+                inks: tuple[tuple[int, int, int], ...],
+                minimum: float = MIN_TEXT_CONTRAST) -> tuple[int, int, int]:
+    """``fg`` when it already reads on ``bg``; else ``fg`` pushed toward the better ink until it does.
+
+    Deterministic: ten steps of 10% toward whichever of ``inks`` contrasts more with ``bg``, and
+    that ink itself when nothing short of it passes. A brand colour is kept wherever it is legible.
+
+    Args:
+        fg: The wanted text colour.
+        bg: What it is drawn on.
+        inks: The theme's dark and light inks.
+        minimum: The contrast floor.
+
+    Returns:
+        A colour with at least ``minimum`` contrast on ``bg`` (or the best ink, if none reaches it).
+    """
+    if contrast_ratio(fg, bg) >= minimum:
+        return fg
+    ink = max(inks, key=lambda i: contrast_ratio(i, bg))
+    for step in range(1, 11):
+        candidate = mix(fg, ink, step / 10)
+        if contrast_ratio(candidate, bg) >= minimum:
+            return candidate
+    return ink
+
+
+@dataclass(frozen=True)
+class DeckTheme:
+    """The colours and type every carousel template is skinned with.
+
+    Attributes:
+        dark: The dark ground (cover/CTA backgrounds, bars), RGB.
+        light: The light ground (content slides), RGB.
+        accent: The bright accent — light gold for the reference brand — RGB.
+        accent_deep: The deep accent — dark gold — RGB.
+        ink_dark: Text on a light ground, RGB.
+        ink_light: Text on a dark ground, RGB.
+        branded: Whether the colours came from a saved kit (False = the neutral default).
+    """
+
+    dark: tuple
+    light: tuple
+    accent: tuple
+    accent_deep: tuple
+    ink_dark: tuple
+    ink_light: tuple
+    branded: bool = False
+
+    @property
+    def inks(self) -> tuple:
+        """The two inks text may fall back to."""
+        return self.ink_dark, self.ink_light
+
+    def ink_on(self, bg: tuple) -> tuple:
+        """Whichever ink reads better on ``bg``.
+
+        Args:
+            bg: The fill text sits on.
+
+        Returns:
+            ``ink_dark`` or ``ink_light``.
+        """
+        return max(self.inks, key=lambda ink: contrast_ratio(ink, bg))
+
+
+def deck_theme(kit: Optional[BrandKit]) -> DeckTheme:
+    """The deck theme for a kit — the neutral default for None or an empty kit.
+
+    The kit's primary is the bright accent and its secondary (else its accent) the deep one; its
+    neutrals are the grounds. A kit missing a field takes the neutral default's for that field.
+    Inks are the grounds themselves, so body text is charcoal on off-white and off-white on
+    charcoal for the reference brand.
+
+    Args:
+        kit: The parsed kit, or None.
+
+    Returns:
+        The theme.
+    """
+    has_kit = kit is not None and any(getattr(kit, f) for f in COLOR_FIELDS)
+
+    def pick(value: Optional[str], default: str) -> tuple[int, int, int]:
+        return hex_to_rgb(value or default)
+
+    dark = pick(kit.neutral_dark_hex if has_kit else None, NEUTRAL_DARK)
+    light = pick(kit.neutral_light_hex if has_kit else None, NEUTRAL_LIGHT)
+    if has_kit and (kit.primary_hex or kit.accent_hex):
+        accent = hex_to_rgb(kit.primary_hex or kit.accent_hex)
+        deep_hex = kit.secondary_hex or (kit.accent_hex if kit.primary_hex else None)
+        accent_deep = hex_to_rgb(deep_hex) if deep_hex else mix(accent, dark, 0.35)
+    else:
+        accent, accent_deep = hex_to_rgb(NEUTRAL_ACCENT), hex_to_rgb(NEUTRAL_ACCENT_DEEP)
+    if contrast_ratio(dark, light) < MIN_TEXT_CONTRAST:
+        # A kit whose two neutrals do not contrast cannot carry text either way round.
+        dark, light = hex_to_rgb(NEUTRAL_DARK), hex_to_rgb(NEUTRAL_LIGHT)
+    return DeckTheme(dark=dark, light=light, accent=accent, accent_deep=accent_deep,
+                     ink_dark=dark, ink_light=light, branded=has_kit)
+
+
+def brand_kit_for_user(user_id: Optional[int]) -> Optional[BrandKit]:
+    """The user's parsed kit, or None. Never raises — a missing kit is the common case (DEBUG).
+
+    Args:
+        user_id: The author; None for a surface with no user.
+
+    Returns:
+        The kit, or None when there is no user, no kit, or it cannot be read.
+    """
+    if not user_id:
+        return None
+    try:
+        from cqc_lem.utilities.db import get_brand_kit
+        return parse_brand_kit(get_brand_kit(user_id))
+    except Exception as e:
+        from cqc_lem.utilities.logger import log_debug
+        log_debug("Brand kit unreadable — theming the deck on the neutral default",
+                  error=str(e), user_id=user_id, action_type="brand_kit")
+        return None
+
+
 def brand_clause_for_user(user_id: Optional[int]) -> str:
     """The ONE resolver from a user to the brand clause every image brief carries. Never raises.
 
