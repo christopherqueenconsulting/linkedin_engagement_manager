@@ -748,9 +748,10 @@ def anchor_rejection(anchor: str, facts: Sequence[str], source: Optional[str] = 
 
 def _prop_reason(anchor: str) -> str:
     """Why an anchor is a prop the brief would refuse to draw (round 8), or ''."""
-    from cqc_lem.utilities.ai.image_brief import prop_failure
+    from cqc_lem.utilities.ai.image_brief import prop_failure, tech_hardware
 
-    return prop_failure(anchor) or ""
+    hardware = tech_hardware(anchor)
+    return prop_failure(anchor) or (f"names tech hardware ({hardware!r})" if hardware else "")
 
 
 def _ground_anchors(raw: Any, source: str, facts: Sequence[str]) -> tuple[str, ...]:

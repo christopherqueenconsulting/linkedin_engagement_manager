@@ -434,6 +434,28 @@ def cover_paper_rule(concept: Optional[ImageConcept] = None) -> str:
     return PAPER_FORBID
 
 
+# Round 11 (#2241): an anchor naming tech hardware ("smaller model server") is filtered before
+# it can reach a brief — the renderer draws racks, cables and code for it even unprompted.
+TECH_HARDWARE = ("laptop", "computer", "monitor", "screen", "keyboard", "server", "rack", "cable",
+                 "data center", "data centre", "terminal", "code")
+_TECH_HARDWARE = re.compile(
+    r"\b(?:" + "|".join(re.escape(t).replace(r"\ ", r"\s+") for t in TECH_HARDWARE)
+    + r")(?:s|es)?\b", re.IGNORECASE)
+
+
+def tech_hardware(text: Optional[str]) -> Optional[str]:
+    """The first ``TECH_HARDWARE`` word in ``text``, or None.
+
+    Args:
+        text: An anchor or idea.
+
+    Returns:
+        The word as written.
+    """
+    hit = _TECH_HARDWARE.search(text or "")
+    return hit.group(0) if hit else None
+
+
 def prop_failure(text: Optional[str]) -> Optional[str]:
     """Why ``text`` names a prop that renders legible marks, or None.
 
@@ -843,7 +865,7 @@ def usable_anchors(concept: Optional[ImageConcept]) -> list[str]:
     anchors = concept.visual_anchors or tuple(
         e for e in concept.specific_entities if not is_fact_only(e))
     return [a for a in anchors if not cliche_hit(a) and not name_tokens(a)
-            and not prop_failure(a)]
+            and not prop_failure(a) and not tech_hardware(a)]
 
 
 def fact_name_tokens(concept: Optional[ImageConcept]) -> set[str]:

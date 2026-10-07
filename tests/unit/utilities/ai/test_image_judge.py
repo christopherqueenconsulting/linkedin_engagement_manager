@@ -724,3 +724,72 @@ class TestRoundTenVideoCaption:
         assert _headline_line("Who buys?", "newsletter") == (
             'The cover\'s headline (typeset onto it by the system): "Who buys?"')
         assert "none — judge the image alone" in _headline_line(None, "video")
+
+
+# The exact r10/judged/001 blind description that failed text_accuracy on its own negative.
+_R10_001_BLIND = ('The main subject is a man with glasses sitting at a table with three other '
+                  'people, smiling at the camera. The setting appears to be a casual meeting or '
+                  'collaborative workspace, with a mug visible on the table. Visible text: - '
+                  '"There is no visible text."')
+
+
+@pytest.mark.unit
+class TestRoundElevenJudge:
+    def test_the_judge_quoting_its_own_negative_is_not_stray_text(self):
+        from cqc_lem.utilities.ai.image_gen import stray_texts
+        assert stray_texts(_R10_001_BLIND) == []
+
+    @pytest.mark.parametrize("negative", ["There is no visible text.", "no visible text", "None",
+                                          "No text visible", "There is no text",
+                                          "Visible text: none", "No text is visible in the image"])
+    def test_negative_statements_are_never_stray(self, negative):
+        from cqc_lem.utilities.ai.image_gen import stray_texts
+        assert stray_texts(f'A man at a table. Visible text: "{negative}"') == []
+
+    @pytest.mark.parametrize("real", ["OPEN LATE", "No entry", "None of the above"])
+    def test_real_text_is_still_stray(self, real):
+        from cqc_lem.utilities.ai.image_gen import stray_texts
+        assert stray_texts(f'A door with a sign: "{real}".') == [real]
+
+    def test_r10_001_passes_text_accuracy(self, tmp_path):
+        verdict, _ = _judge(tmp_path, blind=_R10_001_BLIND)
+        assert verdict.rubric["text_accuracy"] is None
+        assert not any(i.startswith("stray text") for i in verdict.issues)
+
+    @pytest.mark.parametrize("backend", ["gpt-image", "flux"])
+    def test_every_render_states_the_no_tech_scene(self, backend):
+        from cqc_lem.utilities.ai.image_gen import with_no_marks
+        marked = with_no_marks("Two people talking in a warehouse aisle.", backend)
+        assert marked.endswith("The scene contains no computers, laptops, screens, servers, cables "
+                               "or code; people interact with each other in a real place.")
+
+    def test_the_no_tech_clause_never_summons_a_screen_clause(self):
+        from cqc_lem.utilities.ai.image_gen import with_no_marks
+        marked = with_no_marks("Two people talking in a warehouse aisle.", "flux")
+        assert marked.count("screens") == 2  # the blanket constraint + the no-tech clause only
+
+    def _video(self, tmp_path, specificity, hook_text=None, **rubric):
+        answer = _answer(rubric=dict(_GOOD_RUBRIC, specificity=specificity, **rubric))
+        verdict, _ = _judge_on(tmp_path, "video", answer, hook_text=hook_text)
+        return verdict
+
+    def test_an_uncaptioned_video_frame_passes_at_specificity_3(self, tmp_path):
+        assert self._video(tmp_path, 3).acceptable
+
+    def test_an_uncaptioned_video_frame_still_fails_at_2(self, tmp_path):
+        verdict = self._video(tmp_path, 2)
+        assert not verdict.acceptable and "specificity" in verdict.failing
+
+    def test_a_captioned_video_frame_keeps_the_floor_of_4(self, tmp_path):
+        verdict = self._video(tmp_path, 3, hook_text="Payroll eats first")
+        assert not verdict.acceptable and "specificity" in verdict.failing
+
+    @pytest.mark.parametrize("criterion,score", [("no_cliche", 4), ("craft", 3)])
+    def test_the_relaxed_floor_relaxes_nothing_else(self, tmp_path, criterion, score):
+        verdict = self._video(tmp_path, 3, **{criterion: score})
+        assert not verdict.acceptable and criterion in verdict.failing
+
+    def test_a_cover_keeps_specificity_4(self, tmp_path):
+        answer = _answer(rubric=dict(_GOOD_RUBRIC, specificity=3))
+        verdict, _ = _judge_on(tmp_path, "newsletter", answer)
+        assert not verdict.acceptable

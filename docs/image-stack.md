@@ -51,6 +51,26 @@ judge rightly scored specificity 1 on all four covers. So Stage 1 returns two li
   down. Briefs, Stage 3 and the vision judge's specificity all work from `usable_anchors()` — the
   anchors, or for a concept with none, its plain common-noun facts.
 
+## Negatives, inferred hardware, caption-less video (round 11)
+
+- **A quoted negative is not stray text.** The blind judge wrote `Visible text: - "There is no
+  visible text."` and the parser failed the render on it. `_no_text_seen` now recognises negative
+  statements ("no visible text", "there is no text", "none", "Visible text: none", "No text is
+  visible in the image"); real text ("No entry") still counts.
+- **Tech hardware is inferred, so it is refused twice.** No brief named a laptop, yet "AI routing"
+  and "smaller model servers" rendered laptops showing code, racks and cables. Anchors naming
+  `TECH_HARDWARE` (laptop, computer, monitor, screen, keyboard, server, rack, cable, data center,
+  terminal, code) are dropped at parse time and by `usable_anchors`, and EVERY render, on every
+  surface and backend, ends with `NO_TECH_CLAUSE`: "The scene contains no computers, laptops,
+  screens, servers, cables or code; people interact with each other in a real place." The cliché
+  checks are unchanged.
+- **A caption-less video frame passes specificity at 3.** With `VIDEO_CAPTIONS` off,
+  `burned_caption_text` is None and the frame is judged alone. The post text above the video
+  carries the thesis and a lone frame cannot, so at 4 every frame scored 2-3 and every video fell
+  back to Pexels stock — a regression from shipping Runway clips. With a caption headline the
+  floor stays 4; no_cliche (5), craft (4) and stray text are never relaxed. Turning
+  `VIDEO_CAPTIONS` on (sound-off viewing) restores the stricter floor.
+
 ## The render is only a photograph (round 10)
 
 - **Photo-only render prompts.** Told it was making "a LinkedIn newsletter cover" with "negative

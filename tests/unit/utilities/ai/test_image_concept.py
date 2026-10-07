@@ -836,3 +836,27 @@ class TestRoundTenHookAlways:
         prompts = [c[1]["messages"][1]["content"] for c in
                    client.chat.completions.create.call_args_list]
         assert not any("Every hook you offered" in p for p in prompts)
+
+
+@pytest.mark.unit
+class TestRoundElevenTechHardware:
+    @pytest.mark.parametrize("anchor", ["smaller model server", "a rack of GPUs",
+                                        "network cables", "a laptop showing code",
+                                        "the data center floor", "a terminal window"])
+    def test_tech_hardware_anchors_are_dropped(self, anchor):
+        from cqc_lem.utilities.ai.image_concept import _ground_anchors
+        source = f"The team met beside {anchor} on the ops floor with the ops lead."
+        anchors = _ground_anchors([anchor, "the ops lead"], source, ())
+        assert anchor not in anchors and "the ops lead" in anchors
+
+    def test_usable_anchors_filters_a_caller_concept_too(self):
+        from cqc_lem.utilities.ai.image_brief import usable_anchors
+        concept = ImageConcept(thesis="Smaller models win", audience="", specific_entities=(),
+                               emotional_beat="", hook_phrase="", treatment="people_scene",
+                               treatment_rationale="", weak=False,
+                               visual_anchors=("smaller model server", "an ops lead"))
+        assert usable_anchors(concept) == ["an ops lead"]
+
+    def test_the_cliche_checks_still_apply(self):
+        from cqc_lem.utilities.ai.image_brief import cliche_hit
+        assert cliche_hit("a server room")

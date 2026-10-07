@@ -65,11 +65,16 @@ _GENERATED_SUBDIR = os.path.join("images", "generated")
 # backends now refuse every label-carrying surface by name.
 _NO_LABELS = (" No captions, titles, posters, signage, name badges, lanyards with text, or labels "
               "of any kind.")
+# Round 11: no brief named a laptop, yet "AI routing" and "smaller model servers" rendered laptops
+# showing code, server racks and cables — the image model INFERS tech hardware from the topic.
+# So every render, on every surface and backend, states the scene positively and then explicitly.
+NO_TECH_CLAUSE = (" The scene contains no computers, laptops, screens, servers, cables or code; "
+                  "people interact with each other in a real place.")
 _NO_MARKS_GPT = (" Absolutely no text, letters, words, numbers, captions, watermarks, logos, "
                  "brand marks, app icons, social-media icons, charts, or UI elements anywhere "
-                 "in the image." + _NO_LABELS)
+                 "in the image." + _NO_LABELS + NO_TECH_CLAUSE)
 _NO_MARKS_FLUX = (" Every garment and surface is plain and unbranded, screens are blank, walls "
-                  "clean and unmarked." + _NO_LABELS)
+                  "clean and unmarked." + _NO_LABELS + NO_TECH_CLAUSE)
 
 # No render carries text — not even a headline (issue #2241, round 6): ``image_compose`` typesets
 # the hook onto the finished render, so this constraint holds on every surface without exception.
@@ -524,6 +529,12 @@ _RUBRIC_FLOORS = {"specificity": 4, "no_cliche": 5, "text_accuracy": 4, "craft":
 # Round 3 (#2241): four rejected covers were people at laptops with neutral faces, scroll_stop 3.
 # On the surfaces that have to stop a feed, 3 is a fail.
 _SCROLL_STOP_SURFACES = frozenset({"newsletter", "post_image"})
+# Round 11: a VIDEO frame with no caption headline (VIDEO_CAPTIONS off, so `burned_caption_text`
+# is None) passes specificity at 3. The post text above the video carries the thesis, and a lone
+# frame cannot: at 4 every caption-less frame scored 2-3 and every video fell back to Pexels
+# stock — a regression from shipping Runway clips. With a caption headline the floor stays 4;
+# no_cliche, craft and stray text are never relaxed.
+_UNCAPTIONED_VIDEO_SPECIFICITY_FLOOR = 3
 _SCROLL_STOP_FLOOR = 4
 _REQUIRED_SCORES = ("specificity", "no_cliche", "craft")
 # The surfaces whose headline ``image_compose`` typesets onto the render.
@@ -540,9 +551,18 @@ def _normalise_text(text: str) -> str:
     return " ".join(re.sub(r"[^a-z0-9 ]+", " ", (text or "").lower()).split())
 
 
+# Round 11 (#2241): the blind judge QUOTED its own negative — `Visible text: - "There is no visible
+# text."` — and the parser counted that sentence as stray text, failing a clean render.
+_NEGATIVE_TEXT = re.compile(
+    r"^(?:visible text )?(?:there (?:is|are) )?(?:no|none|nothing)"
+    r"(?: (?:visible|legible|readable|discernible))?(?: text| words| lettering| writing)?"
+    r"(?: (?:is )?(?:visible|present|shown|at all|in the image|anywhere))*$")
+
+
 def _no_text_seen(text: str) -> bool:
     normal = _normalise_text(text)
-    return not normal or normal in ("none", "no text", "no visible text", "n a", "na")
+    return (not normal or normal in ("none", "n a", "na", "visible text none")
+            or bool(_NEGATIVE_TEXT.match(normal)))
 
 
 # Text a blind description reports: every quoted string, plus whatever follows a text verb with
@@ -713,6 +733,8 @@ def _staged_inspect(image_path: str, concept: Any, hook_text: Optional[str],
     if surface in _SCROLL_STOP_SURFACES:
         floors["scroll_stop"] = _SCROLL_STOP_FLOOR
         floors["thumbnail_read"] = _SCROLL_STOP_FLOOR
+    if surface == "video" and not hook_text:
+        floors["specificity"] = _UNCAPTIONED_VIDEO_SPECIFICITY_FLOOR
     failing = [name for name, floor in floors.items()
                if rubric.get(name) is not None and rubric[name] < floor]
     issues = [f"{name} {rubric[name]}/5" for name in failing]
