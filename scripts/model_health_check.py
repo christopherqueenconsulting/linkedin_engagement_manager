@@ -55,6 +55,16 @@ Options:
   --tags-fixture PATH    With --catalog-apply, also rewrite that offline tags.json from the SAME
                          fetch the snapshot was written from, so the two can never drift apart.
   --no-usage-levels      Skip the per-model usage-level fetch (one page request per candidate).
+
+PROVIDER scan (issue #2251, logic in scripts/provider_model_scan.py) - OpenAI + Perplexity:
+  --provider-scan        Sunsets / newer-in-family / unlisted for configured non-Ollama models.
+  --provider-json        Emit ONLY the machine-readable provider plan (for the shell orchestrator).
+  --provider-apply       Write the scan to --provider-snapshot (committed; the registry reads it).
+  --file-provider-issues File (or append to) the provider issues the scan planned. Combine with
+                         --plan-file to file from a plan already emitted by --provider-json.
+  --provider-fixture DIR Read openai_models.json / deprecations.html / perplexity_models.json /
+                         litellm_map.json from DIR instead of the network.
+  --provider-snapshot P  Committed provider snapshot (default .litellm/provider_models_snapshot.json).
 Exit: 0 healthy/no-op, 2 swaps/actions planned or applied, 3 manual alert needed, 1 error.
 """
 from __future__ import annotations
@@ -1527,12 +1537,15 @@ def _issue_spec(plan: dict, kind: str) -> dict:
             "body": spec.get("body") or ""}
 
 
-def _file_issues(plan: dict, github: GitHubIssues) -> int:
+CATALOG_ISSUE_KINDS = (("upgrade", UPGRADE_TITLE_PREFIX), ("evaluation", EVAL_TITLE_PREFIX),
+                       ("repoint", REPOINT_TITLE_PREFIX), ("vanished", VANISHED_TITLE_PREFIX))
+
+
+def _file_issues(plan: dict, github: GitHubIssues, kinds: tuple = CATALOG_ISSUE_KINDS) -> int:
     """File/append the consolidated issues. Never raises: a GitHub failure leaves the work for next
     week rather than failing the weekly check."""
     filed = 0
-    for kind, prefix in (("upgrade", UPGRADE_TITLE_PREFIX), ("evaluation", EVAL_TITLE_PREFIX),
-                         ("repoint", REPOINT_TITLE_PREFIX), ("vanished", VANISHED_TITLE_PREFIX)):
+    for kind, prefix in kinds:
         spec = _issue_spec(plan, kind)
         if not spec["markers"]:
             continue
@@ -1558,6 +1571,44 @@ def _file_issues(plan: dict, github: GitHubIssues) -> int:
     return filed
 
 
+def _file_provider_issues(plan: dict, github: "GitHubIssues") -> int:
+    """File/append the provider-scan issues with the same dedup rule as the catalog issues."""
+    from provider_model_scan import PROVIDER_ISSUE_KINDS  # noqa: WPS433 - sibling script
+    return _file_issues(plan, github, kinds=PROVIDER_ISSUE_KINDS)
+
+
+def _provider_main(args: argparse.Namespace) -> int:
+    """`--provider-*` entry point. Exit 3 = a human should look now, 2 = findings, 0 = clean."""
+    import provider_model_scan as pms  # noqa: WPS433 - sibling script
+
+    if args.plan_file:
+        if args.provider_apply:
+            raise SystemExit("--plan-file cannot drive --provider-apply (re-scan instead)")
+        plan = json.loads(sys.stdin.read() if args.plan_file == "-" else _read_text(args.plan_file))
+    else:
+        deployments = parse_deployments(load_config_text(_read_text(args.config)))
+        previous = pms.load_provider_snapshot(
+            _read_text(args.provider_snapshot) if os.path.exists(args.provider_snapshot) else None)
+        plan = pms.scan(deployments, pms.gather_sources(args.provider_fixture),
+                        today=args.today or _today(), previous=previous)
+    if args.provider_json:
+        print(json.dumps(plan))
+    else:
+        pms.print_plan(plan, print)
+    if args.provider_apply and plan.get("snapshot_changed"):
+        with open(args.provider_snapshot, "w") as f:
+            f.write(pms.render_provider_snapshot(plan["snapshot"], plan["today"]))
+        print(f"provider snapshot refreshed -> {args.provider_snapshot}", file=sys.stderr)
+    if args.file_provider_issues:
+        _file_provider_issues(plan, GitHubIssues(args.repo))
+    if plan.get("alert"):
+        return 3
+    if plan.get("sunsets") or plan.get("upgrades") or plan.get("vanished") \
+            or plan.get("snapshot_changed"):
+        return 2
+    return 0
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", default=".litellm/config.yaml")
@@ -1577,7 +1628,16 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--tags-fixture", metavar="PATH", default=None)
     ap.add_argument("--no-usage-levels", action="store_true")
     ap.add_argument("--repo", default=DEFAULT_REPO)
+    ap.add_argument("--provider-scan", action="store_true")
+    ap.add_argument("--provider-json", action="store_true")
+    ap.add_argument("--provider-apply", action="store_true")
+    ap.add_argument("--file-provider-issues", action="store_true")
+    ap.add_argument("--provider-fixture", default=None)
+    ap.add_argument("--provider-snapshot", default=".litellm/provider_models_snapshot.json")
     args = ap.parse_args(argv)
+
+    if args.provider_scan or args.provider_json or args.provider_apply or args.file_provider_issues:
+        return _provider_main(args)
 
     if args.catalog_scan or args.catalog_json or args.catalog_apply or args.file_issues:
         if args.plan_file:

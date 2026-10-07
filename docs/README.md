@@ -95,7 +95,7 @@ index and the `CLAUDE.md` row that points at it, or the pointer becomes a dead e
 - ★ [Surveys](surveys.md) — NPS/CSAT as `api`-type PostHog surveys rendered headless
 - ★ [Content-quality telemetry](content-quality-telemetry.md) — the nightly trend line; unscored is never zero, and it gates nothing
 - ★ [Marketing attribution](marketing-attribution.md) — only owned destinations get UTMs; existing ones are never overwritten
-- ★ [Model-tier benchmarks](model-benchmarks/README.md) — the scoring suite, its contract floor, and how to read a scorecard
+- ★ [Model-tier benchmarks](model-benchmarks/README.md) — the scoring suite, its contract floor, and how to read a scorecard; since #2251 also the `lem-vision`/`lem-image` benchmark (spend-capped), the OpenAI/Perplexity provider scan, and the generated **model registry** (every tier: order, price, last verdict, sunset, newer candidate)
 - [Benchmark run — `bm-20260802-20ae40`](model-benchmarks/2026-08-02-bm-20260802-20ae40.md) — archived scorecard
 - [Benchmark run — `bm-20260802-5fff18`](model-benchmarks/2026-08-02-bm-20260802-5fff18.md) — archived scorecard
 - [Benchmark run — `bm-20260802-b84f19`](model-benchmarks/2026-08-02-bm-20260802-b84f19.md) — archived scorecard
