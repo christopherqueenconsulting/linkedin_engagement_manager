@@ -462,6 +462,50 @@ verified to answer `image/*`), recorded on the source (`update_curated_source_og
 is already preferred wherever the licence and figures allow one. With neither, the item is blocked
 as `link_no_preview_image` before any commentary is written (`docs/curated-sources.md`).
 
+## Showcase round 7 — every printed figure has provenance, batch-level variety
+
+The critic (`gauntlet/critic7/critic_scores.json`) found unsourced figures on images and identical
+layouts across the batch. The text half (the hook, decks, CTAs, curated posts) is in
+`docs/content-core.md`, "Every printed figure has provenance".
+
+**A printed figure is one the body vouches for** (`image_concept.apply_figure_provenance`, the last
+step of `analyze_content_for_image` on every surface). A figure on the headline, the title, or any
+drawn graphic section must appear in a body sentence backed by a story-bank fact (`facts`, read by
+`post_image.story_facts_for` for post images, covers and video concepts) or by a source the body
+names (`fact_consistency.figure_provenance`). Otherwise the headline is re-set as the thesis clause
+without it (else no headline), and the graphic section that draws it is dropped. The figures are
+recorded on the concept (`unsourced_figures`) so no fallback prints them: `last_resort_hook` takes
+the first sentence without one, `video_title_card.title_card_hook` the first caption candidate
+without one, and a cover's title fallback (`cover_headline`) goes numberless. A quote card never
+quotes a sentence carrying one, or the CTA (`post_treatment.quote_candidates`). A numberless result
+claim ("Error rates dropped sharply") fails `hook_rejection` (`vague_result_claim`).
+
+**A cover's figure carries its source.** When the edition body names the source of the figure the
+cover prints, the concept's `graphic.source_line` is that name. A stat card draws it; any other
+cover prints it beside the byline (`newsletter_cover.cited_byline`). A figure the body never
+sources gets a numberless headline.
+
+**Pairs, not single dimensions** (`post_treatment.fresh_pair`, `PAIR_WINDOW` 4). No identical
+`(layout, panel)` pair within the last four visuals of one surface family; the panel moves first.
+Post images pair the split layout with the panel. Title cards pair the layout with the ground,
+which used to be a hash of the post and now joins the rotation (`video_title_card.pick_card_style`;
+the history records both, and reads the bare-name entries written before). Decks pair the template
+with the cover treatment (`carousel_creator.deck_cover_chain`, `recent_deck_choices["template"]`).
+Each family reads its own receipts on disk, so it spans every surface that produces it: carousel and
+document decks share the deck receipts, post images and rhythm re-images share the post receipts.
+
+**Quote cards: one in four posts** (`QUOTE_CAP` 1 per `QUOTE_CAP_WINDOW` 4). **Covers: no third
+split in a row** (`image_concept.split_run_exceeded`, `COVER_SPLIT_RUN` 2): the next cover is
+`full_bleed`, its headline in the render's darkest third over a scrim. Covers still land
+`pending_review`.
+
+**Touching title lines.** slot_133's cover set "Honest AI" over "Planning" with no gap. Each line
+advanced by its own ink height, so a line with no descenders left the next one's ascenders a bare
+`spacing` below it. Every deck text line now advances at least `LINE_PITCH_MIN_EM` (1.0) of the font
+size (`carousel_creator.line_pitch`), and the fit measure (`_lines_height`) uses the same pitch.
+
+Tests: `test_provenance_r7.py`, `test_visual_variety_r7.py`.
+
 ## Post rhythm — treatments, panels, grades and the sameness gate (anti-monotony round)
 
 Every post image was the same composite — a photograph beside a charcoal type panel — so an

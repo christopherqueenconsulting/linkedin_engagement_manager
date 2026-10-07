@@ -15,6 +15,14 @@ The commentary must also NAME the source in its own words and carry a ``Source:`
 ``curated_sources.with_credit`` appends the line deterministically, so the credit never depends on
 the model remembering it.
 
+Showcase round 7: all four curated drafts ran one template ("For a small-business owner…", a
+3-step checklist, a closing "Which…?"), named product features the source never stated, and said
+"In practice" about a model nobody here had run. So the STRUCTURE and its close rotate
+(``CURATED_STRUCTURES``, least-recently-used against the author's recent curated posts); a named
+product or feature the source text does not contain is a fact-gate failure like an invented number
+(``unsourced_names``); and a first-hand testing claim is re-attributed to the source unless a
+story-bank fact backs it (``first_hand_claims``).
+
 Re-charted figures are read from the SOURCE text and validated by ``image_graphics`` exactly as a
 post image's figures are: each drawn string is the sentence's own substring, or it is not drawn.
 """
@@ -39,7 +47,7 @@ from cqc_lem.utilities.curated_sources import (
     has_credit,
     with_credit,
 )
-from cqc_lem.utilities.logger import log_info, log_warning
+from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 from cqc_lem.utilities.observability import FEATURE_CONTENT, llm_pipeline, llm_step
 
 # A reshare whose commentary is a one-liner is the "instant repost" failure mode the research warns
@@ -66,8 +74,230 @@ def _source_block(source: dict) -> str:
             f"<source_text>{excerpt}</source_text>")
 
 
+# --- Structure and close rotation (showcase round 7) ----------------------------------------------
+
+STRUCTURE_TAKEAWAY = "takeaway_contrarian"
+STRUCTURE_EXAMPLE = "single_example"
+STRUCTURE_PROS_CONS = "pros_cons"
+STRUCTURE_TEST_FIRST = "test_first"
+STRUCTURE_CHECKLIST = "checklist"  # the retired template, read off legacy posts only
+# key -> (shape directive, close directive). No shape is a numbered checklist, and no close is a
+# "Which…?" question.
+CURATED_STRUCTURES: dict = {
+    STRUCTURE_TAKEAWAY: (
+        "ONE takeaway from the source in plain words, then ONE point where you disagree, add a "
+        "caveat, or name what it leaves out. No list.",
+        "Close on your own position in one sentence. No question."),
+    STRUCTURE_EXAMPLE: (
+        "ONE concrete example of what this changes for your reader, walked through start to "
+        "finish: who, what they do today, what they would do with it. No list.",
+        "Close by telling the reader what to keep or save from this, in one sentence."),
+    STRUCTURE_PROS_CONS: (
+        "Weigh it: what it does well and what it costs or risks, a sentence or two each, as "
+        "prose. Not a numbered checklist.",
+        "Close with an open question about the trade-off that does NOT start with 'Which'."),
+    STRUCTURE_TEST_FIRST: (
+        "Say what you would test first and what result would change your mind. Attribute every "
+        "capability to the source; you have not tested it.",
+        "Close by asking readers what they would measure, in a question that does NOT start "
+        "with 'Which'."),
+}
+CURATED_STRUCTURE_ORDER = (STRUCTURE_TAKEAWAY, STRUCTURE_EXAMPLE, STRUCTURE_PROS_CONS,
+                           STRUCTURE_TEST_FIRST)
+# How many recent curated posts the rotation reads.
+CURATED_STRUCTURE_WINDOW = 4
+_LIST_LINE_RE = re.compile(r"^\s*(?:[-•*▪✓✔]|\d{1,2}[.)])\s+\S", re.MULTILINE)
+_STRUCTURE_SIGNS = (
+    (STRUCTURE_PROS_CONS, re.compile(r"\b(?:upside|downside|pros?|cons?|trade-?offs?|the catch)\b",
+                                     re.IGNORECASE)),
+    (STRUCTURE_TEST_FIRST, re.compile(r"\b(?:test(?:ed)? first|i'?d test|i would test|"
+                                      r"i'?d measure|change my mind)\b", re.IGNORECASE)),
+    (STRUCTURE_EXAMPLE, re.compile(r"\b(?:for example|picture (?:a|an|your)|imagine|say you|"
+                                   r"take (?:a|an) )", re.IGNORECASE)),
+    (STRUCTURE_TAKEAWAY, re.compile(r"\b(?:takeaway|where i disagree|i'?d push back|"
+                                    r"the caveat|what it leaves out)\b", re.IGNORECASE)),
+)
+# The template opener every round-7 draft used.
+_TEMPLATE_OPENER_RE = re.compile(
+    r"^\s*(?:for|if you(?:'re| are| run))\s+(?:a\s+|the\s+)?small[- ]business(?:es)?"
+    r"(?:\s+owners?)?[^,.\n]{0,40},\s*", re.IGNORECASE)
+_WHICH_CLOSE_RE = re.compile(r"^\W*which\b[^\n]*\?\s*$", re.IGNORECASE)
+
+
+def curated_structure_of(text: Optional[str]) -> Optional[str]:
+    """The structure a curated post was written in, read off its text (None when unreadable)."""
+    body = text or ""
+    if len(_LIST_LINE_RE.findall(body)) >= 3:
+        return STRUCTURE_CHECKLIST
+    return next((key for key, rx in _STRUCTURE_SIGNS if rx.search(body)), None)
+
+
+def select_curated_structure(recent_curated_texts: Optional[list], seed: int = 0) -> str:
+    """The structure THIS curated post is written in: least recently used of the author's last few.
+
+    Args:
+        recent_curated_texts: The author's recent curated posts, most recent first.
+        seed: A stable per-post integer (the source id) breaking ties.
+
+    Returns:
+        One of ``CURATED_STRUCTURE_ORDER``.
+    """
+    recent = [curated_structure_of(t) for t in list(recent_curated_texts or [])
+              [:CURATED_STRUCTURE_WINDOW]]
+    order = list(CURATED_STRUCTURE_ORDER)
+    offset = int(seed or 0) % len(order)
+    order = order[offset:] + order[:offset]
+
+    def rank(key: str) -> int:
+        return recent.index(key) if key in recent else len(recent) + 1
+
+    best = max(rank(k) for k in order)
+    return next(k for k in order if rank(k) == best)
+
+
+def structure_directive(structure: Optional[str]) -> str:
+    """The writer's shape-and-close instruction for one structure; '' for an unknown key."""
+    shape, close = CURATED_STRUCTURES.get(structure or "", ("", ""))
+    if not shape:
+        return ""
+    return (f"\n### Structure for THIS post:\n- {shape}\n- {close}\n"
+            "- Do NOT open with 'For a small-business owner' or any other audience label; open on "
+            "the source's point.\n"
+            "- Never end on a 'Which…?' question.\n")
+
+
+def strip_template_opener(text: Optional[str]) -> Optional[str]:
+    """``text`` without a leading "For a small-business owner, …" audience label."""
+    if not text:
+        return text
+    match = _TEMPLATE_OPENER_RE.match(text)
+    if not match:
+        return text
+    rest = text[match.end():]
+    return rest[:1].upper() + rest[1:] if rest else text
+
+
+def strip_which_close(text: Optional[str]) -> Optional[str]:
+    """``text`` without a final "Which …?" question paragraph, when the post stands without it."""
+    paragraphs = [p for p in re.split(r"\n\s*\n", (text or "").strip()) if p.strip()]
+    if len(paragraphs) < 3 or not _WHICH_CLOSE_RE.match(paragraphs[-1].strip().split("\n")[-1]):
+        return text
+    return "\n\n".join(paragraphs[:-1]).strip()
+
+
+# --- Facts the source does not state (showcase round 7) -------------------------------------------
+
+# Capitalised words that name nothing a source has to state.
+_COMMON_CAPS = frozenset((
+    "I", "AI", "A", "An", "The", "This", "That", "These", "Those", "It", "If", "When", "What",
+    "Why", "How", "Which", "Who", "My", "Our", "Your", "We", "You", "They", "LinkedIn", "Source",
+    "But", "And", "Or", "So", "For", "In", "On", "At", "To", "Start", "Here", "There", "Then",
+    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday", "January",
+    "February", "March", "April", "May", "June", "July", "August", "September", "October",
+    "November", "December", "CEO", "CFO", "CTO", "SMB", "SMBs", "API", "APIs", "ROI", "KPI",
+))
+_NAME_RUN_RE = re.compile(r"\b[A-Z][\w.+&'’-]*(?:\s+[A-Z][\w.+&'’-]*)*")
+_FIRST_HAND_RES = (
+    re.compile(r"\bin practice\b,?\s*", re.IGNORECASE),
+    re.compile(r"\bin my (?:own )?(?:testing|tests|trials?)\b,?\s*", re.IGNORECASE),
+    re.compile(r"\b(?:when )?i (?:tested|tried|ran|benchmarked|piloted) (?:it|this|the|them)\b",
+               re.IGNORECASE),
+    re.compile(r"\bi'?ve been (?:using|testing|running) (?:it|this|the|them)\b", re.IGNORECASE),
+)
+_SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def unsourced_names(text: Optional[str], allowed: Optional[list]) -> list:
+    """Named products, features or organisations in the commentary that no allowed text names.
+
+    A capitalised run that does not open its sentence ("Copilot Home", "Power Automate") is a
+    claim about the world; the source snapshot (plus the author's own voice brief) is the only
+    place it may come from, exactly as with a number.
+
+    Args:
+        text: The commentary.
+        allowed: The texts a name may come from.
+
+    Returns:
+        The unsourced names, in order.
+    """
+    haystack = " ".join(str(a) for a in (allowed or []) if a).lower()
+    found: list = []
+    for line in (text or "").splitlines():
+        for sentence in _SENTENCE_RE.split(line.strip()):
+            for match in _NAME_RUN_RE.finditer(sentence):
+                words = [re.sub(r"['’]s$", "", w) for w in match.group(0).split()]
+                words = [w for w in words if w not in _COMMON_CAPS]
+                opener = match.start() == 0 or sentence[:match.start()].rstrip().endswith(
+                    (":", "\"", "“"))
+                if opener and len(match.group(0).split()) == 1:
+                    continue  # one capitalised word opening a sentence is grammar, not a name
+                name = " ".join(words).strip(" .,'’")
+                if name and name.lower() not in haystack and name not in found \
+                        and not all(w.lower() in haystack for w in words):
+                    found.append(name)
+    return found
+
+
+def first_hand_claims(text: Optional[str]) -> list:
+    """The phrases where the commentary implies the author tested the thing themselves."""
+    return [m.group(0).strip(" ,") for rx in _FIRST_HAND_RES for m in rx.finditer(text or "")]
+
+
+def first_hand_supported(source: dict, facts: Optional[list]) -> bool:
+    """Does a story-bank fact show the author actually used what the source is about?"""
+    names = [str((source or {}).get(k) or "").strip().lower() for k in ("publisher", "author")]
+    title_words = [w.lower() for w in re.findall(r"[A-Z][\w.+-]{2,}", str((source or {}).get(
+        "title") or ""))]
+    keys = [n for n in names + title_words if n and n not in ("the", "and")]
+    return any(k in str(f).lower() for f in (facts or []) for k in keys)
+
+
+def attribute_first_hand(text: Optional[str], who: str) -> str:
+    """Every first-hand testing claim re-attributed to the source, or its sentence dropped."""
+    out = text or ""
+    out = re.sub(r"\b(?i:in practice),?\s*(\w)",
+                 lambda m: f"According to {who}, {m.group(1).lower()}", out)
+    kept = []
+    for line in out.split("\n"):
+        sentences = [s for s in _SENTENCE_RE.split(line)
+                     if not any(rx.search(s) for rx in _FIRST_HAND_RES[1:])]
+        kept.append(" ".join(sentences))
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
+
+
+def drop_sentences_naming(text: Optional[str], names: list) -> str:
+    """``text`` without the sentences that state any of ``names``."""
+    kept = []
+    for line in (text or "").split("\n"):
+        kept.append(" ".join(s for s in _SENTENCE_RE.split(line)
+                             if not any(n in s for n in names)))
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
+
+
+def source_names_directive(names: list) -> str:
+    """The ONE retry's steer after the commentary named things the source does not."""
+    return ("\n\nYOUR PREVIOUS DRAFT NAMED PRODUCTS OR FEATURES THE SOURCE TEXT NEVER STATES ("
+            + ", ".join(f'"{n}"' for n in names[:6]) + "). Rewrite it naming only what the source "
+            "text names, and say nothing about features it does not describe.\n")
+
+
+def _recent_curated_texts(user_id: int) -> list:
+    """The author's recent CURATED posts (they carry a ``Source:`` credit line). Never raises."""
+    try:
+        from cqc_lem.utilities.db import get_recent_post_texts
+
+        texts = get_recent_post_texts(user_id, limit=20) or []
+    except Exception as e:
+        log_debug("Recent posts unreadable for the curated structure rotation", error=str(e),
+                  user_id=user_id, task_name="curated_commentary")
+        return []
+    return [t for t in texts if isinstance(t, str) and re.search(r"(?m)^Source:", t)]
+
+
 def commentary_messages(source: dict, treatment: str, voice: str, prefs: Optional[dict] = None,
-                        content_mix: Optional[str] = None, extra: str = "") -> list:
+                        content_mix: Optional[str] = None, extra: str = "",
+                        structure: Optional[str] = None) -> list:
     """The system + user messages for one curated commentary draft.
 
     Args:
@@ -77,6 +307,7 @@ def commentary_messages(source: dict, treatment: str, voice: str, prefs: Optiona
         prefs: The author's engagement preferences.
         content_mix: The slot's 70/20/10 class (``value`` or ``authority``).
         extra: A retry steer (slop or fact repair), appended last.
+        structure: The rotated ``CURATED_STRUCTURES`` key (showcase round 7).
 
     Returns:
         The chat messages.
@@ -98,6 +329,9 @@ def commentary_messages(source: dict, treatment: str, voice: str, prefs: Optiona
         "owner. A post that only summarizes the source is a failure.\n"
         "- Every number you state must appear in the source text, exactly as written. Never "
         "estimate, round or invent a figure.\n"
+        "- Name only the products, features and capabilities the source text itself describes.\n"
+        "- You have NOT tested this yourself: never write 'In practice', 'I tested' or 'when I "
+        "tried it'. Attribute every capability to the source.\n"
         "- Quote at most one short phrase from the source, in quotation marks.\n"
         "- No politics of any kind.\n"
         "- Do not add a 'Source:' line or a URL; both are added for you.\n"
@@ -107,6 +341,7 @@ def commentary_messages(source: dict, treatment: str, voice: str, prefs: Optiona
     system += _framework.post_writing_directive()
     system += style_directive(prefs, "post")
     system += "\n" + _framework.hashtag_directive(prefs)
+    system += structure_directive(structure)
     user = f"The content you are commenting on:\n{_source_block(source)}\n{extra}"
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
@@ -162,6 +397,37 @@ def _complete(messages: list, model: str = "lem-medium", json_mode: bool = False
     return (response.choices[0].message.content or "").strip()
 
 
+def _source_faithful(text: Optional[str], source: dict, voice: str, draft, user_id: int) -> str:
+    """The round-7 faithfulness pass: names, first-hand claims, template opener and close.
+
+    A named product or feature the source does not state gets ONE rewrite; what survives it loses
+    its sentence. A first-hand testing claim is re-attributed to the source unless a story-bank
+    fact shows the author used it. The template opener and a "Which…?" close are cut in code.
+    """
+    if not text:
+        return text or ""
+    allowed = source_anchors(source) + [str(source.get("author") or ""),
+                                        str(source.get("publisher") or ""), voice or ""]
+    names = unsourced_names(text, allowed)
+    if names:
+        log_info("Curated commentary named things the source does not — rewriting once",
+                 user_id=user_id, names=names[:5], task_name="curated_commentary")
+        retry = draft(source_names_directive(names))
+        if retry and _framework.fact_grounding_report(retry, source_anchors(source))["passes"]:
+            text = retry
+        names = unsourced_names(text, allowed)
+        if names:
+            text = drop_sentences_naming(text, names)
+    if first_hand_claims(text):
+        from cqc_lem.utilities.post_image import story_facts_for
+
+        if not first_hand_supported(source, story_facts_for(user_id)):
+            text = attribute_first_hand(text, str(source.get("author") or source.get("publisher")
+                                                  or "the source"))
+    text = strip_which_close(strip_template_opener(text))
+    return finish_post_text(text)
+
+
 def finish_post_text(text: Optional[str]) -> str:
     """The same deterministic finish a generated text post gets: no markdown, no wall of text.
 
@@ -215,9 +481,12 @@ def generate_curated_commentary(user_id: int, source: dict, treatment: str, prof
     else:
         voice = voice_reference(profile, profile_synthesis)
 
+    structure = select_curated_structure(_recent_curated_texts(user_id),
+                                         int((source or {}).get("id") or 0))
+
     def draft(extra: str = "") -> str:
         return finish_post_text(_complete(commentary_messages(source, treatment, voice, prefs,
-                                                              content_mix, extra)))
+                                                              content_mix, extra, structure)))
 
     text = draft()
     text = lint_repaired(text, "post", draft, prefs=prefs, user_id=user_id,
@@ -236,6 +505,7 @@ def generate_curated_commentary(user_id: int, source: dict, treatment: str, prof
     if text and not report["passes"]:
         text = draft(_framework.fact_retry_directive(report))
         report = _framework.fact_grounding_report(text, anchors)
+    text = _source_faithful(text, source, voice, draft, user_id)
     if not text:
         return None
     if not report["passes"]:

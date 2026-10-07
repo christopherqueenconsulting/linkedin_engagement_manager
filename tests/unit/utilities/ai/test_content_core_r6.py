@@ -43,21 +43,24 @@ class TestDeckCountPhrasings:
         assert [c["phrase"] for c in claims] == ["6-part", "3 steps"]
 
     def test_the_cover_count_is_rewritten_in_its_own_form(self):
+        # Round 7: a deck's count of its OWN length ("6-part") is dropped, not rewritten — the
+        # page counter counts the cover and CTA too (test_deck_claims_r7.py). Item counts still
+        # take the body-slide count, in their own form.
         deck = {"cover": {"title": "A 6-part snapshot", "content": "A Five-step read"},
                 "contents": [{"title": "a", "content": "1"}, {"title": "b", "content": "2"},
                              {"title": "c", "content": "3"}, {"title": "d", "content": "4"}],
                 "call_to_action": {"title": "Save", "content": "Save it."}}
         out, caption, changes = cf.reconcile_deck_counts(deck, "My 6-part teardown.")
-        assert out["cover"] == {"title": "A 4-part snapshot", "content": "A Four-step read"}
-        assert caption == "My 4-part teardown."
-        assert "6-part" in changes
+        assert out["cover"] == {"title": "A snapshot", "content": "A Four-step read"}
+        assert caption == "My teardown."
+        assert "6-part" in changes and "Five-step" in changes
 
     def test_a_count_that_matches_is_left_alone(self):
-        deck = {"cover": {"title": "A 2-part note", "content": ""},
+        deck = {"cover": {"title": "2 steps to a clean close", "content": ""},
                 "contents": [{"title": "a", "content": "1"}, {"title": "b", "content": "2"}],
                 "call_to_action": {"title": "Save", "content": "x"}}
-        _, caption, changes = cf.reconcile_deck_counts(deck, "My 2-part note.")
-        assert changes == [] and caption == "My 2-part note."
+        _, caption, changes = cf.reconcile_deck_counts(deck, "The 2 steps I run.")
+        assert changes == [] and caption == "The 2 steps I run."
 
 
 def _deck(*bodies):

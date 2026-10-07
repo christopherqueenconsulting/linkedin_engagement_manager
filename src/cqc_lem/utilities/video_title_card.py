@@ -26,6 +26,7 @@ anchor carrying a known stock homonym (``STOCK_HOMONYMS``). With no safe query t
 
 import hashlib
 import os
+import re
 import secrets
 import subprocess
 from dataclasses import dataclass
@@ -102,6 +103,10 @@ def stock_query_from_concept(concept: Any) -> Optional[str]:
     return " ".join(safe) or None
 
 
+# How many leading sentences the card may skip to find an opening without an unvouched figure.
+_HOOK_SKIP_SENTENCES = 3
+
+
 def title_card_hook(text: Optional[str], concept: Any = None) -> Optional[str]:
     """The words the card sets — the post's own, never authored. None when there are none.
 
@@ -118,10 +123,26 @@ def title_card_hook(text: Optional[str], concept: Any = None) -> Optional[str]:
     hook = str(getattr(concept, "hook_phrase", "") or "").strip()
     if hook:
         return hook
+    from cqc_lem.utilities.ai.fact_consistency import prints_any, unprovenanced_figures
     from cqc_lem.utilities.video_captions import caption_candidates
 
+    # Showcase round 7: slot_141's opening "5.6 hours per week" was unsourced. The card sets the
+    # first candidate that prints no figure the post does not vouch for.
+    # When every candidate prints one, the first still sets (a card beats a missing asset) — the
+    # post's own hook-provenance finding holds it for review.
+    unsourced = tuple(getattr(concept, "unsourced_figures", ()) or ())
     candidates = caption_candidates(text, TITLE_HOOK_MAX_CHARS)
-    return candidates[0] if candidates else None
+    rest = text or ""
+    for _ in range(_HOOK_SKIP_SENTENCES + 1):
+        clean = [c for c in caption_candidates(rest, TITLE_HOOK_MAX_CHARS)
+                 if not unprovenanced_figures(c, text) and not prints_any(c, unsourced)]
+        if clean:
+            return clean[0]
+        parts = re.split(r"(?<=[.!?])\s+", rest.strip(), maxsplit=1)
+        if len(parts) < 2:
+            break
+        rest = parts[1]
+    return (candidates or [None])[0]
 
 
 # The headline each card set, keyed by the card's file name — read by the caption burn (same task)
@@ -318,16 +339,17 @@ def variant_history_path(user_id: int) -> str:
     return os.path.join(title_card_dir(), "history", f"{int(user_id)}.json")
 
 
-def recent_variants(user_id: Optional[int]) -> list:
-    """This author's recent title-card layouts, most recent first. Never raises.
+def recent_cards(user_id: Optional[int]) -> list:
+    """This author's recent title cards as ``(layout, ground)``, most recent first. Never raises.
 
-    Read from disk, not process state, so a rotation spans workers and restarts.
+    Read from disk, not process state, so a rotation spans workers and restarts. An entry written
+    before showcase round 7 is a bare layout name; its ground reads as None (unknown).
 
     Args:
         user_id: The author; None reads nothing.
 
     Returns:
-        The layouts ([] when unknown or unreadable).
+        The cards ([] when unknown or unreadable).
     """
     import json
 
@@ -338,24 +360,67 @@ def recent_variants(user_id: Optional[int]) -> list:
             data = json.load(handle)
     except (OSError, ValueError):
         return []
-    return [v for v in data if v in TITLE_CARD_VARIANTS] if isinstance(data, list) else []
+    if not isinstance(data, list):
+        return []
+    out = []
+    for entry in data:
+        variant = entry.get("variant") if isinstance(entry, dict) else entry
+        ground = entry.get("ground") if isinstance(entry, dict) else None
+        if variant in TITLE_CARD_VARIANTS:
+            out.append((variant, ground if ground in GROUNDS else None))
+    return out
 
 
-def record_variant(user_id: Optional[int], variant: str) -> None:
-    """Prepend ``variant`` to the author's card history. Never raises.
+def recent_variants(user_id: Optional[int]) -> list:
+    """This author's recent title-card layouts, most recent first ([] when unknown). Never raises."""
+    return [variant for variant, _ground in recent_cards(user_id)]
+
+
+def pick_card_style(hook: Optional[str], recent: Sequence, seed: str = "") -> tuple:
+    """The next card's ``(layout, ground)``: never a pair from the last ``PAIR_WINDOW`` cards.
+
+    Showcase round 7: slot_123 and slot_135 were the same layout on the same charcoal. The layout
+    rotates least-recently-used (``pick_variant``); the ground was a hash of the post, so two
+    cards could land on one pair. It now joins the rotation: the pick's ground unless that pair
+    ran within the window, then the other ground, then another layout
+    (``post_treatment.fresh_pair``).
+
+    Args:
+        hook: The words the card sets.
+        recent: ``recent_cards`` — ``(layout, ground)``, most recent first.
+        seed: Stable per-card text.
+
+    Returns:
+        ``(layout, ground)``.
+    """
+    from cqc_lem.utilities.ai.post_treatment import fresh_pair
+
+    recent = list(recent)
+    variant = pick_variant(hook, [v for v, _g in recent], seed)
+    ground = pick_ground(seed)
+    grounds = (ground, *[g for g in GROUNDS if g != ground])
+    variant, ground, _changed = fresh_pair(variant, ground, available_variants(hook), grounds,
+                                           [v for v, _g in recent], [g for _v, g in recent])
+    return variant, ground
+
+
+def record_variant(user_id: Optional[int], variant: str, ground: Optional[str] = None) -> None:
+    """Prepend the card that just rendered to the author's card history. Never raises.
 
     A lost write costs one repeated layout at most, so it logs at DEBUG.
 
     Args:
         user_id: The author; None records nothing.
         variant: The layout that just rendered.
+        ground: Its ground (charcoal or off-white), when known.
     """
     import json
 
     if user_id is None:
         return
     path = variant_history_path(user_id)
-    history = [variant, *recent_variants(user_id)][:_VARIANT_HISTORY]
+    history = [{"variant": v, "ground": g}
+               for v, g in [(variant, ground), *recent_cards(user_id)]][:_VARIANT_HISTORY]
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as handle:
@@ -689,8 +754,8 @@ def create_title_card_video(text: Optional[str], *, user_id: Optional[int] = Non
         from cqc_lem.utilities.ai.image_concept import concept_kicker
         from cqc_lem.utilities.utils import create_folder_if_not_exists
 
-        palette = title_card_palette(_brand_for(user_id), pick_ground(f"{post_id}:{hook}"))
-        variant = pick_variant(hook, recent_variants(user_id), f"{post_id}:{hook}")
+        variant, ground = pick_card_style(hook, recent_cards(user_id), f"{post_id}:{hook}")
+        palette = title_card_palette(_brand_for(user_id), ground)
         kicker = concept_kicker(concept)
         if variant == VARIANT_QUESTION and not kicker:
             from cqc_lem.utilities.ai.image_concept import derive_kicker
@@ -706,7 +771,7 @@ def create_title_card_video(text: Optional[str], *, user_id: Optional[int] = Non
         if not write_title_card_video(layout, out_path):
             return None
         remember_headline(out_path, hook)
-        record_variant(user_id, layout.variant)
+        record_variant(user_id, layout.variant, ground)
         log_info("Rendered the branded title card video", user_id=user_id, post_id=post_id,
                  task_name=TASK_NAME, ratio=ratio, variant=layout.variant)
         return out_path

@@ -181,8 +181,10 @@ class TestPickVisualIdea:
 class TestAnalyzeEndToEnd:
     def test_a_cover_with_data_becomes_a_code_drawn_graphic_with_its_trace(self):
         with patch(_CREATE, return_value=_resp(_PAYLOAD)):
+            # The figures are the author's own facts here (round 7: a printed figure needs one).
             concept = analyze_content_for_image(SOURCE, surface="newsletter",
-                                                recent_archetypes=["highlight_chart"])
+                                                recent_archetypes=["highlight_chart"],
+                                                facts=[SOURCE])
         assert concept.archetype in ("receipt", "before_after")
         assert concept.graphic["costs"]["items"][0]["source_sentence"] in SOURCE
         assert concept.art_style in ic.ART_STYLES

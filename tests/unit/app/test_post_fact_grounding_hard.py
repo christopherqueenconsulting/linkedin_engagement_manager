@@ -31,6 +31,10 @@ _LIVE_POSTS = {
     "throughput": ("41 PRs in a day. 369 that month. That is what an agent pipeline does when the "
                    "gates are real.\n\nWhat would you ship with that throughput?"),
 }
+# Showcase round 7: a research figure in the HOOK needs its source named in the body.
+_SOURCED_INFERENCE = ("According to the Menlo survey, AI inference costs dropped 30% in Q2 2026. "
+                      "Teams that adopted routing saw 20% faster time-to-value.\n\n"
+                      "What changed for you this quarter?")
 _EXPECTED_NUMBERS = {"router": ["500", "350", "45%"], "inference": ["30%", "20%"],
                      "throughput": ["41", "369"]}
 
@@ -82,7 +86,16 @@ class TestGroundedNumbersStillShip:
     def test_a_number_from_the_research_actually_supplied_passes(self):
         research = ("Industry survey: AI inference costs fell 30% in Q2 2026; routing adopters "
                     "report 20% faster time-to-value.")
-        assert _gates(_LIVE_POSTS["inference"], extra_fact_sources=[research]) == []
+        assert _gates(_SOURCED_INFERENCE, extra_fact_sources=[research]) == []
+
+    def test_a_research_number_in_the_hook_without_its_source_is_held_once(self):
+        # Showcase round 7: grounded, so the fact-grounding gate passes it, but the hook prints it
+        # with no named source in the body — one fact_consistency finding, the figure named.
+        research = ("Industry survey: AI inference costs fell 30% in Q2 2026; routing adopters "
+                    "report 20% faster time-to-value.")
+        findings = _gates(_LIVE_POSTS["inference"], extra_fact_sources=[research])
+        assert [f["gate"] for f in findings] == ["fact_consistency"]
+        assert "30%" in " ".join(findings[0]["details"])
 
     def test_a_number_from_the_profile_brief_passes(self):
         brief = "Voice brief: 15+ years full-stack; routed 500-token prompts to a 350M model for a 45% saving."
@@ -247,9 +260,9 @@ class TestTheReviewGateRepairsBeforeTheHold:
         assert not any("fact-grounding gate" in c.args[0] for c in warn.call_args_list)
 
     def test_grounded_numbers_never_reach_the_editor(self):
-        out, refine, _ = self._review(_LIVE_POSTS["inference"], "unused",
+        out, refine, _ = self._review(_SOURCED_INFERENCE, "unused",
                                       material=["costs fell 30% in Q2; 20% faster time-to-value"])
-        assert out == _LIVE_POSTS["inference"]
+        assert out == _SOURCED_INFERENCE
         refine.assert_not_called()
 
     def test_a_forbidden_claim_is_a_repair_finding_too(self, monkeypatch):

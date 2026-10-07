@@ -25,6 +25,13 @@ import re
 from dataclasses import asdict, dataclass
 from typing import Any, Optional, Sequence
 
+from cqc_lem.utilities.ai.fact_consistency import (
+    PROVENANCE_SOURCE,
+    figure_provenance,
+    source_name_for,
+    unprovenanced_figures,
+    vague_result_claim,
+)
 from cqc_lem.utilities.logger import log_debug, log_info
 from cqc_lem.utilities.observability import llm_step
 
@@ -384,6 +391,8 @@ class ImageConcept:
         art_style: The rotated ``ART_STYLES`` key an editorial_concept renders in.
         hook_verified: The hook the Stage-3 judge last PASSED; the final gate re-checks any hook
             that differs from it (a fallback or a trim), so no path ships an unchecked hook.
+        unsourced_figures: The figures the piece states that its body never vouches for
+            (showcase round 7, ``apply_figure_provenance``) — no headline fallback may print them.
     """
 
     thesis: str
@@ -417,6 +426,7 @@ class ImageConcept:
     idea_nouns: tuple[str, ...] = ()
     art_style: str = ""
     hook_verified: str = ""
+    unsourced_figures: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         """The concept as a JSON-safe dict, for prompts and receipts."""
@@ -721,6 +731,10 @@ def hook_rejection(hook: str, title: Optional[str], topic_text: str = "",
     comparative = vague_comparative(hook)
     if comparative:
         return f"{comparative!r} needs its reference: say 'than …' or give the number"
+    vague = vague_result_claim(hook)
+    if vague:
+        return (f"{vague!r} claims a result with no figure: say what changed and by how much, "
+                "from the piece, or state the mechanism instead")
     return ""
 
 
@@ -1646,6 +1660,12 @@ ROTATION_WINDOW = 4
 # can never sit on a face or a torso (every overlay layout did). The compositor still supports the
 # overlay layouts for a caller that asks.
 COVER_LAYOUTS = ("split_left", "split_right")
+# Showcase round 7: four of five covers were the same 50/50 split (left or right is one geometry
+# to a reader). After `COVER_SPLIT_RUN` split covers in a row the next is full-bleed: the headline
+# sits in the render's darkest third over a scrim. Covers land `pending_review`, so the author
+# still sees every one before it publishes.
+COVER_SPLIT_RUN = 2
+COVER_BREAK_LAYOUT = "full_bleed"
 POST_LAYOUTS = ("split_top", "split_bottom")
 SURFACE_LAYOUTS = {"newsletter": COVER_LAYOUTS, "post_image": POST_LAYOUTS}
 # Each dimension rotates INDEPENDENTLY, so no pairing (of age, gender, ethnicity or setting) is
@@ -1761,6 +1781,21 @@ def rotate_hook_shape(concept: ImageConcept,
     return dataclasses.replace(concept, hook_phrase=options[shape], hook_shape=shape)
 
 
+def split_run_exceeded(layout: Optional[str], recent_layouts: Optional[Sequence[str]]) -> bool:
+    """Would ``layout`` make a cover the third split in a row (``COVER_SPLIT_RUN``)?
+
+    Args:
+        layout: The layout the rotation picked.
+        recent_layouts: The author's recent cover layouts, most recent first.
+
+    Returns:
+        True when ``layout`` and the last ``COVER_SPLIT_RUN`` covers are all split layouts.
+    """
+    run = list(recent_layouts or [])[:COVER_SPLIT_RUN]
+    return (layout in COVER_LAYOUTS and len(run) == COVER_SPLIT_RUN
+            and all(r in COVER_LAYOUTS for r in run))
+
+
 def assign_layout_and_cast(concept: ImageConcept, surface: str,
                            recent_layouts: Optional[Sequence[str]] = None,
                            recent_casts: Optional[Sequence[dict]] = None,
@@ -1783,6 +1818,8 @@ def assign_layout_and_cast(concept: ImageConcept, surface: str,
     options = SURFACE_LAYOUTS.get(surface)
     if options and not layout:
         layout = _least_recent(options, list(recent_layouts or [])[:ROTATION_WINDOW], seed)
+    if surface == "newsletter" and split_run_exceeded(layout, recent_layouts):
+        layout = COVER_BREAK_LAYOUT
     cast = concept.cast
     if surface in _CAST_SURFACES and concept.treatment == TREATMENT_PEOPLE and not cast:
         history = [c for c in (recent_casts or []) if isinstance(c, dict)][:ROTATION_WINDOW]
@@ -2127,6 +2164,116 @@ def apply_title_stat(concept: ImageConcept, title: Optional[str], source: str) -
     return dataclasses.replace(concept, **changed)
 
 
+def _numeric_claims(text: str) -> list:
+    from cqc_lem.utilities.ai.content_framework import numeric_claims
+
+    return numeric_claims(text)
+
+
+def provenance_body(title: Optional[str], source: str) -> str:
+    """The text a printed figure must be vouched for in: the analysed text WITHOUT its title.
+
+    A cover's figure usually comes from the edition title, so the title itself is the surface and
+    can never be its own evidence.
+    """
+    body = source or ""
+    if title and body.startswith(title):
+        return body[len(title):].strip()
+    return body
+
+
+def _graphic_figures(section: Any) -> str:
+    """The drawn strings of one graphic section (its source sentences are evidence, not drawn)."""
+    if isinstance(section, dict):
+        return " ".join(_graphic_figures(v) for k, v in section.items()
+                        if "sentence" not in str(k) and k not in ("amount", "kind"))
+    if isinstance(section, (list, tuple)):
+        return " ".join(_graphic_figures(v) for v in section)
+    return str(section) if isinstance(section, str) else ""
+
+
+def apply_figure_provenance(concept: ImageConcept, title: Optional[str], source: str,
+                            facts: Optional[Sequence[str]] = None, surface: str = "post_image",
+                            user_id: Optional[int] = None) -> ImageConcept:
+    """Every figure the image prints is one the body vouches for (showcase round 7).
+
+    slot_141 printed 80% and 5.6h, rhythm_4 printed 45% and cover_18 printed 53.7%, none of them
+    backed in the body. A figure on the headline or in a drawn graphic must appear in a body
+    sentence that names its source or states a supplied fact (``fact_consistency
+    .figure_provenance``). Otherwise:
+
+    - the headline is re-set without it: the thesis as a clause with the figure removed, when that
+      passes the hook rules, else no headline (a cover then falls back to a numberless title);
+    - a graphic section that draws it is dropped, so no stat card prints it;
+    - on a cover whose figure the body DOES source by name, the stat card carries that name as
+      its source line.
+
+    A headline that claims a result with no figure ("Error rates dropped sharply") is re-set the
+    same way. The figures are recorded on the concept so no later fallback prints them.
+
+    Args:
+        concept: The concept after every hook path.
+        title: The piece's title.
+        source: The analysed text (title first).
+        facts: The allow-list, or None to judge by the body alone.
+        surface: For log context.
+        user_id: For log context.
+
+    Returns:
+        The concept with only vouched-for figures on it.
+    """
+    body = provenance_body(title, source)
+    allow = list(facts) if facts is not None else None
+    hook = concept.hook_phrase or ""
+    printed = " ".join([hook, title or "", _graphic_figures(concept.graphic or {})])
+    bad = unprovenanced_figures(printed, body, allow)
+    vague = vague_result_claim(hook)
+    changed: dict[str, Any] = {}
+    if bad:
+        changed["unsourced_figures"] = tuple(dict.fromkeys((*concept.unsourced_figures, *bad)))
+    hook_bad = unprovenanced_figures(hook, body, allow)
+    if hook and (hook_bad or vague):
+        stripped = " ".join(w for w in (concept.thesis or "").split()
+                            if not unprovenanced_figures(w, body, allow)
+                            and not _HOOK_NUMBER.fullmatch(w.strip(".,;:")))
+        candidate = clause_hook(stripped)
+        topic = " ".join((concept.thesis, *concept.specific_entities))
+        if (not candidate or vague_result_claim(candidate) or any(ch.isdigit() for ch in candidate)
+                or not _valid_hook(candidate, title, topic, source)):
+            candidate = ""
+        else:
+            candidate = _valid_hook(candidate, title, topic, source)
+        log_info("Image headline printed a figure the post does not vouch for — re-set",
+                 user_id=user_id, surface=surface, action_type="image_concept", hook=hook,
+                 figures=hook_bad, vague=vague, replacement=candidate)
+        changed.update(hook_phrase=candidate, hook_shape=hook_shape_of(candidate) if candidate
+                       else "", hook_verified=candidate,
+                       hook_options={hook_shape_of(candidate): candidate} if candidate else None)
+    graphic = dict(concept.graphic or {})
+    dropped = [key for key in ("stat", "comparison", "costs", "before_after", "steps")
+               if graphic.get(key) and unprovenanced_figures(_graphic_figures(graphic[key]), body,
+                                                             allow)]
+    for key in dropped:
+        graphic.pop(key)
+    if surface == "newsletter":
+        # The cover carries the edition's OWN cited source for the figure it prints.
+        shown = " ".join((str((graphic.get("stat") or {}).get("display") or ""),
+                          changed.get("hook_phrase", hook) or ""))
+        for value in [c["value"] for c in _numeric_claims(shown)]:
+            if figure_provenance(value, body, allow) == PROVENANCE_SOURCE:
+                name = source_name_for(value, body)
+                if name:
+                    graphic["source_line"] = f"Source: {name}"
+                    break
+    if dropped or graphic != dict(concept.graphic or {}):
+        if dropped:
+            log_info("Image graphic drew a figure the post does not vouch for — dropped",
+                     user_id=user_id, surface=surface, action_type="image_concept",
+                     sections=dropped)
+        changed["graphic"] = graphic or None
+    return dataclasses.replace(concept, **changed) if changed else concept
+
+
 def check_hook_against_thesis(hook: str, thesis: str, cited: str = "") -> tuple[bool, str, str]:
     """ONE ``lem-simple`` call judging the hook: claim, grammar, length, truth and valence.
 
@@ -2464,6 +2611,7 @@ def analyze_content_for_image(text: str, *, title: Optional[str] = None,
                               recent_shots: Optional[Sequence[str]] = None,
                               recent_archetypes: Optional[Sequence[str]] = None,
                               recent_art_styles: Optional[Sequence[str]] = None,
+                              facts: Optional[Sequence[str]] = None,
                               ) -> Optional[ImageConcept]:
     """Read the full content and decide what its image must show. Never raises.
 
@@ -2484,6 +2632,8 @@ def analyze_content_for_image(text: str, *, title: Optional[str] = None,
         recent_archetypes: Archetypes of the most recent images, most recent first — the last
             ``ARCHETYPE_WINDOW`` are penalised (``select_archetype``).
         recent_art_styles: Art styles of the most recent editorial concepts, most recent first.
+        facts: The author's story-bank facts (and any curated source text) a printed figure may
+            come from (``apply_figure_provenance``); None judges a figure by the body alone.
 
     Returns:
         The concept, or None when the call fails or returns nothing usable — callers keep a
@@ -2547,6 +2697,11 @@ def analyze_content_for_image(text: str, *, title: Optional[str] = None,
         concept = _final_hook(concept, payload, source, title, surface, user_id)
         # Round 5: a figure in the title outranks every hook and graphic path above.
         concept = apply_title_stat(concept, title, source)
+        # Round 7: a figure the image prints must be one the body vouches for.
+        concept = apply_figure_provenance(concept, title, source, facts, surface, user_id)
         # A code-drawn graphic needs the FINAL headline; re-rank against it (deterministic).
         concept = select_archetype(concept, surface, recent_archetypes)
+    else:
+        # A video title card sets the concept's hook too (``video_title_card.title_card_hook``).
+        concept = apply_figure_provenance(concept, title, source, facts, surface, user_id)
     return assign_layout_and_cast(concept, surface, recent_layouts, recent_casts, recent_shots)

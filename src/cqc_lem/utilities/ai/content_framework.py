@@ -2662,8 +2662,10 @@ _SPELLED_FOLD_RE = re.compile(r"\b(" + "|".join(_SPELLED_FOLD_WORDS) + r")[-‑�
 # A bare year is a public, checkable fact, not a project specific — a build receipt saying "in 2026"
 # is not fabricating anything, so years never trip the guard.
 _YEAR_RE = re.compile(r"^(?:19|20)\d{2}$")
-# List/step numbering is structure, not a claim.
-_LEADING_ENUM_RE = re.compile(r"^\s*(?:\d+[.)]\s*|step\s+\d+\s*[:.)]?\s*)", re.IGNORECASE)
+# List/step numbering is structure, not a claim. A decimal that opens a line ("5.6 hours per
+# week", "53.7% of posts") is a figure, never "5." numbering (showcase round 7: slot_141's hook was
+# read as "6 hours", which no allow-list could ever match or excuse).
+_LEADING_ENUM_RE = re.compile(r"^\s*(?:\d+[.)](?!\d)\s*|step\s+\d+\s*[:.)]?\s*)", re.IGNORECASE)
 # A number that is part of a PRODUCT NAME is not a claim the author has to stand behind: the build
 # receipt's structure explicitly asks for the exact stack, so "GPT-4o", "Claude 3.5", "Python 3.12"
 # and "Postgres 16" must not read as invented metrics (they would burn the one regeneration AND hold
@@ -2681,6 +2683,12 @@ _NON_NAME_CAPITALS = frozenset((
 ))
 # "10k", "3m", "2bn" — a magnitude suffix, i.e. a metric, not a build number.
 _MAGNITUDE_SUFFIXES = frozenset(("k", "m", "b", "bn", "mm"))
+# A number followed by what it measures is a metric whatever precedes it: "Reclaim 5.6 hours"
+# opens a sentence with a capital, but nobody ships a product called Reclaim 5.6 (showcase round 7).
+_MEASURE_AFTER_RE = re.compile(
+    r"\s*(?:hours?|hrs?|minutes?|mins?|seconds?|days?|weeks?|months?|quarters?|years?|percent|"
+    r"people|employees|staff|clients|customers|users|tickets|posts|emails|leads|calls|tasks|"
+    r"invoices|orders|deals|hires|meetings|replies|times)\b", re.IGNORECASE)
 
 
 def hook_constraint_directive() -> str:
@@ -2788,6 +2796,8 @@ def _is_product_version(sentence: str, start: int, raw: str) -> bool:
     if re.search(r"[$%x]|percent", raw, re.IGNORECASE):
         return False
     end = start + len(raw)  # raw is stripped, so this excludes whitespace the token regex ate
+    if _MEASURE_AFTER_RE.match(sentence[end:]):
+        return False
     tail = re.match(r"[A-Za-z]+", sentence[end:])
     # Letters welded to the number mean a build ("GPT-4o") — EXCEPT a magnitude suffix, which is
     # exactly how a metric gets written ("saved 10k hours").
@@ -3486,6 +3496,265 @@ def deck_substance_directive(report: Optional[dict]) -> str:
     return "\n".join(lines) + "\n"
 
 
+# --- Deck claims (showcase round 7) ---------------------------------------------------------------
+# The round-7 critic: "The Stakes:", "The Challenge:", "The Setup:", "Step 1: Identify…" headings
+# (128, 133, 143, 144), a cover promising "From Silence to Success" over a deck that shows no
+# success (144), and slide figures the caption never states. Each is checked deterministically,
+# folded into the deck's ONE substance regeneration, and whatever survives it is fixed in code
+# (`finalize_deck_claims`) before anything renders.
+
+# A heading that names the slide's ROLE rather than making a claim.
+_TEMPLATE_HEADING_RE = re.compile(
+    r"^\s*(?:(?:the\s+)?(?:initial\s+|real\s+|key\s+|big\s+)?(?:stakes|challenge|setup|set-up|"
+    r"problem|solution|tension|context|background|result|results|outcome|lesson|lessons|takeaway|"
+    r"twist|fix|approach|turning\s+point|insight|reality|catch|hook|conclusion|bottom\s+line|"
+    r"why\s+it\s+matters|idea|action|next\s+steps?|ask|recap|summary|overview|intro|"
+    r"introduction|moment|shift)\s*[:—–]\s*"
+    r"|(?:step|part|tip|lesson|rule|point|phase|stage)\s+\d{1,2}\s*[:.)—–-]\s*)",
+    re.IGNORECASE)
+# What a cover can promise that a body slide then has to show.
+_PROMISE_FROM_TO_RE = re.compile(r"\bfrom\s+[\w'’-]+(?:\s+[\w'’-]+)?\s+to\s+(?P<to>[\w'’-]+"
+                                 r"(?:\s+[\w'’-]+)?)", re.IGNORECASE)
+_PROMISE_WORDS = frozenset(("success", "successes", "results", "win", "wins", "growth",
+                            "breakthrough", "transformation", "solved", "fixed", "secret",
+                            "secrets", "guaranteed", "profit", "profits", "revenue", "turnaround",
+                            "victory", "payoff"))
+# Words too short to compare by prefix.
+_PROMISE_STEM = 5
+# The longest sentence a deterministic re-heading may use.
+DECK_HEADING_MAX_WORDS = 12
+
+
+def template_heading(title: Optional[str]) -> str:
+    """The role label a slide heading opens with ("The Stakes:", "Step 1:"), or ''."""
+    match = _TEMPLATE_HEADING_RE.match(title or "")
+    return " ".join(match.group(0).split()) if match else ""
+
+
+def _first_sentence(text: Optional[str], max_words: int = DECK_HEADING_MAX_WORDS) -> str:
+    for sentence in _PROOF_SENTENCE_SPLIT.split(_LEADING_ENUM_RE.sub("", text or "").strip()):
+        words = sentence.strip().split()
+        if 2 <= len(words) <= max_words and not sentence.rstrip().endswith("?"):
+            return sentence.strip()
+    return ""
+
+
+def heading_as_claim(title: Optional[str], body: Optional[str]) -> str:
+    """A template heading re-set as a claim, deterministically: the last word after ONE regeneration.
+
+    The label goes. What follows it stays when it asserts something ("The Stakes: one missed
+    step costs a client" -> "One missed step costs a client"); a bare topic ("AI Reliability")
+    gives way to the slide's own first sentence when that is short enough to head it.
+
+    Args:
+        title: The slide heading.
+        body: The slide body.
+
+    Returns:
+        The new heading; the title unchanged when it carries no template label.
+    """
+    from cqc_lem.utilities.ai.image_concept import asserts_something
+
+    label = template_heading(title)
+    if not label:
+        return title or ""
+    rest = _TEMPLATE_HEADING_RE.sub("", title or "", count=1).strip(" :—–-")
+    if rest and asserts_something(rest) and len(rest.split()) >= 3:
+        return rest[:1].upper() + rest[1:]
+    sentence = _first_sentence(body)
+    if sentence:
+        return sentence.rstrip(".")
+    return (rest[:1].upper() + rest[1:]) if rest else (title or "")
+
+
+def _stem(word: str) -> str:
+    return word.lower()[:_PROMISE_STEM]
+
+
+def cover_promise_gap(carousel: Optional[dict]) -> str:
+    """The promise the deck's cover makes that no BODY slide delivers, or ''.
+
+    "From Silence to Success" promises a success; when no body slide (cover and CTA excluded)
+    mentions one, the cover over-promises. Read off the cover's title: the "to …" half of a
+    "From X to Y", and any promise word (`_PROMISE_WORDS`).
+    """
+    slides = deck_slides(carousel)
+    cover = next((s for s in slides if s["key"].lower() == "cover"), None)
+    if not cover or not cover["title"]:
+        return ""
+    promised = []
+    match = _PROMISE_FROM_TO_RE.search(cover["title"])
+    if match:
+        promised += [w for w in re.findall(r"[a-z]+", match.group("to").lower())
+                     if w not in _STOPWORDS]
+    promised += [w for w in re.findall(r"[a-z]+", cover["title"].lower()) if w in _PROMISE_WORDS]
+    delivered = {_stem(w) for s in slides if s["graded"]
+                 for w in re.findall(r"[a-z]+", f"{s['title']} {s['content']}".lower())}
+    return next((w for w in dict.fromkeys(promised) if _stem(w) not in delivered), "")
+
+
+def _strip_count_claims(text: str) -> str:
+    return _DECK_COUNT_COMPOUND_RE.sub(" ", _DECK_COUNT_CLAIM_RE.sub(" ", text or ""))
+
+
+def deck_figure_issues(carousel: Optional[dict], post_text: Optional[str],
+                       sources: Optional[list] = None) -> list:
+    """Slide figures the post does not vouch for, as ``{slide, figures}`` entries.
+
+    A slide is an image, so the round-7 provenance rule holds on it: every figure it prints must
+    be a story-bank fact, or be stated beside a named source
+    (`fact_consistency.unprovenanced_figures`). A document post's body is its caption AND its
+    slides, so a source named on a slide vouches for the figure it introduces. The deck's count
+    promises ("3 Steps") and list numbering are not figures here; the count rules own them.
+    """
+    from cqc_lem.utilities.ai.fact_consistency import unprovenanced_figures
+
+    body = f"{post_text or ''}\n{deck_text(carousel)}"
+    out = []
+    for slide in deck_slides(carousel):
+        text = _strip_count_claims(f"{slide['title']}\n{slide['content']}")
+        figures = unprovenanced_figures(text, body, list(sources or []))
+        if figures:
+            out.append({"slide": _slide_label(slide), "figures": figures})
+    return out
+
+
+def deck_claims_report(carousel: Optional[dict], post_text: Optional[str] = None,
+                       sources: Optional[list] = None) -> dict:
+    """Template headings, an undelivered cover promise and unvouched slide figures. Deterministic.
+
+    Args:
+        carousel: The generated deck.
+        post_text: The caption.
+        sources: The author's story-bank facts.
+
+    Returns:
+        ``{passes, headings, promise, figures, problems, reasons}`` — ``problems`` counts every
+        fault, so a regeneration can be compared against the deck it would replace.
+    """
+    headings = [_slide_label(s) for s in deck_slides(carousel)
+                if s["graded"] and template_heading(s["title"])]
+    promise = cover_promise_gap(carousel)
+    figures = deck_figure_issues(carousel, post_text, sources)
+    reasons = [f"slide “{name}” is headed with a template label, not a claim" for name in headings]
+    if promise:
+        reasons.append(f"the cover promises “{promise}” but no slide shows it")
+    reasons += [f"slide “{f['slide']}” prints {', '.join(f['figures'])}, which the post never "
+                f"backs with a fact or a named source" for f in figures]
+    problems = len(headings) + (1 if promise else 0) + len(figures)
+    return {"passes": not problems, "headings": headings, "promise": promise,
+            "figures": figures, "problems": problems, "reasons": reasons}
+
+
+def deck_claims_directive(report: Optional[dict]) -> str:
+    """The regeneration steer for `deck_claims_report`'s faults; '' for none."""
+    reasons = [str(r) for r in (report or {}).get("reasons", []) if str(r).strip()]
+    if not reasons:
+        return ""
+    lines = ["\n\nYOUR PREVIOUS DECK MADE CLAIMS IT DID NOT SUPPORT. Rewrite it so none of these "
+             "remain:"]
+    lines += [f"- The {r}." for r in reasons]
+    lines.append("- Head every slide with a CLAIM a reader could disagree with (\"Candidate 1 never "
+                 "ran the core workflow\"), never a role label such as \"The Stakes:\", \"The "
+                 "Challenge:\" or \"Step 1:\".")
+    lines.append("- The cover promises only what a slide delivers. No figure on a slide that the "
+                 "post text does not state with its source.")
+    return "\n".join(lines) + "\n"
+
+
+def _deck_copy(carousel: dict) -> dict:
+    return json.loads(json.dumps(carousel))
+
+
+def _set_slide(carousel: dict, slide: dict, field: str, value: str) -> None:
+    holder = carousel.get(slide["key"])
+    if slide["index"] is not None and isinstance(holder, list):
+        holder = holder[slide["index"]]
+    if isinstance(holder, dict):
+        holder[field] = value
+
+
+def _without_figure_sentences(text: str, figures: list) -> str:
+    from cqc_lem.utilities.ai.fact_consistency import prints_any
+
+    lines = []
+    for line in (text or "").split("\n"):
+        kept = [s for s in _PROOF_SENTENCE_SPLIT.split(line) if s.strip()
+                and not prints_any(s, figures)]
+        lines.append(" ".join(kept))
+    out = "\n".join(ln for ln in lines if ln.strip())
+    return out if out.strip() else text
+
+
+def _drop_lead_sentence(carousel: dict, slide: dict, content: str, heading: str) -> None:
+    """A heading lifted from the body's first sentence is not printed twice."""
+    stripped = (content or "").strip()
+    if stripped.startswith(heading):
+        rest = stripped[len(heading):].lstrip(" .!").strip()
+        if rest:
+            _set_slide(carousel, slide, "content", rest)
+
+
+def finalize_deck_claims(carousel: Optional[dict], post_text: Optional[str] = None,
+                         sources: Optional[list] = None) -> tuple:
+    """Fix what the deck's ONE regeneration left, in code, before anything renders.
+
+    - A template heading becomes a claim (`heading_as_claim`).
+    - A slide sentence printing a figure the caption does not vouch for is dropped when the
+      slide keeps other text; a heading printing one is re-set from the slide's first clean
+      sentence.
+    - A cover promise no slide delivers is replaced by the first body slide's heading, which IS
+      what the deck delivers.
+
+    Args:
+        carousel: The deck.
+        post_text: The caption.
+        sources: The author's story-bank facts.
+
+    Returns:
+        ``(carousel, changes)`` — a copy, and one line per change.
+    """
+    from cqc_lem.utilities.ai.fact_consistency import prints_any
+
+    if not isinstance(carousel, dict):
+        return carousel, []
+    out = _deck_copy(carousel)
+    changes: list = []
+    figures_by_slide = {f["slide"]: f["figures"] for f in deck_figure_issues(out, post_text,
+                                                                              sources)}
+    for slide in deck_slides(out):
+        title, content = slide["title"], slide["content"]
+        figures = figures_by_slide.get(_slide_label(slide))
+        if figures:
+            trimmed = _without_figure_sentences(content, figures)
+            if trimmed != content and not prints_any(trimmed, figures):
+                _set_slide(out, slide, "content", trimmed)
+                changes.append(f"dropped {', '.join(figures)} from “{_slide_label(slide)}”")
+                content = trimmed
+            if prints_any(title, figures):
+                clean = _first_sentence(content)
+                if clean and not prints_any(clean, figures):
+                    _set_slide(out, slide, "title", clean.rstrip("."))
+                    changes.append(f"re-headed “{title}” without {', '.join(figures)}")
+                    title = clean.rstrip(".")
+        if slide["graded"] and template_heading(title):
+            claim = heading_as_claim(title, content)
+            if claim and claim != title:
+                _set_slide(out, slide, "title", claim)
+                changes.append(f"“{title}” -> “{claim}”")
+                _drop_lead_sentence(out, slide, content, claim)
+    promise = cover_promise_gap(out)
+    if promise:
+        slides = deck_slides(out)
+        cover = next((s for s in slides if s["key"].lower() == "cover"), None)
+        first = next((s for s in slides if s["graded"] and s["title"]), None)
+        if cover and first:
+            _set_slide(out, cover, "title", first["title"])
+            changes.append(f"cover “{cover['title']}” promised “{promise}”; re-set to "
+                           f"“{first['title']}”")
+    return out, changes
+
+
 # ---------------------------------------------------------------------------
 # Showcase round 4: SMB-outcome fold, CTA-type rotation, topic diversity, deck-count and document
 # wording. The gauntlet's critic failed both monotony and engagement readiness: posts written for
@@ -3748,6 +4017,49 @@ def assign_cta_style(blueprint: Optional[dict], cta_type: str,
     return out
 
 
+# Showcase round 7: "share this with someone hiring their first operations person" closed 141 and
+# 142, "share your insights below" closed 143 and 144. A close's wording may not repeat within
+# `CTA_PHRASE_WINDOW` posts: two closes repeat when they share a normalised three-word run that
+# carries at least `CTA_PHRASE_MIN_CONTENT` content words.
+CTA_PHRASE_WINDOW = 6
+CTA_PHRASE_MIN_CONTENT = 2
+_POSSESSIVES = frozenset(("my", "your", "their", "our", "his", "her", "its"))
+
+
+def _ask_lines(text: Optional[str]) -> list:
+    lines = _closing_lines(text)[-_CTA_TAIL_LINES:]
+    return [ln for ln in lines if cta_type_of(ln) != CTA_TYPE_NONE]
+
+
+def cta_phrases(text: Optional[str]) -> set:
+    """The normalised three-word runs of a post's closing ASK, each with enough content words.
+
+    Possessives fold to one token ("your" = "their"), so "hiring your first operations person"
+    and "hiring their first operations person" repeat. A close with no ask has no phrases.
+    """
+    phrases = set()
+    for line in _ask_lines(text):
+        words = ["POSS" if w in _POSSESSIVES else w
+                 for w in re.findall(r"[a-z0-9']+", line.lower().replace("’", "'"))]
+        for i in range(len(words) - 2):
+            run = words[i:i + 3]
+            if sum(1 for w in run if w not in _STOPWORDS and w != "POSS") >= CTA_PHRASE_MIN_CONTENT:
+                phrases.add(" ".join(run))
+    return phrases
+
+
+def repeated_cta_phrase(text: Optional[str], recent_texts: Optional[list]) -> str:
+    """The closing-ask wording this post repeats from its last `CTA_PHRASE_WINDOW - 1` posts."""
+    mine = cta_phrases(text)
+    if not mine:
+        return ""
+    for other in list(recent_texts or [])[:CTA_PHRASE_WINDOW - 1]:
+        shared = sorted(mine & cta_phrases(other))
+        if shared:
+            return shared[0].replace("POSS", "your")
+    return ""
+
+
 def strip_closing_ask(text: Optional[str]) -> Optional[str]:
     """The post with its closing ask paragraph removed, when the rest still stands as a post.
 
@@ -3943,6 +4255,10 @@ HOOK_SHAPES = (HOOK_SHAPE_STATEMENT, HOOK_SHAPE_NUMBER, HOOK_SHAPE_STORY, HOOK_S
 # any `WHAT_IF_WINDOW` consecutive posts.
 HOOK_SHAPE_WINDOW = 5
 WHAT_IF_WINDOW = 5
+# Showcase round 7: 6 of 14 posts opened on a question. At most `QUESTION_HOOK_CAP` question
+# openers in any `QUESTION_HOOK_WINDOW` consecutive posts.
+QUESTION_HOOK_CAP = 2
+QUESTION_HOOK_WINDOW = 6
 # Which `HOOK_STYLES` entry each shape is written with (first one the format allows wins), so the
 # blueprint's hook style and its opening shape never contradict each other.
 HOOK_SHAPE_STYLES: dict = {
@@ -4035,6 +4351,16 @@ def opening_shape(text: Optional[str]) -> Optional[str]:
     return HOOK_SHAPE_STATEMENT
 
 
+def question_hooks_capped(recent_texts: Optional[list]) -> bool:
+    """Whether this post may NOT open on a question (showcase round 7).
+
+    True when the previous `QUESTION_HOOK_WINDOW - 1` posts already hold `QUESTION_HOOK_CAP`
+    question openers.
+    """
+    window = list(recent_texts or [])[:QUESTION_HOOK_WINDOW - 1]
+    return sum(1 for t in window if opening_shape(t) == HOOK_SHAPE_QUESTION) >= QUESTION_HOOK_CAP
+
+
 def what_if_banned(recent_texts: Optional[list]) -> bool:
     """Whether a "What if" opener already ran in the last `WHAT_IF_WINDOW - 1` posts."""
     return any(opens_with_what_if(t) for t in list(recent_texts or [])[:WHAT_IF_WINDOW - 1])
@@ -4060,8 +4386,9 @@ def select_hook_shape(recent_texts: Optional[list], smb: Optional[bool] = None,
                       allowed: Optional[tuple] = None) -> str:
     """The opening shape THIS post is written with, rotated against the user's recent openings.
 
-    Never the shape the previous post opened with, and the least recently used of the rest over
-    the last `HOOK_SHAPE_WINDOW` posts; ties go to the audience's preferred order (a small-business
+    Never the shape the previous post opened with, never a question once the window holds
+    `QUESTION_HOOK_CAP` of them (`question_hooks_capped`), and the least recently used of the
+    rest over the last `HOOK_SHAPE_WINDOW` posts; ties go to the audience's preferred order (a small-business
     owner's posts lead with statements and numbers, a practitioner's with a contrarian take).
 
     Args:
@@ -4077,7 +4404,9 @@ def select_hook_shape(recent_texts: Optional[list], smb: Optional[bool] = None,
     menu = [s for s in order if s in (allowed or HOOK_SHAPES)] or list(order)
     recent = [opening_shape(t) for t in list(recent_texts or [])[:HOOK_SHAPE_WINDOW]]
     head = recent[0] if recent else None
-    candidates = [s for s in menu if s != head] or menu
+    capped = question_hooks_capped(recent_texts)
+    candidates = [s for s in menu if s != head
+                  and not (capped and s == HOOK_SHAPE_QUESTION)] or menu
 
     def rank(shape: str) -> int:
         return recent.index(shape) if shape in recent else len(recent) + 1
@@ -4121,12 +4450,16 @@ def hook_shape_violation(text: Optional[str], recent_texts: Optional[list]) -> O
         recent_texts: The user's recent posts, most recent first.
 
     Returns:
-        A plain-English reason: the same shape as the previous post, or a "What if" opener inside
-        the `WHAT_IF_WINDOW`. None when the opening is fine.
+        A plain-English reason: the same shape as the previous post, a "What if" opener inside
+        the `WHAT_IF_WINDOW`, or a question opener over `QUESTION_HOOK_CAP`. None when the opening
+        is fine.
     """
     recent = list(recent_texts or [])
     if opens_with_what_if(text) and what_if_banned(recent):
         return f"opens 'What if' again within {WHAT_IF_WINDOW} posts"
+    if opening_shape(text) == HOOK_SHAPE_QUESTION and question_hooks_capped(recent):
+        return (f"opens on a question when {QUESTION_HOOK_CAP} of the last "
+                f"{QUESTION_HOOK_WINDOW - 1} posts already did")
     shape = opening_shape(text)
     if recent and shape and shape == opening_shape(recent[0]):
         return f"opens with the same shape as the previous post ({shape})"
@@ -4185,6 +4518,32 @@ def _reconcile_text(text: str, count: int) -> tuple:
     return _DECK_COUNT_COMPOUND_RE.sub(fix, text), changed
 
 
+# A deck describing its OWN length ("A 4-part conversation starter", "this 6-slide guide"): the
+# reader checks it against the page counter ("1 / 6"), which counts the cover and the CTA, so it can
+# never read true while the body-slide count is right (showcase round 7, slot_143). It is dropped.
+_DECK_SELF_LENGTH_RE = re.compile(
+    r"(?:\b(?P<article>an?)\s+)?\b(?:\d{1,2}|" + "|".join(_DECK_COUNT_WORDS) + r")[-‑‐]"
+    r"(?:part|slide|page|piece)\b\s*", re.IGNORECASE)
+
+
+def drop_self_length(text: Optional[str]) -> tuple:
+    """``text`` without any count it makes about the deck's own length; ``(text, dropped)``."""
+    if not text:
+        return text, []
+    dropped: list = []
+
+    def fix(match: "re.Match") -> str:
+        dropped.append(match.group(0).strip())
+        article = match.group("article")
+        if not article:
+            return ""
+        following = match.string[match.end():match.end() + 1].lower()
+        word = "an" if following and following in "aeiou" else "a"
+        return (word.capitalize() if article[:1].isupper() else word) + " "
+
+    return _DECK_SELF_LENGTH_RE.sub(fix, text), dropped
+
+
 def reconcile_deck_counts(carousel: Optional[dict], post_text: Optional[str] = None) -> tuple:
     """Make the deck's own promised count equal the item slides it actually carries. Deterministic.
 
@@ -4211,10 +4570,13 @@ def reconcile_deck_counts(carousel: Optional[dict], post_text: Optional[str] = N
         fixed = dict(cover)
         for key, value in cover.items():
             if isinstance(value, str):
+                value, dropped = drop_self_length(value)
                 fixed[key], changed = _reconcile_text(value, count)
-                changes += changed
+                changes += dropped + changed
         out["cover"] = fixed
-    caption = post_text
+    caption, dropped = drop_self_length(post_text)
+    changes += dropped
+    post_text = caption
     claims = deck_count_claims(post_text)
     if len(claims) == 1 and not deck_count_report(out, post_text)["passes"]:
         caption, changed = _reconcile_text(str(post_text), count)

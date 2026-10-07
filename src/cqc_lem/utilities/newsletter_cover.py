@@ -18,6 +18,7 @@ Paths are stored RELATIVE to ``assets_dir`` so they map straight onto ``/api/ass
 
 import json
 import os
+import re
 import secrets
 import shutil
 from dataclasses import dataclass
@@ -414,13 +415,60 @@ def cover_headline(brief_hook: Optional[str], concept: Any, title: Optional[str]
     """
     if (brief_hook or "").strip():
         return brief_hook
+    from cqc_lem.utilities.ai.fact_consistency import prints_any
     from cqc_lem.utilities.post_image import last_resort_hook
 
+    # Showcase round 7: a figure the edition body never sources (cover_18's 53.7%) is never the
+    # fallback headline either — the first numberless candidate wins, else the title without it.
+    unsourced = tuple(getattr(concept, "unsourced_figures", ()) or ())
+    first = None
     for text in (title, subtitle):
         hook = last_resort_hook(None, text or "")
-        if hook:
+        if hook and not prints_any(hook, unsourced):
             return hook
+        first = first or hook
+    if unsourced and concept is not None:
+        from cqc_lem.utilities.ai.image_concept import clause_hook
+
+        clause = clause_hook(" ".join(w for w in (getattr(concept, "thesis", "") or "").split()
+                                      if not any(ch.isdigit() for ch in w)))
+        if clause:
+            return clause
+    if first:
+        return _without_figures(first, unsourced)
     return last_resort_hook(concept, "") if concept is not None else None
+
+
+def cited_byline(byline: Optional[str], headline: Optional[str], concept: Any) -> Optional[str]:
+    """The cover's byline, carrying the edition's own source when the headline prints a figure.
+
+    Showcase round 7: cover_18 printed 53.7% with no source. A stat card draws its source line
+    itself; any other cover whose headline carries a figure the body cites by name (the concept's
+    ``graphic.source_line``, set by ``image_concept.apply_figure_provenance``) prints it beside
+    the byline.
+
+    Args:
+        byline: The byline the cover would draw.
+        headline: The headline it sets.
+        concept: The brief's concept, or None.
+
+    Returns:
+        The byline, possibly with " · Source: …" appended.
+    """
+    source_line = str(((getattr(concept, "graphic", None) or {}).get("source_line")) or "").strip()
+    if (not source_line or not any(ch.isdigit() for ch in headline or "")
+            or getattr(concept, "archetype", "") == "stat_card"):
+        return byline
+    return f"{byline} · {source_line}" if byline else source_line
+
+
+def _without_figures(text: str, figures: tuple) -> str:
+    """``text`` with each figure (and an "of" that hung on it) removed, re-capitalised."""
+    out = text
+    for figure in figures:
+        out = re.sub(re.escape(figure) + r"\s*(?:of\s+)?", "", out, flags=re.IGNORECASE)
+    out = " ".join(out.split()).strip(" -–—:,")
+    return out[:1].upper() + out[1:] if out else text
 
 
 def ensure_composed_cover(path: str, hook: Optional[str], render_info: dict, *, concept: Any,
@@ -519,6 +567,7 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
     from cqc_lem.utilities.ai.image_gen import render_avatar_image_gated, render_image_gated
     from cqc_lem.utilities.brand_kit import brand_clause_for_user
     from cqc_lem.utilities.media_provenance import write_brief_receipt
+    from cqc_lem.utilities.post_image import story_facts_for
 
     shape = (f"format={edition_format or 'unspecified'}, hook_style={hook_style or 'unspecified'}"
             if edition_format or hook_style else None)
@@ -539,7 +588,8 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
             recent_hook_shapes=_recent_concept_field(user_id, "hook_shape", ROTATION_WINDOW),
             recent_shots=_recent_concept_field(user_id, "shot", ROTATION_WINDOW),
             recent_archetypes=_recent_cover_archetypes(user_id, ARCHETYPE_WINDOW),
-            recent_art_styles=_recent_concept_field(user_id, "art_style", ROTATION_WINDOW))
+            recent_art_styles=_recent_concept_field(user_id, "art_style", ROTATION_WINDOW),
+            facts=story_facts_for(user_id))
         # Round 8: the avatar is resolved AFTER Stage 1, so the fit rule can read the concept.
         avatar = _resolve_cover_avatar(user_id, use_avatar, title, subtitle, body,
                                        concept=concept)
@@ -561,6 +611,7 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
     # Showcase round 4: every cover is COMPOSED — kicker, headline, byline. cover_19 shipped as a
     # bare people photo because no hook survived; the edition's own title is then the headline.
     hook = cover_headline(brief.hook_text, concept, title, subtitle)
+    byline = cited_byline(byline, hook, brief.concept)
     render_info: dict = {}
     try:
         if avatar:

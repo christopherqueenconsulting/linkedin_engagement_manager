@@ -273,25 +273,33 @@ def timeline_violations(text: Optional[str], happened_at: Any, now: Any = None) 
     return issues
 
 
-def consistency_report(text: Optional[str], happened_at: Any = None, now: Any = None) -> dict:
+def consistency_report(text: Optional[str], happened_at: Any = None, now: Any = None,
+                       hook_facts: Optional[list] = None,
+                       hook_flagged: Optional[list] = None) -> dict:
     """Every date/timeline consistency check on one draft. Deterministic.
 
     Args:
         text: The draft as it would ship.
         happened_at: The anchoring story's date, or None (the timeline check is then skipped).
         now: Today, for the timeline check.
+        hook_facts: The story-bank facts a figure in the hook may come from (showcase round 7,
+            ``hook_provenance_issues``). None skips the hook check — only a caller holding the
+            allow-list can run it.
+        hook_flagged: Figures the fact-grounding gate already holds the post for.
 
     Returns:
-        ``{passes, issues, weekday, deadline, timeline}`` — ``issues`` is the plain-English list a
-        finding and a repair brief carry.
+        ``{passes, issues, weekday, deadline, timeline, provenance}`` — ``issues`` is the
+        plain-English list a finding and a repair brief carry.
     """
     weekday = [f"\"{w['phrase']}\": that date is a {w['actual']}, not a {w['stated']}"
                for w in weekday_mismatches(text)]
     deadline = deadline_contradictions(text)
     timeline = timeline_violations(text, happened_at, now) if happened_at else []
-    issues = weekday + deadline + timeline
+    provenance = (hook_provenance_issues(text, hook_facts, hook_flagged)
+                  if hook_facts is not None else [])
+    issues = weekday + deadline + timeline + provenance
     return {"passes": not issues, "issues": issues, "weekday": weekday, "deadline": deadline,
-            "timeline": timeline}
+            "timeline": timeline, "provenance": provenance}
 
 
 # --- Leaked sign-offs ------------------------------------------------------------------------------
@@ -370,3 +378,209 @@ def named_source_material(text: Optional[str]) -> str:
         The sourced sentences, one per line; '' when none name a source.
     """
     return "\n".join(s for s in _sentences(text) if _NAMED_SOURCE_RE.search(s))
+
+
+# --- Number provenance on images and hooks (showcase round 7) -------------------------------------
+
+# How the post vouches for a figure: a supplied fact (story bank / curated source text), a sentence
+# that names its source, or — when the caller had no fact list — a first-person sentence.
+PROVENANCE_FACT = "fact"
+PROVENANCE_SOURCE = "source"
+PROVENANCE_FIRST_HAND = "first_hand"
+
+# The longest source name a cover's source line carries; longer reads as a sentence, not a credit.
+SOURCE_NAME_MAX = 60
+_NAME_WORDS = r"[A-Z][\w&.'’-]*(?:\s+(?:of\s+|and\s+|&\s+)?[A-Z0-9][\w&.'’-]*){0,6}"
+_SOURCE_NAME_RES = (
+    re.compile(r"\b(?i:according\s+to)\s+(?:the\s+|a\s+|an\s+)?(?P<name>" + _NAME_WORDS + r")"),
+    re.compile(r"\b(?i:per|via)\s+(?:the\s+)?(?P<name>" + _NAME_WORDS + r")"),
+    re.compile(r"\b" + _SOURCE_NOUN + r"\s+(?:by|from|of)\s+(?:the\s+)?(?P<name>" + _NAME_WORDS
+               + r")"),
+    re.compile(r"\(\s*(?P<name>[A-Z][\w&.'’\- ]{1,40}?),?\s*(?:19|20)\d{2}\s*\)"),
+    re.compile(r"\b" + _NOT_A_NAME + r"(?P<name>[A-Z][\w&.'’-]+(?:\s+[A-Z][\w&.'’-]+){0,3}?)"
+               r"(?:'s|’s)?\s+(?:(?:19|20)\d{2}\s+)?" + _SOURCE_NOUN + r"\b"),
+)
+
+
+# A named source that opens its own sentence with a research verb: "Originality.ai looked at 3,000
+# posts", "Gartner found…". The figure is often in the NEXT sentence, which is why a figure's
+# provenance window is its own sentence and the one before it.
+_RESEARCH_VERB_SOURCE_RE = re.compile(
+    r"^\W*" + _NOT_A_NAME + r"(?!(?:I|We|You|They|He|She|It|Teams?|People|Companies|Most|"
+    r"Everyone|Nobody)\b)(?P<name>[A-Z][\w&.'’-]+(?:\s+[A-Z][\w&.'’-]+){0,3})\s+"
+    r"(?:found|finds|reported|reports|surveyed|surveys|analy[sz]ed|studied|looked\s+at|measured|"
+    r"tracked|estimated|estimates|published|polled)\b")
+
+
+def _names_source(sentence: str) -> bool:
+    return bool(_NAMED_SOURCE_RE.search(sentence) or _RESEARCH_VERB_SOURCE_RE.search(sentence))
+
+
+def _figure_windows(value: str, body: Optional[str]) -> list:
+    """``(sentence, window)`` for every body sentence stating ``value``.
+
+    The window is that sentence plus the one before it.
+    """
+    sentences = _sentences(body)
+    return [(s, sentences[max(0, i - 1):i + 1]) for i, s in enumerate(sentences)
+            if any(c["value"] == value for c in _claims(s))]
+
+
+def _claims(text: Optional[str]) -> list:
+    from cqc_lem.utilities.ai.content_framework import numeric_claims
+
+    return numeric_claims(text)
+
+
+def _fact_values(facts: Optional[list]) -> set:
+    # Every number a fact contains — the same generous read the fact-grounding gate's anchors
+    # get, so "Shipped 41 PRs" is never mistaken for a product version and dropped.
+    from cqc_lem.utilities.ai.content_framework import _anchor_numbers
+
+    return _anchor_numbers([str(f) for f in (facts or []) if f])
+
+
+def figure_provenance(value: str, body: Optional[str], facts: Optional[list] = None) -> str:
+    """How the post vouches for ONE figure, or '' when it does not. Deterministic.
+
+    A figure printed on an image, or used in a hook, is only as true as the post body makes it.
+    It must appear in a body sentence AND be backed there by one of (a source named in the
+    sentence just before counts too — "Originality.ai looked at 3,000 posts. 53.7% of …"):
+
+    - a supplied fact (``facts``: the author's story-bank facts, curated source text) — first-hand
+      and verified;
+    - the sentence naming its source ("according to Gartner", "(Edelman, 2025)", "Stanford's
+      survey");
+    - with ``facts`` None (the caller had no allow-list), a first-person sentence — the body's own
+      fabrication gate is what checks a first-person number against the story bank.
+
+    Args:
+        value: The figure, normalised the way ``content_framework.numeric_claims`` writes it.
+        body: The post body the figure must appear in.
+        facts: The allow-list, or None when the caller has none.
+
+    Returns:
+        ``PROVENANCE_FACT``, ``PROVENANCE_SOURCE``, ``PROVENANCE_FIRST_HAND``, or ''.
+    """
+    windows = _figure_windows(value, body)
+    if not windows:
+        return ""
+    if facts is not None and value in _fact_values(facts):
+        return PROVENANCE_FACT
+    if any(_names_source(w) for _, window in windows for w in window):
+        return PROVENANCE_SOURCE
+    if facts is None and any(_FIRST_PERSON_RE.search(s) for s, _ in windows):
+        return PROVENANCE_FIRST_HAND
+    return ""
+
+
+def unprovenanced_figures(surface_text: Optional[str], body: Optional[str],
+                          facts: Optional[list] = None) -> list:
+    """The figures ``surface_text`` prints that the post body does not vouch for, as written.
+
+    Args:
+        surface_text: What the image or hook prints (a headline, a stat, a slide, a title).
+        body: The post body (``figure_provenance``).
+        facts: The allow-list, or None.
+
+    Returns:
+        The offending figures as the surface writes them, in order, de-duplicated.
+    """
+    out: list = []
+    seen: set = set()
+    for claim in _claims(surface_text):
+        if claim["value"] not in seen and not figure_provenance(claim["value"], body, facts):
+            out.append(claim["raw"])
+        seen.add(claim["value"])
+    return out
+
+
+def prints_any(text: Optional[str], figures) -> bool:
+    """Does ``text`` print any of ``figures`` ("53.7 %" and "53.7%" are one figure)?"""
+    wanted = {c["value"] for f in (figures or ()) for c in _claims(str(f))}
+    return bool(wanted) and any(c["value"] in wanted for c in _claims(text))
+
+
+def source_name_for(value: str, body: Optional[str]) -> str:
+    """The source a body sentence names for ``value`` ("Gartner"), or '' when none is readable.
+
+    A citation marker or a bare URL vouches for a figure but names nobody a cover could print, so
+    it returns ''.
+
+    Args:
+        value: The figure, normalised (``numeric_claims``).
+        body: The post body.
+
+    Returns:
+        The source's name as the body writes it, at most ``SOURCE_NAME_MAX`` characters.
+    """
+    for _sentence, window in _figure_windows(value, body):
+        for rx, sentence in ((rx, w) for w in reversed(window)
+                             for rx in (*_SOURCE_NAME_RES, _RESEARCH_VERB_SOURCE_RE)):
+            match = rx.search(sentence)
+            if match:
+                name = re.sub(r"['’]s$", "", " ".join(match.group("name").split()))
+                name = name.strip(" .,;:'’")
+                if name and len(name) <= SOURCE_NAME_MAX:
+                    return name
+    return ""
+
+
+def hook_line(text: Optional[str]) -> str:
+    """A post's hook: the opening sentence of its first non-empty line — what stops the scroll."""
+    first = next((ln.strip() for ln in (text or "").splitlines() if ln.strip()), "")
+    return (_sentences(first) or [""])[0]
+
+
+def hook_provenance_issues(text: Optional[str], facts: Optional[list],
+                           already_flagged: Optional[list] = None) -> list:
+    """The hook's figures the post does not vouch for, as plain-English issues.
+
+    The hook is the line a reader sees before deciding to read on, so a figure there needs the
+    same backing as one printed on an image: a story-bank fact, or a sentence naming its source.
+    A first-person sentence alone is not enough here — ``facts`` is the allow-list.
+
+    Args:
+        text: The post.
+        facts: The story-bank facts (plus any curated source text); None reads as no facts.
+        already_flagged: Figures another finding already names (the fact-grounding gate's
+            unverified values), so one invented number is never reported twice.
+
+    Returns:
+        One issue per figure.
+    """
+    skip = {c["value"] for raw in (already_flagged or []) for c in _claims(str(raw))}
+    return [f"the hook states \"{raw}\" but the post never backs it with a story-bank fact or a "
+            f"named source: cut it from the hook, or name where it comes from"
+            for raw in unprovenanced_figures(hook_line(text), text, list(facts or []))
+            if not ({c["value"] for c in _claims(raw)} & skip)]
+
+
+# A result claimed with no figure: "Error rates dropped sharply", "Satisfaction rose noticeably".
+_RESULT_VERBS = (r"(?:dropped|fell|rose|grew|doubled|tripled|halved|increased|decreased|improved|"
+                 r"declined|surged|plummeted|soared|jumped|climbed|shrank|spiked|skyrocketed|"
+                 r"tanked|dipped|slid)")
+_VAGUE_INTENSIFIERS = (r"(?:sharply|significantly|dramatically|noticeably|drastically|massively|"
+                       r"substantially|considerably|greatly|hugely|markedly|tremendously|"
+                       r"steeply|rapidly)")
+_VAGUE_RESULT_RE = re.compile(
+    r"\b" + _RESULT_VERBS + r"\s+(?:\w+\s+){0,2}?" + _VAGUE_INTENSIFIERS + r"\b|\b"
+    + _VAGUE_INTENSIFIERS + r"\s+" + _RESULT_VERBS + r"\b", re.IGNORECASE)
+
+
+def vague_result_claim(text: Optional[str]) -> str:
+    """A result claimed with no figure ("dropped sharply"), or '' when there is none or a number.
+
+    A headline that says something dropped must say what and by how much, from the facts, or not
+    claim a result at all.
+
+    Args:
+        text: A headline or hook.
+
+    Returns:
+        The vague phrase, or ''.
+    """
+    if not text or any(ch.isdigit() for ch in text):
+        return ""
+    match = _VAGUE_RESULT_RE.search(text)
+    return " ".join(match.group(0).split()) if match else ""

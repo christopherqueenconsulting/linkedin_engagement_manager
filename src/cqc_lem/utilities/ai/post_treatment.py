@@ -66,8 +66,12 @@ RHYTHM_DIMENSIONS = ("treatment", "layout", "panel", "shot", "grade", "setting",
 STYLE_PEOPLE_PHOTO = "people_photo"
 STYLE_CODE_DRAWN = "code_drawn_card"
 STYLE_QUOTE_CARD = "quote_card"
-QUOTE_CAP = 2
-QUOTE_CAP_WINDOW = 6
+# Showcase round 7: three identical dark quote cards in one batch — at most one in four posts.
+QUOTE_CAP = 1
+QUOTE_CAP_WINDOW = 4
+# Showcase round 7: no identical (layout, panel) pair within the last `PAIR_WINDOW` visuals of the
+# same surface family — cards, title cards, decks and covers each answer to it.
+PAIR_WINDOW = 4
 # Round 5: one setting class at most twice in the last six classified AI renders.
 SETTING_CAP = 2
 SETTING_CAP_WINDOW = 6
@@ -287,6 +291,56 @@ def gate_value(value: Optional[str], options: Sequence[str], recent: Sequence[An
     others = [o for o in lru_order(options, [r for r in recent if r], seed) if o != value]
     pick, _ = sameness_pick(others, recent)
     return (pick or value), pick is not None
+
+
+def recent_pairs(recent_firsts: Sequence[Any], recent_seconds: Sequence[Any],
+                 window: int = PAIR_WINDOW) -> set:
+    """The ``(first, second)`` pairs the next visual may not repeat: the previous ``window - 1``.
+
+    Args:
+        recent_firsts: One dimension of the family's recent visuals (a layout), most recent first.
+        recent_seconds: The other, aligned (a panel).
+        window: The window the next visual completes.
+
+    Returns:
+        The pairs shown, unknown halves skipped.
+    """
+    depth = max(0, window - 1)
+    return {(a, b) for a, b in zip(list(recent_firsts)[:depth], list(recent_seconds)[:depth])
+            if a and b}
+
+
+def fresh_pair(first: Optional[str], second: Optional[str], firsts: Sequence[str],
+               seconds: Sequence[str], recent_firsts: Sequence[Any],
+               recent_seconds: Sequence[Any], window: int = PAIR_WINDOW) -> tuple:
+    """``(first, second, changed)`` — never a pair shown in the family's last ``window`` visuals.
+
+    The second dimension moves first (a panel or ground is the cheaper change); the first only
+    when no second clears it. With every pair shown the input is kept.
+
+    Args:
+        first: The rotation's pick for the first dimension.
+        second: Its pick for the second.
+        firsts: The first dimension's options, in preference order.
+        seconds: The second dimension's options, in preference order.
+        recent_firsts: The family's recent firsts, most recent first.
+        recent_seconds: Its recent seconds, aligned.
+        window: ``PAIR_WINDOW``.
+
+    Returns:
+        The pair to use and whether it changed.
+    """
+    shown = recent_pairs(recent_firsts, recent_seconds, window)
+    if not first or not second or (first, second) not in shown:
+        return first, second, False
+    for alt in seconds:
+        if (first, alt) not in shown:
+            return first, alt, True
+    for alt_first in firsts:
+        for alt in (second, *seconds):
+            if (alt_first, alt) not in shown:
+                return alt_first, alt, True
+    return first, second, False
 
 
 def wants_card(recent_treatments: Sequence[str], card_share: float,
@@ -631,6 +685,8 @@ def quote_candidates(text: str, thesis: str = "",
     Returns:
         Up to ``limit`` sentences.
     """
+    from cqc_lem.utilities.ai.content_framework import CTA_TYPE_NONE, cta_type_of
+    from cqc_lem.utilities.ai.fact_consistency import unprovenanced_figures
     from cqc_lem.utilities.ai.image_concept import _content_tokens
 
     thesis_tokens = set(_content_tokens(thesis or ""))
@@ -648,6 +704,10 @@ def quote_candidates(text: str, thesis: str = "",
         if "#" in sentence or _LINK.search(sentence) or not _settable(sentence):
             continue
         if not is_verbatim(sentence, text):
+            continue
+        # Showcase round 7: a quote card is a claim, never the CTA (slot_125 quoted "If you're a
+        # compliance lead…"), and never a figure the post does not vouch for (rhythm_3's 60%).
+        if cta_type_of(sentence) != CTA_TYPE_NONE or unprovenanced_figures(sentence, text):
             continue
         score = 3 * len(_STANCE.findall(sentence.replace("’", "'")))
         score += min(3, len(thesis_tokens & set(_content_tokens(sentence))))
@@ -880,6 +940,10 @@ def plan_post_rhythm(concept: Any, text: str, history: Mapping[str, Sequence[Any
     layout, again = gate_value(getattr(concept, "layout", "") or "", POST_LAYOUTS,
                                history.get("layout", []), seed + "layout")
     rerolled += ["layout"] if again else []
+    # Round 7: never the (layout, panel) pair one of the last few posts shipped.
+    layout, panel, again = fresh_pair(layout, panel, POST_LAYOUTS, tuple(panels) or ("charcoal",),
+                                      history.get("layout", []), history.get("panel", []))
+    rerolled += ["layout_panel"] if again else []
     shot, again = gate_value(getattr(concept, "shot", "") or "", SHOTS, history.get("shot", []),
                              seed + "shot")
     rerolled += ["shot"] if again else []

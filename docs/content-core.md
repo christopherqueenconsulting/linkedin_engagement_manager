@@ -317,6 +317,64 @@ never mention it. Every rule below lives in the shared core and is deterministic
 Tests: `test_fact_consistency.py`, `test_content_core_r6.py`, `test_deck_substance.py`,
 `tests/unit/app/test_fact_consistency_wiring.py`.
 
+### Every printed figure has provenance, decks claim what they show (showcase round 7)
+
+The round-7 critic (`gauntlet/critic7/critic_scores.json`) failed credibility and monotony again:
+an unsourced "5.6 hours per week" hook and "80% of companies" (slot_141), 45% on an image (rhythm_4),
+53.7% on a cover (cover_18), "Error rates dropped sharply" as a headline (slot_130), "4-part" on a
+6-page deck (143), template headings ("The Stakes:", "Step 1: Identify…"), a cover promising "From
+Silence to Success" over a deck with no success (144), six of fourteen posts opening on a question,
+"first operations person" closing two posts in a row, and four curated drafts on one template. The
+image half (headlines, cards, covers, rotation) is in `docs/image-stack.md`, "Showcase round 7".
+
+- **Provenance** (`fact_consistency.figure_provenance` / `unprovenanced_figures`). A figure printed
+  on an image or used in a hook must appear in a body sentence AND be backed by a story-bank fact
+  (the allow-list), or by a source named in that sentence or the one before it ("according to X",
+  "(X, 2025)", "X's survey", "X looked at 3,000 posts"). With no allow-list (None) a first-person
+  sentence also counts. `source_name_for` reads the name a cover can print.
+- **The hook** (`hook_provenance_issues`, `consistency_report(hook_facts=…)`). The hook is the
+  opening sentence. A figure there that the story bank does not hold and the body never sources is
+  a `fact_consistency` finding: the editor's ONE repair, then the PENDING hold, on the review gate
+  and live on every gate pass where numbers are graded (never over an author's edit). A figure the
+  fact-grounding gate already names (`hook_flagged`) is not reported twice. Research numbers are NOT
+  an allow-list here: a research figure in the hook needs its source named in the post.
+- **The decimal bug.** `numeric_claims` read a line-opening decimal as list numbering ("5.6 hours"
+  as "6 hours", "53.7%" as "7%"), so no allow-list could match it. `_LEADING_ENUM_RE` now needs no
+  digit after the dot.
+- **Deck counts.** The body slides are the count (cover and CTA excluded) for an item claim ("3 key
+  steps"), on the cover and the caption. A deck describing its OWN length ("A 4-part conversation
+  starter", "this 6-slide guide") is dropped (`drop_self_length`): the reader checks it against the
+  page counter ("1 / 6"), which counts the cover and CTA, so it never reads true. That was the
+  escape on slot_143, whose four body slides matched "4-part".
+- **Deck claims** (`deck_claims_report`). A body slide headed with a role label
+  (`template_heading`: "The Stakes:", "The Challenge:", "Step 1:"), a cover promise no body slide
+  delivers (`cover_promise_gap`: the "to …" of "From X to Y", or a promise word such as
+  "success"), and a slide figure the caption does not vouch for (`deck_figure_issues`) join the
+  deck's ONE substance regeneration (`ai_helper._repair_carousel_substance`). The retry must have
+  strictly fewer faults of both kinds. What survives is fixed in code before render
+  (`finalize_deck_claims`): the label goes (`heading_as_claim`: the rest when it asserts, else the
+  slide's first short sentence), a figure's sentence is dropped, and an undelivered cover is
+  re-headed with the first body slide's heading.
+- **Question hooks** (`QUESTION_HOOK_CAP` 2 per `QUESTION_HOOK_WINDOW` 6). `select_hook_shape`
+  never assigns a question once the window holds two, and `hook_shape_violation` names a third, so
+  the existing hook retry and `drop_opening_question` apply. A deck caption, which gets no hook
+  pass, has its opening question cut in code (`run_content_plan._enforce_batch_variety`).
+- **CTA wording** (`cta_phrases`, `repeated_cta_phrase`, `CTA_PHRASE_WINDOW` 6). A close repeats
+  another when their closing asks share a normalised three-word run with two content words
+  (possessives fold, so "your" = "their"). `_cut_repeated_cta_phrase` cuts the repeated ask when the
+  post stands without it, on text posts (after the type rotation) and deck captions. The promo
+  slot's artifact close is never touched.
+- **Curated commentary** (`curated_commentary.py`, `docs/curated-sources.md`). The structure and its
+  close rotate (`CURATED_STRUCTURES`: takeaway + contrarian note, one concrete example, pros/cons,
+  what I'd test first), least recently used against the author's recent curated posts. The
+  "For a small-business owner" opener and a closing "Which…?" are cut in code. A product, feature or
+  organisation the source text does not name (`unsourced_names`) gets one rewrite, then loses its
+  sentence. "In practice" / "I tested it" is re-attributed to the source unless a story-bank fact
+  mentions it (`first_hand_supported`).
+
+Tests: `test_provenance_r7.py`, `test_deck_claims_r7.py`, `test_batch_variety_r7.py`,
+`test_curated_faithfulness_r7.py`.
+
 ### Save-targeted archetypes (issue #619)
 
 Two save-targeted post archetypes live in the same `POST_FORMATS` menu: `build_receipt` and

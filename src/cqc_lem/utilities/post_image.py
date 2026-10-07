@@ -398,6 +398,35 @@ def recent_post_receipts(user_id: int, limit: int) -> list[dict]:
     return [payload for _, _, payload in found][:max(0, int(limit))]
 
 
+def story_facts_for(user_id: Optional[int]) -> Optional[list]:
+    """The author's story-bank facts a printed figure may come from (showcase round 7).
+
+    The allow-list ``image_concept.apply_figure_provenance`` reads, shared by every image surface
+    (post images, video concepts, covers). An empty bank is ``[]`` (a figure then needs a named
+    source in the body); an unreadable one is None, which judges a figure by the body alone —
+    the post's own fabrication gate still grades its first-person numbers. Never raises.
+
+    Args:
+        user_id: The author; None reads nothing.
+
+    Returns:
+        The facts, or None when they could not be read.
+    """
+    if user_id is None:
+        return None
+    try:
+        from cqc_lem.utilities.ai.story_bank import fact_sources
+        from cqc_lem.utilities.db import get_story_bank_entries
+
+        entries = get_story_bank_entries(user_id, active_only=True) or []
+        return [str(f) for entry in entries if isinstance(entry, dict)
+                for f in fact_sources(entry) if f]
+    except Exception as e:
+        log_debug("Story bank unreadable for image figure provenance — judging by the body",
+                  error=str(e), user_id=user_id, action_type="post_image")
+        return None
+
+
 def recent_post_archetypes(user_id: int, limit: int) -> list[str]:
     """The archetypes this author's most recent post images shipped as, most-recent first.
 
@@ -595,15 +624,27 @@ def last_resort_hook(concept, text: str) -> Optional[str]:
     if hook:
         return hook
     plain = " ".join(_NOT_SETTABLE.sub(" ", text or "").split())
-    first = re.split(r"(?<=[.!?])\s+", plain, maxsplit=1)[0].strip()
-    if not first:
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", plain) if s.strip()]
+    if not sentences:
         return None
+    # Showcase round 7: the headline never prints a figure the post does not vouch for — the
+    # first sentence that carries none (or only vouched-for ones) leads; the opening otherwise.
+    unsourced = set(getattr(concept, "unsourced_figures", ()) or ())
+    first = next((s for s in sentences if not _prints_unvouched(s, text, unsourced)),
+                 sentences[0])
     if len(first.split()) <= _LAST_RESORT_MAX_WORDS:
         return first
     clause = _CLAUSE_BREAK.split(first, maxsplit=1)[0].strip()
     if 2 <= len(clause.split()) <= _LAST_RESORT_CLAUSE_WORDS:
         return clause
     return " ".join(first.split()[:_LAST_RESORT_MAX_WORDS]).rstrip(",;:—-") + "…"
+
+
+def _prints_unvouched(candidate: str, text: str, unsourced: set) -> bool:
+    """Does ``candidate`` print a figure the post does not vouch for (body-only rule)?"""
+    from cqc_lem.utilities.ai.fact_consistency import prints_any, unprovenanced_figures
+
+    return bool(unprovenanced_figures(candidate, text)) or prints_any(candidate, unsourced)
 
 
 def _render_last_resort_card(concept, rhythm, text: str, *, user_id: int,
@@ -938,7 +979,8 @@ def generate_image_for_post(user_id: int, text: str, post_id: Optional[int] = No
         recent_layouts=[v for v in history["layout"] if v],
         recent_casts=[c for c in history["cast"] if c],
         recent_shots=[v for v in history["shot"] if v],
-        recent_art_styles=[v for v in history["style"] if v in ART_STYLES])
+        recent_art_styles=[v for v in history["style"] if v in ART_STYLES],
+        facts=story_facts_for(user_id))
     brand = brand_clause_for_user(user_id)
     card_share = card_share_for_user(user_id)
     byline = (getattr(profile, "full_name", None) or "").strip() or None

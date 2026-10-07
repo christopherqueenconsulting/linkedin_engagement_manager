@@ -34,6 +34,20 @@ _CLEAN = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _claims_pass_isolated():
+    """Keep the round-7 claims pass out of these call counts.
+
+    These tests count the FACT repair's calls. The claims pass (template headings, cover promise,
+    slide-figure provenance) shares the substance regeneration and has its own tests in
+    `test_deck_claims_r7.py`, so here it always passes.
+    """
+    clean = {"passes": True, "headings": [], "promise": "", "figures": [], "problems": 0,
+             "reasons": []}
+    with patch("cqc_lem.utilities.ai.content_framework.deck_claims_report", return_value=clean):
+        yield
+
+
 def _response(deck: dict, caption: str = "Here is the exact stack."):
     message = MagicMock()
     message.content = json.dumps({"post_text": caption, "carousel": deck})
