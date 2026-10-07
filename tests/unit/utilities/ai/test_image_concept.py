@@ -29,10 +29,15 @@ _PAYLOAD = {"thesis": "Late invoices quietly starve a small agency's payroll",
             "audience": "agency owners",
             "specific_entities": ["unpaid invoices", "payroll run", "agency owner",
                                   "personal credit card"],
-            "visual_anchors": ["an agency owner", "a stack of unpaid invoices",
-                               "a payroll run printout"],
+            "visual_anchors": ["an agency owner", "three late-paying clients",
+                               "a tense payroll day"],
             "emotional_beat": "quiet dread", "hook_phrase": "90 days unpaid",
             "treatment": "concrete_scene", "treatment_rationale": "a tangible situation"}
+
+
+# _SOURCE plus the numbers the numeric-hook tests quote — a hook's numbers must be the piece's.
+_NUM_SOURCE = (_SOURCE + " AI posts got 45% less engagement, 30% of AI answers were wrong, and "
+               "$30K was wasted on AI tools; 45% fewer invoices were paid on time.")
 
 
 def _resp(payload) -> SimpleNamespace:
@@ -221,8 +226,8 @@ class TestVisualAnchors:
                                       "Stanford HAI facade", "a cluttered meeting room"],
                    "treatment": "concrete_scene"}
         concept = parse_concept(payload, _FACTS_SOURCE)
-        assert concept.visual_anchors == ("a marketing lead", "a printed audit checklist",
-                                          "a cluttered meeting room")
+        # The checklist is a prop the brief refuses to draw (round 8), so it is never an anchor.
+        assert concept.visual_anchors == ("a marketing lead", "a cluttered meeting room")
         assert not concept.weak
         assert concept.specific_entities[:2] == ("Terralogic", "GPT-5.2"), "facts are kept"
 
@@ -252,7 +257,7 @@ class TestHookRules:
     def test_shouts_and_orders_are_refused(self, hook):
         assert parse_concept(dict(_PAYLOAD, hook_phrase=hook), _SOURCE).hook_phrase == ""
 
-    @pytest.mark.parametrize("hook", ["Web search isn't enough", "90 days unpaid"])
+    @pytest.mark.parametrize("hook", ["Payroll first, clients last", "90 days unpaid"])
     def test_curiosity_gaps_and_contrasts_pass(self, hook):
         assert parse_concept(dict(_PAYLOAD, hook_phrase=hook), _SOURCE).hook_phrase == hook
 
@@ -311,10 +316,9 @@ class TestTreatmentVariety:
 
 
 _IDEAS = [
-    "A copy editor's red pen frozen mid-strike over a confidently printed paragraph, her face a "
-    "half-smile of disbelief.",
-    "A stack of unpaid invoices under a paperweight beside a cold cup of tea.",
-    "An agency owner wincing at a payroll run printout in an empty office at dusk.",
+    "A copy editor's red pen frozen mid-strike, her face a half-smile of disbelief.",
+    "An empty office chair under a warm lamp beside a cold cup of tea.",
+    "An agency owner wincing at the payroll run ahead in an empty office at dusk.",
 ]
 
 
@@ -391,8 +395,8 @@ class TestVisualIdeas:
 
     def test_a_shouted_hook_falls_through_to_a_valid_alternative(self):
         payload = dict(_PAYLOAD, hook_phrase="Stop wasting money!",
-                       hook_alternatives=["Fix it now!", "Payroll eats first"])
-        assert parse_concept(payload, _SOURCE).hook_phrase == "Payroll eats first"
+                       hook_alternatives=["Fix it now!", "Who covers your payroll?"])
+        assert parse_concept(payload, _SOURCE).hook_phrase == "Who covers your payroll?"
 
 
 class TestRoundFourStageOne:
@@ -429,17 +433,17 @@ class TestRoundFourStageOne:
     def test_title_case_hooks_are_refused(self, hook):
         assert parse_concept(dict(_PAYLOAD, hook_phrase=hook), _SOURCE).hook_phrase == ""
 
-    @pytest.mark.parametrize("hook", ["AI posts: 45% less reach", "AI posts fall flat",
-                                      "Payroll eats first"])
+    @pytest.mark.parametrize("hook", ["45% less engagement on AI posts",
+                                      "Who covers your payroll?", "90 days of unpaid invoices"])
     def test_sentence_case_and_numbers_are_welcome(self, hook):
-        assert parse_concept(dict(_PAYLOAD, hook_phrase=hook), _SOURCE).hook_phrase == hook
+        assert parse_concept(dict(_PAYLOAD, hook_phrase=hook), _NUM_SOURCE).hook_phrase == hook
 
     def test_a_hook_sharing_most_of_the_title_is_refused(self):
-        title = "When AI posts miss the mark on LinkedIn"
-        assert parse_concept(dict(_PAYLOAD, hook_phrase="Posts miss the mark"), _SOURCE,
-                             title=title).hook_phrase == ""
-        assert parse_concept(dict(_PAYLOAD, hook_phrase="Readers scroll right past"), _SOURCE,
-                             title=title).hook_phrase == "Readers scroll right past"
+        title = "Unpaid invoices and the payroll run"
+        assert parse_concept(dict(_PAYLOAD, hook_phrase="Unpaid invoices, payroll run"),
+                             _SOURCE, title=title).hook_phrase == ""
+        assert parse_concept(dict(_PAYLOAD, hook_phrase="Who covers your payroll?"), _SOURCE,
+                             title=title).hook_phrase == "Who covers your payroll?"
 
     def test_the_thesis_is_one_gist_claim(self):
         from cqc_lem.utilities.ai.image_concept import gist_thesis
@@ -455,7 +459,8 @@ class TestRoundFourStageOne:
             analyze_content_for_image(_SOURCE)
         system = create.call_args[1]["messages"][0]["content"]
         assert "ONE central claim, at most 20 words" in system
-        assert "Sentence case, never Title Case" in system and "BELONG in the hook" in system
+        assert "Sentence case, never Title Case" in system
+        assert "comes from the article's OWN words" in system
 
     @pytest.mark.parametrize("idea", [
         "A colleague points to a handwritten note urging personal storytelling.",
@@ -475,22 +480,24 @@ class TestRoundFiveHookNamesItsSubject:
     def test_a_number_with_only_generic_words_is_refused(self, hook):
         assert parse_concept(dict(_PAYLOAD, hook_phrase=hook), _SOURCE).hook_phrase == ""
 
-    @pytest.mark.parametrize("hook", ["AI posts: 45% less reach", "30% AI lies",
-                                      "$30K wasted on AI", "45% fewer invoices paid"])
+    @pytest.mark.parametrize("hook", ["45% less engagement on AI posts",
+                                      "30% of AI answers wrong", "$30K wasted on AI",
+                                      "45% fewer invoices paid"])
     def test_a_number_with_its_subject_passes(self, hook):
-        assert parse_concept(dict(_PAYLOAD, hook_phrase=hook), _SOURCE).hook_phrase == hook
+        assert parse_concept(dict(_PAYLOAD, hook_phrase=hook), _NUM_SOURCE).hook_phrase == hook
 
     def test_a_subjectless_number_falls_through_to_an_alternative(self):
         payload = dict(_PAYLOAD, hook_phrase="45% less engagement",
-                       hook_alternatives=["AI posts: 45% less reach"])
-        assert parse_concept(payload, _SOURCE).hook_phrase == "AI posts: 45% less reach"
+                       hook_alternatives=["45% less engagement on AI posts"])
+        assert parse_concept(payload, _NUM_SOURCE).hook_phrase == \
+            "45% less engagement on AI posts"
 
     def test_the_prompt_asks_numeric_hooks_to_name_the_subject(self):
         with patch(_CREATE, return_value=_resp(_PAYLOAD)) as create:
             analyze_content_for_image(_SOURCE)
         system = create.call_args[1]["messages"][0]["content"]
-        assert "a numeric hook must NAME ITS SUBJECT" in system
-        assert '"45% less reach for AI posts"' in system
+        assert "A numeric hook names its subject" in system
+        assert '"45% less engagement on AI posts"' in system
 
 
 class TestPostImagesFollowTheCoverRecipe:
@@ -520,7 +527,242 @@ class TestPostImagesFollowTheCoverRecipe:
 
     def test_a_striking_object_idea_with_no_people_alternative_stays(self):
         still = "A dented metal cash box sitting on a cluttered desk under a lamp."
-        other = "A stack of unpaid invoices under a paperweight beside a cold cup of tea."
+        other = "An empty office chair under a warm lamp beside a cold cup of tea."
         concept = parse_concept(dict(_PAYLOAD, visual_ideas=[still, other]), _SOURCE)
         with patch(_CREATE, return_value=_resp({"ranking": [1, 2]})):
             assert pick_visual_idea(concept).chosen_idea == still
+
+
+class TestSeriesRotation:
+    """Round 6 of #2241: four covers, one composition, one kind of man."""
+
+    def _concept(self, **overrides):
+        return parse_concept(dict(_PAYLOAD, treatment="people_scene", **overrides), _SOURCE)
+
+    def test_six_consecutive_covers_never_repeat_a_layout_within_three(self):
+        from cqc_lem.utilities.ai.image_concept import assign_layout_and_cast
+        layouts, casts = [], []
+        for i in range(6):
+            concept = self._concept(thesis=f"Late invoices starve payroll, part {i}")
+            concept = assign_layout_and_cast(concept, "newsletter", layouts[:4], casts[:4])
+            layouts.insert(0, concept.layout)
+            casts.insert(0, concept.cast)
+        # Two split layouts: they alternate, so no layout ever repeats back to back.
+        assert all(a != b for a, b in zip(layouts, layouts[1:])), layouts
+        assert len({(c["gender"], c["age"]) for c in casts}) >= 4, "the cast varies"
+        assert len({c["setting"] for c in casts}) >= 4
+
+    def test_every_cast_dimension_rotates_least_recently_used(self):
+        from cqc_lem.utilities.ai.image_concept import CAST_DIMENSIONS, assign_layout_and_cast
+        recent = [{"gender": "man", "age": "30s", "ethnicity": "white", "setting": "office"}]
+        cast = assign_layout_and_cast(self._concept(), "newsletter", [], recent).cast
+        for dim, values in CAST_DIMENSIONS.items():
+            assert cast[dim] != recent[0][dim] and cast[dim] in values
+
+    def test_the_role_comes_from_the_anchors(self):
+        from cqc_lem.utilities.ai.image_concept import assign_layout_and_cast, cast_phrase
+        cast = assign_layout_and_cast(self._concept(), "newsletter").cast
+        assert cast["role"] == "agency owner"
+        phrase = cast_phrase(cast)
+        assert ", an agency owner, " in phrase
+
+    def test_without_history_the_rotation_is_stable_per_piece_but_varies_across(self):
+        from cqc_lem.utilities.ai.image_concept import assign_layout_and_cast
+        first = assign_layout_and_cast(self._concept(thesis="One claim"), "newsletter")
+        again = assign_layout_and_cast(self._concept(thesis="One claim"), "newsletter")
+        assert first.layout == again.layout and first.cast == again.cast
+        others = {assign_layout_and_cast(self._concept(thesis=f"Claim {i}"), "newsletter").layout
+                  for i in range(12)}
+        assert len(others) > 1
+
+    def test_no_cast_off_a_people_scene_and_no_layout_off_covers_and_posts(self):
+        from cqc_lem.utilities.ai.image_concept import assign_layout_and_cast
+        concrete = assign_layout_and_cast(
+            parse_concept(dict(_PAYLOAD, treatment="concrete_scene"), _SOURCE), "newsletter")
+        assert concrete.cast is None and concrete.layout
+        carousel = assign_layout_and_cast(self._concept(), "carousel")
+        assert carousel.layout == "" and carousel.cast is None
+
+    def test_posts_use_the_top_band(self):
+        from cqc_lem.utilities.ai.image_concept import assign_layout_and_cast
+        assert assign_layout_and_cast(self._concept(), "post_image").layout in (
+            "split_top", "split_bottom")
+
+    def test_analyze_takes_the_recent_history(self):
+        with patch(_CREATE, return_value=_resp(dict(_PAYLOAD, treatment="people_scene"))):
+            concept = analyze_content_for_image(
+                _SOURCE, surface="newsletter",
+                recent_layouts=["split_left"])
+        assert concept.layout == "split_right"
+
+
+class TestHookFidelityAndShape:
+    """Round 6: the critic caught "reach" for "engagement", "influencers" for "hidden buyers"."""
+
+    _ARTICLE = ("Hidden buyers decide most AI purchases. AI posts got 45% less engagement than "
+                "human ones, and teams that ignore hidden buyers lose deals.")
+
+    @pytest.mark.parametrize("hook", ["45% less reach on AI posts",
+                                      "Influencers decide your deals",
+                                      "52% less engagement on AI posts"])
+    def test_a_word_or_number_the_piece_never_says_is_refused(self, hook):
+        from cqc_lem.utilities.ai.image_concept import hook_is_faithful
+        assert not hook_is_faithful(hook, self._ARTICLE)
+
+    @pytest.mark.parametrize("hook", ["45% less engagement on AI posts",
+                                      "Who really buys your AI?", "Hidden buyers cost you deals",
+                                      "Search on, still wrong"])
+    def test_the_pieces_own_words_pass(self, hook):
+        from cqc_lem.utilities.ai.image_concept import hook_is_faithful
+        source = self._ARTICLE + " Search was on and the answers were still wrong."
+        assert hook_is_faithful(hook, source)
+
+    @pytest.mark.parametrize("hook,shape", [("Who really buys your AI?", "question"),
+                                            ("45% less engagement on AI posts", "number_claim"),
+                                            ("Search on, still wrong", "contrast"),
+                                            ("Your cheapest model is enough", "plain_claim")])
+    def test_shapes(self, hook, shape):
+        from cqc_lem.utilities.ai.image_concept import hook_shape_of
+        assert hook_shape_of(hook) == shape
+
+    def test_the_shape_rotates_least_recently_used(self):
+        from cqc_lem.utilities.ai.image_concept import rotate_hook_shape
+        payload = dict(_PAYLOAD, hook_phrase="90 days of unpaid invoices", hook_candidates={
+            "number_claim": "90 days of unpaid invoices",
+            "question": "Who covers your payroll?",
+            "plain_claim": "Unpaid invoices cost payroll"})
+        concept = parse_concept(payload, _SOURCE)
+        assert set(concept.hook_options) == {"number_claim", "question", "plain_claim"}
+        rotated = rotate_hook_shape(concept, ["number_claim", "question"])
+        assert rotated.hook_shape == "plain_claim"
+        assert rotated.hook_phrase == "Unpaid invoices cost payroll"
+
+    def test_six_words_now_fit(self):
+        hook = "90 days of unpaid invoices, payroll"
+        assert parse_concept(dict(_PAYLOAD, hook_phrase=hook), _SOURCE).hook_phrase == hook
+
+    def test_the_prompt_asks_for_every_shape_and_the_articles_own_words(self):
+        with patch(_CREATE, return_value=_resp(_PAYLOAD)) as create:
+            analyze_content_for_image(_SOURCE)
+        system = create.call_args[1]["messages"][0]["content"]
+        assert "Give one hook in EACH shape in hook_candidates" in system
+        assert '"hidden buyers" never becomes "influencers"' in system
+
+
+class TestValence:
+    @pytest.mark.parametrize("raw,expected", [("positive", "positive"), ("Negative", "negative"),
+                                              ("weird", "mixed"), (None, "mixed")])
+    def test_valence_is_parsed(self, raw, expected):
+        assert parse_concept(dict(_PAYLOAD, valence=raw), _SOURCE).valence == expected
+
+    def test_the_prompt_ties_valence_to_the_piece(self):
+        with patch(_CREATE, return_value=_resp(_PAYLOAD)) as create:
+            analyze_content_for_image(_SOURCE)
+        assert "positive when the piece is about a saving, a win or relief" in \
+            create.call_args[1]["messages"][0]["content"]
+
+
+
+class TestRoundSevenStageOne:
+    @pytest.mark.parametrize("raw,expected", [
+        ("agency payroll", "AGENCY PAYROLL"), ("Payroll", "PAYROLL"), ("AI content audit", ""),
+        ("LLM costs", ""), ("UNPAID INVOICES", "UNPAID INVOICES"),
+        ("collections", "COLLECTIONS"), ("way too many words here", ""),
+        ("hidden influencers", ""), ("", ""),
+    ])
+    def test_the_kicker_is_grounded_in_the_source(self, raw, expected):
+        from cqc_lem.utilities.ai.image_concept import valid_kicker
+        assert valid_kicker(raw, _SOURCE) == expected
+
+    def test_acronyms_always_pass_and_hyphens_split(self):
+        from cqc_lem.utilities.ai.image_concept import valid_kicker
+        assert valid_kicker("B2B buying", "Buyers keep buying.") == "B2B BUYING"
+        assert valid_kicker("AI fact-checking", "We fact checked every claim.") == \
+            "AI FACT-CHECKING"
+
+    def test_the_kicker_lands_on_the_concept(self):
+        concept = parse_concept(dict(_PAYLOAD, kicker="Agency payroll"), _SOURCE)
+        assert concept.kicker == "AGENCY PAYROLL"
+
+    def test_the_prompt_asks_for_a_kicker(self):
+        with patch(_CREATE, return_value=_resp(_PAYLOAD)) as create:
+            analyze_content_for_image(_SOURCE)
+        assert "Rules for kicker" in create.call_args[1]["messages"][0]["content"]
+
+    def test_hooks_come_back_sentence_cased(self):
+        concept = parse_concept(dict(_PAYLOAD, hook_phrase="payroll first, clients last"), _SOURCE)
+        assert concept.hook_phrase == "Payroll first, clients last"
+
+    def test_full_bleed_is_out_of_the_cover_rotation(self):
+        from cqc_lem.utilities.ai.image_concept import COVER_LAYOUTS
+        assert "full_bleed" not in COVER_LAYOUTS
+        # Round 8: only split layouts rotate — type and scene never overlap.
+        assert set(COVER_LAYOUTS) == {"split_left", "split_right"}
+
+    @pytest.mark.parametrize("idea", ["A founder holding a proposal on a clipboard.",
+                                      "An analyst frowning at code on a monitor.",
+                                      "A manager signing a form at her desk."])
+    def test_prop_ideas_are_filtered(self, idea):
+        from cqc_lem.utilities.ai.image_concept import idea_rejection
+        assert "legible words on a surface" in idea_rejection(idea, ())
+
+
+@pytest.mark.unit
+class TestRoundEightAnchors:
+    def test_an_anchor_the_brief_would_refuse_is_dropped_at_parse_time(self):
+        from cqc_lem.utilities.ai.image_concept import _ground_anchors
+        source = ("A marketing lead walks the warehouse floor with a laptop and a printed "
+                  "checklist before the audit.")
+        anchors = _ground_anchors(["a marketing lead", "a laptop", "a printed checklist",
+                                   "the warehouse floor"], source, ())
+        assert "a laptop" not in anchors and "a printed checklist" not in anchors
+        assert "a marketing lead" in anchors and "the warehouse floor" in anchors
+
+
+@pytest.mark.unit
+class TestRoundNineKickerAndHooks:
+    def test_a_failed_kicker_is_derived_title_first(self):
+        from cqc_lem.utilities.ai.image_concept import derive_kicker
+        source = ("Verification catches errors. Verification costs little. Teams that verify "
+                  "their AI output ship fewer errors.")
+        assert derive_kicker(source, "Why AI verification pays") == "AI VERIFICATION"
+
+    def test_a_derived_kicker_is_never_empty(self):
+        from cqc_lem.utilities.ai.image_concept import derive_kicker
+        assert derive_kicker("", None) == "INSIGHT"
+        assert derive_kicker("the and of", "") == "INSIGHT"
+
+    def test_a_derived_kicker_keeps_a_lone_word_when_nothing_else_recurs(self):
+        from cqc_lem.utilities.ai.image_concept import derive_kicker
+        assert derive_kicker("Pricing pricing pricing once twice", None) == "PRICING"
+
+    def test_parse_concept_always_yields_a_kicker(self):
+        from cqc_lem.utilities.ai.image_concept import parse_concept
+        source = "Content audits find waste. A content audit pays for itself in a month."
+        concept = parse_concept({"thesis": "Content audits pay for themselves",
+                                 "kicker": "QUANTUM FINANCE"}, source, title="Content audits")
+        assert concept is not None and concept.kicker == "CONTENT AUDITS"
+
+    def test_concept_kicker_derives_for_a_caller_concept(self):
+        from cqc_lem.utilities.ai.image_concept import ImageConcept, concept_kicker
+        concept = ImageConcept(thesis="Payroll audits catch payroll errors", audience="",
+                               specific_entities=(), emotional_beat="", hook_phrase="Who pays?",
+                               treatment="people_scene", treatment_rationale="", weak=False)
+        assert concept_kicker(concept) == "PAYROLL"
+        assert concept_kicker(None) == ""
+
+    @pytest.mark.parametrize("hook,vague", [("Verification is much cheaper", "cheaper"),
+                                            ("Audits work better", "better"),
+                                            ("Fewer meetings now", "fewer"),
+                                            ("45% less engagement", None),
+                                            ("Cheaper than a hire", None),
+                                            ("Hidden buyers cost you deals", None)])
+    def test_a_comparative_needs_its_reference(self, hook, vague):
+        from cqc_lem.utilities.ai.image_concept import vague_comparative
+        assert vague_comparative(hook) == vague
+
+    def test_a_vague_comparative_hook_is_refused(self):
+        from cqc_lem.utilities.ai.image_concept import _valid_hook
+        source = "verification is much cheaper than a rework"
+        assert _valid_hook("Verification is much cheaper", None, source, source) == ""
+        assert _valid_hook("Verification is cheaper than rework", None, source, source)

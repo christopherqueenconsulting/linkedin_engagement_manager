@@ -234,7 +234,7 @@ class TestPostImageStagedEngine:
 # ── Video source frame + motion ───────────────────────────────────────────────
 
 class TestVideoStagedEngine:
-    def _run(self, *, avatar=None, quality="standard", concept=None):
+    def _run(self, *, avatar=None, quality="standard", concept=None, caption=None):
         concept = concept or _concept()
 
         def _prompt(*_args, brief_info=None, **_kwargs):
@@ -250,6 +250,8 @@ class TestVideoStagedEngine:
              patch("cqc_lem.utilities.ai.image_concept.analyze_content_for_image",
                    return_value=concept) as stage1, \
              patch("cqc_lem.utilities.brand_kit.brand_clause_for_user", return_value=_BRAND), \
+             patch("cqc_lem.utilities.video_captions.burned_caption_text",
+                   return_value=caption) as captions, \
              patch(f"{_RCP}.get_flux_image_prompt_from_ai", side_effect=_prompt) as prompt, \
              patch(f"{_RCP}.get_runway_ml_video_prompt_from_ai", return_value="motion") as motion, \
              patch("cqc_lem.utilities.ai.ai_helper.generate_post_image",
@@ -260,7 +262,29 @@ class TestVideoStagedEngine:
              patch(f"{_RCP}.create_runway_video", return_value="https://x.mp4") as runway:
             from cqc_lem.app.run_content_plan import _generate_video_src
             src = _generate_video_src(7, "The post about invoices", None, post_id=9)
+        self.captions = captions
         return src, concept, stage1, prompt, motion, gpi, gated, ungated, runway
+
+    def test_the_frame_judge_reads_the_burned_caption_as_its_headline(self):
+        caption = "Agencies wait 90 days to get paid. Here is the fix."
+        _, _, _, prompt, _, _, gated, _, _ = self._run(caption=caption)
+        assert gated.call_args[1]["hook_text"] == caption
+        assert gated.call_args[1]["surface"] == "video"
+        self.captions.assert_called_once_with("The post about invoices", user_id=7,
+                                              avatar_led=False)
+        # Judge-only: the brief author never sees it.
+        assert caption not in str(prompt.call_args)
+
+    def test_the_avatar_frame_judge_reads_it_too_with_the_avatar_gate(self):
+        avatar = {"model_ref": "owner/lora:v1", "trigger_word": "TOK"}
+        _, _, _, _, _, gpi, _, _, _ = self._run(avatar=avatar, concept=_author_concept(),
+                                                caption="My hardest no.")
+        assert gpi.call_args[1]["hook_text"] == "My hardest no."
+        assert self.captions.call_args.kwargs["avatar_led"] is True
+
+    def test_no_burned_caption_means_no_headline(self):
+        _, _, _, _, _, _, gated, _, _ = self._run(caption=None)
+        assert gated.call_args[1]["hook_text"] is None
 
     def test_the_standard_no_avatar_frame_is_now_gated_on_the_video_surface(self):
         src, concept, stage1, _, _, gpi, gated, ungated, runway = self._run()
@@ -422,6 +446,61 @@ class TestVideoFrameGateAndClipCheck:
         assert _clip_check_extra({"clip_check": {"a": 1}}) == {"clip_check": {"a": 1}}
 
 
+class TestVideoCaptionIsJudgeOnly:
+    """The caption reaches the video frame's judge, never the render (PR #2249)."""
+
+    def test_video_never_composites_and_the_caption_never_reaches_the_renderer(self):
+        from cqc_lem.utilities.ai import image_gen
+        caption = "Agencies wait 90 days to get paid."
+        with patch.object(image_gen, "_render_with_backend",
+                          return_value=("/tmp/frame.png", "gpt-image")) as render, \
+             patch("cqc_lem.utilities.ai.image_compose.compose_headline") as compose, \
+             patch.object(image_gen, "inspect_render_quality",
+                          return_value=image_gen.QualityVerdict(acceptable=True)) as judge:
+            path = image_gen.render_image_gated("a scene", surface="video", ratio="9:16",
+                                                concept=_concept(), hook_text=caption,
+                                                enforce=True)
+        assert path == "/tmp/frame.png", "the raw frame ships — no composite"
+        compose.assert_not_called()
+        assert render.call_args.kwargs["ratio"] == "9:16", "no square scene for a split layout"
+        assert caption not in render.call_args.args[0]
+        assert judge.call_args.kwargs["hook_text"] == caption
+        assert judge.call_args.kwargs["composite_path"] is None
+        assert "video" not in image_gen.COMPOSE_SURFACES
+
+
+class TestBurnedCaptionText:
+    _POST = "Agencies wait 90 days to get paid.\nHere is the fix.\n\nMore detail.\n#cashflow"
+
+    def _caption(self, *, flag=True, avatar_led=False, opt_in=False):
+        from cqc_lem.utilities import video_captions as vc
+        with patch("cqc_lem.utilities.flags.flag_enabled", return_value=flag), \
+             patch.object(vc, "captions_allowed_on_avatar_video", return_value=opt_in):
+            return vc.burned_caption_text(self._POST, user_id=7, avatar_led=avatar_led)
+
+    def test_it_is_the_same_text_the_burn_uses(self):
+        from cqc_lem.utilities.video_captions import caption_lines
+        assert self._caption() == " ".join(caption_lines(self._POST))
+        assert self._caption().startswith("Agencies wait 90 days")
+
+    def test_flag_off_is_none(self):
+        assert self._caption(flag=False) is None
+
+    def test_an_avatar_frame_without_the_overlay_opt_in_is_none(self):
+        assert self._caption(avatar_led=True) is None
+        assert self._caption(avatar_led=True, opt_in=True)
+
+    def test_no_prose_is_none(self):
+        from cqc_lem.utilities import video_captions as vc
+        with patch("cqc_lem.utilities.flags.flag_enabled", return_value=True):
+            assert vc.burned_caption_text("#a #b", user_id=7) is None
+
+    def test_a_raising_flag_read_is_none(self):
+        from cqc_lem.utilities import video_captions as vc
+        with patch("cqc_lem.utilities.flags.flag_enabled", side_effect=RuntimeError("x")):
+            assert vc.burned_caption_text(self._POST, user_id=7) is None
+
+
 class TestMotionPromptCarriesTheConcept:
     def _draft(self, concept):
         from cqc_lem.utilities.ai import ai_helper
@@ -538,8 +617,13 @@ class TestCarouselStagedEngine:
         llm.chat.completions.create.assert_not_called()
         queries = [c.args[0] for c in pexels.call_args_list]
         assert len(queries) == 3
-        assert queries[0].startswith("unpaid invoices")
+        # Anchors this slide names lead: slide 2 searches the bank balance, slide 3 the owner.
         assert queries[1].startswith("bank balance")
+        assert queries[2].startswith("agency owner")
+        # "unpaid invoices" is a paper prop, which the engine stopped offering as an anchor in
+        # round 7, so it is never a stock search either — slide 1 takes the deck's anchors.
+        assert queries[0] == "agency owner bank balance"
+        assert not any("invoice" in q for q in queries)
 
     def test_no_slide_wanting_an_image_costs_no_concept(self, tmp_path):
         from cqc_lem.utilities import carousel_creator as cc

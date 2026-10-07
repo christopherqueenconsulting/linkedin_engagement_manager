@@ -16,6 +16,7 @@ per-content-type prompt helper** — add a preset.
 | `utilities/ai/image_concept.py` | Stage 1: reading the WHOLE piece → a grounded `ImageConcept` (#2241) |
 | `utilities/ai/image_brief.py` | Authoring the prompt: content + concept in → validated brief out |
 | `utilities/ai/image_gen.py` | Rendering that brief, plus the vision quality gate |
+| `utilities/ai/image_compose.py` | Typesetting the headline onto a finished render — the ONE place a headline meets a render (round 6) |
 
 ## The staged engine (issue #2241)
 
@@ -49,6 +50,159 @@ judge rightly scored specificity 1 on all four covers. So Stage 1 returns two li
   dropped too. Fewer than two survivors marks the concept `weak`, and the coverage checks stand
   down. Briefs, Stage 3 and the vision judge's specificity all work from `usable_anchors()` — the
   anchors, or for a concept with none, its plain common-noun facts.
+
+## No labels, a kicker always, anchored comparatives (round 9)
+
+- **No painted captions.** gpt-image rendered the brief's role and group nouns as labels — a
+  poster reading "Founders & Content Teams In Conversation", badges reading "SECURITY". Both
+  `with_no_marks` constraints now end "No captions, titles, posters, signage, name badges,
+  lanyards with text, or labels of any kind." `PROPS_DIRECTIVE` tells the author to describe
+  people by appearance and action, and `_deterministic_failure` refuses a group caption
+  (`_GROUP_LABEL`: "X & Y", capitalised "X and Y", "x and y teams"). Posters, signage, badges,
+  lanyards, labels, contracts and agreements joined the prop list, so no visual idea or anchor
+  can carry one either.
+- **Video frames.** The props directive and rejection already ran on `surface="video"`; the leak
+  was the word "contract", which the prop list did not know, and the fallback interpolating a
+  thesis that named one. The fallback now drops a thesis or audience that names a prop or a
+  group caption. Security hardware is a cliché: a safe dial, vault, combination lock, padlock,
+  dial, light switch, toggle switch, lever ("safe" alone stays an adjective).
+- **A kicker always.** When Stage 1's kicker fails `valid_kicker`, `derive_kicker` takes the 1-2
+  most frequent topic words (title words first, 4+ letters or an allowed acronym), uppercased.
+  `concept_kicker` covers a caller's concept with no kicker, so every composite carries one.
+- **Comparatives need a reference.** `vague_comparative` refuses a hook like "Verification is
+  much cheaper"; "than" or a number anchors it ("45% less engagement").
+- **Positive valence never touches the head.** Hands on the head, face, temples or forehead and
+  "head in hands" are refused for positive valence; the directive asks for eyes open, engaged with
+  the other person or the task.
+
+## Split layouts, square scenes, no screens (round 8)
+
+Every overlay layout still put type over a face or a torso, whatever the brief asked for, so the
+rotation is now SPLIT layouts only — the scene and the type panel never overlap by construction:
+
+- **Layouts.** Covers (16:9, a 1600x900 canvas) rotate `split_left` / `split_right` with a 40%
+  type panel; posts (4:5, built at 1080x1350 directly — no later crop) rotate `split_top` /
+  `split_bottom` with a 34% panel. The panel grows a step (45/50%, 40/46%) only when the
+  cap-height floor is not met. A 4px dark-gold seam rule marks where panel meets photograph.
+  The overlay layouts stay in `image_compose.LAYOUTS` for a caller that asks.
+- **Square scene.** Any composited render is requested at `1:1` (`_scene_ratio` in
+  `image_gen.py`, `ratio = "1:1"` in `build_image_brief`) — the avatar path included — and the
+  brief asks for "a SQUARE frame with the subject centred and filling it". `cover_fit` scales it
+  to cover the scene region and centre-crops, so a centred subject survives either aspect.
+  `conform_to_ratio` (PR #2249) does not exist on this branch; a composited post never needs it.
+- **No screens.** `prop_failure` refuses laptops, monitors, keyboards, tablets, displays and
+  computers on every surface (video frames included); a phone survives only face-down. Scenes are
+  people interacting in a real environment. "server room", "servers", "racks", "server cabinet"
+  and "data center" are clichés.
+- **Anchors are never props.** `_ground_anchors` drops an anchor `prop_failure` would refuse, so
+  Stage 1 can never ask the brief for something the brief must then refuse.
+- **Specificity is the descriptors alone.** The judge's anchor, gist and headline-names-subject
+  answers no longer cap `specificity`; they land as `advisory:` issues on the receipt
+  (`advisory_issues`).
+- **Cover avatar.** Auto uses `guardrails.resolve_avatar_for_concept` with Stage 1's concept when
+  that fit rule exists (PR #2249); otherwise the guardrails + classifier conjunction decides.
+
+## The cover is an editorial system (round 7)
+
+Round 6's composites were a big step (exact gold and charcoal, Montserrat, rotating layouts, a
+diverse cast), but gpt-4.1 and the blind critic both still read every scene as "a generic office"
+— the headline carried the topic alone, because the clichés that used to say "AI" are rightly
+banned. `image_compose` now typesets a whole editorial cover from Stage 1's facts:
+
+- **Kicker** — a 1–3 word UPPERCASE topic tag ("AI CONTENT AUDIT", "LLM COSTS", "B2B BUYING")
+  above the headline, in the brand accent (dark gold), letter-spaced, at `KICKER_RATIO` (35%) of
+  the headline size. Stage 1 returns it; `valid_kicker` keeps it only when every word matches the
+  source by its root (AI/LLM/B2B… always pass). It is what makes a human-reaction scene read as
+  "about AI" without a cliché.
+- **Hero numeral** — `split_hero` lifts a grounded number ("45%", "$30K", "53.7%") onto its own line
+  at `HERO_RATIO` (2×) the headline size in the brand primary; the rest of the hook goes underneath
+  in the brand `neutral_light` (off-white). A hook with no number stays all gold.
+- **Byline** — the newsletter's title when the caller passes `signature`, otherwise the author's
+  `profile.full_name` (already in hand — no new DB read), set small at the bottom in off-white at
+  50% opacity; omitted when empty. Posts take the author's name the same way once their call site
+  passes it.
+- **Bigger type.** Everything scales from one headline size, binary-searched to the largest the box
+  allows (so the widest line fills the box). The floor is a CAP HEIGHT of 9% of the image height on
+  landscape covers and 6% on 4:5 posts (`MIN_CAP_FRACTION`); when the default backing cannot hold
+  that in three lines, the panel widens (`PANEL_WIDTHS` 38→43→48%) or the band deepens
+  (`BAND_HEIGHTS` 26→32→38%) before settling, and a result still under the floor is logged. Hooks
+  are sentence-cased (first letter up, acronyms kept), in Stage 1 and again at compositing.
+- **`full_bleed` is out of the rotation** (it set a headline across a face); covers rotate
+  `panel_left`, `panel_right`, `lower_third_band`, posts `band_top`. Every layout has its own
+  negative-space instruction — `lower_third_band` keeps faces, torsos and hands in the upper 55%.
+- **No props, on any surface.** "Blank" never held: "Proposal" on a clipboard, "COST REDUCTION
+  CHECKLIST", "KPI Dashboard", `console.log` on a monitor, "Name / Date" on a form. `prop_failure`
+  refuses paper of every kind (documents, sheets, reports, proposals, clipboards, checklists, forms,
+  invoices, bills, folders, binders), whiteboard or chart content and code — on EVERY surface, the
+  round-5 edge-on exception included — and any screen not explicitly the back of a laptop, facing
+  away or face-down. The brief gives the author the alternatives (`PROPS_DIRECTIVE`: gesture,
+  posture, two people interacting, the environment; hands empty or holding a mug, pen or phone
+  face-down), prop anchors are never asked for, and prop ideas are filtered before ranking.
+- **Good news never reads as pain.** On a positive valence the face is "a quiet, satisfied
+  half-smile and relaxed shoulders, eyes open", and eyes closed/squeezed or a hand on the chest is
+  refused (`_PAINED_RELIEF`) — "relief" had rendered as both.
+- **The judge reads the cover as one.** The targeted prompt carries the kicker, says "Read the
+  kicker, headline and scene together as one cover", and the 5 descriptor adds "the kicker +
+  headline name the exact topic and the scene shows the human stakes of it" — a generic office is
+  fine when kicker, headline and emotion are specific.
+- **A caller's concept is used exactly as given** — only a concept `build_image_brief` computes
+  itself gets the per-piece layout/cast rotation (PR #2249 relies on this).
+
+## The headline is composited, never rendered (round 6)
+
+**This supersedes every earlier "hook in the render" rule below** — the round-3 cover layout, the
+round-4 typography spec and the round-5 post layout all asked gpt-image to DRAW the headline, and
+the blind critic traced most remaining defects to that one root cause: the panel drifted through
+charcoal, black, navy and grey-green, the type through gold, pale gold and off-white at any
+weight, and three of nine headlines clipped the frame edge. So:
+
+- **`utilities/ai/image_compose.py` is the ONE place a headline meets a render.**
+  `compose_headline(render_path, hook, layout, brand, surface)` typesets the hook with PIL in the
+  bundled **Montserrat ExtraBold** (SIL OFL, `src/cqc_lem/resources/fonts/` with `OFL.txt` —
+  `src/` ships whole in the image; the system bold faces `carousel_creator` uses are the
+  fallback). The panel/band/scrim is the brand's neutral dark and the headline its primary,
+  **exactly** (`brand_style` reads "name (#hex)" pairs from the brand clause; the reference brand
+  is light gold `#E9D437` on charcoal `#1F1F1F` with a dark-gold `#A89816` rule). Text wraps to at
+  most 3 lines and binary-searches the largest size that fits a safe box keeping ≥6% of the frame
+  clear on every side; each line is aligned by its INK, so no glyph crosses the margin. A cover
+  line is held to ≥7% of the frame height (legible at 400px); anything smaller is logged.
+- **Layouts are compositing templates**, rotated least-recently-used over the last 4 receipts
+  (`assign_layout_and_cast`, a sibling of `enforce_graphic_cap`): covers `panel_left` /
+  `panel_right` (a solid panel over 38% of the width), `full_bleed` (over the scene's darkest
+  third, a charcoal gradient scrim, no panel) and `lower_third_band` (a band, its text held to the
+  central 60% of a landscape frame); posts `band_top` (a band over 26% of the height below a 6% top
+  margin — the 4:5 crop change is a separate PR). The brief tells the author only to keep that
+  region calm negative space (`NEGATIVE_SPACE`).
+- **No render carries any text.** The declared-hook exception is gone: `with_no_marks` is the
+  blanket "no text" on every surface again, the brief never quotes the headline (a quoted string
+  is rejected), and `carries_hook` now means "gets a composited headline" — covers and posts only;
+  video frames get none (captions come later) and carousel is unchanged.
+- **The judge grades each image where it lives.** The blind look and the text check run on the
+  RAW render — any text it transcribes caps `text_accuracy` at 2 (`text_accuracy` is decided
+  deterministically now). The targeted questions run on the COMPOSITE: specificity, scroll stop,
+  brand. Headline legibility and clipping are asserted in `test_image_compose.py`, not judged.
+- **Calibrated specificity.** The targeted prompt anchors the scale — 5 "with its headline, a
+  scroller would correctly guess this piece's argument", 4 "clearly on-topic, slightly generic
+  scene", 3 "the scene could sit on many unrelated posts even with the headline", ≤2 "misleading
+  or off-topic" — gated at ≥4. The round-4 "reusable on an unrelated article" cap is dropped; the
+  descriptors carry it.
+- **Hook fidelity and variety.** `hook_is_faithful`: every number in a hook must appear in the
+  source, and every other content word must match a source word by its root, bar common function
+  words, verbs and adjectives (`_HOOK_FREE_WORDS`; AI/LLM always) — the critic caught "reach" for
+  "engagement" and "influencers" for "hidden buyers". Stage 1 offers one hook per SHAPE
+  (`number_claim`, `contrast`, `question`, `plain_claim`) and `rotate_hook_shape` picks the
+  least-recently-used valid one — every hook had been "AI X: N% Y". Hooks may run to 6 words now
+  that they are typeset.
+- **Cast and emotion.** A people_scene gets a rotated cast hint — gender, age band, ethnicity and
+  setting each rotate independently and least-recently-used, the role is drawn from the piece's
+  anchors ("a South Asian woman in her 50s, an agency owner, on a warehouse floor") — so the series
+  stops reading as one man in his 30s-40s; an avatar is never recast. Stage 1 sets a `valence`
+  (positive / negative / mixed): a saving reads calm, pleased, relieved or wry, a risk concerned,
+  skeptical or frustrated, and the judge's emotion question carries it. Emotion must be authentic
+  and restrained — the carry-forward directive no longer says "exaggerated" (a frame showed a man
+  wailing over a bill) and a cartoonish face caps `craft` at 3.
+- **Video frames** take the no-paper rule (they had brought back a sheet reading "MONTHLY BILL")
+  and the brand-accent gate, as covers and posts do.
 
 **The hook carries the thesis; the image carries emotion and specificity (gauntlet round 2).**
 Round 1's fixes removed the clichés and stray text but overcorrected: all four covers came back as
@@ -203,11 +357,19 @@ user's brand clause (`brand_kit.brand_clause_for_user`):
 | Post image (`post_image.generate_image_for_post`) | the post text | yes | base + avatar (avatar only when the post is about the author; one gpt-image retry if the avatar render is unusable); rubric + `render_path` on the receipt | `POST_IMAGE_RATIO`, default **4:5** |
 | Carousel slide (`carousel_creator`, avatar slides) | the WHOLE carousel, once per deck, lazily — only if a slide wants an image | yes | avatar-eligible slides (the likeness only when the deck is about the author) | 1:1 |
 | Carousel stock query (`derive_image_query`) | the same per-deck concept: its visual anchors (never its facts — a name or number is not a stock photo) ARE the Pexels query, so no per-slide `lem-simple` call | — | — | — |
-| Video source frame (`run_content_plan._generate_video_src`) | the post text | yes | every frame, ENFORCED (incl. the standard-tier no-avatar frame, which was ungated); a rejected frame is never animated; the likeness only when the post is about the author | tier's ratio |
+| Video source frame (`run_content_plan._generate_video_src`) | the post text | yes | every frame, ENFORCED (incl. the standard-tier no-avatar frame, which was ungated); a rejected frame is never animated; the judge reads the caption that will be burned on (`video_captions.burned_caption_text`) as its headline — judge-only, never composited; the likeness only when the post is about the author | tier's ratio |
 | Video motion prompt (`get_runway_ml_video_prompt_from_ai`) | the same concept: thesis + emotional beat reach the motion author, plus `MOTION_DISCIPLINE` | — | — | — |
 | Video clip (`utilities/video_clip_check.py`) | — | — | 3 sampled frames, one `lem-vision` call; a defect buys ONE re-render | — |
 | Admin variants (`generate_variants`) | the source text, once per batch | yes | per variant | per combo |
 | Tutorial thumbnail (`video_tutorials`) | the title (no user, so no brand) | — | yes | 16:9 |
+
+**The video frame's headline is its caption.** `_caption_video_asset` burns the post's first 1-2
+lines onto the stored MP4, so a viewer sees the frame WITH that text; judged without it, a person
+with no context scored specificity 2-3 on every gauntlet frame. `video_captions.burned_caption_text`
+returns exactly what the burn will use (same `caption_lines`, same flag and avatar-overlay gates;
+None when nothing would be burned), and it is passed as the frame's `hook_text`. It reaches the
+judge only: `video` is never in `COMPOSE_SURFACES`, so nothing is composited, the scene keeps its
+ratio, and `hook_text` never enters a render prompt.
 
 **Video (PR #2249 video gauntlet).** Both gauntlet frames failed an advisory gate and were animated
 anyway, so Runway spent a render on a frame the judge disliked. The frame gate is now ENFORCED for
@@ -325,14 +487,12 @@ treatment template and every fallback — and that test also fails the build on 
 ever selects**, which is how `thumbnail` stayed wrong until #1141 wired
 `video_tutorials.generate_thumbnail` up to it.
 
-**NO text, letters, or logos in any render — EXCEPT one declared 2–5 word hook on the
-`editorial_graphic` treatment, verified by the judge.** No name or number of the piece's facts in a
-prompt either, and nothing in the scene "titled", "labelled" or "displaying" named content. Enforced in the system prompt and
-`_rejection`, with `with_no_marks()` as the render-side belt: a brief carrying `hook_text` gets
-"The only text in the image is exactly "<hook>" — no other words, letters, numbers, logos,
-watermarks or UI" INSTEAD of the blanket ban (positively phrased for FLUX), and the printed-surface
-blank-state clause is skipped since the hook is set on one. The blind judge then transcribes what
-is actually there and the rubric's `text_accuracy` compares it to the hook.
+**NO text, letters, or logos in any render — no exception.** A cover's or post's headline is
+typeset afterwards by `image_compose` (round 6). No name or number of the piece's facts in a
+prompt either, and nothing in the scene "titled", "labelled" or "displaying" named content.
+Enforced in the system prompt and `_rejection` (any quoted string is refused), with
+`with_no_marks()` as the render-side belt on every surface. The blind judge transcribes what is
+actually on the raw render, and any text at all caps `text_accuracy` at 2.
 
 **A SCREEN is the one surface a blanket constraint does not hold on.** A described laptop or
 monitor invites the renderer to fill its glass with plausible UI, and newsletter cover ed9 came back

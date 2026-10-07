@@ -29,6 +29,8 @@ from cqc_lem.utilities.ai.image_concept import (
     WEAK_ENTITY_FLOOR,
     ImageConcept,
     analyze_content_for_image,
+    assign_layout_and_cast,
+    cast_phrase,
     entity_mentioned,
     is_fact_only,
     name_tokens,
@@ -91,19 +93,23 @@ _TREATMENT_TEMPLATES: dict[str, str] = {
         "TREATMENT people_scene: a photorealistic, candid documentary photograph of the piece's "
         "audience in the exact situation it describes, built from the chosen visual idea. The "
         "emotional beat is VISIBLE as a specific human reaction — a wince at a number, mid-laugh "
-        "relief, a raised eyebrow at a draft, arms crossed in a tense meeting — in a close or "
-        "medium framing where the face reads at thumbnail size. A laptop is at most a prop. "
+        "relief, a raised eyebrow at a colleague, arms crossed in a tense meeting — in a close or "
+        "medium framing where the face reads at thumbnail size — clearly readable but authentic "
+        "and restrained, the face a real person would make, never cartoonish or crying. There is "
+        "no laptop or screen in frame. The emotion's direction follows the piece's valence: a saving or a "
+        "win is a quiet, satisfied half-smile with relaxed shoulders, eyes open and engaged with "
+        "the other person or the task, hands away from head and face; a risk or a "
+        "loss reads concerned, skeptical or frustrated — never shock or despair for good news. "
         "The image is BRIGHT — high-key or warm daylight with strong subject contrast — never a "
         "dark, moody, low-key scene unless the emotional beat itself is dark (dread, crisis). Real "
         "texture: visible skin pores, fabric wear and creases, scuffed surfaces and everyday "
         "imperfections rather than studio polish. When the author's likeness is supplied, the "
         "author is the person in the scene."),
     TREATMENT_GRAPHIC: (
-        "TREATMENT editorial_graphic: a designed editorial graphic. The ONLY words in the image "
-        "are the hook, in double quotes, spelled exactly, set in bold sans-serif type with its "
-        "placement stated (for example large in the left third). One supporting photographic "
-        "element drawn from the visual anchors sits beside it on a flat brand-palette color "
-        "field with generous negative space."),
+        "TREATMENT editorial_graphic: a designed editorial layout — one supporting photographic "
+        "element drawn from the visual anchors on a flat brand-palette color field with generous, "
+        "calm negative space. The headline is typeset onto that space later by the system, so "
+        "the image itself carries no words at all."),
     TREATMENT_CONCRETE: (
         "TREATMENT concrete_scene: a photorealistic photograph of the specific, tangible "
         "situation the visual anchors describe, shot where it really happens, with real texture "
@@ -153,6 +159,13 @@ CLICHE_OBJECTS: tuple[str, ...] = (
     "pile of money", "stack of money", "dollar bill", "banknote", "pile of coins",
     "stack of coins", "coin stack", "piggy bank", "money bag", "shaking hands", "thumbs up",
     "hologram", "data visualization hologram", "glowing dashboard", "data stream",
+    # Round 8: "the soft blue glow of a server room" reached a post render, racks and all.
+    "server room", "server rack", "server cabinet", "servers", "racks", "rack of servers",
+    "data center", "data centre",
+    # Round 9: a video frame turned a safe dial and touched a wall switch — security as hardware.
+    # "safe" alone is an everyday adjective ("feels safe"), so the object is matched by phrase.
+    "safe dial", "wall safe", "steel safe", "office safe", "safe door", "vault", "combination lock",
+    "padlock", "dial", "light switch", "toggle switch", "lever",
     # Stock office (issue #1992).
     "person at laptop", "man at laptop", "woman at laptop", "professional at laptop",
     "typing hands", "hands typing", "hands on keyboard", "coffee and notebook",
@@ -272,8 +285,8 @@ itself, and you turn them into a single render-ready prompt.
   focus.
 - Stock symbols are REFUSED, whatever the topic: """ + ", ".join(CLICHE_OBJECTS) + """. Find
   what THIS piece shows instead.
-- Quotation marks appear ONLY around the hook, copied exactly, when a hook is given (every
-  newsletter cover, and the editorial_graphic treatment). Otherwise no quoted text and no hook.
+- The image carries NO text at all, ever: any headline is typeset onto it later by the
+  system. Never quote the headline or any other words in the prompt.
 """
 
 _VOCABULARY_RULES = (
@@ -286,8 +299,8 @@ _VOCABULARY_RULES = (
     + " drags the image away from a real photograph or a designed graphic.\n")
 
 _SYSTEM_PROMPT_TAIL = """- The renderer ignores negation, so never write "no X" or "without X" — and NEVER mention
-  text, letters, numbers, logos, watermarks, brands, charts, or UI at all, the editorial_graphic
-  hook being the one exception: naming them summons them, garbled. Describe surfaces positively
+  text, letters, numbers, logos, watermarks, brands, charts, or UI at all: naming them summons
+  them, garbled. Describe surfaces positively
   instead: plain unbranded clothing, clean unmarked walls.
 - A SCREEN is where marks appear even when the brief never asked for them: a described laptop,
   monitor or phone invites the renderer to fill its glass with plausible UI, tiled app icons and
@@ -398,68 +411,107 @@ _DOCUMENT_NOUNS = re.compile(
     r"checklists|flip[\s\-]chart|whiteboard|slide|slides)\b", re.IGNORECASE)
 _UNREADABLE_QUALIFIERS = re.compile(
     r"\bblank\b|\bsteep\s+angle\b|\bno\s+writing\s+is\s+legible\b|\bout\s+of\s+focus\b|"
-    r"\billegible\b|\bunreadable\b|\bface[\s\-]down\b|\bturned\s+away\b|\bsoft[\s\-]focus\b",
+    r"\billegible\b|\bunreadable\b|\bface[\s\-]down\b|\bturned\s+away\b|\bsoft[\s\-]focus\b|"
+    r"\bfacing\s+away\b|\bback\s+of\s+(?:a|an|the|her|his|their)\b",
     re.IGNORECASE)
 DOCUMENT_BLANKING = ("every paper and screen in the frame is blank, seen at a steep angle so no "
                      "writing is legible, or out of focus")
 
-# Round 5 (#2241): even under the blank rule, paper props kept rendering legible text on covers
-# ("LEAD LAST REMARKS" on ed16's checklist). A cover carries NO paper prop unless its chosen
-# visual idea is ABOUT a document — and then only as a blank sheet seen edge-on.
+# Round 7 (#2241): stray text on PROPS persisted on every surface even under "blank" — "Proposal"
+# on a clipboard, "COST REDUCTION CHECKLIST", "SOURCE PACK", "KPI Dashboard", console.log on a
+# monitor, "Name / Date" on a form. The renderer ignores "blank", so the props are refused
+# outright, on EVERY surface: paper of any kind, whiteboard or chart content, code, and any screen
+# that is not explicitly seen from behind or turned away.
 _PAPER_PROPS = re.compile(
-    r"\b(?:paper|papers|sheet|sheets|document|documents|clipboard|clipboards|printout|printouts|"
-    r"printed|report|reports|checklist|checklists|invoice|invoices|statement|statements|folder|"
-    r"folders|binder|binders|memo|memos|page|pages|receipt|receipts|notebook|notebooks|"
-    r"flip[\s\-]chart|draft|drafts|manuscript|letter|letters)\b", re.IGNORECASE)
-_EDGE_ON_SHEET = re.compile(r"\bblank sheet seen edge[\s\-]on\b", re.IGNORECASE)
-COVER_EDGE_ON = "a blank sheet seen edge-on"
-PAPER_FORBID, PAPER_EDGE_ON = "forbid", "edge_on"
-COVER_PROPS_DIRECTIVE = {
-    PAPER_FORBID: ("COVER PROPS: no paper in frame — no documents, clipboards, printouts, "
-                   "reports or checklists. Paper renders legible text; build the scene on faces, "
-                   "hands at rest and the room.\n"),
-    PAPER_EDGE_ON: (f"COVER PROPS: the chosen idea is about a document, so the ONLY paper in frame "
-                    f"is {COVER_EDGE_ON} — say exactly that.\n"),
-}
+    r"\b(?:paper|papers|sheet|sheets|document|documents|report|reports|proposal|proposals|"
+    r"clipboard|clipboards|checklist|checklists|form|forms|invoice|invoices|bill|bills|folder|"
+    r"folders|binder|binders|printout|printouts|printed|statement|statements|memo|memos|page|"
+    r"pages|receipt|receipts|notebook|notebooks|draft|drafts|manuscript|letter|letters|"
+    r"whiteboard|whiteboards|chart|charts|graph|graphs|flip[\s\-]chart|code|console|terminal|"
+    r"spreadsheet|spreadsheets|sticky\s+notes?|post-it|contract|contracts|agreement|agreements|"
+    # Round 9: gpt-image paints role and group nouns as captions — "Founders & Content Teams In
+    # Conversation" on a poster, "SECURITY" on a badge — so anything that carries a label goes.
+    r"poster|posters|signage|signboard|signboards|placard|placards|banner|banners|badge|badges|"
+    r"lanyard|lanyards|label|labels|nameplate|nameplates|caption|captions)\b", re.IGNORECASE)
+# Round 9: a capitalised group caption ("Founders & Content Teams", "Engineering and Security")
+# or a group-noun label ("founders and content teams") is exactly what the renderer paints onto
+# a poster or a badge. People are described by appearance and action instead.
+_GROUP_LABEL = re.compile(
+    r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\s+(?:&|and)\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\b|"
+    r"\b\w+\s*&\s*\w+\b|"
+    r"\b\w+\s+and\s+\w+\s+(?:teams|groups|departments|staff|leads|leaders|crews)\b")
+# Round 8: gpt-4.1 flagged "person at laptop" on most scenes, so screens are gone entirely —
+# laptops, monitors, keyboards, tablets, displays, computers — on every surface. A phone may
+# appear only face-down.
+_SCREEN_WORDS = re.compile(
+    r"\b(?:laptop|laptops|screen|screens|monitor|monitors|tablet|tablets|keyboard|keyboards|"
+    r"display|displays|computer|computers|ipad|ipads|desktop|desktops|macbook|macbooks)\b",
+    re.IGNORECASE)
+_PHONE_WORDS = re.compile(r"\b(?:phone|phones|smartphone|smartphones)\b", re.IGNORECASE)
+_FACE_DOWN = re.compile(r"\bface[\s\-]down\b", re.IGNORECASE)
+PAPER_FORBID = "forbid"
+PROPS_DIRECTIVE = (
+    "PROPS: no paper of any kind in frame — no documents, sheets, reports, proposals, "
+    "clipboards, checklists, forms, invoices, bills, folders or binders — no whiteboard, chart "
+    "or code content — and no screens at all: no laptop, monitor, keyboard, tablet or computer. "
+    "Hands hold nothing, or a mug, pen or phone held face-down. Tell the story with people "
+    "interacting and gesturing in a real environment — a warehouse, a shop floor, a meeting room, "
+    "a hallway, a kitchen table, a workshop. Describe each person by APPEARANCE and ACTION (\"a "
+    "woman in a green jumper pointing at the shelf\"), never by a role or group caption such as "
+    "\"founders and content teams\" or \"engineering lead\" — the renderer paints those onto "
+    "posters and badges. No posters, signage, name badges, lanyards or labels.\n")
+# Kept for the call sites that name it: covers and posts were the first surfaces with the rule.
+COVER_PROPS_DIRECTIVE = {PAPER_FORBID: PROPS_DIRECTIVE}
 
 
-def cover_paper_rule(concept: Optional[ImageConcept]) -> str:
-    """How a cover may show paper.
-
-    ``edge_on`` when the chosen idea is about a document, else ``forbid``.
+def cover_paper_rule(concept: Optional[ImageConcept] = None) -> str:
+    """The prop rule for any surface: ``forbid`` since round 7, whatever the idea is about.
 
     Args:
-        concept: Stage 1's concept, or None.
+        concept: Unused — the edge-on exception for document ideas is gone.
 
     Returns:
-        ``PAPER_EDGE_ON`` or ``PAPER_FORBID``.
+        ``PAPER_FORBID``.
     """
-    idea = concept.chosen_idea if concept else ""
-    return PAPER_EDGE_ON if _PAPER_PROPS.search(idea or "") else PAPER_FORBID
+    _ = concept
+    return PAPER_FORBID
+
+
+def prop_failure(text: Optional[str]) -> Optional[str]:
+    """Why ``text`` names a prop that renders legible marks, or None.
+
+    Args:
+        text: A render prompt (hook stripped) or a visual idea.
+
+    Returns:
+        The reason: a paper/document/chart/code prop, or a screen not seen from behind.
+    """
+    text = text or ""
+    paper = _PAPER_PROPS.search(text)
+    if paper:
+        return (f"the scene names {paper.group(0)!r} — paper, charts and code render legible "
+                f"text; tell the story with gesture, posture and the room instead")
+    screen = _SCREEN_WORDS.search(text)
+    if screen:
+        return (f"the scene names a {screen.group(0)} — screens are the stock 'person at laptop' "
+                f"trope; show people interacting in a real environment instead")
+    phone = _PHONE_WORDS.search(text)
+    if phone and not _FACE_DOWN.search(text):
+        return (f"the scene names a {phone.group(0)} — a phone appears only held face-down")
+    return None
 
 
 def paper_rule_failure(prompt: str, rule: Optional[str]) -> Optional[str]:
-    """Why ``prompt`` breaks a cover's paper rule, or None.
+    """Why ``prompt`` breaks the prop rule, or None (no rule passed: not checked).
 
     Args:
         prompt: The render prompt, hook stripped.
-        rule: ``PAPER_FORBID``, ``PAPER_EDGE_ON`` or None (no rule — not a cover).
+        rule: ``PAPER_FORBID`` or None.
 
     Returns:
         The rejection reason.
     """
-    if not rule:
-        return None
-    hit = _PAPER_PROPS.search(prompt or "")
-    if not hit:
-        return None
-    if rule == PAPER_FORBID:
-        return (f"a cover carries no paper props ({hit.group(0)!r}) — paper keeps rendering "
-                f"legible text; build the scene on faces and the room")
-    if not _EDGE_ON_SHEET.search(prompt):
-        return (f"the only paper on this cover is {COVER_EDGE_ON} — describe it exactly so, "
-                f"never {hit.group(0)!r}")
-    return None
+    return prop_failure(prompt) if rule else None
 
 
 def words_on_surface(text: Optional[str]) -> Optional[str]:
@@ -546,51 +598,67 @@ _DARK_SCENE = re.compile(
     r"\b(?:moody|low[\s\-]key|dimly[\s\-]lit|dimly|dark\s+(?:room|office|scene|setting|"
     r"background|interior|studio)|shadowy|noir|chiaroscuro|pitch[\s\-]black|near[\s\-]black|"
     r"gloomy|murky|unlit)\b", re.IGNORECASE)
+# Round 7: "relief" rendered as eyes squeezed shut and a hand on the chest — good news as pain.
+_PAINED_RELIEF = re.compile(
+    r"\beyes\s+(?:closed|shut|squeezed)\b|\b(?:closed|squeezed|shut)\s+eyes\b|"
+    r"\bhand\s+(?:on|over|to)\s+(?:her|his|their|the)\s+(?:chest|heart)\b|"
+    # Round 9: "Right model, right time" rendered a man holding his head, eyes shut — a headache.
+    r"\bhands?\s+(?:on|over|to|against|pressed\s+to|cradling|rubbing|covering)\s+"
+    r"(?:her|his|their|the)\s+(?:head|face|temples?|forehead|brow|eyes)\b|"
+    r"\b(?:holding|clutching|cradling|rubbing|massaging)\s+(?:her|his|their)\s+"
+    r"(?:head|face|temples?|forehead|brow)\b|"
+    r"\b(?:head|face)\s+in\s+(?:her|his|their)\s+hands\b",
+    re.IGNORECASE)
 _DARK_BEAT = re.compile(r"\b(?:dread|crisis|fear|grief|panic|despair|dark|ominous|loss)\b",
                         re.IGNORECASE)
 # The surfaces that follow the cover recipe: a hook, a face with a readable emotion, no paper,
 # blank screens, bright light (round 5 extended it from covers to post images).
 HOOK_SURFACES = frozenset({"newsletter", "post_image"})
-POST_HOOK_LAYOUT = (
-    'POST LAYOUT (4:5 portrait): the headline "{hook}" sits large in the top third — '
-    "{type_spec}, five words at most. The subject fills the lower two thirds.\n")
-# Every newsletter cover carries its hook as a headline (round 3): the hook carries the THESIS,
-# the visual carries emotion and specificity — the YouTube-thumbnail / editorial-cover pattern.
-COVER_HOOK_LAYOUT = (
-    'COVER LAYOUT: the headline "{hook}" sits in one third of the frame — left or right, opposite '
-    "the subject — {type_spec}, five words at most. The visual subject fills the other two "
-    "thirds.\n")
-# The hook's typography is a FIXED brand spec, never the model's choice (round 4: ed16's hook came
-# back in a serif face). The brand kit's font vibe replaces the default typeface when present.
-_DEFAULT_TYPEFACE = "a heavy geometric sans-serif (Montserrat ExtraBold style)"
-_DEFAULT_HOOK_COLOR = "light gold"
-HOOK_TYPE_SPEC = ("set in {typeface}, sentence case, {color} on a charcoal backing panel, large "
-                  "enough to read at 400x225")
-_FONT_VIBE = re.compile(r"(?:font[_\s]?vibe|typography(?:\s+feel)?|typeface|font)\s*:\s*([^;\n]+)",
-                        re.IGNORECASE)
-_SHADED_COLOR = re.compile(
-    r"\b((?:light|dark|deep|warm|pale|bright|soft|muted)\s+)?(" + "|".join(
-        sorted(_COLOR_WORDS, key=len, reverse=True)) + r")\b", re.IGNORECASE)
+# Round 6: video frames brought paper back ("MONTHLY BILL") and scored brand_fit 1 with no hook,
+# so the no-paper rule and the brand-accent gate cover them too.
+PAPER_SURFACES = frozenset({"newsletter", "post_image", "video"})
+BRAND_GATE_SURFACES = frozenset({"newsletter", "post_image", "video"})
+# Round 6 addendum (#2241): the headline is COMPOSITED by ``image_compose``, never rendered. The
+# brief only keeps the region the headline will sit on calm, so the typesetting has room.
+NEGATIVE_SPACE: dict[str, str] = {
+    "panel_left": ("keep the LEFT half of the frame calm, plain negative space — a soft wall or "
+                   "background — with every subject in the right half; a headline panel is "
+                   "added there later"),
+    "panel_right": ("keep the RIGHT half of the frame calm, plain negative space — a soft wall or "
+                    "background — with every subject in the left half; a headline panel is added "
+                    "there later"),
+    "full_bleed": ("keep one side third of the frame calm and slightly darker — a shadowed wall "
+                   "or the window side — with nothing important in it; a headline is set over "
+                   "it later"),
+    "lower_third_band": ("keep every subject — faces, torsos and hands — in the UPPER 55% of the "
+                         "frame, the bottom 45% calm and uncluttered floor or wall; a headline "
+                         "band is added there later"),
+    "band_top": ("keep the top 40% of the frame calm, plain negative space — wall, sky or "
+                 "ceiling — with every subject in the lower 60%; a headline band is added there "
+                 "later"),
+}
+# Round 8: the split layouts give the scene its own region, so the scene leaves no space at
+# all — it is a square with the subject centred, filling it (it is centre-cropped beside the type).
+_SQUARE_SCENE = ("compose a SQUARE frame with the subject centred and filling it, the headline is "
+                 "set beside the image, never on it")
+NEGATIVE_SPACE.update({layout: _SQUARE_SCENE for layout in
+                       ("split_left", "split_right", "split_top", "split_bottom")})
+_DEFAULT_NEGATIVE_SPACE = {"newsletter": "split_left", "post_image": "split_top"}
 
 
-def hook_type_spec(brand_kit: Optional[str]) -> str:
-    """The fixed typography clause every hook carries.
+def negative_space_directive(layout: str, surface: str) -> str:
+    """Which region of the frame the scene keeps calm for the composited headline.
 
     Args:
-        brand_kit: The pre-rendered brand clause, or None.
+        layout: The concept's rotated compositing template ('' for the surface default).
+        surface: ``newsletter`` or ``post_image``; other surfaces get no headline.
 
     Returns:
-        "set in <typeface>, sentence case, <primary color> on a dark area, large enough to read at
-        400x225" — the brand kit's font vibe and first named color when present, else a heavy
-        geometric sans-serif in light gold. A sans-serif is always stated.
+        The directive sentence, or '' when the surface carries no headline.
     """
-    font = _FONT_VIBE.search(brand_kit or "")
-    typeface = font.group(1).strip().rstrip(".,") if font else ""
-    if typeface and "sans" not in typeface.lower():
-        typeface = f"{typeface}, a heavy geometric sans-serif"
-    color = _SHADED_COLOR.search(brand_kit or "")
-    return HOOK_TYPE_SPEC.format(typeface=typeface or _DEFAULT_TYPEFACE,
-                                 color=color.group(0).lower() if color else _DEFAULT_HOOK_COLOR)
+    if surface not in _DEFAULT_NEGATIVE_SPACE:
+        return ""
+    return NEGATIVE_SPACE.get(layout) or NEGATIVE_SPACE[_DEFAULT_NEGATIVE_SPACE[surface]]
 
 
 def brand_colors(brand_kit: Optional[str]) -> frozenset[str]:
@@ -612,8 +680,13 @@ def _names_a_color(prompt: str, colors: frozenset[str]) -> bool:
 
 
 def carries_hook(surface: str, treatment: str) -> bool:
-    """Does this image carry the concept's hook? Covers, post images, and any graphic."""
-    return surface in HOOK_SURFACES or treatment == TREATMENT_GRAPHIC
+    """Does this image get the concept's hook composited on? Covers and post images only.
+
+    ``treatment`` is accepted for the call sites' symmetry; since round 6 no render carries text,
+    so a graphic on another surface gets no headline either.
+    """
+    _ = treatment
+    return surface in HOOK_SURFACES
 
 
 # Name tokens a prompt may carry anyway: the platform the use case itself names.
@@ -691,7 +764,8 @@ def usable_anchors(concept: Optional[ImageConcept]) -> list[str]:
         return []
     anchors = concept.visual_anchors or tuple(
         e for e in concept.specific_entities if not is_fact_only(e))
-    return [a for a in anchors if not cliche_hit(a) and not name_tokens(a)]
+    return [a for a in anchors if not cliche_hit(a) and not name_tokens(a)
+            and not prop_failure(a)]
 
 
 def fact_name_tokens(concept: Optional[ImageConcept]) -> set[str]:
@@ -750,7 +824,7 @@ def _deterministic_failure(prompt: str, *, anchors: list[str], weak: bool,
                            names: Optional[set[str]] = None,
                            colors: Optional[frozenset[str]] = None,
                            paper_rule: Optional[str] = None,
-                           bright: bool = False) -> Optional[str]:
+                           bright: bool = False, positive: bool = False) -> Optional[str]:
     """Why ``prompt`` fails the deterministic checks, or None when it passes them.
 
     Shared by Stage 2's validation and Stage 3, so the two can never disagree about a cliché,
@@ -775,9 +849,15 @@ def _deterministic_failure(prompt: str, *, anchors: list[str], weak: bool,
     if named:
         return (f"the prompt names {named!r}, a fact the image cannot draw — show the visual "
                 f"anchors, never a name or a number")
-    paper = paper_rule_failure(unhooked, paper_rule)
-    if paper:
-        return paper
+    pained = _PAINED_RELIEF.search(unhooked) if positive else None
+    if pained:
+        return (f"good news reads as pain ({pained.group(0)!r}) — a quiet, satisfied half-smile "
+                f"with relaxed shoulders, eyes open, engaged with the other person or the task, "
+                f"hands away from the head and face")
+    label = _GROUP_LABEL.search(unhooked)
+    if label:
+        return (f"the prompt names a group caption ({label.group(0)!r}) — the renderer paints "
+                f"those onto posters and badges; describe people by appearance and action")
     dark = _DARK_SCENE.search(unhooked) if bright else None
     if dark:
         return (f"the prompt asks for a dark scene ({dark.group(0)!r}) — light it bright, high-key "
@@ -788,17 +868,14 @@ def _deterministic_failure(prompt: str, *, anchors: list[str], weak: bool,
                 f"blank or abstract")
     legible = legible_document(unhooked)
     if legible:
-        return (f"the prompt asks for a readable document ({legible!r}) — describe every paper "
-                f"and screen as blank, seen at a steep angle so no writing is legible, or out of "
-                f"focus")
-    unblanked = unblanked_document(unhooked)
-    if unblanked:
-        return (f"the prompt names a {unblanked} without saying how it stays unreadable — "
-                f"describe it as blank, seen at a steep angle so no writing is legible, or out "
-                f"of focus")
-    if hook_text and "sans" not in unhooked.lower():
-        return ("the hook's typeface is not stated — set it in a heavy geometric sans-serif, "
-                "sentence case")
+        return (f"the prompt asks for a readable document ({legible!r}) — drop it; tell the story "
+                f"with gesture, posture and the room")
+    # (A document "described as blank" is no longer enough — round 7 refuses the prop itself,
+    # below — so the old unblanked-document check has nothing left to add.)
+    # After the specific phrase checks, so their more precise reason is the one the author hears.
+    paper = paper_rule_failure(unhooked, paper_rule)
+    if paper:
+        return paper
     # Advisory since round 3: the hook carries the thesis, so ONE anchor in frame is enough — two
     # pushed ed16 onto the fallback twice for "depicts 1 of the anchors".
     if not weak and anchors and not any(entity_mentioned(a, prompt) for a in anchors):
@@ -814,7 +891,7 @@ def _rejection(parsed: dict[str, Any], *, anchors: list[str], weak: bool,
                hook_text: Optional[str], names: Optional[set[str]] = None,
                colors: Optional[frozenset[str]] = None,
                paper_rule: Optional[str] = None, bright: bool = False,
-               avatar: bool = False) -> Optional[str]:
+               positive: bool = False, avatar: bool = False) -> Optional[str]:
     """Why an authored brief is unusable, or None. The reason goes back to the author verbatim."""
     prompt = str(parsed.get("prompt") or "").strip()
     pose = _AVATAR_POSE.search(prompt) if avatar else None
@@ -830,10 +907,10 @@ def _rejection(parsed: dict[str, Any], *, anchors: list[str], weak: bool,
         return "failed validation (refusal phrasing)"
     reply_hook = str(parsed.get("hook_text") or "").strip()
     if reply_hook.lower() not in ("", "null", "none") and not hook_text:
-        return "the reply declared hook text, but this image carries no hook"
+        return "the reply declared hook text, but the image carries no text — the headline is typeset later"
     return _deterministic_failure(prompt, anchors=anchors, weak=weak, hook_text=hook_text,
                                   names=names, colors=colors, paper_rule=paper_rule,
-                                  bright=bright)
+                                  bright=bright, positive=positive)
 
 
 _CHECK_PROMPT = """You are checking an image prompt BEFORE it is sent to a renderer.
@@ -876,7 +953,7 @@ def check_prompt_against_concept(prompt: str, concept: Optional[ImageConcept],
     anchors = usable_anchors(concept)
     failure = _deterministic_failure(prompt, anchors=anchors,
                                      weak=_concept_is_weak(concept, anchors),
-                                     hook_text=hook_text, names=fact_name_tokens(concept))
+                                     hook_text=None, names=fact_name_tokens(concept))
     if failure:
         return False, failure
     if concept is None:
@@ -961,11 +1038,13 @@ def _fallback_brief(content: str, *, surface: str, ratio: str, context: str,
     treatment = _fallback_treatment(treatment or _treatment_for(concept, avatar),
                                     usable_anchors(concept))
     anchors = [_plain_words(a) for a in usable_anchors(concept)]
-    cover = surface in HOOK_SURFACES
-    # A cover carries no paper prop (round 5), so a paper anchor never reaches its fallback.
-    anchors = [a for a in anchors if a and not (cover and _PAPER_PROPS.search(a))]
+    # No prop anchor reaches a fallback (usable_anchors already drops them, round 7).
+    anchors = [a for a in anchors if a]
     use = _USE_LABELS.get(surface, _USE_LABELS[_DEFAULT_PRESET])
     summary = _plain_words(concept.thesis if concept else content)[:240]
+    if prop_failure(summary) or _GROUP_LABEL.search(summary):
+        # Round 9: a thesis about "the pricing contract" rendered a sheet reading PRICING CONTRACT.
+        summary = "the people this piece is about, working it through together"
     hook = (concept.hook_phrase if concept and concept.hook_phrase
             and carries_hook(surface, treatment) else None)
     accent = sorted(brand_colors(brand_kit) & {"gold", "golden"}) or sorted(brand_colors(brand_kit))
@@ -973,26 +1052,22 @@ def _fallback_brief(content: str, *, surface: str, ratio: str, context: str,
               f"bright, high-key warm daylight with strong subject contrast and one deliberate "
               f"{accent[0]} accent, subtle film "
               f"grain, real texture with fabric wear and everyday imperfections, plain unbranded "
-              f"surfaces, clean unmarked walls; "
-              + (f"every screen in the frame is blank or out of focus, and any paper is "
-                 f"{COVER_EDGE_ON}." if cover else f"{DOCUMENT_BLANKING}."))
-    if not hook:
-        layout = ""
-    elif surface == "post_image":
-        layout = (f' The headline "{hook}" sits large in the top third, '
-                  f"{hook_type_spec(brand_kit)}; the subject fills the lower two thirds.")
-    else:
-        layout = (f' The headline "{hook}" sits in the left third, {hook_type_spec(brand_kit)}; '
-                  f"the subject fills the other two thirds.")
+              f"surfaces, clean unmarked walls, hands at rest or around a mug.")
+    space = negative_space_directive(concept.layout if concept else "", surface) if hook else ""
+    layout = f" {space[:1].upper()}{space[1:]}." if space else ""
     # Profile context is AUTHOR context: a fallback is a render prompt, so it never carries it.
     context = ""
     idea = _plain_words(concept.chosen_idea) if concept and concept.chosen_idea else ""
 
     if idea:
-        prompt = (f"{context}A photorealistic editorial photograph for a {use}: {idea}, shot on a "
-                  f"50mm lens at f/2.8, visible skin pores, {finish}{layout}")
+        who = (f", the person {cast_phrase(concept.cast)}"
+               if concept and concept.cast and not avatar else "")
+        prompt = (f"{context}A photorealistic editorial photograph for a {use}: {idea}{who}, shot "
+                  f"on a 50mm lens at f/2.8, visible skin pores, {finish}{layout}")
     elif treatment == TREATMENT_PEOPLE:
         who = _plain_words(concept.audience) if concept and concept.audience else ""
+        if _GROUP_LABEL.search(who):
+            who = ""  # "founders and content teams" is painted on a poster, never shown (round 9)
         who = who or "a small working team"
         around = _join(anchors[:3]) if anchors else f"the situation this describes: {summary}"
         prompt = (f"{context}A photorealistic candid documentary photograph for a {use}: {who} "
@@ -1018,9 +1093,18 @@ def _fallback_brief(content: str, *, surface: str, ratio: str, context: str,
                       hook_text=hook, rejections=tuple(rejections))
 
 
+_VALENCE_FACES = {
+    "positive": ("a quiet, satisfied half-smile and relaxed shoulders, eyes open, engaged with "
+                 "the other person or the task — never eyes closed, never a hand on the chest, "
+                 "head or face"),
+    "negative": "concerned, skeptical or frustrated — restrained, never despair",
+    "mixed": "wry or thoughtful",
+}
+
+
 def _analysis_block(concept: Optional[ImageConcept], anchors: list[str],
                     hook: Optional[str], surface: str = "post_image",
-                    brand_kit: Optional[str] = None) -> str:
+                    brand_kit: Optional[str] = None, avatar: bool = False) -> str:
     if concept is None:
         return ("Analysis of the piece: unavailable — read the excerpt and build the image on "
                 "the specific, depictable things it describes.\n")
@@ -1031,14 +1115,19 @@ def _analysis_block(concept: Optional[ImageConcept], anchors: list[str],
     block = f"Analysis of the piece: {json.dumps(analysis)}\n"
     if concept.chosen_idea:
         block += f"CHOSEN VISUAL IDEA — build the image on this: {concept.chosen_idea}\n"
+    if concept.cast and not avatar:
+        # Round 6: the series read as one man in his 30s-40s. The cast rotates; the role comes
+        # from the piece's own anchors.
+        block += (f"CAST: the person in frame is {cast_phrase(concept.cast)} — a real, "
+                  f"unremarkable member of this audience, no stereotyped styling.\n")
+    if concept.valence:
+        block += f"VALENCE: {concept.valence} — {_VALENCE_FACES.get(concept.valence, '')}.\n"
     if hook:
-        type_spec = hook_type_spec(brand_kit)
-        block += (f'Hook — the ONLY text in the image, quoted exactly: "{hook}", {type_spec} — '
-                  f"state that typography in the prompt.\n")
-        if surface == "newsletter" and concept.treatment != TREATMENT_GRAPHIC:
-            block += COVER_HOOK_LAYOUT.format(hook=hook, type_spec=type_spec)
-        elif surface == "post_image" and concept.treatment != TREATMENT_GRAPHIC:
-            block += POST_HOOK_LAYOUT.format(hook=hook, type_spec=type_spec)
+        block += (f"HEADLINE (typeset onto the image later by the system — never draw it, never "
+                  f"quote it): {hook}\n")
+        space = negative_space_directive(concept.layout, surface)
+        if space:
+            block += f"NEGATIVE SPACE: {space}.\n"
     return block
 
 
@@ -1082,6 +1171,11 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
             log_debug("Image concept stage raised — briefing without it", error=str(e),
                       surface=surface, action_type="image_brief")
             concept = None
+        if concept is not None and not concept.layout and not concept.cast:
+            # A concept this call computed gets a stable per-piece rotation (covers pass their
+            # receipt history to Stage 1). A CALLER's concept is used exactly as given.
+            concept = assign_layout_and_cast(concept, surface)
+
     preset = surface if surface in _STYLE_PRESETS else _DEFAULT_PRESET
     treatment = _treatment_for(concept, avatar)
     anchors = usable_anchors(concept)
@@ -1089,10 +1183,15 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
     names = fact_name_tokens(concept)
     hook = (concept.hook_phrase if concept and concept.hook_phrase
             and carries_hook(surface, treatment) else None)
+    if hook:
+        # Round 8: a composited surface renders a SQUARE scene that image_compose centre-crops
+        # beside its type panel, whatever the caller's final ratio.
+        ratio = "1:1"
     colors = brand_colors(brand_kit)
     # Deterministically enforced on covers; requested on every surface.
-    gate_colors = colors if surface == "newsletter" else None
-    paper_rule = cover_paper_rule(concept) if surface in HOOK_SURFACES else None
+    gate_colors = colors if surface in BRAND_GATE_SURFACES else None
+    paper_rule = PAPER_FORBID  # every surface since round 7
+    positive = concept is not None and concept.valence == "positive"
     bright = surface in HOOK_SURFACES and not (
         concept is not None and _DARK_BEAT.search(concept.emotional_beat or ""))
     # The likeness directive leads the context on purpose (issue #744): with nothing stating who
@@ -1104,10 +1203,10 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
         f"{context}USE CASE: {_STYLE_PRESETS[preset]}\n"
         f"{_TREATMENT_TEMPLATES[treatment]}\n\n"
         f"Compose for a {ratio} aspect ratio.\n"
-        + _analysis_block(concept, anchors, hook, surface, brand_kit)
+        + _analysis_block(concept, anchors, hook, surface, brand_kit, avatar=bool(avatar))
         + (f"Brand: {brand_kit}\n" if brand_kit else "")
         + BRAND_ACCENT_DIRECTIVE.format(colors=", ".join(sorted(colors)))
-        + (COVER_PROPS_DIRECTIVE[paper_rule] if paper_rule else "")
+        + PROPS_DIRECTIVE
         + (avatar_directive(concept) if avatar else _NO_AVATAR_PEOPLE)
         + (f"Content shape: {content_shape}\n" if content_shape else "")
         + (f"This author's recent images already looked like this, so make this one visibly "
@@ -1170,9 +1269,9 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
                 continue
             if isinstance(parsed.get("prompt"), str):
                 parsed["prompt"] = strip_author_context(parsed["prompt"], context)
-            rejection = _rejection(parsed, anchors=anchors, weak=weak, hook_text=hook,
+            rejection = _rejection(parsed, anchors=anchors, weak=weak, hook_text=None,
                                    names=names, colors=gate_colors, paper_rule=paper_rule,
-                                   bright=bright, avatar=bool(avatar))
+                                   bright=bright, positive=positive, avatar=bool(avatar))
             if rejection:
                 reason = rejection
                 rejections.append(reason)

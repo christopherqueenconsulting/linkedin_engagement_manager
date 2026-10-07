@@ -790,3 +790,107 @@ class TestRecentCoverTreatments:
             nc.generate_cover_for_edition(3, 9, "T", "S", "B")
         assert recent.call_args[0] == (3, 3)
         assert stage1.call_args[1]["recent_treatments"] == ["editorial_graphic"]
+
+
+class TestCoverRotationHistory:
+    def test_stage_one_gets_layout_cast_and_hook_shape_history(self, tmp_path):
+        receipts = [{"focal_concept": "x", "concept": {"layout": "panel_left",
+                                                       "cast": {"gender": "man"},
+                                                       "hook_shape": "question"}}]
+        with patch.object(nc, "assets_dir", str(tmp_path / "assets")), \
+             patch.object(nc, "_resolve_cover_avatar", return_value=None), \
+             patch.object(nc, "_recent_cover_receipts", return_value=receipts), \
+             patch("cqc_lem.utilities.ai.image_concept.analyze_content_for_image",
+                   return_value=None) as stage1, \
+             patch("cqc_lem.utilities.ai.image_brief.build_image_brief", return_value=_brief()), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated", return_value=None):
+            nc.generate_cover_for_edition(3, 9, "T", "S", "B")
+        kwargs = stage1.call_args[1]
+        assert kwargs["recent_layouts"] == ["panel_left"]
+        assert kwargs["recent_casts"] == [{"gender": "man"}]
+        assert kwargs["recent_hook_shapes"] == ["question"]
+
+    def test_the_rotated_layout_reaches_the_compositor(self, tmp_path):
+        from cqc_lem.utilities.ai.image_brief import ImageBrief
+        concept = _concept(layout="full_bleed")
+        brief = ImageBrief(prompt="p", ratio=nc.COVER_IMAGE_RATIO, surface="newsletter",
+                           style_preset="newsletter", focal_concept="f", concept=concept,
+                           hook_text="Who buys?")
+        with patch.object(nc, "assets_dir", str(tmp_path / "assets")), \
+             patch.object(nc, "_resolve_cover_avatar", return_value=None), \
+             patch("cqc_lem.utilities.ai.image_concept.analyze_content_for_image",
+                   return_value=concept), \
+             patch("cqc_lem.utilities.ai.image_brief.build_image_brief", return_value=brief), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated",
+                   return_value=None) as gen:
+            nc.generate_cover_for_edition(3, 9, "T", "S", "B")
+        assert gen.call_args[1]["layout"] == "full_bleed"
+        assert gen.call_args[1]["hook_text"] == "Who buys?"
+
+
+
+class TestCoverByline:
+    def _run(self, tmp_path, **kwargs):
+        from types import SimpleNamespace
+        profile = SimpleNamespace(full_name="Christopher Queen", job_title=None, industry=None,
+                                  company_name=None)
+        with patch.object(nc, "assets_dir", str(tmp_path / "assets")), \
+             patch.object(nc, "_resolve_cover_avatar", return_value=None), \
+             patch("cqc_lem.utilities.ai.image_concept.analyze_content_for_image",
+                   return_value=None), \
+             patch("cqc_lem.utilities.ai.image_brief.build_image_brief", return_value=_brief()), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated",
+                   return_value=None) as gen:
+            nc.generate_cover_for_edition(3, 9, "T", "S", "B", profile=profile, **kwargs)
+        return gen.call_args[1]["signature"]
+
+    def test_the_byline_defaults_to_the_authors_name(self, tmp_path):
+        assert self._run(tmp_path) == "Christopher Queen"
+
+    def test_a_newsletter_title_wins_when_the_caller_has_one(self, tmp_path):
+        assert self._run(tmp_path, signature="The AI Operator") == "The AI Operator"
+
+    def test_no_profile_means_no_byline(self, tmp_path):
+        with patch.object(nc, "assets_dir", str(tmp_path / "assets")), \
+             patch.object(nc, "_resolve_cover_avatar", return_value=None), \
+             patch("cqc_lem.utilities.ai.image_concept.analyze_content_for_image",
+                   return_value=None), \
+             patch("cqc_lem.utilities.ai.image_brief.build_image_brief", return_value=_brief()), \
+             patch("cqc_lem.utilities.ai.image_gen.render_image_gated",
+                   return_value=None) as gen:
+            nc.generate_cover_for_edition(3, 9, "T", "S", "B")
+        assert gen.call_args[1]["signature"] is None
+
+
+class TestCoverAvatarFitRule:
+    def test_auto_uses_the_concept_fit_rule_when_the_guardrails_offer_it(self, monkeypatch):
+        from cqc_lem.utilities.avatar import guardrails
+        calls = []
+
+        def fit_rule(user_id, surface, concept, source_text):
+            calls.append((user_id, surface, concept, source_text))
+            return None
+
+        monkeypatch.setattr(guardrails, "resolve_avatar_for_concept", fit_rule, raising=False)
+        with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for") as legacy, \
+             patch.object(nc, "classify_avatar_relevance") as classify:
+            assert nc._resolve_cover_avatar(3, None, "T", "S", "B", concept="C") is None
+        assert calls and calls[0][1] == "newsletter" and calls[0][2] == "C"
+        legacy.assert_not_called()
+        classify.assert_not_called()
+
+    def test_an_explicit_without_never_consults_the_fit_rule(self, monkeypatch):
+        from cqc_lem.utilities.avatar import guardrails
+        monkeypatch.setattr(guardrails, "resolve_avatar_for_concept",
+                            lambda *a, **k: _USABLE_AVATAR, raising=False)
+        assert nc._resolve_cover_avatar(3, False, "T", "S", "B", concept="C") is None
+
+    def test_without_a_concept_the_classifier_conjunction_still_decides(self, monkeypatch):
+        """A merged tree with the fit rule must keep the no-concept behaviour (PR #2249)."""
+        from cqc_lem.utilities.avatar import guardrails
+        monkeypatch.setattr(guardrails, "resolve_avatar_for_concept",
+                            lambda *a, **k: None, raising=False)
+        with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for",
+                   return_value=_USABLE_AVATAR), \
+             patch.object(nc, "classify_avatar_relevance", return_value=True):
+            assert nc._resolve_cover_avatar(3, None, "T", "S", "B") == _USABLE_AVATAR

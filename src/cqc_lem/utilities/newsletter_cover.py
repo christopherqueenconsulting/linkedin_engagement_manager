@@ -21,7 +21,7 @@ import os
 import secrets
 import shutil
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 from cqc_lem import assets_dir
 from cqc_lem.utilities.logger import log_debug, log_info, log_warning
@@ -258,6 +258,21 @@ def _recent_cover_treatments(user_id: int, limit: int = 3) -> list[str]:
             if str(r.get("treatment") or "").strip()]
 
 
+def _recent_concept_field(user_id: int, field: str, limit: int) -> list:
+    """One Stage 1 concept field off the last `limit` cover receipts, most-recent first.
+
+    Feeds the deterministic rotations (round 6 of #2241): layout, cast and hook shape are each
+    picked least-recently-used against what the series already showed.
+    """
+    values = []
+    for receipt in _recent_cover_receipts(user_id, limit):
+        concept = receipt.get("concept")
+        value = concept.get(field) if isinstance(concept, dict) else None
+        if value:
+            values.append(value)
+    return values
+
+
 def _recent_cover_signals(user_id: int, limit: int = _VARIETY_WINDOW) -> list[str]:
     """What the last few covers looked like — ``"<treatment>: <focal concept>"`` — for the brief.
 
@@ -329,21 +344,34 @@ def _avatar_for_explicit_choice(user_id: int) -> Optional[dict]:
 
 
 def _resolve_cover_avatar(user_id: int, use_avatar: Optional[bool], title: Optional[str],
-                          subtitle: Optional[str], body: Optional[str]) -> Optional[dict]:
+                          subtitle: Optional[str], body: Optional[str],
+                          concept: Any = None) -> Optional[dict]:
     """Which avatar (if any) this cover renders with.
 
     ``use_avatar`` is the per-edition override: False never renders it, True skips only the
     per-surface opt-in and the relevance classifier. ``None`` (Auto) needs BOTH the guardrails
     (``avatar_use_newsletter`` opt-in + approval) AND the classifier to agree — the owner's ask
     was "some newsletters, when it's relevant to the article", and this is that conjunction.
+
+    Round 8 (#2241): when the avatar guardrails offer ``resolve_avatar_for_concept`` — the fit rule
+    PR #2249 added for posts — Auto uses THAT, with Stage 1's concept, so a cover only carries the
+    author when the piece is about the author (ed18 rendered a blurry back-of-head). Without it,
+    the guardrails + classifier conjunction above still decides.
     """
     if use_avatar is False:
         return None
     if use_avatar is True:
         return _avatar_for_explicit_choice(user_id)
 
+    from cqc_lem.utilities.avatar import guardrails
     from cqc_lem.utilities.avatar.guardrails import AVATAR_SURFACE_NEWSLETTER, resolve_avatar_for
 
+    fit_rule = getattr(guardrails, "resolve_avatar_for_concept", None)
+    # The fit rule judges a CONCEPT; with none (Stage 1 down) it has nothing to read, so the
+    # guardrails + classifier conjunction decides, exactly as before the rule existed.
+    if fit_rule is not None and concept is not None:
+        return fit_rule(user_id, surface=AVATAR_SURFACE_NEWSLETTER, concept=concept,
+                        source_text=_edition_full_text(subtitle, body))
     avatar = resolve_avatar_for(user_id, surface=AVATAR_SURFACE_NEWSLETTER)
     if not avatar:
         return None
@@ -357,6 +385,7 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
                                guidance: Optional[str] = None,
                                edition_format: Optional[str] = None,
                                hook_style: Optional[str] = None,
+                               signature: Optional[str] = None,
                                ) -> "tuple[Optional[str], Optional[str]]":
     """Generate a cover for one edition. Returns ``(relative_path, None)`` or ``(None, reason)``.
 
@@ -386,16 +415,21 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
     from cqc_lem.utilities.brand_kit import brand_clause_for_user
     from cqc_lem.utilities.media_provenance import write_brief_receipt
 
-    avatar = _resolve_cover_avatar(user_id, use_avatar, title, subtitle, body)
     shape = (f"format={edition_format or 'unspecified'}, hook_style={hook_style or 'unspecified'}"
             if edition_format or hook_style else None)
 
     try:
-        from cqc_lem.utilities.ai.image_concept import GRAPHIC_WINDOW
+        from cqc_lem.utilities.ai.image_concept import GRAPHIC_WINDOW, ROTATION_WINDOW
         concept = analyze_content_for_image(
             _edition_full_text(subtitle, body), title=title, surface="newsletter",
             user_id=user_id,
-            recent_treatments=_recent_cover_treatments(user_id, GRAPHIC_WINDOW))
+            recent_treatments=_recent_cover_treatments(user_id, GRAPHIC_WINDOW),
+            recent_layouts=_recent_concept_field(user_id, "layout", ROTATION_WINDOW),
+            recent_casts=_recent_concept_field(user_id, "cast", ROTATION_WINDOW),
+            recent_hook_shapes=_recent_concept_field(user_id, "hook_shape", ROTATION_WINDOW))
+        # Round 8: the avatar is resolved AFTER Stage 1, so the fit rule can read the concept.
+        avatar = _resolve_cover_avatar(user_id, use_avatar, title, subtitle, body,
+                                       concept=concept)
         # The avatar is resolved BEFORE the brief is authored: its declared subject clause is what
         # stops the prompt LLM inventing a different person for the LoRA to contradict (#744).
         brief = build_image_brief("\n\n".join(p for p in (title, subtitle, body) if p),
@@ -408,20 +442,26 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
                     action_type="newsletter_cover")
         return None, "Could not write a cover prompt"
 
+    # The cover's byline (round 7): the newsletter's title when the caller has it, else the
+    # author's name from the profile already in hand — no extra DB read.
+    byline = signature or getattr(profile, "full_name", None) or None
     render_info: dict = {}
     try:
         if avatar:
             generated_path = render_avatar_image_gated(
                 brief.prompt, avatar=avatar, user_id=user_id, surface="newsletter",
                 ratio=COVER_IMAGE_RATIO, focal_concept=brief.focal_concept,
-                render_info=render_info, concept=brief.concept, hook_text=brief.hook_text)
+                render_info=render_info, concept=brief.concept, hook_text=brief.hook_text,
+                layout=getattr(brief.concept, "layout", None), signature=byline)
         else:
             generated_path = render_image_gated(brief.prompt, surface="newsletter",
                                                 ratio=COVER_IMAGE_RATIO,
                                                 focal_concept=brief.focal_concept,
                                                 user_id=user_id, render_info=render_info,
                                                 concept=brief.concept,
-                                                hook_text=brief.hook_text)
+                                                hook_text=brief.hook_text,
+                                                layout=getattr(brief.concept, "layout", None),
+                                                signature=byline)
     except Exception as e:
         log_warning("Newsletter cover generation failed", exc=e, user_id=user_id,
                     action_type="newsletter_cover")

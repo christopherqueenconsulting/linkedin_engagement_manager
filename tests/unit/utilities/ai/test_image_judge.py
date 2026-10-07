@@ -79,8 +79,9 @@ class TestBlindFirst:
         second = create.call_args_list[1][1]
         text = second["messages"][0]["content"][0]["text"]
         assert _CONCEPT.thesis in text and _BLIND in text
-        assert "unpaid invoices; payroll run; agency owner" in text
-        assert f'Does it equal exactly "{_HOOK}"?' in text
+        # A paper anchor is never asked about (round 7): it is never drawn.
+        assert "payroll run; agency owner" in text and "unpaid invoices;" not in text
+        assert f'The cover\'s headline (typeset onto it by the system): "{_HOOK}"' in text
         assert "valve" in text, "the stock-symbol list is asked about by name"
         assert second["response_format"] == {"type": "json_object"}
 
@@ -108,21 +109,23 @@ class TestRubric:
         verdict, _ = _judge(tmp_path, answer=_answer(cliches_present=["gear"]))
         assert not verdict.acceptable and verdict.rubric["no_cliche"] <= 2
 
-    def test_no_anchor_seen_at_all_caps_specificity(self, tmp_path):
+    def test_no_anchor_seen_is_advisory_only(self, tmp_path):
+        """Round 8: specificity is the descriptors alone; anchors never cap it."""
         seen = {"unpaid invoices": False, "payroll run": False, "agency owner": False}
         verdict, _ = _judge(tmp_path, answer=_answer(entities_depicted=seen))
-        assert not verdict.acceptable and verdict.rubric["specificity"] == 3
+        assert verdict.acceptable and verdict.rubric["specificity"] == 5
+        assert "advisory: no anchor visibly depicted" in verdict.issues
 
     def test_one_anchor_seen_is_enough_the_count_is_advisory(self, tmp_path):
         """Round 3: the headline carries the thesis; two anchors is no longer required."""
-        seen = {"unpaid invoices": True, "payroll run": False, "agency owner": False}
+        seen = {"unpaid invoices": False, "payroll run": True, "agency owner": False}
         verdict, _ = _judge(tmp_path, answer=_answer(entities_depicted=seen))
         assert verdict.acceptable and verdict.rubric["specificity"] == 5
 
-    def test_the_hook_must_be_transcribed_exactly(self, tmp_path):
+    def test_the_raw_render_must_carry_no_text_at_all(self, tmp_path):
+        """Round 6: the headline is composited; ANY text the blind look finds is a defect."""
         verdict, _ = _judge(tmp_path, hook_text=_HOOK,
-                            answer=_answer(dict(_GOOD_RUBRIC, text_accuracy=5),
-                                           text_seen="Payrol eats frist"))
+                            blind=f'A worried owner. The visible text reads "{_HOOK}".')
         assert not verdict.acceptable and verdict.failing == ["text_accuracy"]
 
     def test_an_exact_hook_passes(self, tmp_path):
@@ -131,9 +134,10 @@ class TestRubric:
                                            text_seen="PAYROLL EATS FIRST."))
         assert verdict.acceptable
 
-    def test_stray_text_without_a_hook_fails(self, tmp_path):
+    def test_the_judges_own_transcription_no_longer_decides_text(self, tmp_path):
+        """The targeted look sees the COMPOSITE, which carries the headline by design."""
         verdict, _ = _judge(tmp_path, answer=_answer(text_seen="Q3 REVENUE"))
-        assert not verdict.acceptable and verdict.rubric["text_accuracy"] == 2
+        assert verdict.acceptable and verdict.rubric["text_accuracy"] is None
 
     @pytest.mark.parametrize("seen", ["", "none", "No visible text"])
     def test_no_text_is_not_applicable(self, tmp_path, seen):
@@ -181,24 +185,25 @@ class TestRubricRepair:
                                                           ["a brass valve"]),
                                             "gpt-image", _CONCEPT, None)
         assert "specificity, no_cliche" in directive
-        assert "unpaid invoices; payroll run; agency owner" in directive
+        assert "payroll run; agency owner" in directive
         assert "a brass valve" in directive
 
     def test_flux_repair_never_names_the_defect(self):
         directive = rubric_repair_directive(self._verdict(["no_cliche"], ["a brass valve"]),
                                             "flux", _CONCEPT, None)
         assert directive.startswith("Render this scene again with")
-        assert "valve" not in directive and "unpaid invoices" in directive
+        assert "valve" not in directive and "payroll run" in directive
 
-    def test_a_hook_failure_names_the_exact_hook(self):
+    def test_a_text_failure_never_asks_for_the_hook_to_be_rendered(self):
         directive = rubric_repair_directive(self._verdict(["text_accuracy"]), "gpt-image",
                                             _CONCEPT, _HOOK)
-        assert f'"{_HOOK}"' in directive
+        assert _HOOK not in directive
+        assert "the image carries no text at all — the headline is typeset later" in directive
 
     def test_a_text_failure_without_a_hook_asks_for_blank_surfaces(self):
         directive = rubric_repair_directive(self._verdict(["text_accuracy"]), "flux",
                                             _CONCEPT, None)
-        assert "plain and unmarked" in directive
+        assert "every paper and screen blank and unmarked" in directive
 
     def test_no_failing_criteria_falls_back_to_the_legacy_directive(self):
         verdict = QualityVerdict(acceptable=False, issues=["six fingers"])
@@ -207,15 +212,44 @@ class TestRubricRepair:
 
 
 class TestStagedGateLoop:
-    def test_concept_and_hook_reach_the_judge_and_the_renderer(self):
+    def test_concept_hook_and_composite_reach_the_judge_but_never_the_renderer(self, tmp_path):
+        from PIL import Image
+        raw = tmp_path / "raw.png"
+        Image.new("RGB", (1536, 1024), (230, 225, 210)).save(raw)
+        info: dict = {}
         with patch.object(image_gen, "_render_with_backend",
-                          return_value=("/tmp/1.png", "gpt-image")) as render, \
+                          return_value=(str(raw), "gpt-image")) as render, \
              patch.object(image_gen, "inspect_render_quality",
                           return_value=QualityVerdict(acceptable=True)) as judge:
-            render_image_gated("p", surface="newsletter", concept=_CONCEPT, hook_text=_HOOK)
+            path = render_image_gated("p", surface="newsletter", concept=_CONCEPT,
+                                      hook_text=_HOOK, layout="panel_right", render_info=info)
         assert judge.call_args[1]["concept"] is _CONCEPT
         assert judge.call_args[1]["hook_text"] == _HOOK
-        assert render.call_args[1]["hook_text"] == _HOOK
+        assert judge.call_args[0][0] == str(raw), "the blind look and text check see the RAW"
+        assert judge.call_args[1]["composite_path"] == path != str(raw)
+        assert "hook_text" not in render.call_args[1] and _HOOK not in render.call_args[0][0]
+        assert info["raw_render_path"] == str(raw)
+
+    def test_a_compositing_failure_ships_the_raw_render(self):
+        with patch.object(image_gen, "_render_with_backend",
+                          return_value=("/tmp/missing.png", "gpt-image")), \
+             patch.object(image_gen, "inspect_render_quality",
+                          return_value=QualityVerdict(acceptable=True)) as judge, \
+             patch.object(image_gen, "log_warning") as warn:
+            path = render_image_gated("p", surface="newsletter", concept=_CONCEPT,
+                                      hook_text=_HOOK)
+        assert path == "/tmp/missing.png" and judge.call_args[1]["composite_path"] is None
+        assert warn.called
+
+    @pytest.mark.parametrize("surface", ["carousel", "video", "thumbnail"])
+    def test_no_headline_is_composited_off_covers_and_posts(self, surface):
+        with patch.object(image_gen, "_render_with_backend",
+                          return_value=("/tmp/1.png", "gpt-image")), \
+             patch.object(image_gen, "inspect_render_quality",
+                          return_value=QualityVerdict(acceptable=True)) as judge:
+            assert render_image_gated("p", surface=surface, concept=_CONCEPT,
+                                      hook_text=_HOOK) == "/tmp/1.png"
+        assert judge.call_args[1]["composite_path"] is None
 
     def test_without_a_concept_the_judge_is_called_the_legacy_way(self):
         with patch.object(image_gen, "_render_with_backend",
@@ -347,39 +381,24 @@ class TestStagedGateLoop:
         assert info == {"used_avatar": False}
 
 
-class TestHookTextException:
-    """The ONE text exception: an editorial_graphic's declared hook (issue #2241)."""
+class TestNoTextInAnyRender:
+    """Round 6: the text exception is gone — image_compose sets the headline afterwards."""
 
-    def test_gpt_gets_the_hook_only_clause_instead_of_the_blanket_ban(self):
-        marked = with_no_marks("A designed editorial graphic.", "gpt-image", hook_text=_HOOK)
-        assert f'The only text in the image is exactly "{_HOOK}"' in marked
-        assert _NO_MARKS_GPT not in marked
+    def test_with_no_marks_has_no_hook_parameter(self):
+        import inspect
+        assert "hook_text" not in inspect.signature(with_no_marks).parameters
 
-    def test_flux_gets_it_positively(self):
-        marked = with_no_marks("A designed editorial graphic.", "flux", hook_text=_HOOK)
-        assert f'the exact phrase "{_HOOK}"' in marked
-        assert _NO_MARKS_FLUX not in marked and "no other" not in marked
+    @pytest.mark.parametrize("backend,blanket", [("gpt-image", _NO_MARKS_GPT),
+                                                 ("flux", _NO_MARKS_FLUX)])
+    def test_every_render_gets_the_blanket_ban(self, backend, blanket):
+        assert with_no_marks("A cover.", backend).endswith(blanket)
 
-    def test_the_printed_surface_clause_is_skipped_for_a_hook_but_screens_are_not(self):
-        prompt = "Type on a poster beside a laptop."
-        marked = with_no_marks(prompt, "gpt-image", hook_text=_HOOK)
-        assert "printed surface in the frame is bare" not in marked
-        assert "switched off and uniformly dark" in marked
-
-    def test_the_hook_clause_is_added_at_most_once(self):
-        once = with_no_marks("A graphic.", "gpt-image", hook_text=_HOOK)
-        assert with_no_marks(once, "gpt-image", hook_text=_HOOK) == once
-
-    def test_without_a_hook_nothing_changes(self):
-        assert with_no_marks("A desk.", "gpt-image") == "A desk." + _NO_MARKS_GPT
-
-    def test_the_renderer_receives_the_hook_clause(self):
+    def test_the_renderer_never_receives_a_headline(self):
         with patch.object(image_gen, "_render_via_gpt_image", return_value="/tmp/g.png") as gpt:
-            image_gen._render_with_backend("A graphic.", hook_text=_HOOK)
-        assert f'exactly "{_HOOK}"' in gpt.call_args[0][0]
+            image_gen._render_with_backend("A scene.")
+        assert gpt.call_args[0][0].endswith(_NO_MARKS_GPT)
 
 
-# The blind descriptions gpt-4o-mini returned for gauntlet round 1 of #2241, verbatim.
 _ED16_BLIND = ('The image features a stack of cash, specifically bundles of hundred-dollar bills, '
                'placed on a contrasting black and yellow background. The visible text reads, '
                '"Stop wasting your budget!" and "$30K" is displayed on a piece of torn paper next '
@@ -431,20 +450,21 @@ class TestStrayTextInTheBlindDescription:
 
 
 class TestSpecificityNeedsTheThesis:
-    def test_a_thesis_the_judge_says_a_stranger_cannot_infer_caps_specificity(self, tmp_path):
+    def test_a_gist_that_does_not_read_is_advisory_only(self, tmp_path):
         verdict, _ = _judge(tmp_path, answer=_answer(thesis_inferable=False))
-        assert not verdict.acceptable and verdict.rubric["specificity"] == 3
+        assert verdict.rubric["specificity"] == 5
+        assert "advisory: the gist does not read" in verdict.issues
 
     def test_the_targeted_judge_is_asked_about_anchors_and_inference(self, tmp_path):
         concept = ImageConcept(
             thesis="t", audience="a", specific_entities=("Terralogic", "$30K"),
             emotional_beat="e", hook_phrase="", treatment="people_scene",
-            treatment_rationale="r", visual_anchors=("a marketing lead", "a printed checklist"))
+            treatment_rationale="r", visual_anchors=("a marketing lead", "a crowded meeting room"))
         _verdict, create = _judge(tmp_path, concept=concept,
                                   answer=_answer(entities_depicted={"a marketing lead": True,
-                                                                    "a printed checklist": True}))
+                                                                    "a crowded meeting room": True}))
         text = create.call_args_list[1][1]["messages"][0]["content"][0]["text"]
-        assert "a marketing lead; a printed checklist" in text
+        assert "a marketing lead; a crowded meeting room" in text
         assert "Terralogic" not in text, "a fact is never asked about as something visible"
         assert "thesis_inferable" in text
 
@@ -474,8 +494,10 @@ class TestRoundThreeJudge:
     def test_the_headline_reaches_the_targeted_judge(self, tmp_path):
         _v, create = _judge_on(tmp_path, "newsletter", _answer(), hook_text="Payroll eats first")
         text = create.call_args_list[1][1]["messages"][0]["content"][0]["text"]
-        assert "The cover's headline: \"Payroll eats first\"" in text
-        assert "Reading the headline together with the image, would a viewer get the GIST" in text
+        assert "The cover's headline (typeset onto it by the system): \"Payroll eats first\"" \
+            in text
+        assert "Could this whole cover — kicker, headline and scene together — sit unchanged" \
+            in text
         assert "Does a face show a clear, specific emotion readable at 400x225?" in text
         assert "brand_fit" in text
 
@@ -523,39 +545,37 @@ class TestRoundFourJudge:
     def test_the_new_questions_reach_the_targeted_judge(self, tmp_path):
         _v, create = _judge_on(tmp_path, "newsletter", _answer(), hook_text="Payroll eats first")
         text = create.call_args_list[1][1]["messages"][0]["content"][0]["text"]
-        assert 'Does the visible emotion match "a wince of dread"?' in text
-        assert "Is the headline set in a sans-serif typeface?" in text
-        assert ('Considering the headline "Payroll eats first" together with the image, could '
-                'this cover be reused unchanged for an unrelated article?') in text
+        assert 'Does the visible emotion match "a wince of dread" with a mixed valence' in text
+        assert "Is the emotion authentic rather than exaggerated or cartoonish?" in text
+        assert "5 = with its headline, a scroller would correctly guess this piece's argument" \
+            in text
+        assert "3 = the scene could sit on many unrelated posts" in text
         assert "GIST of the claim" in text
+        assert "sans-serif" not in text and "reused unchanged" not in text
 
     def test_a_mismatched_emotion_fails_scroll_stop(self, tmp_path):
         verdict, _ = _judge_on(tmp_path, "newsletter", _answer(emotion_matches=False))
         assert verdict.rubric["scroll_stop"] == 3 and "scroll_stop" in verdict.failing
 
-    def test_a_serif_headline_caps_brand_fit(self, tmp_path):
-        verdict, _ = _judge_on(tmp_path, "newsletter",
-                               _answer(dict(_GOOD_RUBRIC, brand_fit=5, text_accuracy=5),
-                                       headline_sans_serif=False, text_seen="Payroll eats first"),
-                               hook_text="Payroll eats first")
-        assert verdict.rubric["brand_fit"] == 3
+    def test_a_cartoonish_face_caps_craft(self, tmp_path):
+        """Round 6: a man wailing over a bill; caricature faces."""
+        verdict, _ = _judge_on(tmp_path, "newsletter", _answer(emotion_authentic=False))
+        assert verdict.rubric["craft"] == 3 and "craft" in verdict.failing
 
     def test_no_headline_means_no_typeface_cap(self, tmp_path):
         verdict, _ = _judge_on(tmp_path, "newsletter",
                                _answer(dict(_GOOD_RUBRIC, brand_fit=5), headline_sans_serif=False))
         assert verdict.rubric["brand_fit"] == 5
 
-    def test_an_image_reusable_on_any_business_article_caps_specificity(self, tmp_path):
-        """ed18's generic flip-chart presentation scored specificity 5."""
+    def test_the_reuse_cap_is_gone_the_descriptors_carry_it(self, tmp_path):
         verdict, _ = _judge_on(tmp_path, "newsletter", _answer(reusable_elsewhere=True))
-        assert verdict.rubric["specificity"] == 3 and "specificity" in verdict.failing
+        assert verdict.rubric["specificity"] == 5 and verdict.acceptable
 
     def test_a_text_failure_repair_names_papers_and_screens(self):
         verdict = QualityVerdict(acceptable=False, failing=["text_accuracy"],
                                  issues=["text_accuracy 2/5"])
         directive = rubric_repair_directive(verdict, "gpt-image", _PEOPLE, "Payroll eats first")
-        assert ("remove every legible mark from papers and screens; the only text is the hook "
-                '"Payroll eats first"') in directive
+        assert "remove every legible mark from papers and screens" in directive
 
     @pytest.mark.parametrize("surface,env,expected", [
         ("newsletter", None, 2), ("post_image", None, 1), ("carousel", None, 1),
@@ -568,21 +588,13 @@ class TestRoundFourJudge:
             monkeypatch.setenv("IMAGE_GATE_CANDIDATES", env)
         assert image_gen._gate_candidates(_PEOPLE, surface) == expected
 
-    def test_the_render_clause_states_the_sans_serif_too(self):
-        assert "heavy geometric sans-serif in sentence case" in with_no_marks(
-            "A cover.", "gpt-image", hook_text="Payroll eats first")
-        assert "heavy geometric sans-serif in sentence case" in with_no_marks(
-            "A cover.", "flux", hook_text="Payroll eats first")
-
-
 class TestRoundFiveJudge:
     """Round 5 of #2241: headline + image judged as ONE cover; emotion pushes forward."""
 
-    def test_without_a_headline_the_reuse_question_is_about_the_image(self, tmp_path):
+    def test_without_a_headline_the_judge_grades_the_image_alone(self, tmp_path):
         _v, create = _judge_on(tmp_path, "post_image", _answer())
         text = create.call_args_list[1][1]["messages"][0]["content"][0]["text"]
-        assert "Could this exact image be reused unchanged on an unrelated business article?" \
-            in text
+        assert "(none — judge the image alone)" in text
         assert "Does the headline alone name its subject" in text
 
     def test_a_headline_that_does_not_name_its_subject_caps_specificity_at_four(self, tmp_path):
@@ -591,7 +603,8 @@ class TestRoundFiveJudge:
                                        headline_names_subject=False,
                                        text_seen="Payroll eats first"),
                                hook_text="Payroll eats first")
-        assert verdict.rubric["specificity"] == 4 and verdict.acceptable, "passes, not a 5"
+        assert verdict.rubric["specificity"] == 5 and verdict.acceptable
+        assert "advisory: the headline does not name its subject" in verdict.issues
 
     @pytest.mark.parametrize("answer,weak", [
         (_answer(face_emotion=False), True), (_answer(emotion_matches=False), True),
@@ -619,8 +632,9 @@ class TestEmotionCarriesForward:
              patch.object(image_gen, "inspect_render_quality", return_value=self._WEAK):
             render_image_gated("base", surface="newsletter", concept=_PEOPLE)
         prompts = [c[0][0] for c in render.call_args_list]
-        directive = ("The expression must be unmistakable at thumbnail size: a wince of dread, "
-                     "exaggerated like a magazine cover photo.")
+        directive = ("The expression must be clearly readable at thumbnail size but authentic "
+                     "and restrained: a wince of dread, the face a real person would make, never "
+                     "cartoonish or crying.")
         assert len(prompts) == 4
         assert directive not in prompts[0]
         assert all(directive in p for p in prompts[1:]), "candidate 2 and the retry both carry it"
@@ -634,7 +648,7 @@ class TestEmotionCarriesForward:
                           return_value=("/tmp/x.png", "gpt-image")) as render, \
              patch.object(image_gen, "inspect_render_quality", return_value=self._PLAIN):
             render_image_gated("base", surface="newsletter", concept=_PEOPLE)
-        assert all("unmistakable" not in c[0][0] for c in render.call_args_list)
+        assert all("authentic and restrained" not in c[0][0] for c in render.call_args_list)
 
     def test_the_avatar_path_carries_it_too(self, monkeypatch):
         monkeypatch.setenv("IMAGE_GATE_CANDIDATES", "2")
@@ -646,7 +660,7 @@ class TestEmotionCarriesForward:
              patch.object(image_gen, "inspect_render_quality", return_value=self._WEAK):
             image_gen.render_avatar_image_gated("base", avatar=avatar, user_id=3,
                                                 surface="newsletter", concept=_PEOPLE)
-        assert "unmistakable at thumbnail size" in lora.call_args_list[1][0][0]
+        assert "authentic and restrained" in lora.call_args_list[1][0][0]
 
 
 class TestBrightEnoughForAWhiteFeed:
@@ -666,3 +680,76 @@ class TestBrightEnoughForAWhiteFeed:
         verdict = QualityVerdict(acceptable=False, failing=["thumbnail_read"],
                                  issues=["thumbnail_read 3/5"])
         assert "bright, high-key" in rubric_repair_directive(verdict, "flux", _PEOPLE, None)
+
+
+
+class TestRoundSevenJudge:
+    def test_the_kicker_and_cover_reading_reach_the_judge(self, tmp_path):
+        from dataclasses import replace
+        concept = replace(_PEOPLE, kicker="AGENCY PAYROLL")
+        _v, create = _judge_on(tmp_path, "newsletter", _answer(), concept=concept,
+                               hook_text="Payroll eats first")
+        text = create.call_args_list[1][1]["messages"][0]["content"][0]["text"]
+        assert 'The cover\'s kicker (topic tag, typeset by the system): "AGENCY PAYROLL"' in text
+        assert "Read the kicker, headline and scene together as one cover." in text
+        assert ("the kicker + headline name the exact topic and the scene shows the human stakes "
+                "of it") in text
+
+    def test_kicker_and_signature_reach_the_compositor(self, tmp_path):
+        from dataclasses import replace
+
+        from PIL import Image
+        raw = tmp_path / "raw.png"
+        Image.new("RGB", (1536, 1024), (230, 225, 210)).save(raw)
+        concept = replace(_CONCEPT, kicker="AGENCY PAYROLL")
+        with patch.object(image_gen, "_render_with_backend",
+                          return_value=(str(raw), "gpt-image")), \
+             patch.object(image_gen, "inspect_render_quality",
+                          return_value=QualityVerdict(acceptable=True)), \
+             patch("cqc_lem.utilities.ai.image_compose.compose_headline",
+                   return_value=str(tmp_path / "c.png")) as compose:
+            render_image_gated("p", surface="newsletter", concept=concept, hook_text=_HOOK,
+                               signature="Christopher Queen")
+        assert compose.call_args[1]["kicker"] == "AGENCY PAYROLL"
+        assert compose.call_args[1]["signature"] == "Christopher Queen"
+
+
+@pytest.mark.unit
+class TestRoundEightJudge:
+    def test_advisory_issues_never_touch_a_score(self):
+        from cqc_lem.utilities.ai.image_gen import advisory_issues
+        notes = advisory_issues({"entities_depicted": {"a ledger": False},
+                                 "thesis_inferable": False, "headline_names_subject": False},
+                                ["a ledger"], "Who buys?")
+        assert notes == ["advisory: no anchor visibly depicted",
+                         "advisory: the gist does not read",
+                         "advisory: the headline does not name its subject"]
+        assert advisory_issues({"entities_depicted": {"a ledger": True},
+                                "headline_names_subject": False}, ["a ledger"], None) == []
+
+    @pytest.mark.parametrize("surface", ["newsletter", "post_image"])
+    def test_a_composited_render_is_square(self, surface):
+        from cqc_lem.utilities.ai.image_gen import _scene_ratio
+        assert _scene_ratio("16:9", "Who buys?", surface) == "1:1"
+        assert _scene_ratio("4:5", None, surface) == "4:5"
+
+    def test_an_uncomposited_surface_keeps_its_ratio(self):
+        from cqc_lem.utilities.ai.image_gen import _scene_ratio
+        assert _scene_ratio("16:9", "Who buys?", "video") == "16:9"
+
+
+@pytest.mark.unit
+class TestRoundNineNoLabels:
+    @pytest.mark.parametrize("backend", ["gpt-image", "flux"])
+    def test_every_backend_refuses_captions_badges_and_signage(self, backend):
+        from cqc_lem.utilities.ai.image_gen import with_no_marks
+        marked = with_no_marks("A woman in a green jumper pointing at a shelf.", backend)
+        assert ("No captions, titles, posters, signage, name badges, lanyards with text, or "
+                "labels of any kind.") in marked
+
+    def test_every_composite_gets_a_kicker(self):
+        from cqc_lem.utilities.ai.image_gen import _kicker_for
+        concept = ImageConcept(thesis="Payroll audits catch payroll errors", audience="",
+                               specific_entities=(), emotional_beat="", hook_phrase="Who pays?",
+                               treatment="people_scene", treatment_rationale="", weak=False)
+        assert _kicker_for(concept) == "PAYROLL"

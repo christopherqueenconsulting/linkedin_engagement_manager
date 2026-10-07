@@ -1660,8 +1660,15 @@ def _generate_video_src(user_id: int, text_content: str, profile, post_id: int =
                                                     concept=concept,
                                                     brand_kit=brand_clause_for_user(user_id))
         frame_brief = frame_info.get("brief")
+        # The frame's judge reads the caption `_caption_video_asset` will burn onto the MP4 as its
+        # headline (PR #2249): a person with no context scored specificity 2-3 on every frame.
+        # JUDGE-ONLY: `video` is not a compositing surface (`image_gen.COMPOSE_SURFACES`), and
+        # `hook_text` never reaches a render prompt, so nothing is painted onto the frame.
+        from cqc_lem.utilities.video_captions import burned_caption_text
         gate_kwargs = {"focal_concept": getattr(frame_brief, "focal_concept", None),
-                       "concept": concept, "hook_text": getattr(frame_brief, "hook_text", None)}
+                       "concept": concept,
+                       "hook_text": burned_caption_text(text_content, user_id=user_id,
+                                                        avatar_led=has_avatar)}
         # Audio-capable (premium/Veo) renders need the user's language in the prompt — Veo has no
         # language parameter and invents a voiceover otherwise (issue #548). Silent models skip
         # the lookup entirely.

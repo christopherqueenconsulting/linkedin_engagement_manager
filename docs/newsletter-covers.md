@@ -198,7 +198,7 @@ records every rejection (`docs/image-stack.md`).
 
 Clichés and stray text were gone, but every cover was people at laptops or holding paper with a
 neutral face, no hook, no brand color — all REJECTED at specificity 2. Round 3's engine answer:
-every cover now carries its hook as the headline (`COVER_HOOK_LAYOUT`), the visual must carry the
+every cover now carries its hook as the headline (composited since round 6), the visual must carry the
 emotional beat on a face, Stage 1 proposes three visual ideas that one cheap call ranks, the judge
 grades headline + image together with `scroll_stop ≥ 4` and `brand_fit ≥ 3`, and every cover names
 one brand-color accent (`docs/image-stack.md`).
@@ -220,6 +220,46 @@ looked at the image without its headline, and ed18's "45% less engagement" never
 less. Round 5 judges the cover as headline + image, requires a numeric hook to name its subject,
 keeps paper off covers (a blank sheet seen edge-on when the idea is about a document), and carries
 an emotion-intensity directive into every later candidate and retry.
+
+### Gauntlet round 5 and the blind critic → composited headlines
+
+1 of 4 covers accepted; the quality was good but every cover shared one composition (dark panel
+left, a reacting man in his 30s-40s right), and an independent blind critic traced the remaining
+defects — drifting panel and type colors, thin weights, clipped headlines, "AI X: N% Y" everywhere,
+hook words the article never used — to gpt-image drawing the headline. The render now carries no
+text; `image_compose` typesets the hook in the exact brand colors and the bundled Montserrat
+ExtraBold, in a rotated layout. Cast, hook shape and layout each rotate least-recently-used over
+the last receipts (`_recent_concept_field`), hooks must use the article's own words, emotion
+follows the piece's valence and must be authentic, and the judge grades the composite against
+anchored specificity descriptors (`docs/image-stack.md`, "The headline is composited"). The stored
+cover is the COMPOSITE; the raw render's path rides `render_info["raw_render_path"]`.
+
+### Gauntlet round 6 → the editorial cover
+
+Compositing worked (exact colors, the brand font, rotating layouts, a varied cast); what remained
+was type too small for a thumbnail, a `full_bleed` headline across a face, a lowercase hook,
+props still carrying stray text, "relief" rendered as pain, and both judges calling every scene a
+generic office. The cover is now a kicker + hero numeral + headline + byline system with a
+cap-height floor and a growing backing; props are refused on every surface; and the byline is the
+newsletter title when the caller passes `signature`, else the author's profile name
+(`docs/image-stack.md`, "The cover is an editorial system").
+
+### Gauntlet round 7 → split covers
+
+Type still landed on faces, laptops and server rooms crept back in, and the judge capped
+specificity for not showing props the brief refuses. Covers are now a type panel BESIDE a square
+scene (`split_left`/`split_right`), screens are banned on every surface, anchors that are props
+are dropped at parse time, the anchor checks are advisory only, and the avatar renders only when
+the concept fit rule says the piece is about the author (`docs/image-stack.md`, "Split layouts,
+square scenes, no screens").
+
+### Gauntlet round 8 → no painted labels
+
+Split covers held (three of four accepted); ed17 failed on a painted poster caption and two
+covers had no kicker. Renders now refuse every label-carrying surface, the brief describes people
+by appearance rather than by group caption, a missing kicker is derived from the piece, and a
+comparative hook must say "than" or carry a number (`docs/image-stack.md`, "No labels, a kicker
+always, anchored comparatives").
 
 ### Rejections land for review, with their reason
 

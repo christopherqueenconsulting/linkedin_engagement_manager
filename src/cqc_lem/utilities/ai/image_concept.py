@@ -42,7 +42,31 @@ _MAX_ANCHORS = 5
 # thesis, but the anchor-coverage checks downstream stand down rather than demand what is not
 # there.
 WEAK_ENTITY_FLOOR = 2
-_HOOK_MIN_WORDS, _HOOK_MAX_WORDS, _HOOK_MAX_CHARS = 2, 5, 32
+# Round 6: the headline is typeset by ``image_compose``, so it may run to six words.
+_HOOK_MIN_WORDS, _HOOK_MAX_WORDS, _HOOK_MAX_CHARS = 2, 6, 44
+# Round 6 (blind critic): every hook was "AI X: N% Y". The SHAPE rotates least-recently-used.
+HOOK_SHAPES = ("number_claim", "contrast", "question", "plain_claim")
+VALENCES = ("positive", "negative", "mixed")
+# Words a hook may use that the source need not contain: function words, common verbs and
+# adjectives. Everything else in a hook — every number and every other content word — must come
+# from the piece itself (the critic caught "reach" for "engagement", "influencers" for "hidden
+# buyers"). AI and LLM are always allowed.
+_HOOK_FREE_WORDS = frozenset({
+    "you", "your", "yours", "they", "their", "them", "who", "what", "why", "how", "when", "which",
+    "still", "really", "just", "only", "even", "never", "always", "more", "less", "most", "least",
+    "fewer", "than", "not", "isn", "aren", "don", "doesn", "can", "cannot", "will", "won",
+    "would", "should", "could", "must", "need", "needs", "get", "gets", "got", "make", "makes",
+    "made", "keep", "keeps", "find", "finds", "lose", "loses", "lost", "cost", "costs", "pay",
+    "pays", "paid", "buy", "buys", "win", "wins", "miss", "misses", "missed", "work", "works",
+    "worked", "fail", "fails", "failed", "beat", "beats", "see", "sees", "say", "says", "know",
+    "knows", "think", "thinks", "want", "wants", "use", "uses", "used", "go", "goes", "come",
+    "comes", "take", "takes", "give", "gives", "enough", "wrong", "right", "real", "really",
+    "big", "small", "new", "old", "same", "every", "all", "some", "any", "one", "first", "last",
+    "hidden", "silent", "quiet", "cheap", "cheaper", "cheapest", "better", "best", "worse",
+    "worst", "true", "false", "good", "bad", "half", "twice", "times", "percent", "here", "there",
+    "now", "yet", "already", "again", "away", "off", "out", "over", "under", "behind", "ahead",
+    "on", "ai", "llm", "llms",
+})
 # lem-medium is a reasoning model: thinking tokens bill against this budget before any JSON. 2500
 # still ran out on real editions (gauntlet round 3: finish_reason=length, empty content), so every
 # JSON call in the engine now gets a budget a reasoning model finishes inside, asks for LOW
@@ -99,8 +123,12 @@ Respond with ONLY a JSON object:
  "visual_anchors": ["<3-5 DEPICTABLE things from the piece: roles, places, physical artifacts, \
 actions or situations>"],
  "emotional_beat": "<the feeling the reader should get, a few words>",
- "hook_phrase": "<2-5 words, at most 32 characters>",
+ "valence": "positive|negative|mixed",
+ "kicker": "<1-3 word UPPERCASE topic tag, words from the article: AI CONTENT AUDIT, LLM COSTS>",
+ "hook_phrase": "<2-6 words>",
  "hook_alternatives": ["<two more hooks, same rules>"],
+ "hook_candidates": {{"number_claim": "<…>", "contrast": "<…>", "question": "<…>",
+                     "plain_claim": "<…>"}},
  "visual_ideas": ["<3 one-sentence image ideas>"],
  "treatment": "{'|'.join(TREATMENTS)}",
  "treatment_rationale": "<one sentence>"}}
@@ -115,11 +143,21 @@ draw "GPT-5.2" or "a 2025 report", it writes the words as garbled text. Write th
 
 Rules for hook_phrase and hook_alternatives: a curiosity gap a reader would want closed, or a \
 concrete contrast drawn from the thesis. Never an exclamation, never an order to the reader \
-("Stop…", "Start…", "Don't…"), never a restatement of the title, never a full sentence. Sentence \
-case, never Title Case. Numbers and facts from the article BELONG in the hook — it is the one \
-place a fact may be written — but a numeric hook must NAME ITS SUBJECT within the 5 words: "45% \
-less reach for AI posts" or "AI posts: 45% less reach", never "45% less engagement". The hook \
+("Stop…", "Start…", "Don't…"), never a restatement of the title. Sentence case, never Title \
+Case, 2-6 words. Every number and every noun in a hook comes from the article's OWN words — \
+"engagement" stays "engagement", never "reach"; "hidden buyers" never becomes "influencers". A \
+numeric hook names its subject: "45% less engagement on AI posts", never "45% less \
+engagement". Give one hook in EACH shape in hook_candidates — number_claim ("45% less engagement \
+on AI posts"), contrast ("Search on, still wrong"), question ("Who really buys your AI?"), \
+plain_claim ("Your cheapest model is enough") — the series rotates through them. The hook \
 carries the THESIS; the image carries emotion and specificity.
+
+Rules for valence: positive when the piece is about a saving, a win or relief; negative when it \
+is about a risk, a loss or a mistake; mixed otherwise. The face in the image follows it.
+
+Rules for kicker: the 1-3 word topic tag a magazine prints above a headline — "AI CONTENT AUDIT", \
+"LLM COSTS", "AI FACT-CHECKING", "B2B BUYING". Every word comes from the article. It is what tells \
+a scroller what the cover is ABOUT, so the scene never has to.
 
 Rules for visual_ideas: exactly 3 one-sentence ideas, each combining the hook with a concrete \
 scene or juxtaposition built from the visual anchors and the emotional beat — for an article \
@@ -204,6 +242,13 @@ class ImageConcept:
         chosen_idea: The idea the cheap ranking call picked; Stage 2 builds from it.
         rejected_ideas: The ideas it did not pick, kept for the receipt.
         idea_pick_reason: Why it picked the winner, or why it could not rank.
+        layout: The rotated compositing template for the headline (``assign_layout_and_cast``).
+        cast: The rotated person hint for a people_scene, as a dict of its dimensions.
+        valence: positive / negative / mixed — the emotion's direction must match it.
+        hook_shape: Which ``HOOK_SHAPES`` the chosen hook takes.
+        hook_options: Every valid hook Stage 1 offered, by shape, for the rotation to pick from.
+        kicker: The 1-3 word UPPERCASE topic tag ``image_compose`` sets above the headline, every
+            word grounded in the source ('' when none survived validation).
     """
 
     thesis: str
@@ -219,6 +264,12 @@ class ImageConcept:
     chosen_idea: str = ""
     rejected_ideas: tuple[str, ...] = ()
     idea_pick_reason: str = ""
+    layout: str = ""
+    cast: Optional[dict[str, str]] = None
+    valence: str = "mixed"
+    hook_shape: str = ""
+    hook_options: Optional[dict[str, str]] = None
+    kicker: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         """The concept as a JSON-safe dict, for prompts and receipts."""
@@ -325,7 +376,159 @@ def names_its_subject(hook: str, topic_text: str) -> bool:
                if t not in _GENERIC_HOOK_WORDS and not any(ch.isdigit() for ch in t))
 
 
-def _valid_hook(hook: str, title: Optional[str], topic_text: str = "") -> str:
+def _root(token: str) -> str:
+    for suffix in ("ings", "ers", "ing", "ies", "ied", "ed", "es", "er", "ly", "s"):
+        if token.endswith(suffix) and len(token) - len(suffix) >= 3:
+            return token[: len(token) - len(suffix)]
+    return token
+
+
+def hook_is_faithful(hook: str, source: str) -> bool:
+    """Is every number and every content word in ``hook`` from the piece's own words?
+
+    Numbers must appear in the source verbatim (digits); every other content word must match a
+    word in the source by its root ("buyers" ↔ "buyer"), unless it is a ``_HOOK_FREE_WORDS``
+    function word, common verb or adjective. AI and LLM are always allowed.
+
+    Args:
+        hook: The hook.
+        source: The analysed text (title included).
+
+    Returns:
+        Whether the hook drifts from nothing the piece says.
+    """
+    lowered = (source or "").lower()
+    for number in re.findall(r"\d+(?:[.,]\d+)?", hook):
+        if number not in lowered:
+            return False
+    for token in re.findall(r"[a-z][a-z'’]*", hook.lower()):
+        token = token.split("'")[0].split("’")[0]
+        if len(token) < 3 or token in _STOPWORDS or token in _HOOK_FREE_WORDS:
+            continue
+        if not re.search(rf"\b{re.escape(_root(token))}", lowered):
+            return False
+    return True
+
+
+_KICKER_ACRONYMS = frozenset({"ai", "llm", "llms", "b2b", "b2c", "saas", "seo", "crm", "roi"})
+_KICKER_MAX_WORDS = 3
+# Round 9 (#2241): words a derived kicker never uses — they name no topic.
+_KICKER_SKIP = frozenset({
+    "about", "after", "also", "because", "been", "before", "being", "between", "both", "does",
+    "doing", "each", "every", "have", "having", "here", "just", "like", "many", "more", "most",
+    "much", "only", "other", "over", "same", "should", "some", "such", "than", "then", "there",
+    "these", "they", "this", "those", "through", "very", "what", "when", "where", "which",
+    "while", "will", "with", "would", "your", "yours", "into", "them", "were", "make", "made",
+    "really", "still", "even", "back", "well", "good", "better", "best", "need", "needs",
+})
+
+
+def derive_kicker(source: str, title: Optional[str] = None) -> str:
+    """A deterministic kicker for when Stage 1's fails ``valid_kicker``: never ''.
+
+    The 1-2 most frequent topic words of the piece, title words first (a title word outranks any
+    body word), uppercased. A word is 4+ letters, or a ``_KICKER_ACRONYMS`` acronym of any length,
+    so "AI" survives where "the" never does. Two words only when the second also recurs.
+
+    Args:
+        source: The analysed text.
+        title: The piece's title, if any.
+
+    Returns:
+        The uppercase kicker; "INSIGHT" when the piece has no usable word at all.
+    """
+    counts: dict[str, int] = {}
+    first_seen: dict[str, int] = {}
+    in_title = set()
+    for position, token in enumerate(re.findall(r"[a-z0-9]+", f"{title or ''} {source or ''}"
+                                                .lower())):
+        if token.isdigit() or token in _KICKER_SKIP or token in _STOPWORDS:
+            continue
+        if len(token) < 4 and token not in _KICKER_ACRONYMS:
+            continue
+        counts[token] = counts.get(token, 0) + 1
+        first_seen.setdefault(token, position)
+    for token in re.findall(r"[a-z0-9]+", (title or "").lower()):
+        if token in counts:
+            in_title.add(token)
+    ranked = sorted(counts, key=lambda t: (t not in in_title, -counts[t], first_seen[t]))
+    if not ranked:
+        return "INSIGHT"
+    chosen = ranked[:1]
+    if len(ranked) > 1 and (counts[ranked[1]] >= 2 or ranked[1] in in_title):
+        chosen.append(ranked[1])
+    chosen.sort(key=lambda t: first_seen[t])
+    return " ".join(chosen).upper()
+
+
+def concept_kicker(concept: Any) -> str:
+    """The concept's kicker, derived from its own thesis and hook when Stage 1 gave none.
+
+    Args:
+        concept: An ``ImageConcept`` (or None).
+
+    Returns:
+        The kicker; '' only when there is no concept.
+    """
+    if concept is None:
+        return ""
+    kicker = str(getattr(concept, "kicker", "") or "")
+    if kicker:
+        return kicker
+    # The hook is body text here, never a title: "Who pays?" must not outrank the thesis topic.
+    return derive_kicker(" ".join((getattr(concept, "thesis", "") or "",
+                                   *(getattr(concept, "visual_anchors", ()) or ()),
+                                   getattr(concept, "hook_phrase", "") or "")))
+
+
+
+def valid_kicker(kicker: Any, source: str) -> str:
+    """The kicker, uppercased, if it is 1-3 words all drawn from the source; else ''.
+
+    Every word must match a source word by its root (hyphenated parts each count: "FACT-CHECKING"
+    needs "fact" and "check"); the generic acronyms AI, LLM, B2B… always pass.
+
+    Args:
+        kicker: Stage 1's raw kicker.
+        source: The analysed text.
+
+    Returns:
+        The uppercase kicker, or ''.
+    """
+    text = " ".join(str(kicker or "").split()).strip(" .,:;")
+    words = text.split()
+    if not (1 <= len(words) <= _KICKER_MAX_WORDS) or len(text) > 32:
+        return ""
+    lowered = (source or "").lower()
+    for part in re.findall(r"[a-z0-9]+", text.lower()):
+        if part in _KICKER_ACRONYMS or part in _STOPWORDS:
+            continue
+        if not re.search(rf"\b{re.escape(_root(part))}", lowered):
+            return ""
+    return text.upper()
+
+
+def hook_shape_of(hook: str) -> str:
+    """Classify a hook into one of ``HOOK_SHAPES``.
+
+    Args:
+        hook: The hook.
+
+    Returns:
+        question (ends with ?), number_claim (has a digit), contrast (a comma, colon or "but"),
+        else plain_claim.
+    """
+    if hook.rstrip().endswith("?"):
+        return "question"
+    if any(ch.isdigit() for ch in hook):
+        return "number_claim"
+    if re.search(r",|:|\bbut\b|\byet\b|\bstill\b", hook, re.IGNORECASE):
+        return "contrast"
+    return "plain_claim"
+
+
+def _valid_hook(hook: str, title: Optional[str], topic_text: str = "",
+                source: Optional[str] = None) -> str:
     """The hook if it is a usable curiosity gap; else ''.
 
     2-5 words, at most ``_HOOK_MAX_CHARS``, no exclamation mark, no imperative opener, not Title
@@ -349,7 +552,38 @@ def _valid_hook(hook: str, title: Optional[str], topic_text: str = "") -> str:
     if any(ch.isdigit() for ch in hook) and not names_its_subject(
             hook, f"{title or ''} {topic_text}"):
         return ""  # a number with no subject says how much, never of what
-    return hook
+    if source is not None and not hook_is_faithful(hook, source):
+        return ""  # a number or noun the piece never says
+    if vague_comparative(hook):
+        return ""  # "much cheaper" than what?
+    # Sentence case: the first letter up (round 7: "audit stops AI waste"); acronyms untouched.
+    return hook[:1].upper() + hook[1:] if hook[:1].islower() else hook
+
+
+# Round 9: "Verification is much cheaper" — cheaper than what? A comparative needs its reference.
+_COMPARATIVES = frozenset({
+    "cheaper", "faster", "slower", "better", "worse", "more", "less", "fewer", "higher", "lower",
+    "bigger", "smaller", "greater", "larger", "longer", "shorter", "easier", "harder", "safer",
+    "riskier", "quicker", "smarter", "stronger", "weaker", "richer", "poorer", "cleaner",
+    "clearer", "simpler", "leaner", "deeper", "wider", "tighter", "sooner", "earlier", "newer",
+    "older", "costlier", "pricier", "busier", "louder", "quieter", "sharper", "slimmer",
+})
+
+
+def vague_comparative(hook: str) -> Optional[str]:
+    """The comparative in ``hook`` that has no reference — no "than" and no number — or None.
+
+    Args:
+        hook: The hook.
+
+    Returns:
+        The comparative word, or None when the hook has none or anchors it ("45% less
+        engagement", "cheaper than a hire").
+    """
+    tokens = re.findall(r"[a-z]+", (hook or "").lower())
+    if "than" in tokens or any(ch.isdigit() for ch in hook or ""):
+        return None
+    return next((t for t in tokens if t in _COMPARATIVES), None)
 
 
 def is_title_case(text: str) -> bool:
@@ -435,6 +669,13 @@ def anchor_rejection(anchor: str, facts: Sequence[str], source: Optional[str] = 
     return ""
 
 
+def _prop_reason(anchor: str) -> str:
+    """Why an anchor is a prop the brief would refuse to draw (round 8), or ''."""
+    from cqc_lem.utilities.ai.image_brief import prop_failure
+
+    return prop_failure(anchor) or ""
+
+
 def _ground_anchors(raw: Any, source: str, facts: Sequence[str]) -> tuple[str, ...]:
     anchors: list[str] = []
     lowered_source = source.lower()
@@ -442,7 +683,7 @@ def _ground_anchors(raw: Any, source: str, facts: Sequence[str]) -> tuple[str, .
         anchor = _clean(item, 80)
         if not anchor or anchor.lower() in (a.lower() for a in anchors):
             continue
-        reason = anchor_rejection(anchor, facts, source)
+        reason = anchor_rejection(anchor, facts, source) or _prop_reason(anchor)
         grounded = any(re.search(rf"\b{re.escape(_stem(t))}", lowered_source)
                        for t in _content_tokens(anchor))
         if reason or not grounded:
@@ -466,7 +707,12 @@ def idea_rejection(idea: str, facts: Sequence[str]) -> str:
     Returns:
         A short reason, or ``''``.
     """
-    from cqc_lem.utilities.ai.image_brief import cliche_hit, legible_document, words_on_surface
+    from cqc_lem.utilities.ai.image_brief import (
+        cliche_hit,
+        legible_document,
+        prop_failure,
+        words_on_surface,
+    )
 
     hit = cliche_hit(idea)
     if hit:
@@ -477,6 +723,9 @@ def idea_rejection(idea: str, facts: Sequence[str]) -> str:
     words = words_on_surface(idea) or legible_document(idea)
     if words:
         return f"legible words on a surface ({words!r})"
+    prop = prop_failure(idea)
+    if prop:
+        return f"legible words on a surface ({prop})"
     lowered = {t.lower() for t in re.findall(r"[A-Za-z0-9]+", idea)}
     for fact in facts:
         if is_fact_only(fact):
@@ -512,11 +761,25 @@ def _filter_ideas(raw: Any, facts: Sequence[str]) -> tuple[str, ...]:
     return tuple(ideas[:_VISUAL_IDEAS])
 
 
+def _hook_options(payload: dict[str, Any], title: Optional[str], topic_text: str,
+                  source: str) -> dict[str, str]:
+    """Every valid hook Stage 1 offered, keyed by its shape (first valid per shape wins)."""
+    raw = payload.get("hook_candidates")
+    offered = list(raw.values()) if isinstance(raw, dict) else []
+    offered += [payload.get("hook_phrase")] + list(payload.get("hook_alternatives") or [])
+    options: dict[str, str] = {}
+    for candidate in offered:
+        hook = _valid_hook(_clean(candidate, 80), title, topic_text, source)
+        if hook:
+            options.setdefault(hook_shape_of(hook), hook)
+    return options
+
+
 def _first_valid_hook(payload: dict[str, Any], title: Optional[str],
-                      topic_text: str = "") -> str:
+                      topic_text: str = "", source: Optional[str] = None) -> str:
     candidates = [payload.get("hook_phrase")] + list(payload.get("hook_alternatives") or [])
     for candidate in candidates:
-        hook = _valid_hook(_clean(candidate, 80), title, topic_text)
+        hook = _valid_hook(_clean(candidate, 80), title, topic_text, source)
         if hook:
             return hook
     return ""
@@ -554,13 +817,20 @@ def parse_concept(payload: Optional[dict[str, Any]], source: str,
     anchors = _ground_anchors(payload.get("visual_anchors"), source, entities)
     # The first hook that passes the rules, so a shouted primary hook does not cost a cover its
     # headline when a usable alternative was offered (round 3: every cover carries one).
-    hook = _first_valid_hook(payload, title, " ".join((thesis, *entities, *anchors)))
+    topic = " ".join((thesis, *entities, *anchors))
+    options = _hook_options(payload, title, topic, source)
+    hook = _first_valid_hook(payload, title, topic, source) or next(iter(options.values()), "")
     treatment = _resolve_treatment(_clean(payload.get("treatment"), 40).lower(), anchors, hook)
     return ImageConcept(
         thesis=thesis,
         audience=_clean(payload.get("audience"), 120),
         specific_entities=entities,
         emotional_beat=_clean(payload.get("emotional_beat"), 120),
+        valence=(_clean(payload.get("valence"), 20).lower()
+                 if _clean(payload.get("valence"), 20).lower() in VALENCES else "mixed"),
+        hook_shape=hook_shape_of(hook) if hook else "",
+        hook_options=options or None,
+        kicker=valid_kicker(payload.get("kicker"), source) or derive_kicker(source, title),
         hook_phrase=hook,
         treatment=treatment,
         treatment_rationale=_clean(payload.get("treatment_rationale")),
@@ -657,11 +927,146 @@ def pick_visual_idea(concept: ImageConcept, surface: str = "post_image") -> Imag
                                idea_pick_reason=reason)
 
 
+# Round 6 (#2241): all four covers shared one composition — a dark panel left, a reacting man
+# in his 30s-40s right. Layout and cast now rotate DETERMINISTICALLY, least-recently-used across
+# the author's last ``ROTATION_WINDOW`` receipts, as a sibling of ``enforce_graphic_cap``.
+ROTATION_WINDOW = 4
+# Compositing templates (``image_compose.LAYOUTS``): the headline is typeset, never rendered.
+# Round 8: only SPLIT layouts rotate — the type panel and the scene never overlap, so a headline
+# can never sit on a face or a torso (every overlay layout did). The compositor still supports the
+# overlay layouts for a caller that asks.
+COVER_LAYOUTS = ("split_left", "split_right")
+POST_LAYOUTS = ("split_top", "split_bottom")
+SURFACE_LAYOUTS = {"newsletter": COVER_LAYOUTS, "post_image": POST_LAYOUTS}
+# Each dimension rotates INDEPENDENTLY, so no pairing (of age, gender, ethnicity or setting) is
+# ever correlated with another — or with the role, which always comes from the piece's anchors.
+CAST_DIMENSIONS: dict[str, tuple[str, ...]] = {
+    "gender": ("woman", "man"),
+    "age": ("20s", "30s", "40s", "50s", "60s"),
+    "ethnicity": ("Black", "East Asian", "South Asian", "Hispanic", "white", "Middle Eastern",
+                  "Southeast Asian"),
+    "setting": ("office", "home office", "warehouse floor", "shop counter", "conference hallway"),
+}
+_CAST_SURFACES = frozenset({"newsletter", "post_image", "video"})
+_ROLE_WORDS = re.compile(
+    r"\b(?:owner|founder|lead|manager|editor|analyst|marketer|consultant|director|officer|"
+    r"executive|reviewer|buyer|accountant|seller|engineer|designer|writer|recruiter|coach|"
+    r"strategist|operator|planner|specialist)s?\b", re.IGNORECASE)
+
+
+def _least_recent(options: Sequence[str], recent: Sequence[str], seed: str) -> str:
+    """The option unused in ``recent`` (most recent first), else the one used longest ago.
+
+    With no history at all, a stable hash of ``seed`` picks — so surfaces with no receipt reader
+    still vary piece to piece instead of always taking the first option.
+    """
+    recent = [r for r in recent if r in options]
+    if not recent:
+        return options[sum(map(ord, seed or "")) % len(options)]
+    unused = [o for o in options if o not in recent]
+    if unused:
+        return unused[0]
+    return max(options, key=recent.index)
+
+
+def _role_from_anchors(concept: ImageConcept) -> str:
+    """The person's role, drawn from the piece's own anchors (then its audience) — never invented.
+
+    "an agency owner" gives "agency owner", "engineering lead reviewing billing" gives
+    "engineering lead", an audience of "agency owners" gives "agency owner".
+    """
+    for text in tuple(concept.visual_anchors) + (concept.audience,):
+        words = (text or "").split()
+        for idx, word in enumerate(words):
+            if _ROLE_WORDS.fullmatch(word.strip(",.;:")):
+                start = max(0, idx - 1)
+                if words[start].lower() in ("a", "an", "the"):
+                    start = idx
+                role = " ".join(words[start:idx + 1]).lower().strip(",.;:")
+                return role[:-1] if role.endswith("s") and not role.endswith("ss") else role
+    return "professional"
+
+
+_SETTING_PREPOSITION = {"warehouse floor": "on", "shop counter": "behind",
+                        "conference hallway": "in"}
+
+
+def cast_phrase(cast: Optional[dict[str, str]]) -> str:
+    """The brief's cast line: "a {ethnicity} {gender} in her/his {age}, a {role}, at a {setting}".
+
+    Args:
+        cast: The rotated cast dict, or None.
+
+    Returns:
+        The phrase, or '' without a cast.
+    """
+    if not cast:
+        return ""
+    pronoun = "her" if cast.get("gender") == "woman" else "his"
+    preposition = _SETTING_PREPOSITION.get(cast["setting"], "in")
+    role = cast["role"]
+    article = "an" if role[:1].lower() in "aeiou" else "a"
+    return (f"a {cast['ethnicity']} {cast['gender']} in {pronoun} {cast['age']}, {article} "
+            f"{role}, {preposition} a {cast['setting']}")
+
+
+def rotate_hook_shape(concept: ImageConcept,
+                      recent_shapes: Optional[Sequence[str]] = None) -> ImageConcept:
+    """Pick the least-recently-used hook SHAPE among the valid hooks Stage 1 offered.
+
+    Args:
+        concept: Stage 1's concept, with ``hook_options``.
+        recent_shapes: Shapes of the most recent hooks, most recent first.
+
+    Returns:
+        The concept with ``hook_phrase`` and ``hook_shape`` set to the rotated pick; unchanged
+        when it offered fewer than two shapes.
+    """
+    options = concept.hook_options or {}
+    if len(options) < 2:
+        return concept
+    shapes = tuple(s for s in HOOK_SHAPES if s in options)
+    shape = _least_recent(shapes, list(recent_shapes or [])[:ROTATION_WINDOW], concept.thesis)
+    return dataclasses.replace(concept, hook_phrase=options[shape], hook_shape=shape)
+
+
+def assign_layout_and_cast(concept: ImageConcept, surface: str,
+                           recent_layouts: Optional[Sequence[str]] = None,
+                           recent_casts: Optional[Sequence[dict]] = None) -> ImageConcept:
+    """Rotate the composition and (for a people_scene) the person, least-recently-used.
+
+    Args:
+        concept: Stage 1's concept.
+        surface: Only surfaces with a layout table get a layout; covers, posts and video frames
+            get a cast.
+        recent_layouts: The last ``ROTATION_WINDOW`` layouts on this surface, most recent first.
+        recent_casts: The last ``ROTATION_WINDOW`` cast dicts, most recent first.
+
+    Returns:
+        The concept with ``layout`` and ``cast`` set (unchanged values when not applicable).
+    """
+    seed = concept.thesis
+    layout = concept.layout
+    options = SURFACE_LAYOUTS.get(surface)
+    if options and not layout:
+        layout = _least_recent(options, list(recent_layouts or [])[:ROTATION_WINDOW], seed)
+    cast = concept.cast
+    if surface in _CAST_SURFACES and concept.treatment == TREATMENT_PEOPLE and not cast:
+        history = [c for c in (recent_casts or []) if isinstance(c, dict)][:ROTATION_WINDOW]
+        cast = {dim: _least_recent(values, [h.get(dim, "") for h in history], seed + dim)
+                for dim, values in CAST_DIMENSIONS.items()}
+        cast["role"] = _role_from_anchors(concept)
+    return dataclasses.replace(concept, layout=layout, cast=cast)
+
+
 @llm_step("image_concept")
 def analyze_content_for_image(text: str, *, title: Optional[str] = None,
                               surface: str = "post_image",
                               user_id: Optional[int] = None,
                               recent_treatments: Optional[Sequence[str]] = None,
+                              recent_layouts: Optional[Sequence[str]] = None,
+                              recent_casts: Optional[Sequence[dict]] = None,
+                              recent_hook_shapes: Optional[Sequence[str]] = None,
                               ) -> Optional[ImageConcept]:
     """Read the full content and decide what its image must show. Never raises.
 
@@ -675,6 +1080,9 @@ def analyze_content_for_image(text: str, *, title: Optional[str] = None,
         user_id: The author, for log context.
         recent_treatments: Treatments of this author's most recent images, most recent first;
             the analyst is asked to prefer a different one when the piece allows.
+        recent_layouts: Layouts of the most recent images on this surface, most recent first.
+        recent_casts: Cast dicts of the most recent images, most recent first.
+        recent_hook_shapes: Hook shapes of the most recent images, most recent first.
 
     Returns:
         The concept, or None when the call fails or returns nothing usable — callers keep a
@@ -724,4 +1132,6 @@ def analyze_content_for_image(text: str, *, title: Optional[str] = None,
         log_debug("Image concept reply unusable", user_id=user_id, surface=surface,
                   action_type="image_concept", raw=json.dumps(payload)[:200] if payload else "")
         return None
-    return pick_visual_idea(enforce_graphic_cap(concept, recent, surface), surface)
+    concept = pick_visual_idea(enforce_graphic_cap(concept, recent, surface), surface)
+    concept = rotate_hook_shape(concept, recent_hook_shapes)
+    return assign_layout_and_cast(concept, surface, recent_layouts, recent_casts)
