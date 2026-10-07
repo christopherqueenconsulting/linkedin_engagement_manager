@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.182.3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.182.2...v0.182.3) (2026-10-07)
+
+
+### Bug Fixes
+
+* **media:** branded video opener fallback, on-brand captions, card redesign, style rotation (showcase round 4) ([#2274](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2274)) ([4e6ccfc](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4e6ccfcd6fe27b3991c20d3e8ea76cbf0d9416d4))
+* **media:** number fidelity on covers/cards, deck counters, title-card thumbnail frame + layout variety, setting gate (showcase round 5) ([#2276](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2276)) ([e61fe61](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e61fe61c3603d07cc9110adf4d2fecdaf5a839b2))
+
 ## [0.182.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.182.1...v0.182.2) (2026-10-07)
 
 
