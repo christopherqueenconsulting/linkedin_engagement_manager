@@ -453,7 +453,14 @@ def validate_graphic_facts(raw: Any, source: str) -> dict:
     stat, reason = validate_fact(raw.get("thesis_stat"), source) if raw.get("thesis_stat") \
         else (None, "")
     if stat:
-        out["stat"] = stat
+        # The context line under the hero must be a complete phrase, never the sentence with a
+        # hole where the figure was (#2241 data_card).
+        context = complete_context(stat["label"], stat["source_sentence"],
+                                   split_value(stat["value"], stat["unit"])[0])
+        if context and label_grounded(context, stat["source_sentence"]):
+            out["stat"] = dict(stat, label=context)
+        else:
+            rejected.append("thesis_stat: no complete context phrase in its sentence")
     elif reason:
         rejected.append(f"thesis_stat: {reason}")
 
@@ -1176,6 +1183,70 @@ _DRAWERS = {STAT_CARD: _draw_stat_card, HIGHLIGHT_CHART: _draw_highlight_chart,
             CHECKLIST: _draw_checklist}
 
 
+_HOOK_FIGURE = re.compile(r"[$€£]?\d[\d,]*(?:\.\d+)?\s?(?:[KkMmBb]n?(?![A-Za-z])|thousand\b|"
+                          r"million\b|billion\b)?%?")
+
+
+def hook_repeats_figure(hook: Optional[str], fact: dict) -> bool:
+    """Does the headline state the same amount the stat card draws as its hero?
+
+    Compared by AMOUNT, so "$12K" in the hook repeats a hero of "$12,000".
+
+    Args:
+        hook: The headline.
+        fact: The stat card's drawn fact (``amount`` or ``display``).
+
+    Returns:
+        True when any figure in ``hook`` equals the fact's amount.
+    """
+    amount = fact.get("amount")
+    if amount is None:
+        amount = _amount(str(fact.get("display") or ""))
+    if amount is None:
+        return False
+    return any(_amount(m.group(0)) == amount for m in _HOOK_FIGURE.finditer(hook or ""))
+
+
+_DANGLING = frozenset({"by", "to", "of", "for", "with", "in", "on", "at", "from", "the", "a",
+                       "an", "and", "or", "than", "about", "around", "nearly", "over", "under"})
+
+
+def complete_context(label: str, sentence: str, value: str) -> str:
+    """The stat card's context line as a COMPLETE phrase of ``sentence``, or ``""``.
+
+    #2241 data_card: Stage 1's label "Our routing change saved in model costs" is every word of
+    its sentence with the figure cut out — a sentence with a hole. A label is kept only when it is
+    a contiguous run of the sentence's own words that does not carry the figure; otherwise the
+    words that FOLLOW the figure ("in model costs") are the line. Nothing is reworded.
+
+    Args:
+        label: Stage 1's label.
+        sentence: The fact's source sentence.
+        value: The figure's number as written in the sentence.
+
+    Returns:
+        The context line, or ``""`` when no complete phrase of 2+ words exists.
+    """
+    def words(text: str) -> list[str]:
+        return re.findall(r"[a-z0-9$€£%'.,\-]+", _norm(text).lower().replace(",", ""))
+
+    want, have = [w.strip(".") for w in words(label)], [w.strip(".") for w in words(sentence)]
+    digits = re.sub(r"[^\d.]", "", str(value))
+    contiguous = bool(want) and any(have[i:i + len(want)] == want
+                                    for i in range(len(have) - len(want) + 1))
+    # "cut AI costs by" under a hero is contiguous but still dangles — its object was the figure.
+    dangling = bool(want) and want[-1] in _DANGLING
+    if contiguous and not dangling and not (digits and any(digits in w for w in want)):
+        return label
+    norm = _norm(sentence)
+    at = norm.find(str(value))
+    if at < 0:
+        return ""
+    tail = re.match(r"\s?(?:[KkMmBb]n?(?![A-Za-z])|%|x(?![A-Za-z])|percent\b|thousand\b|"
+                    r"million\b|billion\b)?", norm[at + len(str(value)):])
+    return _label_after(norm, at + len(str(value)) + (tail.end() if tail else 0))
+
+
 def render_graphic(archetype: str, graphic: dict, *, surface: str, hook: str,
                    kicker: str = "", signature: str = "", brand: Optional[BrandStyle] = None,
                    layout: Optional[str] = None, out_path: Optional[str] = None,
@@ -1210,6 +1281,10 @@ def render_graphic(archetype: str, graphic: dict, *, surface: str, hook: str,
     if not (hook or "").strip():
         raise GraphicError("a code-drawn graphic needs a headline")
     facts = assert_traceable(archetype, graphic)
+    if archetype == STAT_CARD and hook_repeats_figure(hook, facts[0]):
+        # #2241 data_card: "Our routing change saved $12,000" in the panel, then "$12,000" as the
+        # hero beside it. The stat card IS the claim; its panel keeps the kicker and byline only.
+        hook = ""
     brand = brand or BrandStyle()
     size = GRAPHIC_CANVAS.get(surface, GRAPHIC_CANVAS["newsletter"])
     layout = layout if layout in SPLIT_LAYOUTS else DEFAULT_LAYOUT.get(surface, LAYOUTS[0])

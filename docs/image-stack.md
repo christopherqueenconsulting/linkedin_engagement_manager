@@ -192,6 +192,14 @@ accent object or wardrobe piece; `video_frame_failure` refuses a prompt naming a
 button or keypad, and the video brand gate accepts only an accent colour (`video_accent_colors`),
 never the off-white neutral any wall satisfies.
 
+**A stat card says its number once** (the `data_card` post treatment draws it). A panel headline
+that states the same AMOUNT as the hero ("Our routing change saved $12,000" beside "$12,000";
+`hook_repeats_figure`, so "$12K" counts too) is dropped and the panel keeps its kicker and byline.
+The context line under the hero is a COMPLETE phrase of the sentence (`complete_context`): Stage 1's
+label survives only as a contiguous run of the sentence's words that neither carries the figure nor
+dangles on a preposition; otherwise it is the words that follow the figure ("in model costs last
+quarter"); with neither, no stat card is drawn — never "Our routing change saved in model costs".
+
 **Carousel decks** follow the brand kit, draw their own figures in code and default to no stock —
 `docs/content-quality-audits/carousel.md` §8.
 

@@ -256,3 +256,58 @@ class TestStoryRotation:
         with patch.object(rcp, "get_story_bank_entries", return_value=self.ENTRIES), \
                 patch.object(rcp, "get_recent_post_texts", side_effect=RuntimeError("db")):
             assert rcp._select_story_for_post(1, {})["id"] == 1
+
+
+ROUTING = "Our routing change saved $12,000 in model costs last quarter."
+
+
+class TestDataCardRedundancy:
+    """#2241 data_card: the headline repeated the hero, and the context line had a hole."""
+
+    @pytest.mark.parametrize("label,expected", [
+        ("Our routing change saved in model costs", "in model costs last quarter"),
+        ("saved by one routing change", "in model costs last quarter"),
+        ("in model costs", "in model costs"),
+        ("model costs last quarter", "model costs last quarter"),
+    ])
+    def test_the_context_line_is_a_complete_phrase(self, label, expected):
+        assert ig.complete_context(label, ROUTING, "12,000") == expected
+
+    def test_a_figure_with_no_complete_phrase_draws_no_stat(self):
+        sentence = "My client cut AI costs by 45%."
+        graphic = ig.validate_graphic_facts({"thesis_stat": {
+            "label": "cut AI costs by", "value": "45", "unit": "%",
+            "source_sentence": sentence}}, sentence)
+        assert "stat" not in graphic
+        assert any("complete context" in r for r in graphic["rejected"])
+
+    def test_a_hole_label_is_replaced_at_validation(self):
+        graphic = ig.validate_graphic_facts({"thesis_stat": {
+            "label": "Our routing change saved in model costs", "value": "12,000", "unit": "$",
+            "source_sentence": ROUTING}}, ROUTING)
+        assert graphic["stat"]["label"] == "in model costs last quarter"
+        assert ig.assert_traceable("stat_card", graphic)
+
+    @pytest.mark.parametrize("hook,repeats", [("Our routing change saved $12,000", True),
+                                              ("Routing saved $12K", True),
+                                              ("Routing pays for itself", False),
+                                              ("We cut 12 tools", False)])
+    def test_a_headline_repeating_the_hero_is_detected_by_amount(self, hook, repeats):
+        assert ig.hook_repeats_figure(hook, {"amount": 12000.0}) is repeats
+
+    def test_a_fact_without_an_amount_never_repeats(self):
+        assert ig.hook_repeats_figure("Saved $12,000", {"display": "$12,000"}) is True
+        assert ig.hook_repeats_figure("Saved $12,000", {}) is False
+
+    @pytest.mark.parametrize("hook,set_hook", [
+        ("Our routing change saved $12,000", ""),
+        ("Routing pays for itself", "Routing pays for itself")])
+    def test_the_stat_card_panel_drops_a_repeating_headline(self, tmp_path, hook, set_hook):
+        graphic = ig.validate_graphic_facts({"thesis_stat": {
+            "label": "in model costs", "value": "12,000", "unit": "$",
+            "source_sentence": ROUTING}}, ROUTING)
+        with patch.object(ig, "compose_headline", return_value=str(tmp_path / "c.png")) as comp:
+            ig.render_graphic("stat_card", graphic, surface="post_image", hook=hook,
+                              kicker="AI COSTS", signature="Chris")
+        assert comp.call_args.args[1] == set_hook
+        assert comp.call_args.kwargs["kicker"] == "AI COSTS"
