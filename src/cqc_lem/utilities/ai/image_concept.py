@@ -915,7 +915,6 @@ def _valid_hook(hook: str, title: Optional[str], topic_text: str = "",
 
 _CLAUSE_BREAK = re.compile(r"[,;:—–]| - |\b(?:because|so|while|which|but|as|after|when)\b",
                            re.IGNORECASE)
-_NUMBER = re.compile(r"[$€£]?\d[\d,.]*(?:%|[kKmMbB]\b)?")
 _TRAILING = frozenset({"and", "or", "but", "of", "to", "with", "for", "a", "an", "the", "by", "in",
                        "on", "at", "its", "their", "your", "our", "is", "are", "was", "were"})
 
@@ -1919,7 +1918,7 @@ def analyze_content_for_image(text: str, *, title: Optional[str] = None,
         f"different treatment than {recent[0]} when the piece allows.\n" if recent else "")
     try:
         payload = None
-        for _attempt in (1, 2):
+        for _ in range(2):
             response = client.chat.completions.create(
                 model="lem-medium",
                 messages=[{"role": "system", "content": _SYSTEM_PROMPT},
