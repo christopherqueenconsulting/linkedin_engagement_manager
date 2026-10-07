@@ -21,6 +21,17 @@ pytestmark = pytest.mark.unit
 
 _CREATE = "cqc_lem.utilities.ai.client.client.chat.completions.create"
 
+
+def _engine_calls(create) -> list:
+    """Every LLM call except round 12's hook-vs-thesis judge (a separate lem-simple check)."""
+    return [c for c in create.call_args_list
+            if "Does the headline ASSERT" not in str(c[1].get("messages"))]
+
+
+def _stage1(create) -> dict:
+    """The kwargs of Stage 1's own lem-medium analysis call."""
+    return next(c[1] for c in create.call_args_list if c[1].get("model") == "lem-medium")
+
 _SOURCE = ("Our agency nearly missed payroll in March. Three clients sat on unpaid invoices for "
            "90 days while the payroll run came due, and the agency owner covered it from a "
            "personal credit card. Here is the collections process we built afterwards.")
@@ -150,8 +161,8 @@ class TestAnalyzeContentForImage:
             concept = analyze_content_for_image(long_text, title="Collections", surface="newsletter",
                                                 user_id=1)
         assert concept.thesis == _PAYLOAD["thesis"]
-        kwargs = create.call_args[1]
-        assert create.call_count == 1
+        kwargs = _stage1(create)
+        assert len(_engine_calls(create)) == 1
         assert kwargs["model"] == "lem-medium"
         assert kwargs["response_format"] == {"type": "json_object"}
         assert kwargs["max_tokens"] >= 2000, "lem-medium is a reasoning model"
@@ -163,7 +174,7 @@ class TestAnalyzeContentForImage:
     def test_the_system_prompt_forbids_invention_and_names_every_treatment(self):
         with patch(_CREATE, return_value=_resp(_PAYLOAD)) as create:
             analyze_content_for_image(_SOURCE)
-        system = create.call_args[1]["messages"][0]["content"]
+        system = _stage1(create)["messages"][0]["content"]
         assert "Never invent one" in system
         for treatment in TREATMENTS:
             assert treatment in system
@@ -264,7 +275,7 @@ class TestHookRules:
     def test_the_prompt_states_the_hook_rules(self):
         with patch(_CREATE, return_value=_resp(_PAYLOAD)) as create:
             analyze_content_for_image(_SOURCE)
-        system = create.call_args[1]["messages"][0]["content"]
+        system = _stage1(create)["messages"][0]["content"]
         assert "Never an exclamation, never an order to the reader" in system
         assert "NEVER a brand, product, company or model name" in system
 
@@ -304,7 +315,7 @@ class TestTreatmentVariety:
         with patch(_CREATE, return_value=_resp(_PAYLOAD)) as create:
             analyze_content_for_image(_SOURCE, surface="newsletter",
                                       recent_treatments=["concrete_scene", "people_scene"])
-        user = create.call_args[1]["messages"][1]["content"]
+        user = _stage1(create)["messages"][1]["content"]
         assert "most recent first: concrete_scene, people_scene" in user
         assert "Prefer a different treatment than concrete_scene" in user
         assert "Prefer people_scene" in user and "real faces beat clipart" in user
@@ -312,7 +323,7 @@ class TestTreatmentVariety:
     def test_other_surfaces_get_no_cover_bias(self):
         with patch(_CREATE, return_value=_resp(_PAYLOAD)) as create:
             analyze_content_for_image(_SOURCE, surface="post_image")
-        assert "COVER" not in create.call_args[1]["messages"][1]["content"]
+        assert "COVER" not in _stage1(create)["messages"][1]["content"]
 
 
 _IDEAS = [
@@ -386,7 +397,7 @@ class TestVisualIdeas:
         with patch(_CREATE, side_effect=[_resp(payload),
                                          _resp({"ranking": [1], "reason": "r"})]) as create:
             concept = analyze_content_for_image(_SOURCE, surface="newsletter")
-        assert create.call_count == 2
+        assert len(_engine_calls(create)) == 2
         assert concept.chosen_idea == _IDEAS[0]
         system = create.call_args_list[0][1]["messages"][0]["content"]
         assert "exactly 3 one-sentence ideas" in system and "At least ONE idea is people-led" in system
@@ -405,7 +416,7 @@ class TestRoundFourStageOne:
     def test_the_budget_fits_a_reasoning_model_and_asks_for_low_effort(self):
         with patch(_CREATE, return_value=_resp(_PAYLOAD)) as create:
             analyze_content_for_image(_SOURCE)
-        kwargs = create.call_args[1]
+        kwargs = _stage1(create)
         assert kwargs["max_tokens"] >= 6000 and kwargs["reasoning_effort"] == "low"
 
     def test_a_length_cut_is_retried_once(self):
@@ -413,7 +424,7 @@ class TestRoundFourStageOne:
             message=SimpleNamespace(content=""), finish_reason="length")])
         with patch(_CREATE, side_effect=[cut, _resp(_PAYLOAD)]) as create:
             concept = analyze_content_for_image(_SOURCE)
-        assert create.call_count == 2 and concept is not None
+        assert len(_engine_calls(create)) == 2 and concept is not None
 
     def test_two_length_cuts_give_up(self):
         cut = SimpleNamespace(choices=[SimpleNamespace(
@@ -457,7 +468,7 @@ class TestRoundFourStageOne:
     def test_the_prompt_asks_for_one_short_claim_and_sentence_case(self):
         with patch(_CREATE, return_value=_resp(_PAYLOAD)) as create:
             analyze_content_for_image(_SOURCE)
-        system = create.call_args[1]["messages"][0]["content"]
+        system = _stage1(create)["messages"][0]["content"]
         assert "ONE central claim, at most 20 words" in system
         assert "Sentence case, never Title Case" in system
         assert "comes from the article's OWN words" in system
@@ -495,7 +506,7 @@ class TestRoundFiveHookNamesItsSubject:
     def test_the_prompt_asks_numeric_hooks_to_name_the_subject(self):
         with patch(_CREATE, return_value=_resp(_PAYLOAD)) as create:
             analyze_content_for_image(_SOURCE)
-        system = create.call_args[1]["messages"][0]["content"]
+        system = _stage1(create)["messages"][0]["content"]
         assert "A numeric hook names its subject" in system
         assert '"45% less engagement on AI posts"' in system
 
@@ -506,7 +517,7 @@ class TestPostImagesFollowTheCoverRecipe:
     def test_post_guidance_requires_a_hook_and_prefers_people(self):
         with patch(_CREATE, return_value=_resp(_PAYLOAD)) as create:
             analyze_content_for_image(_SOURCE, surface="post_image")
-        user = create.call_args[1]["messages"][1]["content"]
+        user = _stage1(create)["messages"][1]["content"]
         assert "LinkedIn feed POST image (4:5). Prefer people_scene" in user
         assert "hook_phrase is required" in user and "never an object sitting on a desk" in user
 
@@ -550,7 +561,8 @@ class TestSeriesRotation:
         # Two split layouts: they alternate, so no layout ever repeats back to back.
         assert all(a != b for a, b in zip(layouts, layouts[1:])), layouts
         assert len({(c["gender"], c["age"]) for c in casts}) >= 4, "the cast varies"
-        assert len({c["setting"] for c in casts}) >= 4
+        # Round 12: the setting is the ARTICLE's, never rotated.
+        assert {c["setting"] for c in casts} == {""}
 
     def test_every_cast_dimension_rotates_least_recently_used(self):
         from cqc_lem.utilities.ai.image_concept import CAST_DIMENSIONS, assign_layout_and_cast
@@ -564,7 +576,7 @@ class TestSeriesRotation:
         cast = assign_layout_and_cast(self._concept(), "newsletter").cast
         assert cast["role"] == "agency owner"
         phrase = cast_phrase(cast)
-        assert ", an agency owner, " in phrase
+        assert phrase.endswith(", an agency owner")
 
     def test_without_history_the_rotation_is_stable_per_piece_but_varies_across(self):
         from cqc_lem.utilities.ai.image_concept import assign_layout_and_cast
@@ -644,7 +656,7 @@ class TestHookFidelityAndShape:
     def test_the_prompt_asks_for_every_shape_and_the_articles_own_words(self):
         with patch(_CREATE, return_value=_resp(_PAYLOAD)) as create:
             analyze_content_for_image(_SOURCE)
-        system = create.call_args[1]["messages"][0]["content"]
+        system = _stage1(create)["messages"][0]["content"]
         assert "Give one hook in EACH shape in hook_candidates" in system
         assert '"hidden buyers" never becomes "influencers"' in system
 
@@ -659,7 +671,7 @@ class TestValence:
         with patch(_CREATE, return_value=_resp(_PAYLOAD)) as create:
             analyze_content_for_image(_SOURCE)
         assert "positive when the piece is about a saving, a win or relief" in \
-            create.call_args[1]["messages"][0]["content"]
+            _stage1(create)["messages"][0]["content"]
 
 
 
@@ -687,7 +699,7 @@ class TestRoundSevenStageOne:
     def test_the_prompt_asks_for_a_kicker(self):
         with patch(_CREATE, return_value=_resp(_PAYLOAD)) as create:
             analyze_content_for_image(_SOURCE)
-        assert "Rules for kicker" in create.call_args[1]["messages"][0]["content"]
+        assert "Rules for kicker" in _stage1(create)["messages"][0]["content"]
 
     def test_hooks_come_back_sentence_cased(self):
         concept = parse_concept(dict(_PAYLOAD, hook_phrase="payroll first, clients last"), _SOURCE)
@@ -825,7 +837,9 @@ class TestRoundTenHookAlways:
         with patch("cqc_lem.utilities.ai.client.client") as client:
             client.chat.completions.create.side_effect = self._stage1(RuntimeError("down"))
             concept = analyze_content_for_image(self._SOURCE, surface="post_image")
-        assert concept.hook_phrase == "Audit exposed hidden AI tool spend"
+        # Derived from the thesis, then round 12's lead number ($30K, in the first sentence) wins.
+        assert concept.hook_phrase == "$30K billing review"
+        assert concept.hook_shape == "number_claim"
 
     def test_a_carousel_never_pays_for_a_hook_retry(self):
         from cqc_lem.utilities.ai.image_concept import analyze_content_for_image
@@ -860,3 +874,120 @@ class TestRoundElevenTechHardware:
     def test_the_cliche_checks_still_apply(self):
         from cqc_lem.utilities.ai.image_brief import cliche_hit
         assert cliche_hit("a server room")
+
+
+_R12_SOURCE = ("Our AI tool bill hit $30K before anyone looked. At a billing review late on a "
+               "Tuesday, the engineering lead found seats nobody used. Routing cut spend by 85% "
+               "with the same quality. One caveat: cheap-first routing hurts precision on legal "
+               "text.")
+
+
+@pytest.mark.unit
+class TestRoundTwelveSetting:
+    def test_the_setting_comes_from_the_article(self):
+        concept = parse_concept(dict(_PAYLOAD, setting="a billing review late on a Tuesday"),
+                                _R12_SOURCE)
+        assert concept.setting == "a billing review late on a Tuesday"
+
+    @pytest.mark.parametrize("setting", ["a warehouse floor", "a server room", "Acme HQ lobby",
+                                         "a room full of laptops", ""])
+    def test_an_ungrounded_or_unusable_setting_is_dropped(self, setting):
+        concept = parse_concept(dict(_PAYLOAD, setting=setting), _R12_SOURCE)
+        assert concept.setting == ""
+
+    def test_the_cast_rotates_only_people_and_carries_the_articles_setting(self):
+        from cqc_lem.utilities.ai.image_concept import (
+            CAST_DIMENSIONS,
+            assign_layout_and_cast,
+            cast_phrase,
+        )
+        assert set(CAST_DIMENSIONS) == {"gender", "age", "ethnicity"}
+        concept = parse_concept(dict(_PAYLOAD, treatment="people_scene",
+                                     setting="a billing review late on a Tuesday"), _R12_SOURCE)
+        cast = assign_layout_and_cast(concept, "newsletter").cast
+        assert cast["setting"] == "a billing review late on a Tuesday"
+        assert cast_phrase(cast).endswith(", at a billing review late on a Tuesday")
+
+    def test_the_prompt_asks_for_the_articles_setting(self):
+        from cqc_lem.utilities.ai.image_concept import _SYSTEM_PROMPT
+        assert '"setting"' in _SYSTEM_PROMPT and "Rules for setting" in _SYSTEM_PROMPT
+
+
+@pytest.mark.unit
+class TestRoundTwelveLeadNumber:
+    def _concept(self, **overrides):
+        fields = dict(thesis="Routing cut AI spend 85% with the same quality", audience="",
+                      specific_entities=("85%", "$30K"), emotional_beat="relief",
+                      hook_phrase="Who pays for idle seats?", treatment="people_scene",
+                      treatment_rationale="", weak=False,
+                      visual_anchors=("the engineering lead", "a billing review"),
+                      hook_shape="question",
+                      hook_options={"question": "Who pays for idle seats?",
+                                    "number_claim": "85% less spend with routing"})
+        fields.update(overrides)
+        return ImageConcept(**fields)
+
+    def test_a_thesis_number_is_found_in_the_claim_sentence(self):
+        from cqc_lem.utilities.ai.image_concept import thesis_number
+        assert thesis_number(self._concept(), _R12_SOURCE) == "85%"
+
+    def test_a_number_only_in_the_tail_is_not_the_lead(self):
+        from cqc_lem.utilities.ai.image_concept import thesis_number
+        source = ("Routing is about matching the model to the job. It takes care. It takes "
+                  "tests. Later, unrelated: 85% of teams skip it.")
+        concept = self._concept(thesis="Routing matches the model to the job",
+                                specific_entities=("85%",))
+        assert thesis_number(concept, source) == ""
+
+    def test_the_lead_number_overrides_shape_rotation(self):
+        from cqc_lem.utilities.ai.image_concept import lead_with_number
+        concept = lead_with_number(self._concept(), _R12_SOURCE)
+        assert concept.hook_shape == "number_claim"
+        assert concept.hook_phrase == "85% less spend with routing"
+
+    def test_without_an_offered_number_hook_one_is_built(self):
+        from cqc_lem.utilities.ai.image_concept import lead_with_number
+        concept = lead_with_number(self._concept(hook_options={"question": "Who pays?"}),
+                                   _R12_SOURCE)
+        assert concept.hook_phrase.startswith("85% ") and concept.hook_shape == "number_claim"
+
+    def test_rotation_stays_in_charge_without_a_thesis_number(self):
+        from cqc_lem.utilities.ai.image_concept import lead_with_number
+        concept = self._concept(thesis="Routing matches the model to the job",
+                                specific_entities=())
+        assert lead_with_number(concept, "Routing matches the model to the job.") is concept
+
+
+@pytest.mark.unit
+class TestRoundTwelveHookAssertsThesis:
+    @pytest.mark.parametrize("hook", ["Cheapest model everywhere vs hybrid routing",
+                                      "Routing versus cheap-first", "Humans v. agents"])
+    def test_a_versus_hook_is_refused(self, hook):
+        from cqc_lem.utilities.ai.image_concept import hook_rejection
+        assert "takes no side" in hook_rejection(hook, None)
+
+    def test_a_caveat_hook_is_regenerated_and_valence_follows_the_shipped_hook(self):
+        from cqc_lem.utilities.ai.image_concept import _hook_asserts_thesis
+        concept = ImageConcept(thesis="Routing cut AI spend 85% with the same quality",
+                               audience="", specific_entities=("85%",), emotional_beat="",
+                               hook_phrase="Cheap-first hurts precision", treatment="people_scene",
+                               treatment_rationale="", weak=False, valence="negative",
+                               visual_anchors=("the engineering lead",))
+        replies = [_resp({"asserts_thesis": False, "valence": "negative",
+                          "reason": "it is the closing caveat"}),
+                   _resp({"hook_phrase": "Routing cut spend by 85%"}),
+                   _resp({"asserts_thesis": True, "valence": "positive", "reason": "ok"})]
+        with patch(_CREATE, side_effect=replies) as create:
+            out = _hook_asserts_thesis(concept, {}, _R12_SOURCE, None, "post_image", 1)
+        assert out.hook_phrase == "Routing cut spend by 85%"
+        assert out.valence == "positive"
+        retry = create.call_args_list[1][1]["messages"][1]["content"]
+        assert "Cheap-first hurts precision" in retry and "closing caveat" in retry
+
+    def test_an_unreachable_judge_keeps_the_hook(self):
+        from cqc_lem.utilities.ai.image_concept import _hook_asserts_thesis
+        concept = ImageConcept(thesis="t", audience="", specific_entities=(),
+                               emotional_beat="", hook_phrase="Who pays?",
+                               treatment="people_scene", treatment_rationale="", weak=False)
+        with patch(_CREATE, side_effect=RuntimeError("down")):
+            assert _hook_asserts_thesis(concept, {}, "s", None, "post_image", 1) is concept

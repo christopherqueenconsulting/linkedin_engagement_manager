@@ -331,3 +331,15 @@ class TestSplitLayouts:
 
     def test_the_defaults_are_splits(self):
         assert ic.DEFAULT_LAYOUT == {"newsletter": "split_left", "post_image": "split_top"}
+
+
+class TestRoundTwelveCanvas:
+    def test_a_cover_is_built_at_1920x1080(self, tmp_path):
+        out = compose_headline(_render(tmp_path, (1024, 1024)), "Who buys?",
+                               layout="split_left", surface="newsletter")
+        assert Image.open(out).size == (1920, 1080)
+
+    def test_a_post_stays_1080x1350(self, tmp_path):
+        out = compose_headline(_render(tmp_path, (1024, 1024)), "Who buys?",
+                               layout="split_top", surface="post_image")
+        assert Image.open(out).size == (1080, 1350)

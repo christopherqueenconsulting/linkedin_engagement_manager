@@ -417,6 +417,12 @@ PROPS_DIRECTIVE = (
     "woman in a green jumper pointing at the shelf\"), never by a role or group caption such as "
     "\"founders and content teams\" or \"engineering lead\" — the renderer paints those onto "
     "posters and badges. No posters, signage, name badges, lanyards or labels.\n")
+# Round 12: video 101's foreground hand smeared in frame 5 — Runway animates what is nearest the
+# lens worst. ``NO_NEAR_FOREGROUND`` is the clause the motion prompt (``MOTION_DISCIPLINE``,
+# PR #2249) appends too.
+NO_NEAR_FOREGROUND = "no hands or objects close to the camera"
+VIDEO_FRAME_DIRECTIVE = (f"VIDEO FRAME: {NO_NEAR_FOREGROUND} — people at mid-distance, hands "
+                         f"well away from the lens, nothing in the near foreground.\n")
 # Kept for the call sites that name it: covers and posts were the first surfaces with the rule.
 COVER_PROPS_DIRECTIVE = {PAPER_FORBID: PROPS_DIRECTIVE}
 
@@ -443,6 +449,14 @@ _TECH_HARDWARE = re.compile(
     + r")(?:s|es)?\b", re.IGNORECASE)
 
 
+# Round 12 (#2241): toy figurines, blank placeholder cards and coloured pin flags read as AI
+# artifacts to the blind critic. No symbolic or metaphorical prop: hands are empty or the people
+# interact.
+_SYMBOLIC_PROPS = re.compile(
+    r"\b(?:figurines?|tokens?|cards?|flags?|chess(?:\s+pieces?|\s+board)?|blocks?|"
+    r"sticky\s+notes?|post-its?|game\s+pieces?|pawns?|dominoe?s?)\b", re.IGNORECASE)
+
+
 def tech_hardware(text: Optional[str]) -> Optional[str]:
     """The first ``TECH_HARDWARE`` word in ``text``, or None.
 
@@ -466,6 +480,10 @@ def prop_failure(text: Optional[str]) -> Optional[str]:
         The reason: a paper/document/chart/code prop, or a screen not seen from behind.
     """
     text = text or ""
+    symbolic = _SYMBOLIC_PROPS.search(text)
+    if symbolic:
+        return (f"the scene names {symbolic.group(0)!r} — a symbolic prop reads as an AI "
+                f"artifact; hands are empty or the people interact")
     paper = _PAPER_PROPS.search(text)
     if paper:
         return (f"the scene names {paper.group(0)!r} — paper, charts and code render legible "
@@ -569,7 +587,9 @@ BRAND_ACCENT_DIRECTIVE = (
     "BRAND ACCENT: brand colors are ACCENTS, never the overall tone — include exactly one "
     "deliberate brand-color element, named by its color ({colors}): the hook's color, a wardrobe "
     "accent, or a wall or background accent. Charcoal belongs only behind the hook, as its "
-    "backing panel; the scene itself stays bright.\n")
+    "backing panel; the scene itself stays bright. Every other wardrobe and object color stays "
+    "within gold, charcoal, off-white and natural tones — no saturated red, blue or green "
+    "objects.\n")
 # Round 5 (#2241, post gauntlet): every post render came back dark and moody — the charcoal brand
 # neutral dragged whole scenes to near-black, which reads as murky in a white feed. A low-key
 # scene is refused on the cover-recipe surfaces unless the emotional beat is itself dark.
@@ -588,6 +608,39 @@ _PAINED_RELIEF = re.compile(
     r"(?:head|face|temples?|forehead|brow)\b|"
     r"\b(?:head|face)\s+in\s+(?:her|his|their)\s+hands\b",
     re.IGNORECASE)
+# Round 12: the critic called furrowed brows and an alarmed open mouth overacting.
+_OVERACTED = re.compile(
+    r"\bopen[\s\-]mouth(?:ed)?\b|\bmouths?\s+(?:wide\s+)?(?:open|agape|ajar)\b|\bgasp\w*\b|"
+    r"\balarm(?:ed)?\b|\bfurrow\w*\s+brows?\b|\bbrows?\s+furrow\w*\b|\bfurrowed\b|"
+    r"\bwide[\s\-]eyed\b|\bjaw[\s\-]drop\w*\b|\bshock(?:ed)?\b",
+    re.IGNORECASE)
+# Round 12: primary-colour pin flags clashed with the gold/charcoal/off-white brand. A saturated
+# red, blue or green OBJECT is refused; a muted tone ("soft blue sweater") and nature ("green
+# leaves", "blue hour") are not.
+_SATURATED = re.compile(
+    r"\b(?:red|blue|green|primary[\s\-]colou?red|neon|rainbow|multi[\s\-]?colou?red)\b"
+    r"(?![\s\-](?:hour|plants?|leaves|foliage|trees?|eyes|eyed|sky))", re.IGNORECASE)
+_MUTED = frozenset({"soft", "pale", "muted", "dusty", "faded", "light", "slate", "powder",
+                    "sage", "olive", "navy", "washed", "deep", "dark", "greyish", "grayish"})
+
+
+def saturated_color(text: Optional[str]) -> Optional[str]:
+    """The first saturated red, blue or green (or primary-colour) word in ``text``, or None.
+
+    Args:
+        text: A render prompt.
+
+    Returns:
+        The colour word as written.
+    """
+    for match in _SATURATED.finditer(text or ""):
+        before = re.findall(r"[a-z]+", (text or "")[:match.start()].lower())
+        if before and before[-1] in _MUTED:
+            continue
+        return match.group(0)
+    return None
+
+
 _DARK_BEAT = re.compile(r"\b(?:dread|crisis|fear|grief|panic|despair|dark|ominous|loss)\b",
                         re.IGNORECASE)
 # The surfaces that follow the cover recipe: a hook, a face with a readable emotion, no paper,
@@ -949,6 +1002,15 @@ def _deterministic_failure(prompt: str, *, anchors: list[str], weak: bool,
     if named:
         return (f"the prompt names {named!r}, a fact the image cannot draw — show the visual "
                 f"anchors, never a name or a number")
+    overacted = _OVERACTED.search(unhooked)
+    if overacted:
+        return (f"the prompt overacts the face ({overacted.group(0)!r}) — restrained: concern "
+                f"shows in posture and eyes with the mouth closed; good news is a quiet, "
+                f"satisfied look")
+    color = saturated_color(unhooked)
+    if color:
+        return (f"the prompt names a saturated {color!r} — wardrobe and objects stay within "
+                f"gold, charcoal, off-white and natural tones")
     pained = _PAINED_RELIEF.search(unhooked) if positive else None
     if pained:
         return (f"good news reads as pain ({pained.group(0)!r}) — a quiet, satisfied half-smile "
@@ -1195,7 +1257,8 @@ _VALENCE_FACES = {
     "positive": ("a quiet, satisfied half-smile and relaxed shoulders, eyes open, engaged with "
                  "the other person or the task — never eyes closed, never a hand on the chest, "
                  "head or face"),
-    "negative": "concerned, skeptical or frustrated — restrained, never despair",
+    "negative": ("concern shown through posture and eyes, mouth closed — restrained, never an "
+                 "open mouth, a furrowed brow or alarm"),
     "mixed": "wry or thoughtful",
 }
 
@@ -1218,6 +1281,9 @@ def _analysis_block(concept: Optional[ImageConcept], anchors: list[str],
         # from the piece's own anchors.
         block += (f"CAST: the person in frame is {cast_phrase(concept.cast)} — a real, "
                   f"unremarkable member of this audience, no stereotyped styling.\n")
+    if concept.setting:
+        # Round 12: the place is the ARTICLE's — never a stock backdrop like a warehouse.
+        block += f"SETTING (from the article — use it): {concept.setting}\n"
     if concept.valence:
         block += f"VALENCE: {concept.valence} — {_VALENCE_FACES.get(concept.valence, '')}.\n"
     if hook:
@@ -1304,6 +1370,7 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
         + (f"Brand: {brand_kit}\n" if brand_kit else "")
         + BRAND_ACCENT_DIRECTIVE.format(colors=", ".join(sorted(colors)))
         + PROPS_DIRECTIVE
+        + (VIDEO_FRAME_DIRECTIVE if surface == "video" else "")
         + ("" if avatar else _NO_AVATAR_PEOPLE)
         + (f"Content shape: {content_shape}\n" if content_shape else "")
         + (f"This author's recent images already looked like this, so make this one visibly "

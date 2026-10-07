@@ -488,6 +488,8 @@ Read the kicker, headline and scene together as one cover. Look at the image its
 8. Is the emotion authentic rather than exaggerated or cartoonish?
 9. Does a gold accent or the charcoal / off-white brand palette read in the image?
 10. Does the headline alone name its subject — not just a number? (true when there is none)
+11. Is any expression overacted — an open or gaping mouth, a furrowed brow, alarm, a grin at
+    bad news?
 
 Score each criterion 1-5, 5 best:
 - specificity: 5 = with its headline, a scroller would correctly guess this piece's argument —
@@ -502,6 +504,7 @@ Respond with ONLY a JSON object:
 {{"entities_depicted": {{"<thing>": true}}, "cliches_present": ["..."],
  "thesis_inferable": true, "face_emotion": true, "emotion_matches": true,
  "emotion_authentic": true, "headline_names_subject": true, "bright_enough": true,
+ "expression_overacted": false,
  "rubric": {{"specificity": 1, "no_cliche": 1, "thumbnail_read": 1, "craft": 1,
             "scroll_stop": 1, "brand_fit": 1}},
  "issues": ["<short actionable phrase>"]}}"""
@@ -635,7 +638,7 @@ def _apply_overlays(rubric: dict, *, blind: str, answer: dict, entities: list,
     if answer.get("emotion_matches") is False:
         rubric["scroll_stop"] = min(rubric.get("scroll_stop") or 3, 3)
     # Round 6: a wailing man over a bill, caricature faces — a fake emotion is a craft defect.
-    if answer.get("emotion_authentic") is False:
+    if answer.get("emotion_authentic") is False or answer.get("expression_overacted") is True:
         rubric["craft"] = min(rubric.get("craft") or 3, 3)
     if answer.get("bright_enough") is False:
         rubric["thumbnail_read"] = min(rubric.get("thumbnail_read") or 3, 3)

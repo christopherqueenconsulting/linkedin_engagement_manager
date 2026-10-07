@@ -340,9 +340,10 @@ _FIVE_EDITIONS = (
               specific_entities=("API bill", "founder", "credit card statement"),
               visual_anchors=("a founder", "a credit card statement", "a printed usage bill")),
      {"focal_concept": "a founder wincing at the card in her hand",
-      "prompt": ("A candid editorial photograph of a founder at a cluttered table wincing at the "
-                 "credit card in her hand, warm evening gold lamp light, shot on a 50mm lens at "
-                 "f/2, tactile texture, subtle film grain.")}),
+      # Round 12: no credit card in hand — a held card is a symbolic prop.
+      "prompt": ("A candid editorial photograph of a founder at a cluttered table wincing, her "
+                 "hands empty, warm evening gold lamp light, shot on a 50mm lens at f/2, tactile "
+                 "texture, subtle film grain.")}),
     ("Spot the Leak in Your LinkedIn AI Budget",
      _concept(thesis="Unused seats are where an AI budget quietly goes",
               specific_entities=("budget spreadsheet", "finance manager", "unused seats")),
@@ -1240,15 +1241,15 @@ class TestRoundSixBrief:
     """Round 6 of #2241: cast rotation, valence, video frames, a headline never drawn."""
 
     _CAST = {"gender": "woman", "age": "50s", "ethnicity": "South Asian",
-             "setting": "warehouse floor", "role": "agency owner"}
+             "setting": "a client's open-plan office", "role": "agency owner"}
 
     def test_the_cast_reaches_the_author(self):
         concept = _concept(treatment="people_scene", cast=self._CAST, layout="panel_left")
         with patch(_LLM, return_value=_resp(_GROUNDED_COVER)) as llm:
             build_image_brief("c", surface="newsletter", concept=concept)
         user = llm.call_args[1]["messages"][1]["content"]
-        assert ("CAST: the person in frame is a South Asian woman in her 50s, an agency owner, on a "
-                "warehouse floor") in user
+        assert ("CAST: the person in frame is a South Asian woman in her 50s, an agency owner, at a "
+                "client's open-plan office") in user
 
     def test_an_avatar_is_never_recast(self):
         avatar = {"gender_presentation": "man", "age_band": "40s", "trigger_word": "TOK"}
@@ -1527,3 +1528,58 @@ class TestRoundTenPhotoOnly:
     def test_whitepapers_and_dashboards_are_props(self, prop):
         from cqc_lem.utilities.ai.image_brief import prop_failure
         assert prop_failure(f"A team around a table with {prop}."), prop
+
+
+@pytest.mark.unit
+class TestRoundTwelveBrief:
+    @pytest.mark.parametrize("prop", ["toy figurines on the table", "blank placeholder cards",
+                                      "coloured pin flags", "a chess board", "wooden blocks",
+                                      "a sticky note", "a game token"])
+    def test_symbolic_props_are_refused(self, prop):
+        from cqc_lem.utilities.ai.image_brief import prop_failure
+        assert "symbolic prop" in (prop_failure(f"Two people beside {prop}.") or "")
+
+    @pytest.mark.parametrize("face", ["her mouth open in alarm", "a gasping founder",
+                                      "a furrowed brow", "brows furrowed", "an alarmed look",
+                                      "an open-mouthed stare"])
+    def test_overacted_faces_are_refused(self, face):
+        bad = dict(_GROUNDED_COVER, prompt=_GROUNDED_COVER["prompt"] + f" {face}.")
+        with patch(_LLM, side_effect=[_resp(bad), _resp(_GROUNDED_COVER)]) as llm:
+            build_image_brief("c", surface="newsletter", concept=_COVER_CONCEPT)
+        assert "overacts the face" in llm.call_args_list[1][1]["messages"][1]["content"]
+
+    @pytest.mark.parametrize("color,bad", [("bright red flags", True), ("a blue mug", True),
+                                           ("a green folder chair", True),
+                                           ("a soft blue sweater", False),
+                                           ("green leaves outside", False),
+                                           ("blue hour light", False),
+                                           ("a navy blazer", False)])
+    def test_saturated_objects_are_refused(self, color, bad):
+        from cqc_lem.utilities.ai.image_brief import saturated_color
+        assert bool(saturated_color(f"A man with {color}.")) is bad
+
+    def test_the_brand_directive_bounds_every_color(self):
+        from cqc_lem.utilities.ai.image_brief import BRAND_ACCENT_DIRECTIVE
+        assert "gold, charcoal, off-white and natural tones" in BRAND_ACCENT_DIRECTIVE
+
+    def test_negative_valence_is_restrained(self):
+        from cqc_lem.utilities.ai.image_brief import _VALENCE_FACES
+        assert "mouth closed" in _VALENCE_FACES["negative"]
+
+    def test_a_video_frame_keeps_the_near_foreground_empty(self):
+        with patch(_LLM, return_value=_resp(_GROUNDED_COVER)) as llm:
+            build_image_brief("c", surface="video", concept=_concept())
+        assert "no hands or objects close to the camera" in \
+            llm.call_args[1]["messages"][1]["content"]
+
+    def test_a_cover_brief_has_no_video_directive(self):
+        with patch(_LLM, return_value=_resp(_GROUNDED_COVER)) as llm:
+            build_image_brief("c", surface="newsletter", concept=_COVER_CONCEPT)
+        assert "VIDEO FRAME" not in llm.call_args[1]["messages"][1]["content"]
+
+    def test_the_articles_setting_reaches_the_author(self):
+        concept = _concept(setting="a billing review late on a Tuesday")
+        with patch(_LLM, return_value=_resp(_GROUNDED_COVER)) as llm:
+            build_image_brief("c", surface="video", concept=concept)
+        assert "SETTING (from the article — use it): a billing review late on a Tuesday" in \
+            llm.call_args[1]["messages"][1]["content"]

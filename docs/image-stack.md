@@ -51,6 +51,40 @@ judge rightly scored specificity 1 on all four covers. So Stage 1 returns two li
   down. Briefs, Stage 3 and the vision judge's specificity all work from `usable_anchors()` — the
   anchors, or for a concept with none, its plain common-noun facts.
 
+## What the blind critic asked for (round 12)
+
+The in-pipeline judge passed every item in round 11; the independent blind critic did not. Each
+of its notes became an engine rule:
+
+- **The setting is the article's.** "warehouse floor" from the cast rotation turned up on four of
+  nine items whatever the topic. The rotation now covers only people (gender, age band,
+  ethnicity); Stage 1 returns `setting` — the story's own scene, else the audience's real
+  workplace — validated by `_ground_setting` like an anchor (no name, number, prop, tech hardware
+  or stock symbol, and grounded in the source; a weekday or month is a time, not a name). It
+  reaches the author as `SETTING` and the cast line as ", at …".
+- **The lead number leads.** `thesis_number` finds a grounded number tied to the thesis — in the
+  title, the first two body sentences, or the sentence carrying the claim — and
+  `lead_with_number` forces a `number_claim` hook carrying it (an offered one first, else the
+  number plus the first anchor's noun). Shape rotation applies only without one.
+- **The hook asserts the thesis.** An "X vs Y" hook is refused (`hook_rejection`).
+  `check_hook_against_thesis` (ONE `lem-simple` call at the end of Stage 1, failing open) asks
+  whether the headline asserts the main claim rather than a caveat; on no, the hook is
+  regenerated once with that reason. It sits in Stage 1 rather than Stage 3 because the hook is
+  the concept's — Stage 2/3 never rewrite it. The same call returns the headline's own valence,
+  and the face follows THAT (post 140 grinned at "hurts").
+- **No symbolic props**: figurines, tokens, cards, flags, chess, blocks, sticky notes, game
+  pieces are refused by `prop_failure`.
+- **Restrained faces.** "open mouth", "gasping", "alarmed", "furrowed brow", "wide-eyed",
+  "shocked" are refused in briefs; negative valence is concern in posture and eyes, mouth closed.
+  The judge asks "Is any expression overacted?" and a yes caps craft at 3.
+- **Brand-bound colour.** Wardrobe and objects stay within gold, charcoal, off-white and natural
+  tones; `saturated_color` refuses a saturated red, blue or green object (a muted tone or nature
+  passes).
+- **Covers at 1920x1080** (LinkedIn's recommended size); posts stay 1080x1350.
+- **Video frames keep the near foreground empty** (`VIDEO_FRAME_DIRECTIVE`, built on
+  `NO_NEAR_FOREGROUND`): Runway smears a hand close to the lens. The motion prompt's
+  `MOTION_DISCIPLINE` lives on PR #2249 and should append the same clause.
+
 ## Negatives, inferred hardware, caption-less video (round 11)
 
 - **A quoted negative is not stray text.** The blind judge wrote `Visible text: - "There is no

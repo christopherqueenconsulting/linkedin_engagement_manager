@@ -793,3 +793,16 @@ class TestRoundElevenJudge:
         answer = _answer(rubric=dict(_GOOD_RUBRIC, specificity=3))
         verdict, _ = _judge_on(tmp_path, "newsletter", answer)
         assert not verdict.acceptable
+
+
+@pytest.mark.unit
+class TestRoundTwelveJudge:
+    def test_an_overacted_expression_caps_craft(self, tmp_path):
+        verdict, create = _judge(tmp_path, answer=_answer(expression_overacted=True))
+        assert verdict.rubric["craft"] == 3 and not verdict.acceptable
+        text = create.call_args_list[1][1]["messages"][0]["content"][0]["text"]
+        assert "Is any expression overacted" in text
+
+    def test_a_restrained_face_passes(self, tmp_path):
+        verdict, _ = _judge(tmp_path, answer=_answer(expression_overacted=False))
+        assert verdict.acceptable

@@ -129,6 +129,8 @@ actions or situations>"],
  "hook_alternatives": ["<two more hooks, same rules>"],
  "hook_candidates": {{"number_claim": "<…>", "contrast": "<…>", "question": "<…>",
                      "plain_claim": "<…>"}},
+ "setting": "<WHERE the story happens, from the article: its own scene ('a billing review late \
+on a Tuesday', 'a conference hallway'), else the audience's real workplace the text implies>",
  "visual_ideas": ["<3 one-sentence image ideas>"],
  "treatment": "{'|'.join(TREATMENTS)}",
  "treatment_rationale": "<one sentence>"}}
@@ -154,6 +156,11 @@ carries the THESIS; the image carries emotion and specificity.
 
 Rules for valence: positive when the piece is about a saving, a win or relief; negative when it \
 is about a risk, a loss or a mistake; mixed otherwise. The face in the image follows it.
+
+Rules for setting: the place comes from the ARTICLE, never a stock backdrop — the story's own \
+scene when it has one, else the real workplace of its audience as the text describes it. A few \
+words, lowercase, with its article ("a client's open-plan office"). Never a warehouse or a \
+storeroom unless the piece is about one.
 
 Rules for kicker: the 1-3 word topic tag a magazine prints above a headline — "AI CONTENT AUDIT", \
 "LLM COSTS", "AI FACT-CHECKING", "B2B BUYING". Every word comes from the article. It is what tells \
@@ -270,6 +277,7 @@ class ImageConcept:
     hook_shape: str = ""
     hook_options: Optional[dict[str, str]] = None
     kicker: str = ""
+    setting: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         """The concept as a JSON-safe dict, for prompts and receipts."""
@@ -553,6 +561,8 @@ def hook_rejection(hook: str, title: Optional[str], topic_text: str = "",
         return "an order or a shout is an ad, not a curiosity gap"
     if is_title_case(hook):
         return "sentence case only, never Title Case"
+    if _VERSUS.search(hook):
+        return "an 'X vs Y' hook takes no side — state the piece's claim"
     hook_tokens = set(_content_tokens(hook))
     title_tokens = set(_content_tokens(title or ""))
     if hook_tokens and title_tokens and (
@@ -567,6 +577,10 @@ def hook_rejection(hook: str, title: Optional[str], topic_text: str = "",
     if comparative:
         return f"{comparative!r} needs its reference: say 'than …' or give the number"
     return ""
+
+
+# Round 12: "Cheapest model everywhere vs hybrid routing" takes no side; the critic wants a claim.
+_VERSUS = re.compile(r"\b(?:vs|versus|v)\b\.?", re.IGNORECASE)
 
 
 def _valid_hook(hook: str, title: Optional[str], topic_text: str = "",
@@ -754,6 +768,46 @@ def _prop_reason(anchor: str) -> str:
     return prop_failure(anchor) or (f"names tech hardware ({hardware!r})" if hardware else "")
 
 
+_CALENDAR_WORDS = re.compile(
+    r"\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|January|February|March|"
+    r"April|May|June|July|August|September|October|November|December)\b")
+
+
+def _ground_setting(raw: Any, source: str, facts: Sequence[str]) -> str:
+    """Stage 1's setting, validated like an anchor (round 12), or '' when it is unusable.
+
+    The cast rotation once supplied the setting, and "warehouse floor" turned up on four of nine
+    gauntlet items whatever the topic. The setting now comes from the article: refused when it
+    names a name, a number, a prop, tech hardware or a stock symbol, or when nothing in it appears
+    in the source.
+
+    Args:
+        raw: The analyst's ``setting``.
+        source: The analysed text.
+        facts: The concept's ``specific_entities``.
+
+    Returns:
+        The setting, first letter lowercased, or ''.
+    """
+    from cqc_lem.utilities.ai.image_brief import cliche_hit
+
+    setting = _clean(raw, 100)
+    if not setting:
+        return ""
+    # A weekday or month is a time, not a name: "late on a Tuesday" is the story's own scene.
+    plain = _CALENDAR_WORDS.sub(lambda m: m.group(0).lower(), setting)
+    reason = (anchor_rejection(plain, facts, source) or _prop_reason(setting)
+              or ("a stock symbol" if cliche_hit(setting) else ""))
+    lowered = source.lower()
+    grounded = any(re.search(rf"\b{re.escape(_stem(t))}", lowered)
+                   for t in _content_tokens(setting))
+    if reason or not grounded:
+        log_debug("Image concept setting dropped", setting=setting, action_type="image_concept",
+                  reason=reason or "nothing in it appears in the source")
+        return ""
+    return setting[:1].lower() + setting[1:] if setting[:1].isupper() else setting
+
+
 def _ground_anchors(raw: Any, source: str, facts: Sequence[str]) -> tuple[str, ...]:
     anchors: list[str] = []
     lowered_source = source.lower()
@@ -909,6 +963,7 @@ def parse_concept(payload: Optional[dict[str, Any]], source: str,
         hook_shape=hook_shape_of(hook) if hook else "",
         hook_options=options or None,
         kicker=valid_kicker(payload.get("kicker"), source) or derive_kicker(source, title),
+        setting=_ground_setting(payload.get("setting"), source, entities),
         hook_phrase=hook,
         treatment=treatment,
         treatment_rationale=_clean(payload.get("treatment_rationale")),
@@ -1023,8 +1078,8 @@ CAST_DIMENSIONS: dict[str, tuple[str, ...]] = {
     "age": ("20s", "30s", "40s", "50s", "60s"),
     "ethnicity": ("Black", "East Asian", "South Asian", "Hispanic", "white", "Middle Eastern",
                   "Southeast Asian"),
-    "setting": ("office", "home office", "warehouse floor", "shop counter", "conference hallway"),
 }
+# Round 12 (#2241): the SETTING is no longer rotated — it comes from the article (``setting``).
 _CAST_SURFACES = frozenset({"newsletter", "post_image", "video"})
 _ROLE_WORDS = re.compile(
     r"\b(?:owner|founder|lead|manager|editor|analyst|marketer|consultant|director|officer|"
@@ -1065,12 +1120,25 @@ def _role_from_anchors(concept: ImageConcept) -> str:
     return "professional"
 
 
-_SETTING_PREPOSITION = {"warehouse floor": "on", "shop counter": "behind",
-                        "conference hallway": "in"}
+_SETTING_LEAD = re.compile(r"^(?:in|on|at|during|behind|inside|outside|by|near)\b",
+                           re.IGNORECASE)
+_ARTICLE_LEAD = re.compile(r"^(?:a|an|the|her|his|their|our|its|\w+'s)\b", re.IGNORECASE)
+
+
+def _setting_clause(setting: str) -> str:
+    """", at a client's open-plan office" — or '' with no setting."""
+    setting = (setting or "").strip()
+    if not setting:
+        return ""
+    if _SETTING_LEAD.match(setting):
+        return f", {setting}"
+    if not _ARTICLE_LEAD.match(setting):
+        setting = f"{'an' if setting[:1].lower() in 'aeiou' else 'a'} {setting}"
+    return f", at {setting}"
 
 
 def cast_phrase(cast: Optional[dict[str, str]]) -> str:
-    """The brief's cast line: "a {ethnicity} {gender} in her/his {age}, a {role}, at a {setting}".
+    """The brief's cast line: "a {ethnicity} {gender} in her/his {age}, a {role}, at {setting}".
 
     Args:
         cast: The rotated cast dict, or None.
@@ -1081,11 +1149,10 @@ def cast_phrase(cast: Optional[dict[str, str]]) -> str:
     if not cast:
         return ""
     pronoun = "her" if cast.get("gender") == "woman" else "his"
-    preposition = _SETTING_PREPOSITION.get(cast["setting"], "in")
     role = cast["role"]
     article = "an" if role[:1].lower() in "aeiou" else "a"
     return (f"a {cast['ethnicity']} {cast['gender']} in {pronoun} {cast['age']}, {article} "
-            f"{role}, {preposition} a {cast['setting']}")
+            f"{role}{_setting_clause(cast.get('setting', ''))}")
 
 
 def rotate_hook_shape(concept: ImageConcept,
@@ -1134,6 +1201,7 @@ def assign_layout_and_cast(concept: ImageConcept, surface: str,
         cast = {dim: _least_recent(values, [h.get(dim, "") for h in history], seed + dim)
                 for dim, values in CAST_DIMENSIONS.items()}
         cast["role"] = _role_from_anchors(concept)
+        cast["setting"] = concept.setting
     return dataclasses.replace(concept, layout=layout, cast=cast)
 
 
@@ -1157,8 +1225,146 @@ def _offered_hooks(payload: Any) -> list[str]:
     return [_clean(h, 80) for h in offered if _clean(h, 80)]
 
 
+_SENTENCE = re.compile(r"(?<=[.!?])\s+|\n+")
+
+
+def thesis_number(concept: ImageConcept, source: str, title: Optional[str] = None) -> str:
+    """The grounded number tied to the THESIS, or '' (round 12).
+
+    A number from the thesis or the facts that appears verbatim in the source AND in the title,
+    the first two sentences of the body, or the same source sentence as the thesis claim (one
+    sharing at least half of the thesis's content words).
+
+    Args:
+        concept: Stage 1's concept.
+        source: The analysed text (title first, as Stage 1 reads it).
+        title: The piece's title.
+
+    Returns:
+        The number as the source writes it ("$30K", "45%"), or ''.
+    """
+    lowered = (source or "").lower()
+    body = source or ""
+    if title and body.startswith(title):
+        body = body[len(title):]
+    sentences = [s for s in _SENTENCE.split(body.strip()) if s.strip()]
+    thesis_tokens = set(_content_tokens(concept.thesis))
+    claim_sentences = [s for s in sentences if thesis_tokens and len(
+        thesis_tokens & set(_content_tokens(s))) * 2 >= len(thesis_tokens)]
+    tied_text = " ".join([title or "", *sentences[:2], *claim_sentences]).lower()
+    for text in (concept.thesis, *concept.specific_entities):
+        for match in _NUMBER.finditer(text or ""):
+            number = match.group(0).rstrip(".,")
+            if number.lower() in lowered and number.lower() in tied_text:
+                return number
+    return ""
+
+
+def lead_with_number(concept: ImageConcept, source: str,
+                     title: Optional[str] = None) -> ImageConcept:
+    """Force a ``number_claim`` hook carrying the thesis's lead number, when there is one.
+
+    Round 12: the critic's best cover led with its stat ("45%"); four others left theirs out. A
+    valid hook already carrying the number wins (Stage 1's hook first, then its options); else
+    the number plus the first anchor's noun, when that passes the hook rules. Shape rotation
+    stays in charge only when the thesis has no such number.
+
+    Args:
+        concept: The concept after shape rotation.
+        source: The analysed text.
+        title: The piece's title.
+
+    Returns:
+        The concept, its hook led by the number when one could be made.
+    """
+    number = thesis_number(concept, source, title)
+    if not number:
+        return concept
+    candidates = [concept.hook_phrase, *(concept.hook_options or {}).values()]
+    hook = next((h for h in candidates if h and number.lower() in h.lower()), "")
+    if not hook:
+        topic = " ".join((concept.thesis, *concept.specific_entities, *concept.visual_anchors))
+        noun = next((" ".join(a.split()[-2:]) for a in concept.visual_anchors
+                     if a and not any(ch.isdigit() for ch in a)), "")
+        hook = _valid_hook(f"{number} {noun}", title, topic, source) if noun else ""
+    if not hook:
+        return concept
+    options = dict(concept.hook_options or {})
+    options["number_claim"] = hook
+    return dataclasses.replace(concept, hook_phrase=hook, hook_shape="number_claim",
+                               hook_options=options)
+
+
+_HOOK_THESIS_CHECK = """A headline is set beside an image for a LinkedIn piece.
+
+The piece's main claim: {thesis}
+The headline: "{hook}"
+
+Does the headline ASSERT the piece's main claim — not a caveat, a side point or a neutral "X vs Y"
+that takes no side? And what is the headline's own valence: positive (a saving, a win, relief),
+negative (a risk, a loss, a mistake) or mixed? Respond with ONLY a JSON object:
+{{"asserts_thesis": true|false, "valence": "positive|negative|mixed", "reason": "<one sentence>"}}"""
+
+
+def check_hook_against_thesis(hook: str, thesis: str) -> tuple[bool, str, str]:
+    """ONE ``lem-simple`` call: does the hook assert the thesis, and what is its valence?
+
+    Fails OPEN — an unreachable or unreadable judge passes the hook with no valence.
+
+    Args:
+        hook: The headline.
+        thesis: Stage 1's thesis.
+
+    Returns:
+        ``(asserts_thesis, valence or '', reason)``.
+    """
+    from cqc_lem.utilities.ai.ai_helper import _loads_json_object
+    from cqc_lem.utilities.ai.client import client
+
+    try:
+        response = client.chat.completions.create(
+            model="lem-simple",
+            messages=[{"role": "user", "content": _HOOK_THESIS_CHECK.format(
+                thesis=thesis, hook=hook)}],
+            response_format={"type": "json_object"},
+            temperature=0,
+            max_tokens=_CONCEPT_MAX_TOKENS,
+            reasoning_effort=REASONING_EFFORT,
+        )
+        answer = _loads_json_object(response.choices[0].message.content or "") or {}
+    except Exception as e:
+        log_debug("Hook-vs-thesis check unavailable — passing the hook", error=str(e),
+                  action_type="image_concept")
+        return True, "", "judge unavailable"
+    valence = str(answer.get("valence") or "").lower()
+    return (answer.get("asserts_thesis") is not False,
+            valence if valence in VALENCES else "", str(answer.get("reason") or "")[:200])
+
+
+def _hook_asserts_thesis(concept: ImageConcept, payload: Any, source: str,
+                         title: Optional[str], surface: str,
+                         user_id: Optional[int]) -> ImageConcept:
+    """Regenerate a hook that states a caveat or a neutral "vs" (round 12); set its valence.
+
+    Post 140 headlined its closing caveat ("Cheap-first hurts precision") while arguing FOR
+    routing. ONE regeneration with the judge's reason, then the face's valence follows the hook
+    that ships — 140's subject grinned at "hurts".
+    """
+    if not concept.hook_phrase:
+        return concept
+    ok, valence, reason = check_hook_against_thesis(concept.hook_phrase, concept.thesis)
+    if not ok:
+        rejected = f'"{concept.hook_phrase}": it does not assert the main claim ({reason})'
+        concept = _ensure_hook(dataclasses.replace(concept, hook_phrase=""), payload, source,
+                               title, surface, user_id, extra_reasons=(rejected,))
+        concept = lead_with_number(concept, source, title)
+        _, valence, _ = check_hook_against_thesis(concept.hook_phrase, concept.thesis)
+    return dataclasses.replace(concept, valence=valence) if valence else concept
+
+
 def _ensure_hook(concept: ImageConcept, payload: Any, source: str, title: Optional[str],
-                 surface: str, user_id: Optional[int]) -> ImageConcept:
+                 surface: str, user_id: Optional[int],
+                 extra_reasons: Sequence[str] = ()) -> ImageConcept:
     """A composited surface's concept with a hook: Stage 1 retried ONCE, else ``derive_hook``.
 
     The retry carries every rejection reason back to the analyst (round 10: two posts shipped
@@ -1170,8 +1376,9 @@ def _ensure_hook(concept: ImageConcept, payload: Any, source: str, title: Option
 
     topic = " ".join((concept.thesis, *concept.specific_entities, *concept.visual_anchors))
     offered = _offered_hooks(payload)
-    reasons = "\n".join(f'- "{h}": {hook_rejection(h, title, topic, source) or "unusable"}'
-                         for h in offered) or "- (no hook offered)"
+    reasons = "\n".join([f'- "{h}": {hook_rejection(h, title, topic, source) or "unusable"}'
+                          for h in offered if not extra_reasons]
+                         + [f"- {r}" for r in extra_reasons]) or "- (no hook offered)"
     hook = ""
     try:
         response = client.chat.completions.create(
@@ -1279,4 +1486,8 @@ def analyze_content_for_image(text: str, *, title: Optional[str] = None,
         concept = _ensure_hook(concept, payload, source, title, surface, user_id)
     concept = pick_visual_idea(enforce_graphic_cap(concept, recent, surface), surface)
     concept = rotate_hook_shape(concept, recent_hook_shapes)
+    if surface in _HOOKED_SURFACES:
+        # Round 12: the lead number outranks shape rotation, and the hook must assert the thesis.
+        concept = lead_with_number(concept, source, title)
+        concept = _hook_asserts_thesis(concept, payload, source, title, surface, user_id)
     return assign_layout_and_cast(concept, surface, recent_layouts, recent_casts)

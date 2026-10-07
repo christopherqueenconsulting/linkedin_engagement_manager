@@ -268,6 +268,14 @@ typeset a fake cover into the empty side of the scene. The render prompt now des
 photograph, checked deterministically and repaired before it ships (`docs/image-stack.md`, "The
 render is only a photograph").
 
+### Gauntlet round 11 → the blind critic
+
+Every cover passed the in-pipeline judge, but the blind critic scored most items 2-4 on
+specificity and scroll stop: a warehouse backdrop whatever the topic, the lead stat missing from
+the headline, a caveat or a neutral "vs" as the headline, symbolic props, overacted faces and
+primary-colour objects. Each became an engine rule, and covers are now built at 1920x1080
+(`docs/image-stack.md`, "What the blind critic asked for").
+
 ### Rejections land for review, with their reason
 
 A definite judge failure on `no_cliche` or `specificity` after the attempt budget returns verdict

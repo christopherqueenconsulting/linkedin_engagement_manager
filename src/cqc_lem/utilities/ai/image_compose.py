@@ -64,7 +64,9 @@ SPLIT_LAYOUTS = (SPLIT_LEFT, SPLIT_RIGHT, SPLIT_TOP, SPLIT_BOTTOM)
 LAYOUTS = (PANEL_LEFT, PANEL_RIGHT, BAND_TOP, LOWER_THIRD_BAND, FULL_BLEED) + SPLIT_LAYOUTS
 DEFAULT_LAYOUT = {"newsletter": SPLIT_LEFT, "post_image": SPLIT_TOP}
 # The composited canvas per surface: a 16:9 cover, a 4:5 feed post (no later crop).
-CANVAS = {"newsletter": (1600, 900), "post_image": (1080, 1350)}
+# Round 12: covers at 1920x1080, LinkedIn's recommended newsletter cover size (the square scene
+# is upscaled LANCZOS into its region by ``cover_fit``).
+CANVAS = {"newsletter": (1920, 1080), "post_image": (1080, 1350)}
 # The type panel's share of the canvas, growing a step when the floor is not met.
 SPLIT_PANEL = {"vertical": (0.40, 0.45, 0.50), "horizontal": (0.34, 0.40, 0.46)}
 _SEAM_RULE = 4
