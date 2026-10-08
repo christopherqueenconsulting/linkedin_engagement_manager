@@ -248,24 +248,36 @@ class TestAlignmentCheck:
 
     def test_on_focus_post_passes_silently(self):
         log = MagicMock()
-        out, _ = _run([_FRESH], recent=[], prefs=self._PREFS, log=log)
+        with patch(f"{_RCP}.log_info") as info:
+            out, _ = _run([_FRESH], recent=[], prefs=self._PREFS, log=log)
         assert out == _FRESH
-        assert not any("focus topic" in str(c.args[0]) for c in log.call_args_list)
+        assert not any("focus topic" in str(c.args[0])
+                       for c in log.call_args_list + info.call_args_list)
 
-    def test_off_focus_post_logs_warning_but_ships(self):
+    def test_off_focus_post_logs_info_but_ships(self):
+        # INFO, never WARNING (#2308): an off-niche draft is a measurement the gate pass already
+        # records on the post, so escalating it filed a code defect against a working governor.
         log = MagicMock()
         off_focus = ("I planted tomatoes with my kids last weekend and the garden taught me "
                      "patience.\n\nSeedlings grow slowly; compounding beats intensity.")
-        out, _ = _run([off_focus], recent=[], prefs=self._PREFS, log=log)
+        with patch(f"{_RCP}.log_info") as info:
+            out, _ = _run([off_focus], recent=[], prefs=self._PREFS, log=log)
         assert out == off_focus  # never blocks
-        assert any("focus topic" in str(c.args[0]) for c in log.call_args_list)
+        assert not any("focus topic" in str(c.args[0]) for c in log.call_args_list)
+        off_niche = [c for c in info.call_args_list if "focus topic" in str(c.args[0])]
+        assert len(off_niche) == 1
+        kwargs = off_niche[0].kwargs
+        assert kwargs["post_id"] == 77
+        assert kwargs["topic_authority_score"] < kwargs["topic_authority_min"]
 
     def test_empty_focus_topics_is_noop(self, monkeypatch):
         monkeypatch.setenv("POST_PROOF_REGEN_ENABLED", "off")  # isolate the focus-alignment check
         log = MagicMock()
-        out, _ = _run(["Anything at all about any subject whatsoever."],
-                      recent=[], prefs={"focus_topics": []}, log=log)
-        assert not any("focus topic" in str(c.args[0]) for c in log.call_args_list)
+        with patch(f"{_RCP}.log_info") as info:
+            _run(["Anything at all about any subject whatsoever."],
+                 recent=[], prefs={"focus_topics": []}, log=log)
+        assert not any("focus topic" in str(c.args[0])
+                       for c in log.call_args_list + info.call_args_list)
 
     def test_llm_check_off_by_default(self):
         off_focus = "I planted tomatoes with my kids last weekend in the garden."
@@ -277,10 +289,12 @@ class TestAlignmentCheck:
         monkeypatch.setenv("POST_ALIGNMENT_LLM_CHECK_ENABLED", "true")
         log = MagicMock()
         off_focus = "I planted tomatoes with my kids last weekend in the garden."
-        with patch("cqc_lem.utilities.ai.ai_helper.post_is_relevant", return_value=True) as llm_check:
+        with patch("cqc_lem.utilities.ai.ai_helper.post_is_relevant", return_value=True) as llm_check, \
+                patch(f"{_RCP}.log_info") as info:
             _run([off_focus], recent=[], prefs=self._PREFS, log=log)
         llm_check.assert_called_once()
-        assert not any("focus topic" in str(c.args[0]) for c in log.call_args_list)
+        assert not any("focus topic" in str(c.args[0])
+                       for c in log.call_args_list + info.call_args_list)
 
 
 class TestProofGate:

@@ -2992,8 +2992,7 @@ def _check_post_alignment(content: str, prefs: dict, user_id: int = None, post_i
     (topic_authority_score — NO LLM call). Below the off-niche threshold, POST_ALIGNMENT_LLM_CHECK_ENABLED
     (default OFF, the COMMENT_RESEARCH_ENABLED cost-gating pattern) lets an LLM relevance check rescue
     keyword misses — it only fires when the heuristic already failed, so the default path costs
-    nothing. An off-niche post logs a structured warning (with its score) and never blocks the
-    pipeline.
+    nothing. An off-niche post logs at INFO (with its score) and never blocks the pipeline.
     """
     topics = [str(t).strip() for t in ((prefs or {}).get("focus_topics") or []) if str(t).strip()]
     if not topics or not content:
@@ -3007,7 +3006,11 @@ def _check_post_alignment(content: str, prefs: dict, user_id: int = None, post_i
         from cqc_lem.utilities.ai.ai_helper import post_is_relevant
         aligned = post_is_relevant(content, topics)
     if not aligned:
-        log_warning("Generated post is off-niche vs the user's Topic DNA — does not relate to any "
+        # INFO, not WARNING (#2308): this is a MEASUREMENT of the draft, not a degraded path — the
+        # gate pass records the same verdict on the post as an advisory `focus` finding, which is the
+        # record the author sees. Each off-niche post recurs it, so escalation filed a code defect
+        # against a governor working as designed.
+        log_info("Generated post is off-niche vs the user's Topic DNA — does not relate to any "
                     "declared focus topic",
                     user_id=user_id, post_id=post_id, task_name="create_text_post",
                     topic_authority_score=round(score, 4), topic_authority_min=round(threshold, 4))
