@@ -725,6 +725,10 @@ def _fmt(value: Any) -> str:
     return str(value)
 
 
+RESULTS_HEADER = ("| Prompt | Model | Role | Work | Cases | Contract | Wilson LB | First draft | Accuracy | "
+                  "Judge | Pairwise | Verdict |")
+
+
 def render_report(run: dict[str, Any]) -> str:
     """Render one run as markdown: scores, versions and verdicts — never generated text."""
     lines = [f"# Prompt eval run `{run['run_id']}`", "",
@@ -737,10 +741,7 @@ def render_report(run: dict[str, Any]) -> str:
             lines.append(f"| `{name}` | {cal['rows']} | {cal['scored']} | {_fmt(cal['agreement'])} | "
                          f"{'yes' if cal['calibrated'] else 'no — code graders only'} |")
         lines.append("")
-    lines += ["## Results", "",
-              "| Prompt | Model | Role | Work | Cases | Contract | Wilson LB | First draft | "
-              "Accuracy | Judge | Pairwise | Verdict |",
-              "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    lines += ["## Results", "", RESULTS_HEADER, "|---" * RESULTS_HEADER.count(" | ") + "|---|"]
     for r in run["results"]:
         m = r["metrics"]
         lines.append(
