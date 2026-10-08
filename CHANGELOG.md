@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.183.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.182.4...v0.183.0) (2026-10-08)
+
+
+### Features
+
+* **media:** kinetic motion design for $0 title cards and GIF loops ([#2283](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2283)) ([61b8a66](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/61b8a668e7b7d9966611e614da078b93ca44acbc))
+* **models:** move lem-research to Perplexity's current API + OpenAI/OpenRouter text-tier benchmarking (refs [#2255](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2255), refs [#2256](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2256)) ([#2280](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2280)) ([27e4e5c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/27e4e5c325c3973f3e03784fd863a13fafeb5d6a))
+* **models:** promote gpt-5.4-mini (lem-medium) and gpt-6.1-sol (lem-complex) off live benchmarks ([#2284](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2284)) ([fbd1c26](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/fbd1c26fbefd8e8780f7ba373ae4020359361394))
+
+
+### Bug Fixes
+
+* **content:** image-number provenance, deck claims and counts, batch-level layout and hook variety (showcase round 7) ([#2281](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2281)) ([f880ee4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f880ee44781a457a538ec692844eaa4c38defe3c))
+
 ## [0.182.4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.182.3...v0.182.4) (2026-10-07)
 
 
