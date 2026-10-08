@@ -37,6 +37,11 @@ RESULT_PATHS = ("docs/prompt-evals", "tests/benchmarks/prompts/eval_state.json")
 BOT_NAME = "lem-prompt-evals[bot]"
 BOT_EMAIL = "prompt-evals@users.noreply.github.com"
 
+FIX_HINT = ("- Fix: edit the prompt, run `python scripts/prompt_capture.py --write --changed-in \"PR #N\"`, "
+            "and the next weekly run re-grades the new version automatically (docs/prompt-evals.md §8).")
+KIND_HINT = ("- `prompt-fails` = the tier's champion missed a floor; `fails-on-fallback` = a deployed "
+             "fallback did. A prompt-wording change that alters voice or tone is `risk:product-decision`.")
+
 #: Runs one command and returns its stdout. Raises `subprocess.CalledProcessError` on failure.
 Runner = Callable[[Sequence[str]], str]
 
@@ -81,10 +86,8 @@ def render_issue(prompt_id: str, version: Any, failures: list[dict[str, Any]],
         "",
         f"- Report: `{report}` (lands with the results PR on `{BRANCH}`)",
         f"- Run: {run_url}" if run_url else "- Run: (local)",
-        "- Fix: edit the prompt, run `python scripts/prompt_capture.py --write --changed-in \"PR #N\"`, "
-        "and the next weekly run re-grades the new version automatically (docs/prompt-evals.md §8).",
-        "- `prompt-fails` = the tier's champion missed a floor; `fails-on-fallback` = a deployed "
-        "fallback did. A prompt-wording change that alters voice or tone is `risk:product-decision`.",
+        FIX_HINT,
+        KIND_HINT,
     ]
     return title, "\n".join(lines) + "\n"
 
