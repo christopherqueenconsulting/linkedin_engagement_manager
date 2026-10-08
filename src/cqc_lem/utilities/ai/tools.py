@@ -1,7 +1,7 @@
 """The two outside-world research fetchers the content pipeline grounds itself on.
 
 `search_with_perplexity` is `content_research`'s DIRECT fallback for when the proxy's
-`lem-research-preferred` route is unavailable; `search_recent_news` is the free GoogleNews path
+`lem-research` route is unavailable; `search_recent_news` is the free GoogleNews path
 `get_industry_trend_analysis_based_on_user_profile` drops to when research is disabled or came back
 empty. Both are SOURCES, never gates — every caller already treats "nothing found" as "write from
 the profile and topic alone", so raising here costs freshness, never the post.
@@ -18,42 +18,51 @@ from GoogleNews import GoogleNews
 
 from cqc_lem.utilities.ai.client import client
 
+# Perplexity's Agent API (#2255). Sonar Chat Completions (`/chat/completions`, model `sonar`) was
+# sunset on 2026-09-27; `/v1/agent` is the canonical endpoint (`/v1/responses` is its alias, which
+# the proxy's `perplexity/preset/fast` deployment uses) and the `fast` preset is Sonar's successor.
+PERPLEXITY_AGENT_URL = "https://api.perplexity.ai/v1/agent"
+PERPLEXITY_RESEARCH_PRESET = "fast"
+
 
 def search_with_perplexity(query: str, max_sources: int = 5) -> dict:
-    """Search for recent information using Perplexity Sonar (online search-augmented LLM).
+    """Search for recent information through Perplexity's Agent API, directly (no proxy).
 
-    Returns {query, answer, sources} where sources is a list of {url} dicts.
-    Raises RuntimeError if PERPLEXITY_API_KEY is not set.
+    Args:
+        query: The research question.
+        max_sources: Upper bound on the source URLs returned.
+
+    Returns:
+        `{query, answer, sources}` where sources is a list of `{url}` dicts, read by the same
+        `parse_agent_response` the proxy path uses.
+
+    Raises:
+        RuntimeError: `PERPLEXITY_API_KEY` is not set.
+        requests.HTTPError: Perplexity answered with an error status.
     """
+    from cqc_lem.utilities.ai.content_research import parse_agent_response
+
     # Read key at call time so dotenv-late-load scenarios still work
     perplexity_key = os.environ.get("PERPLEXITY_API_KEY")
     if not perplexity_key:
         raise RuntimeError("PERPLEXITY_API_KEY is not set")
 
     response = requests.post(
-        "https://api.perplexity.ai/chat/completions",
+        PERPLEXITY_AGENT_URL,
         headers={
             "Authorization": f"Bearer {perplexity_key}",
             "Content-Type": "application/json",
         },
         json={
-            "model": "sonar",
-            "messages": [
-                {"role": "system", "content": "Be precise and concise. Cite your sources."},
-                {"role": "user", "content": query},
-            ],
-            "max_tokens": 512,
-            "return_citations": True,
+            "preset": PERPLEXITY_RESEARCH_PRESET,
+            "instructions": "Be precise and concise. Cite your sources.",
+            "input": query,
+            "max_output_tokens": 512,
         },
-        timeout=30,
+        timeout=60,
     )
     response.raise_for_status()
-    data = response.json()
-
-    answer = data["choices"][0]["message"]["content"]
-    raw_citations = data.get("citations", [])
-    sources = [{"url": url} for url in raw_citations[:max_sources]]
-
+    answer, sources = parse_agent_response(response.json(), max_sources)
     return {"query": query, "answer": answer, "sources": sources}
 
 

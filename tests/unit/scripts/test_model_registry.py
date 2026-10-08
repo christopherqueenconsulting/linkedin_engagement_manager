@@ -270,3 +270,40 @@ def test_every_configured_provider_model_is_priced():
                if reg.price_text({"model": f"{p}/{m}", "bare": m, "is_ollama": False},
                                  prices) == "unpriced"]
     assert missing == [], f"pin with scripts/model_registry.py --refresh-prices: {missing}"
+
+
+class TestResearchPresetsAndMeteredVerdicts:
+    """#2255 presets and #2256 provider-qualified leaderboard rows."""
+
+    _CONFIG = ("model_list:\n  - model_name: lem-research\n    litellm_params:\n"
+               "      model: perplexity/preset/fast\n"
+               "  - model_name: lem-complex\n    litellm_params:\n      model: openai/gpt-4o\n")
+    _PRICES = {"perplexity/preset/fast": {"input_cost_per_token": 2e-07,
+                                          "output_cost_per_token": 1.2e-06,
+                                          "cost_per_request": 0.0025},
+               "openai/gpt-4o": {"input_cost_per_token": 2.5e-06, "output_cost_per_token": 1e-05}}
+    _README = README.replace(
+        "<!-- LEADERBOARD:END -->",
+        "| 2026-10-08 | `bm-c` | lem-complex | `openai/gpt-4o` | champion | 100% | 90% | 80% | "
+        "1 ms | baseline |\n<!-- LEADERBOARD:END -->")
+
+    def _rows(self):
+        deployments = mhc.parse_deployments(mhc.load_config_text(self._CONFIG))
+        return {(r["tier"], r["model"]): r for r in reg.build_registry(
+            deployments, prices=self._PRICES, catalog={}, provider_snapshot=PROVIDER,
+            readme_text=self._README)}
+
+    def test_a_preset_prices_its_per_call_search_fee(self):
+        row = self._rows()[("lem-research", "preset/fast")]
+        assert row["price"] == "$0.20 / $1.20 per 1M in/out + $0.0025/call"
+        assert row["newer candidate?"] == "n/a (preset: Perplexity re-points it)"
+        assert row["sunset"] == "none published"
+
+    def test_a_metered_run_row_is_read_under_its_qualified_id(self):
+        assert self._rows()[("lem-complex", "gpt-4o")]["last verdict"] == "baseline · 2026-10-08"
+
+    def test_the_committed_snapshot_prices_both_research_presets(self):
+        prices = json.loads((_ROOT / reg.DEFAULT_PRICES).read_text())["models"]
+        for preset in ("perplexity/preset/fast", "perplexity/preset/low"):
+            assert prices[preset]["cost_per_request"] > 0
+        assert "perplexity/sonar" not in prices

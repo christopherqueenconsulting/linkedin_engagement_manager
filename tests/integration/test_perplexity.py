@@ -1,4 +1,8 @@
-"""Integration tests for Perplexity Sonar research integration.
+"""Integration tests for the Perplexity research integration (Agent API since #2255).
+
+Sonar Chat Completions was sunset on 2026-09-27; `search_with_perplexity` now calls the Agent API
+(`/v1/agent`, `fast` preset) directly, and the proxy's `lem-research` alias reaches the same API via
+`/v1/responses` (prove that route with `scripts/probe_research.py`).
 
 Tests that hit the live API are skipped when PERPLEXITY_API_KEY is absent.
 Tests that verify fallback/error behavior run without a key.
@@ -13,7 +17,7 @@ import pytest
 @pytest.mark.slow
 class TestPerplexitySearch:
     def test_search_returns_answer_and_sources(self):
-        """Perplexity sonar returns a non-empty answer for a known query."""
+        """The Agent API `fast` preset returns a non-empty, cited answer for a known query."""
         if not os.environ.get("PERPLEXITY_API_KEY"):
             pytest.skip("PERPLEXITY_API_KEY not set")
 
@@ -22,7 +26,7 @@ class TestPerplexitySearch:
         from cqc_lem.utilities.ai.tools import search_with_perplexity
 
         try:
-            result = search_with_perplexity("Recent trends in artificial intelligence 2025")
+            result = search_with_perplexity("Recent trends in artificial intelligence 2026")
         except requests.exceptions.HTTPError as e:
             # Same rule the Pexels probe already follows: a present-but-expired key is
             # functionally "no key" for a live-call test, and turning the nightly red for
@@ -38,6 +42,9 @@ class TestPerplexitySearch:
         assert result["answer"], "Expected a non-empty answer from Perplexity"
         assert "sources" in result
         assert isinstance(result["sources"], list)
+        # A web-search preset grounds its answer on what it read; every source is a URL.
+        assert result["sources"], "Expected at least one citation from a web-search preset"
+        assert all(str(s["url"]).startswith("http") for s in result["sources"])
 
     def test_search_raises_without_api_key(self):
         """search_with_perplexity raises RuntimeError when PERPLEXITY_API_KEY is missing."""

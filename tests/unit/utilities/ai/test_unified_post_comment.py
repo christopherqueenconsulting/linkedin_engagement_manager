@@ -169,6 +169,7 @@ class TestCommentsUseUnifiedFramework:
              patch(_CLIENT) as client, patch(_DIRECT) as direct:
             ai_helper.generate_ai_response("A POST", _profile())
         client.chat.completions.create.assert_not_called()
+        client.responses.create.assert_not_called()  # the research route since #2255
         direct.assert_not_called()
 
     def test_comment_research_woven_in_when_enabled(self, monkeypatch):

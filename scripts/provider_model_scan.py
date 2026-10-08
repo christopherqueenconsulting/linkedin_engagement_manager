@@ -172,6 +172,17 @@ def provider_of(model: str) -> str:
     return text.split("/", 1)[0] if "/" in text else "openai"
 
 
+def is_preset(provider: str, bare: str) -> bool:
+    """Is this a Perplexity Agent API PRESET (``perplexity/preset/fast``) rather than a model id?
+
+    A preset names a configuration (model + tools + budget) that Perplexity re-points as it ships
+    improvements (#2255). ``/v1/models`` lists models, never presets, so a preset's absence from
+    that list is no evidence it is gone - the live research probe (``scripts/probe_research.py``)
+    is what proves a preset still answers.
+    """
+    return provider == "perplexity" and str(bare or "").startswith("preset/")
+
+
 def configured_provider_models(deployments: list) -> dict:
     """Non-Ollama deployments grouped as ``{(provider, bare): [tier, ...]}``.
 
@@ -303,6 +314,8 @@ def plan_provider_vanished(deployments: list, models_by_provider: dict,
     for (provider, bare), groups in sorted(configured_provider_models(deployments).items()):
         listed = (models_by_provider or {}).get(provider)
         if not listed or not (authoritative or {}).get(provider):
+            continue
+        if is_preset(provider, bare):
             continue
         if bare not in set(listed):
             out.append({"provider": provider, "model": bare, "groups": sorted(groups)})

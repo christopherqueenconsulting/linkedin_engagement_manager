@@ -704,6 +704,82 @@ renders accepted, and sunburst cost about 30% as much. It therefore replaced `gp
 `lem-image` fallback. Its `reject` verdict means only "not better than the champion", on n=3. It
 does not say the model is unfit to stand behind the champion.
 
+The Sonar sunset was acted on in #2255. `lem-research` now runs on Perplexity's **Agent API**:
+
+- **Deployments.** `perplexity/preset/fast` leads (Sonar's named successor, one web search) and
+  `perplexity/preset/low` is the `order: 2` fallback. LiteLLM's perplexity provider sends a
+  `preset/<name>` model as `{"preset": "<name>"}` to `/v1/responses`.
+- **Caller.** That is a Responses-API route, so `content_research._research_via_litellm` calls
+  `client.responses.create`. A chat-completions call to the alias would not reach it.
+- **Response shape.** `content_research.parse_agent_response` is the one reader of the typed
+  `output` list: `output_text` parts, `url_citation` annotations and the `search_results` item.
+  The direct fallback (`tools.search_with_perplexity`, `POST /v1/agent`) uses the same parser.
+- **What the scan does with a preset.** A preset is a configuration Perplexity re-points, not a
+  model id. `/v1/models` never lists one, so `provider_model_scan.is_preset` keeps it out of the
+  unlisted check. Its price is pinned by hand in the snapshot: the preset model's token rate plus
+  `cost_per_request`, the per-call search fee.
+- **Proving it live.** The scan can no longer see a dead research route, so this is the check:
+
+```bash
+# ONE research call through the proxy (prod-image sidecar on the compose network), ~$0.003.
+python scripts/probe_research.py            # --route direct skips the proxy
+```
+
+### Metered text candidates: OpenRouter or OpenAI (#2256)
+
+Until #2256 the text tiers measured only Ollama tags, so every OpenAI deployment read
+"never measured". A provider-qualified id now runs the same suites (`scripts/benchmark_routed.py`):
+
+- **Routing.** `openai/gpt-5.4-mini` contains a `/`, so it is metered; `gpt-oss:20b` does not, so
+  it goes to Ollama as before. Metered calls go to OpenRouter (`OPENROUTER_API_KEY`) by default.
+  `--text-provider openai` sends `openai/*` ids to OpenAI directly (`OPENAI_API_KEY`). Both use
+  `AttributedOpenAI`.
+- **Benchmark only.** Production stays on the LiteLLM proxy with LEM's own keys. OpenRouter never
+  enters `.litellm/config.yaml`.
+- **Champions.** `--champion-source metered` makes each tier's champion its first non-Ollama
+  deployment: `openai/gpt-4o` on `lem-complex`, and the `openai/gpt-4o-mini` fallback on
+  `lem-simple`, `lem-medium` and `lem-router`. The default is still the first Ollama deployment.
+- **Spend is refused before the first call** (exit 1) when any of these holds:
+  - the plan names a model the snapshot does not price;
+  - the plan exceeds `--max-spend-usd` (default `BENCHMARK_MAX_SPEND_USD`, else $2.00). The plan
+    prices every case at its full output budget, plus the in-runner judge at the `lem-medium`
+    rate;
+  - on OpenRouter, the metered part exceeds the key's `limit_remaining` from
+    `GET /api/v1/auth/key`, or that answer cannot be read.
+- **Spend is metered during the run.** Each attempt reserves its own ceiling first, including a
+  budget escalation or an empty-answer repeat. The meter's cap is the lower of the run cap and
+  `limit_remaining`. The actual spend is in the report header and in the results JSON
+  (`metered.spent_usd`).
+- **Keys.** No key reaches stdout, stderr, the results JSON or the report. Every error string is
+  redacted first.
+- **Cost, not quota.** A metered model has no Ollama usage level. Its `usage_delta` compares
+  pinned per-token prices instead. A rise on either rate is an increase, so the standing spend
+  policy holds `gpt-5.4-mini` (5x/7.5x `gpt-4o-mini`) for the owner, exactly as it holds a quota
+  increase.
+
+```bash
+# Planned spend, no network:
+poetry run python scripts/benchmark_models.py --dry-run --champion-source metered \
+  --tiers lem-complex --models openai/gpt-6.1-sol
+# A real run (BENCHMARK_ENABLED=true, OPENROUTER_API_KEY, plus the app's proxy env for the judge):
+poetry run python scripts/benchmark_models.py --run --champion-source metered \
+  --tiers lem-simple,lem-medium,lem-router --models openai/gpt-5.4-mini \
+  --results-out /tmp/bm-mini.json
+```
+
+A win is still only a recommendation. `scripts/apply_benchmark_winners.py RESULTS.json` turns each
+`recommend` into a proposed config edit and prints it as a diff, together with the regenerated
+registry. It writes only with `--write`, and the change goes in its own PR that cites the report.
+
+- **Placement.** The candidate is inserted just before the champion it beat, and the champion
+  stays as its fallback.
+- **Ordered groups.** If the tier holds only the champion, or every deployment is ordered, the
+  candidate takes the champion's `order` and the rest shift down.
+- **Latency groups.** If other deployments carry no `order`, the candidate joins as a latency
+  peer. LiteLLM drops every unordered deployment once one is ordered, so ordering the pair would
+  take the Ollama primary out of service.
+- **Refused.** A `hold` (unless `--include-held`), and an OpenRouter-only id (`anthropic/...`).
+
 ### Prices: how the cost map is pinned
 
 `.litellm/model_prices_snapshot.json` is the committed copy of BerriAI/litellm's
@@ -760,7 +836,8 @@ Generated by `scripts/model_registry.py --write` - **do not hand-edit**; rerun i
 | lem-medium | 2 | ollama-cloud | `gemma4:31b` | plan-metered (shadow `gpt-4o-mini`) | reject · 2026-08-02 | none published | no |
 | lem-medium | 3 | openai | `gpt-4o-mini` | $0.15 / $0.60 per 1M in/out | never measured | none published | yes: `gpt-5.4-mini` |
 | lem-complex | 1 | openai | `gpt-4o` | $2.50 / $10.00 per 1M in/out | never measured | none published | yes: `gpt-6.1-sol` |
-| lem-research | 1 | perplexity | `sonar` | $1.00 / $1.00 per 1M in/out | never measured | **2026-09-27** (curated) | n/a (unversioned ids) |
+| lem-research | 1 | perplexity | `preset/fast` | $0.20 / $1.20 per 1M in/out + $0.0025/call | never measured | none published | n/a (preset: Perplexity re-points it) |
+| lem-research | 2 | perplexity | `preset/low` | $0.20 / $1.20 per 1M in/out + $0.0030/call | never measured | none published | n/a (preset: Perplexity re-points it) |
 | lem-image | 1 | openai | `gpt-image-2` | ≤$0.055/image (medium, 1024²) | baseline · 2026-10-07 | none published | yes: `gpt-image-2.5-sunburst` |
 | lem-image | 2 | openai | `gpt-image-2.5-sunburst` | ≤$0.055/image (medium, 1024²) | reject · 2026-10-07 | none published | no |
 | lem-vision | 1 | openai | `gpt-4.1` | $2.00 / $8.00 per 1M in/out | baseline · 2026-10-07 | none published | yes: `gpt-6.1-sol` |
