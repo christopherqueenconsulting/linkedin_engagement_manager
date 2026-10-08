@@ -26,6 +26,10 @@ Two rules the surfaces above encode:
   middleware sees it, so only genuine 500s file an issue.
 - **`console.error` is not an error either.** It is noisy and routinely carries the user's own
   content in the message, so browser console capture stays off.
+- **An operator interrupt is not an error.** Ctrl-C on a sidecar or manual script reaches the
+  excepthook as an uncaught `KeyboardInterrupt` with no message. `observability._drop_operator_interrupts`
+  is installed as the SDK's `before_send`, so every surface drops an `$exception` whose outermost
+  exception is one. An error raised while handling the interrupt still ships (#2307).
 
 Double counting is not a concern: `posthog.capture_exception` is idempotent per exception
 *instance*, so a task that does `log_error(..., exc=e)` and then re-raises produces ONE occurrence,

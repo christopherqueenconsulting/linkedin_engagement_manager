@@ -295,3 +295,60 @@ class TestOperatorCliNeverReachesTheProject:
         from cqc_lem.utilities import logger as log_mod, observability as obs
 
         assert obs.telemetry_muted is log_mod.telemetry_muted
+
+
+class TestOperatorInterruptsAreNotDefects:
+    """Ctrl-C on a script is an operator stopping it, not a bug (issue #2307)."""
+
+    @staticmethod
+    def _exception_event(exc: BaseException) -> dict:
+        # Built with the SDK's own serializer so the test pins the shape before_send really sees.
+        from posthog.exception_utils import exceptions_from_error_tuple
+
+        try:
+            raise exc
+        except BaseException as raised:
+            exc_info = (type(raised), raised, raised.__traceback__)
+        return {"event": "$exception",
+                "properties": {"$exception_list": exceptions_from_error_tuple(exc_info)}}
+
+    def test_hook_is_installed_on_the_sdk(self):
+        import posthog
+
+        from cqc_lem.utilities.observability import _drop_operator_interrupts
+
+        assert posthog.before_send is _drop_operator_interrupts
+
+    def test_drops_an_uncaught_keyboard_interrupt(self):
+        from cqc_lem.utilities.observability import _drop_operator_interrupts
+
+        assert _drop_operator_interrupts(self._exception_event(KeyboardInterrupt())) is None
+
+    def test_keeps_a_real_exception(self):
+        from cqc_lem.utilities.observability import _drop_operator_interrupts
+
+        event = self._exception_event(ValueError("boom"))
+        assert _drop_operator_interrupts(event) is event
+
+    def test_keeps_an_error_raised_while_handling_an_interrupt(self):
+        from cqc_lem.utilities.observability import _drop_operator_interrupts
+
+        try:
+            try:
+                raise KeyboardInterrupt()
+            except KeyboardInterrupt:
+                raise RuntimeError("cleanup failed")
+        except RuntimeError as outer:
+            event = self._exception_event(outer)
+        assert _drop_operator_interrupts(event) is event
+
+    @pytest.mark.parametrize("event", [
+        {"event": "post_published", "properties": {"$exception_list": [{"type": "KeyboardInterrupt"}]}},
+        {"event": "$exception", "properties": {}},
+        {"event": "$exception"},
+        {"event": "$exception", "properties": {"$exception_list": ["not-a-dict"]}},
+    ])
+    def test_passes_every_other_event_through_untouched(self, event):
+        from cqc_lem.utilities.observability import _drop_operator_interrupts
+
+        assert _drop_operator_interrupts(event) is event
