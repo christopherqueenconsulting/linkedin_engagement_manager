@@ -555,8 +555,9 @@ def create_ppt(ppt_name, carousel_data: Union[
                my_theme: PowerPointThemeColors = PowerPointThemeColors(**{"lt1": "e9d437", "dk2": "a89816"}),
                design_number: int = 1,
                post_id: Optional[int] = None,
-               user_id: Optional[int] = None):
-    """Render `carousel_data` into a .pptx under `generated_designs/` and return the saved path.
+               user_id: Optional[int] = None,
+               output_dir: Optional[str] = None):
+    """Render `carousel_data` into a .pptx under `assets/generated_designs/` and return the saved path.
 
     The carousel's CONCRETE TYPE is the dispatch key. A model with no matching branch is saved as an
     untouched copy of the design template rather than raising — a new carousel type that forgets to
@@ -565,9 +566,15 @@ def create_ppt(ppt_name, carousel_data: Union[
     `design_number` selects `carousel_designs/Design-{n}.pptx`; theme colours are applied to the file
     AFTER it is saved. `post_id`/`user_id` are threaded through only to seed the deterministic
     per-slide image and layout selection, so re-rendering the same post reproduces the same deck.
+
+    The deck is written under `assets_dir` (or `output_dir`), never beside this module: the prod
+    image's source tree is read-only, so a save there raised EROFS on every carousel (#2305).
+    `assets_dir` is read at call time, not import time, so a test can point it at a temp dir.
     """
+    import cqc_lem
+
     current_dir = os.path.dirname(__file__)
-    generated_dir = os.path.join(current_dir, "generated_designs")
+    generated_dir = output_dir or os.path.join(cqc_lem.assets_dir, "generated_designs")
     os.makedirs(generated_dir, exist_ok=True)
     design_path = os.path.join(current_dir, f"carousel_designs/Design-{design_number}.pptx")
     prs = Presentation(design_path)
