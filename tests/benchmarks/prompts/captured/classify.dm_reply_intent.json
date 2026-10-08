@@ -1,0 +1,27 @@
+{
+  "prompt_id": "classify.dm_reply_intent",
+  "target": "cqc_lem.utilities.ai.dm_nurture._llm_intent",
+  "tier": "lem-simple",
+  "content_hash": "sha256:75aada1a571fffff5079048108f692c67d5902d6bf0b436cea2471cceb6541d9",
+  "messages": [
+    {
+      "role": "system",
+      "content": "You classify how a person replied to a LinkedIn direct message from a professional who reached out to them. Answer with exactly ONE of these words and nothing else:\ninterested - they want to go further (a call, details, pricing, next steps)\nobjection - they raised a concern, doubt, or blocker (cost, an existing vendor, skepticism)\nnot_now - open in principle but the timing is wrong\ndisinterest - an explicit no, or a request to stop contacting them\nneutral - a reply that is none of the above (small talk, thanks, a general remark)"
+    },
+    {
+      "role": "user",
+      "content": "Their reply:\nThanks for the note. Things are hectic right now, maybe circle back in a couple of months?\n\nOne word:"
+    }
+  ],
+  "params": {
+    "extra_body": {
+      "metadata": {
+        "feature": "system",
+        "user_id": "system"
+      }
+    },
+    "max_tokens": 4,
+    "model": "lem-simple",
+    "temperature": 0
+  }
+}

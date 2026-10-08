@@ -107,6 +107,8 @@ index and the `CLAUDE.md` row that points at it, or the pointer becomes a dead e
 - [Benchmark run — `bm-20260830-3048e1`](model-benchmarks/2026-08-30-bm-20260830-3048e1.md) — archived scorecard
 - [Benchmark run — `bm-20260830-1e6b4e`](model-benchmarks/2026-08-30-bm-20260830-1e6b4e.md) — archived scorecard
 - [Media benchmark run — `mm-20261007-9d8037`](model-benchmarks/2026-10-07-mm-20261007-9d8037.md) — `lem-vision`/`lem-image` scorecard behind the `gpt-image-2.5-sunburst` fallback
+- ★ [Prompt evals](prompt-evals.md) — every LLM call site registered and versioned (`prompts.lock.json`), captured as production renders it; datasets, code + model graders, the change-driven weekly runner
+- [Prompt inventory](prompt-evals/inventory.md) — GENERATED: one row per call site with family, status, version and latest verdicts
 - ★ [Stack watchdog & deep health](stack-watchdog.md) — the host watchdog and the `/health/deep` monitor contract
 - ★ [Production log files](production-logs.md) — `/opt/lem/logs/`, one dated file per UTC day; INFO not DEBUG; grep beats `docker logs`
 
