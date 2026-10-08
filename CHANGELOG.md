@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.187.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.187.0...v0.187.1) (2026-10-08)
+
+
+### Bug Fixes
+
+* **content:** owner's people-on-cover rule, split budget, ONE figure gate, stitched stories (issue 2316) ([c88d90b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c88d90bd90f5f9450f2cb28f46424610bf70e52e))
+* **content:** people-on-cover rule, split budget, ONE figure gate, stitched stories (issue 2316) ([#2317](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2317)) ([c88d90b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c88d90bd90f5f9450f2cb28f46424610bf70e52e))
+
 ## [0.187.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.186.0...v0.187.0) (2026-10-08)
 
 
