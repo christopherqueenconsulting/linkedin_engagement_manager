@@ -404,17 +404,29 @@ def get_user_password_pair_by_id(user_id: int):
 def add_linkedin_profile(profile: LinkedInProfile, user_id: Optional[int] = None):
     """Upsert a scraped LinkedIn profile.
 
-    `user_id` is COALESCEd rather than overwritten, so re-scraping a profile with no account attached
-    never unlinks a row that was already tied to one.
+    `user_id` and `email` are COALESCEd rather than overwritten, so re-scraping a profile with no
+    account attached never unlinks a row that was already tied to one.
+
+    An OWNED write (`user_id` given) first deletes the UNOWNED rows it would collide with (issue
+    #2306). When the user's profile URL changes, the anonymous by-URL scrape caches the new URL as its
+    own row; the owned upsert then lands on that row by `profile_url` and setting its `email` hits the
+    user's real row — `1062 Duplicate entry … for key 'profiles.email'`. The owned row is the one kept
+    because synthesis and the skills re-index window live on it and are read by `user_id`; an unowned
+    row is only a scrape cache. A row owned by ANOTHER user is never touched, so a genuine conflict
+    still fails as before.
     """
     try:
         with db_cursor(commit=True) as cursor:
+            if user_id is not None:
+                cursor.execute(
+                    "DELETE FROM profiles WHERE user_id IS NULL AND (profile_url = %s OR email = %s)",
+                    (str(profile.profile_url), profile.email))
             cursor.execute("""
                 INSERT INTO profiles (profile_url, email, data, user_id)
                 VALUES (%s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                         profile_url = VALUES(profile_url),
-                        email = VALUES(email),
+                        email = COALESCE(VALUES(email), email),
                         data = VALUES(data),
                         user_id = COALESCE(VALUES(user_id), user_id)
                 """,
