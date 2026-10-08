@@ -33,6 +33,8 @@
 #   - Cached with its expiry and reused until 5 minutes before it lapses, so only the first tick of
 #     each hour pays a mint.
 #   - Never logged, never echoed except by gh_app_token() itself, whose only caller assigns it.
+#   - lem-gh-token.timer sources a root-owned copy of this file from /usr/local/lib/lem/, written by
+#     install-root-scripts.sh; the runner keeps sourcing the pipeline tree's lib/ copy.
 
 BASE="${BASE:-/home/lem/agent-pipeline}"
 # Preferred (hardened) location first, then the legacy in-BASE path for boxes not yet migrated.
@@ -110,8 +112,9 @@ gh_app_mint_token() {
   mkdir -p "$(dirname "$GH_APP_TOKEN_CACHE")"
   ( umask 077; printf '%s %s\n' "$exp" "$tok" > "$GH_APP_TOKEN_CACHE.new" )
   mv "$GH_APP_TOKEN_CACHE.new" "$GH_APP_TOKEN_CACHE"
-  # When root mints for the runner, hand ownership over or the consumer cannot read it.
-  [ "$(id -u)" = "0" ] && chown "${LEM_RUNNER_USER:-lem}:${LEM_RUNNER_USER:-lem}" "$GH_APP_TOKEN_CACHE" 2>/dev/null
+  # When root mints for the runner, hand ownership over or the consumer cannot read it. `-h`: change
+  # the entry in the runner's state dir itself, never whatever it might point at.
+  [ "$(id -u)" = "0" ] && chown -h "${LEM_RUNNER_USER:-lem}:${LEM_RUNNER_USER:-lem}" "$GH_APP_TOKEN_CACHE" 2>/dev/null
   printf '%s' "$tok"
 }
 

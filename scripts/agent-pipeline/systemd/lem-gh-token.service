@@ -15,9 +15,13 @@ Environment=BASE=/home/lem/agent-pipeline
 Environment=LEM_RUNNER_USER=lem
 EnvironmentFile=/etc/lem/github-app.env
 
-ExecStart=/bin/bash -c '. /home/lem/agent-pipeline/lib/gh_app_token.sh && gh_app_mint_token >/dev/null'
+# A root unit executes only root-owned files: this sources the copy install-root-scripts.sh writes
+# to /usr/local/lib/lem/, never the pipeline tree's lib/. Re-run that installer (as root) after a
+# change to lib/gh_app_token.sh; sync.sh logs a WARNING until someone does.
+ExecStart=/bin/bash -c '. /usr/local/lib/lem/gh_app_token.sh && gh_app_mint_token >/dev/null'
 
 NoNewPrivileges=yes
 PrivateTmp=yes
+PrivateDevices=yes
 ProtectSystem=strict
 ReadWritePaths=/home/lem/agent-pipeline/state
