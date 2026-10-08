@@ -447,6 +447,15 @@ class TestRotation:
         with open(path, "w") as fh:
             fh.write('{"motions": "chart_draw", "variants": [1, "number_led"]}')
         assert tc.read_card_history(9) == {"variants": ["number_led"], "motions": []}
+        # Round 7's bare list of {"variant", "ground"} entries reads, and a motion keeps them.
+        with open(path, "w") as fh:
+            fh.write('[{"variant": "number_led", "ground": "off_white"}]')
+        assert tc.recent_cards(9) == [(tc.VARIANT_NUMBER, tc.GROUND_OFF_WHITE)]
+        md.record_motion(9, md.STYLE_CHART_DRAW)
+        assert tc.recent_cards(9) == [(tc.VARIANT_NUMBER, tc.GROUND_OFF_WHITE)]
+        tc.record_variant(9, tc.VARIANT_QUESTION, tc.GROUND_CHARCOAL)
+        assert md.recent_motions(9) == [md.STYLE_CHART_DRAW]
+        assert tc.recent_cards(9)[0] == (tc.VARIANT_QUESTION, tc.GROUND_CHARCOAL)
 
 
 class TestBuild:
@@ -601,6 +610,10 @@ class TestWiring:
         assert motion.style in md.DATA_STYLES and motion.mode == md.MODE_MP4
         assert motion.seconds == tc.title_card_seconds()
         assert md.recent_motions(21) == [motion.style]
+        # Round 7's pair is recorded beside it: the layout AND the ground the card rendered on.
+        layout = write.call_args[0][0]
+        grounds = {tc.title_card_palette(None, g).ground: g for g in tc.GROUNDS}
+        assert tc.recent_cards(21) == [(layout.variant, grounds[layout.palette.ground])]
 
     def test_consecutive_cards_rotate_their_motion(self):
         concept = SimpleNamespace(hook_phrase="We cut response time in one quarter",
