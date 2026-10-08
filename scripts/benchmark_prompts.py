@@ -58,6 +58,7 @@ for _path in (REPO / "src", REPO, REPO / "scripts"):
 
 import benchmark_models as bm  # noqa: E402
 import benchmark_routed as routed  # noqa: E402
+import model_health_check as mhc  # noqa: E402
 import prompt_capture as capture  # noqa: E402
 import prompt_registry as registry  # noqa: E402
 import yaml  # noqa: E402
@@ -114,14 +115,18 @@ def tier_deployments(config_text: str) -> dict[str, list[str]]:
     The first deployment of a tier is its champion; the rest are the deployed fallbacks a prompt
     can actually be served by when the first is down.
     """
-    import model_health_check as mhc
-
     out: dict[str, list[str]] = {}
     for row in mhc.parse_deployments(mhc.load_config_text(config_text)):
         models = out.setdefault(str(row["group"]), [])
         if row["model"] and row["model"] not in models:
             models.append(row["model"])
     return out
+
+
+def ollama_deployments(config_text: str) -> frozenset[str]:
+    """Return every deployment id the LiteLLM config routes to Ollama Cloud (by its ``api_base``)."""
+    rows = mhc.parse_deployments(mhc.load_config_text(config_text))
+    return frozenset(str(r["model"]) for r in rows if r["is_ollama"])
 
 
 def models_for_tier(tier: str, deployments: dict[str, list[str]],
@@ -140,13 +145,17 @@ def models_for_tier(tier: str, deployments: dict[str, list[str]],
 def wire_id(model: str, models_cfg: dict[str, Any]) -> Optional[str]:
     """Return the id the GitHub-hosted run reaches ``model`` by, or ``None`` if it has none.
 
-    A proxy-host mapping wins (a free Ollama champion runs as its OpenRouter-hosted twin). Otherwise
-    a provider-qualified id is used as-is; a bare Ollama tag with no mapping cannot be reached from
-    CI — the production Ollama key never goes into GitHub.
+    A proxy-host mapping wins (a free Ollama champion runs as its OpenRouter-hosted twin). An Ollama
+    deployment without one cannot be reached from CI — the production Ollama key never goes into
+    GitHub. Which deployments are Ollama is read from the config's ``api_base``
+    (``models_cfg["ollama"]``), not guessed from a tag's ``:`` — an Ollama id need not carry one.
+    A bare tag is never reachable; any other provider-qualified id is used as-is.
     """
     mapped = (models_cfg.get("proxy_host") or {}).get(model)
     if mapped:
         return str(mapped)
+    if model in (models_cfg.get("ollama") or ()):
+        return None
     if routed.is_routed(model) and ":" not in model.split("/", 1)[1]:
         return model
     return None
@@ -888,9 +897,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     evaluated = evaluated_prompts()
     lock = registry.load_json(registry.LOCK_PATH)
     state = registry.load_json(args.state)
-    models_cfg = load_models_config()
+    config_text = CONFIG_PATH.read_text(encoding="utf-8")
+    models_cfg = {**load_models_config(), "ollama": ollama_deployments(config_text)}
     families = registry.load_families()
-    deployments = tier_deployments(CONFIG_PATH.read_text(encoding="utf-8"))
+    deployments = tier_deployments(config_text)
     graders = {pid: grader_versions(entry, families, capture.load_dataset(entry))
                for pid, entry in evaluated.items()}
     prompt_ids = {p.strip() for p in args.prompt_ids.split(",") if p.strip()} or None

@@ -99,6 +99,25 @@ model_list:
     def test_wire_id(self, model, wire):
         assert bp.wire_id(model, MODELS_CFG) == wire
 
+    def test_an_ollama_deployment_without_a_colon_is_still_unreachable(self):
+        config = """
+model_list:
+  - model_name: lem-agent-tier1
+    litellm_params:
+      model: openai/glm-5.3
+      api_base: os.environ/OLLAMA_CLOUD_URL
+  - model_name: lem-medium
+    litellm_params:
+      model: openai/gpt-5.4-mini
+"""
+        cfg = {**MODELS_CFG, "ollama": bp.ollama_deployments(config)}
+
+        assert cfg["ollama"] == frozenset({"openai/glm-5.3"})
+        assert bp.wire_id("openai/glm-5.3", cfg) is None
+        assert bp.wire_id("openai/gpt-5.4-mini", cfg) == "openai/gpt-5.4-mini"
+        mapped = {**cfg, "proxy_host": {"openai/glm-5.3": "z-ai/glm-5.3"}}
+        assert bp.wire_id("openai/glm-5.3", mapped) == "z-ai/glm-5.3"
+
     def test_load_models_config_reads_the_shipped_file(self):
         cfg = bp.load_models_config()
         assert cfg["judge"]["model"] and cfg["proxy_host"] and cfg["candidates"]
