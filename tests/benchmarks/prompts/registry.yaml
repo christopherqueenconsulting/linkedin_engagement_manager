@@ -6,7 +6,54 @@
 # status: evaluated  — captured, versioned in prompts.lock.json, has a dataset and graders
 #         planned    — tracked and versioned by source hash; dataset not written yet
 #         exempt:<reason> — not graded here, and why
-# family: post_longform | comment | dm | classifier | json_planner | rewrite | summary | media_prompt | judge
+# family: post_longform | comment | own_comment | dm | classifier | json_planner | rewrite | summary | media_prompt | judge
+
+# Grader defaults per family (docs/prompt-evals.md §4). Every row of an evaluated prompt in a family is
+# scored by these; an entry's `assertions` and a row's own `assertions` add to them. `production`
+# classes follow scripts/benchmark_models.py (#910): a contract failure is what the call site consumes,
+# a repairable one is what production's regeneration gates retry. `rubric` names the model-grader
+# rubric in rubrics/<rubric>.md; a family without one is graded by code only.
+families:
+  comment:
+    rubric: comment
+    assertions:
+      - {type: no_preamble}
+      - {type: max_chars, value: 700}
+      - {type: comment_contract}
+      - {type: slop_lint, content_type: comment}
+      - {type: meeting_ask}
+      - {type: ungrounded_metrics}
+  own_comment:
+    # The user's OWN first comment on their own post (seed / golden-hour wave). Production does not
+    # run it through the third-party comment contract or the grounding gate — it lints it on the
+    # `own_post_comment` surface — so neither is graded here.
+    rubric: comment
+    assertions:
+      - {type: no_preamble}
+      - {type: max_chars, value: 700}
+      - {type: slop_lint, content_type: own_post_comment}
+      - {type: meeting_ask}
+  dm:
+    rubric: dm
+    assertions:
+      - {type: no_preamble}
+      - {type: max_chars, value: 300}
+      - {type: slop_lint, content_type: dm}
+      - {type: meeting_ask}
+  post_longform:
+    rubric: post_longform
+    assertions:
+      - {type: no_preamble}
+      - {type: max_chars, value: 3000}
+      - {type: slop_lint, content_type: post}
+      - {type: min_burstiness, value: 0.3}
+      - {type: meeting_ask}
+      - {type: ungrounded_metrics}
+      - {type: dwell, min_score: 40}
+  classifier:
+    assertions: []
+  judge:
+    assertions: []
 
 sites:
   cqc_lem.utilities.ai.ai_helper:_call_llm#0:
@@ -36,7 +83,19 @@ sites:
   cqc_lem.utilities.ai.ai_helper:generate_ai_response._draft#0:
     id: comment.feed
     family: comment
-    status: planned
+    status: evaluated
+    dataset: datasets/comment.feed.jsonl
+    capture:
+      target: cqc_lem.utilities.ai.ai_helper.generate_ai_response
+      select: 0
+      env: {HUMANIZE_ENABLED: "0", CONTENT_RESEARCH_ENABLED: "0", COMMENT_GATE_MAX_ATTEMPTS: "1"}
+      canonical:
+        post_content: "We cut our month-end close from 9 days to 4 by automating bank reconciliations."
+        profile: {$persona: fractional_cfo}
+        prefs: {comment_length: medium}
+        research: {}
+        recent_comments: []
+      reply: "Cutting the close from 9 days to 4 is real progress. Which reconciliation broke most often before you automated it?"
   cqc_lem.utilities.ai.ai_helper:generate_ai_response_test#0:
     id: smoke.ai_response_test
     status: "exempt:connectivity smoke test, not a product prompt"
@@ -67,7 +126,18 @@ sites:
   cqc_lem.utilities.ai.ai_helper:generate_nurture_dm._draft#0:
     id: dm.nurture
     family: dm
-    status: planned
+    status: evaluated
+    dataset: datasets/dm.nurture.jsonl
+    capture:
+      target: cqc_lem.utilities.ai.ai_helper.generate_nurture_dm
+      select: 0
+      env: {HUMANIZE_ENABLED: "0", CONTENT_RESEARCH_ENABLED: "0", COMMENT_GATE_MAX_ATTEMPTS: "1"}
+      canonical:
+        their_message: "Honestly that's too expensive for us right now"
+        intent: objection
+        profile: {$persona: fractional_cfo}
+        first_name: Chris
+      reply: "Fair, Chris. Budget timing is real. What would need to be true for it to pay for itself?"
   cqc_lem.utilities.ai.ai_helper:generate_onboarding_nudge_copy#0:
     id: app.onboarding_nudge
     family: dm
@@ -78,8 +148,18 @@ sites:
     status: planned
   cqc_lem.utilities.ai.ai_helper:generate_seed_comment._draft#0:
     id: comment.seed
-    family: comment
-    status: planned
+    family: own_comment
+    status: evaluated
+    dataset: datasets/comment.seed.jsonl
+    capture:
+      target: cqc_lem.utilities.ai.ai_helper.generate_seed_comment
+      select: 0
+      env: {HUMANIZE_ENABLED: "0", CONTENT_RESEARCH_ENABLED: "0", COMMENT_GATE_MAX_ATTEMPTS: "1"}
+      canonical:
+        post_content: "We cut our month-end close from 9 days to 4. The biggest win wasn't speed."
+        profile: {$persona: fractional_cfo}
+        prefs: {}
+      reply: "The part I left out: the first month after automating we found two accounts nobody had reconciled in a year."
   cqc_lem.utilities.ai.ai_helper:generate_thread_reply._draft#0:
     id: comment.thread_reply
     family: comment
@@ -119,7 +199,20 @@ sites:
   cqc_lem.utilities.ai.ai_helper:get_thought_leadership_post_from_ai#0:
     id: post.thought_leadership
     family: post_longform
-    status: planned
+    status: evaluated
+    dataset: datasets/post.thought_leadership.jsonl
+    capture:
+      target: cqc_lem.utilities.ai.ai_helper.get_thought_leadership_post_from_ai
+      select: 0
+      env: {HUMANIZE_ENABLED: "0", CONTENT_RESEARCH_ENABLED: "0", COMMENT_GATE_MAX_ATTEMPTS: "1"}
+      patches:
+        cqc_lem.utilities.ai.ai_helper.get_industry_trend_analysis_based_on_user_profile:
+          {industry: Financial Services, analysis: "Mid-market firms are moving to rolling 13-week cash forecasts.", sources: [], focus_topic: cash flow}
+      canonical:
+        linked_user_profile: {$persona: fractional_cfo}
+        buyer_stage: awareness
+        content_mix: value
+      reply: "Most founders forecast cash on invoice dates. Customers don't pay on invoice dates."
   cqc_lem.utilities.ai.ai_helper:get_video_content_from_ai#0:
     id: post.video_script
     family: post_longform
@@ -139,13 +232,16 @@ sites:
   cqc_lem.utilities.ai.ai_helper:post_is_relevant#0:
     id: classify.post_relevance
     family: classifier
-    status: planned
+    status: evaluated
+    dataset: datasets/classify.post_relevance.jsonl
     capture:
       target: cqc_lem.utilities.ai.ai_helper.post_is_relevant
       canonical:
         post_content: "We cut our month-end close from 9 days to 4 by automating bank reconciliations. Here's what actually moved the needle."
         include_topics: ["finance automation", "accounting operations"]
       reply: "yes"
+    assertions:
+      - {type: label_match, parse: yes_no}
   cqc_lem.utilities.ai.ai_helper:summarize_recent_activity#0:
     id: profile.activity_summary
     family: summary
@@ -169,12 +265,16 @@ sites:
   cqc_lem.utilities.ai.content_alignment:score_authenticity#0:
     id: judge.authenticity
     family: judge
-    status: planned
+    status: evaluated
+    dataset: datasets/judge.authenticity.jsonl
     capture:
       target: cqc_lem.utilities.ai.content_alignment.score_authenticity
       canonical:
         content: "Last spring I nearly lost our biggest client over a missed handoff. The fix wasn't a new tool, it was a 10-minute Friday call. What's the smallest ritual that saved a relationship for you?"
       reply: '{"score": 82, "reasons": ["specific personal detail"]}'
+    assertions:
+      - {type: production_json, required_keys: [score]}
+      - {type: label_match, parse: authenticity_action, threshold: 60}
   cqc_lem.utilities.ai.content_research:_research_via_litellm#0:
     id: research.web
     status: "exempt:live web research — output depends on the live web, not reproducible"
@@ -196,12 +296,15 @@ sites:
   cqc_lem.utilities.ai.dm_nurture:_llm_intent#0:
     id: classify.dm_reply_intent
     family: classifier
-    status: planned
+    status: evaluated
+    dataset: datasets/classify.dm_reply_intent.jsonl
     capture:
       target: cqc_lem.utilities.ai.dm_nurture._llm_intent
       canonical:
         text: "Thanks for the note. Things are hectic right now, maybe circle back in a couple of months?"
       reply: "not_now"
+    assertions:
+      - {type: label_match, parse: enum, values: [interested, objection, not_now, disinterest, neutral]}
   cqc_lem.utilities.ai.image_brief:_author_image_brief#0:
     id: image.brief
     family: media_prompt
@@ -241,12 +344,15 @@ sites:
   cqc_lem.utilities.ai.lead_intent:_llm_says_lead#0:
     id: classify.lead_intent
     family: classifier
-    status: planned
+    status: evaluated
+    dataset: datasets/classify.lead_intent.jsonl
     capture:
       target: cqc_lem.utilities.ai.lead_intent._llm_says_lead
       canonical:
         text: "Interesting post. We're evaluating options for this next quarter, what does your engagement usually look like?"
       reply: "yes"
+    assertions:
+      - {type: label_match, parse: yes_no}
   cqc_lem.utilities.ai.post_treatment:pick_quote#0:
     id: post.pick_quote
     family: json_planner

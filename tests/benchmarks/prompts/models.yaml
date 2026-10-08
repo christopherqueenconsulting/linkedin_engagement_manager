@@ -23,16 +23,22 @@ proxy_host:
   openai/gemma4:31b: google/gemma-4-31b-it
   openai/gpt-4o-mini: openai/gpt-4o-mini
   openai/gpt-4o: openai/gpt-4o
+  openai/gpt-5.4-mini: openai/gpt-5.4-mini
+  openai/gpt-6.1-sol: openai/gpt-6.1-sol
 
 candidates:
   - model: openai/gpt-5.4-mini
-    tiers: [lem-simple, lem-medium]
+    tiers: [lem-simple]
     status: considering
-    note: "registry 'newer candidate' for the mini tier; priced in model_prices_snapshot.json"
+    note: "lem-medium champion since #2284; still a candidate for lem-simple"
+  - model: openai/gpt-5.4-mini
+    tiers: [lem-medium]
+    status: adopted
+    note: "promoted to lem-medium champion off live benchmarks (#2284)"
   - model: openai/gpt-6.1-sol
     tiers: [lem-complex]
-    status: considering
-    note: "registry successor to gpt-4o, the only fully metered tier"
+    status: adopted
+    note: "promoted to lem-complex champion off live benchmarks (#2284)"
   - model: deepseek-v4.1-flash
     tiers: [lem-medium, lem-complex]
     status: considering

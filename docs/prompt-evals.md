@@ -14,8 +14,8 @@ Live inventory, generated: [`docs/prompt-evals/inventory.md`](prompt-evals/inven
 | Phase | What | State |
 |---|---|---|
 | 1 | Inventory, drift guard, versioning lock, capture, hermetic guards, this doc | **shipped** |
-| 2 | Datasets (≥20 rows) + code graders + rubrics for 8 wave-1 prompts | next |
-| 3 | `scripts/benchmark_prompts.py`: change-driven runner, model graders, spend plan | |
+| 2 | Datasets (≥20 rows) + code graders + rubrics + calibration sets for 8 wave-1 prompts | **shipped** |
+| 3 | `scripts/benchmark_prompts.py`: change-driven runner, model graders, spend plan | next |
 | 4 | `.github/workflows/prompt-evals.yml` (owner-landed) + the first baseline run | |
 | 5 | Remediation PR for every wave-1 prompt that fails its floor | |
 | 6 | Waves 2–3: datasets for the remaining planned prompts, about 10 per PR | |
@@ -44,8 +44,9 @@ Sections below marked *(phase N)* describe the design the later phases implement
   - `exempt:<reason>`: not graded here, and the reason why. Examples: vision and image calls, which
     `benchmark_media.py` grades; live web research, which is not reproducible; untiered legacy
     tools; eval-harness transports.
-- **Family** decides the graders and rubric: `post_longform`, `comment`, `dm`, `classifier`,
-  `json_planner`, `rewrite`, `summary`, `media_prompt` or `judge`.
+- **Family** decides the graders and rubric: `post_longform`, `comment`, `own_comment`, `dm`,
+  `classifier`, `json_planner`, `rewrite`, `summary`, `media_prompt` or `judge`. The defaults for
+  each family live in the `families:` block at the top of `registry.yaml` (§4).
 
 ## 2. Versioning: `prompts.lock.json`
 
@@ -96,37 +97,115 @@ To capture a new prompt, add to its registry entry:
       reply: "yes"                                               # canned model answer
       select: -1                                                 # which recorded call (default last)
       env: {}                                                    # extra pinned env (optional)
+      patches: {dotted.name: value}                              # upstream steps replaced (optional)
 ```
+
+A builder that makes several calls is scored on its **first draft** (`select: 0`), with the extra calls
+switched off in `env`: `HUMANIZE_ENABLED=0` drops the humanize rewrite, `CONTENT_RESEARCH_ENABLED=0`
+drops live research, and `COMMENT_GATE_MAX_ATTEMPTS=1` makes one gate attempt. This is the harness's
+#910 rule: a suite scores a first draft, while production ships an n-th. An upstream LLM step that only
+*feeds* the prompt, such as the trend analysis behind a thought-leadership post, is replaced through
+`patches`, so the row supplies its output instead of the step running.
 
 A builder that needs the database gets a pure `build_<x>_messages(inputs)` extracted, and production
 calls it too. Do this rather than patching the database, because a patch list breaks silently on
 every refactor.
 
-## 3. Datasets *(phase 2)*
+## 3. Datasets
 
-`tests/benchmarks/prompts/datasets/<id>.jsonl` holds one JSON row per case, with these fields:
+`tests/benchmarks/prompts/datasets/<id>.jsonl` holds one JSON row per case:
 
-- `id`
-- `source`: `synthetic` or `golden`
-- `persona`: from `personas.json`
-- `inputs`: builder kwargs
-- `context`
-- `labels`
-- `tags`, for edge cases: `edge:empty`, `edge:long`, `edge:non_english`, `adversarial:injection`,
-  `persona:non_tech`, `mix:promo`
-- `canned`: an output used by `--dry-run`
+```json
+{"id": "cf-scrap", "source": "synthetic",
+ "inputs": {"post_content": "...", "profile": {"$persona": "quality_lead"},
+            "profile_synthesis": {"$synthesis": "quality_lead"}, "prefs": {"comment_length": "medium"}},
+ "patches": {},
+ "context": {"post_content": "..."}, "labels": {}, "tags": ["persona:non_tech"],
+ "canned": {"output": "..."}}
+```
 
-Rules:
+- **`inputs`** are the builder's keyword arguments. Two placeholders resolve against
+  `personas.json`, which holds 5 synthetic personas (hospital operations, fractional CFO, SaaS
+  founder, plant quality lead, people leader):
+  - `{"$persona": name}` becomes a `LinkedInProfile`;
+  - `{"$synthesis": name}` becomes that persona's voice synthesis.
+- **`patches`** replace upstream steps for this row (see §2).
+- **`context`** is what graders read, for example `post_content` for `comment_contract` and
+  `ungrounded_metrics`.
+- **`labels.expected`** is the ground truth for `label_match`.
+- **`tags`** mark edge cases: `edge:empty`, `edge:long`, `edge:non_english`,
+  `adversarial:injection`, `persona:non_tech`, `mix:promo`, `near_miss`, `ambiguous`, `golden`.
+- **`canned.output`** is a hand-written answer. Capture feeds it to the builder as the model's
+  reply, and the dry run grades it.
+- **`expect_no_request: true`** marks a row the builder must short-circuit before any model call,
+  such as an empty or URL-only post. It is asserted, then left out of the suite.
 
-- Each evaluated prompt has at least 20 rows, and classifiers are label-balanced.
-- `authenticity_rubric.GOLDEN_SET` is the dataset for `judge.authenticity`.
-- **The repo is public.** No harvested production content is committed. The datasets are a
-  *regression set*, not a held-out set, because anything committed here can be read.
-- Changing a dataset bumps `dataset_version` in the lock, and that triggers a re-run.
+`python scripts/prompt_capture.py --render <id>` renders a dataset through the real builder into a
+suite. The output is a list of harness cases in the tier-suite format, with sampling parameters
+dropped. It is rendered at run time and **not committed**: the comment system prompt alone is several
+KB per row. Rendering is deterministic, because `random` is seeded per row from its id. A builder's
+random picks, such as a comment blueprint, therefore vary across rows but never between runs.
 
-## 4. Grading: code graders and model graders *(phase 2–3)*
+**Rules,** enforced by `tests/unit/scripts/test_prompt_datasets.py`:
 
-Each prompt declares its graders. A grader is versioned by a hash of its code or rubric. Editing one
+- At least 20 rendered rows per evaluated prompt.
+- Unique ids, and personas that resolve.
+- Classifier and judge labels balanced to within one.
+- Coverage of `edge:long`, `edge:non_english` and `adversarial:injection`, plus `mix:promo` for
+  the comment and post families.
+- Every row renders through the real builder into a suite `bm.load_prompt_suite` accepts.
+- **Every canned answer clears all of its graders,** so the dry run is green for a reason.
+
+Further rules:
+
+- `authenticity_rubric.GOLDEN_SET` (6 items) seeds `judge.authenticity`.
+- **The repo is public.** Every row is synthetic: no real people, companies or harvested text. The
+  datasets are a *regression set*, not a held-out set.
+- **Datasets are versioned.** Editing a row moves `dataset_hash`, and `--write` bumps
+  `dataset_version` (with `dataset_history`) without bumping the prompt's version. `--check` reports
+  it as "dataset changed". Phase 3's runner re-runs the eval on that bump.
+
+### Wave 1
+
+| Prompt | Builder | Family | Rows |
+|---|---|---|---|
+| `comment.feed` | `generate_ai_response` | comment | 22 (2 `expect_no_request`) |
+| `comment.seed` | `generate_seed_comment` | own_comment | 20 |
+| `post.thought_leadership` | `get_thought_leadership_post_from_ai` (trend step patched) | post_longform | 20 |
+| `dm.nurture` | `generate_nurture_dm` | dm | 20 |
+| `classify.post_relevance` | `post_is_relevant` | classifier | 20, yes/no 10/10 |
+| `classify.lead_intent` | `lead_intent._llm_says_lead` | classifier | 20, yes/no 10/10 |
+| `classify.dm_reply_intent` | `dm_nurture._llm_intent` | classifier | 20, 4 per intent |
+| `judge.authenticity` | `content_alignment.score_authenticity` | judge | 20, keep/demote 10/10 |
+
+### Adding a row
+
+1. Append a line to the dataset.
+2. Run `python scripts/prompt_capture.py --write`, which bumps `dataset_version`.
+3. Run `pytest tests/unit/scripts/test_prompt_datasets.py`.
+
+If the row's canned answer fails a grader, fix the answer, not the grader. A grader that disagrees
+with production is a bug in the grader, and it gets its own PR.
+
+## 4. Grading: code graders and model graders
+
+Every row is scored by its family's default graders, then the entry's own `assertions`, then the
+row's. The family defaults live in the `families:` block of `registry.yaml`:
+
+| Family | Contract | Repairable | Rubric |
+|---|---|---|---|
+| `comment` | `no_preamble`, `max_chars 700` | `comment_contract`, `slop_lint(comment)`, `meeting_ask`, `ungrounded_metrics` | `comment` |
+| `own_comment` | `no_preamble`, `max_chars 700` | `slop_lint(own_post_comment)`, `meeting_ask` | `comment` |
+| `dm` | `no_preamble`, `max_chars 300` | `slop_lint(dm)`, `meeting_ask` | `dm` |
+| `post_longform` | `no_preamble`, `max_chars 3000` | `slop_lint(post)`, `min_burstiness 0.3`, `meeting_ask`, `ungrounded_metrics`, `dwell ≥ 40` | `post_longform` |
+| `classifier` | entry's `label_match` (`yes_no` or `enum`) | none | none (labels are truth) |
+| `judge` | `production_json[score]`, `label_match(authenticity_action, 60)` | none | none |
+
+`own_comment` is the user's own first comment on their post. Production never runs it through the
+third-party comment contract or the grounding gate, so neither grades it here. The phase-2 dataset
+test caught that mismatch.
+
+*(phase 3)* A grader is versioned by a hash of its code or rubric. A grader is versioned by a hash of its code or rubric. Editing one
 grader re-grades only the stale pairs, and it reuses stored outputs instead of regenerating them.
 
 ### Code graders
@@ -138,8 +217,8 @@ the same reason production would.
 | Grader | Wraps | Class |
 |---|---|---|
 | `no_preamble`, `max_chars`, `min_chars`, `max_lines`, `forbidden_phrases`, `required_phrases` | existing harness | contract |
-| `production_json` | `ai_helper._loads_json_object` + required keys/types | contract |
-| `enum_label` / `label_match` | allowed set; accuracy + macro-F1 vs `labels.expected` | contract |
+| `production_json` | `ai_helper._loads_json_object` + `required_keys` (tolerates the fence production tolerates; `json_object` stays the strict check) | contract |
+| `label_match` | reads the answer the way the call site does: `yes_no` = `startswith("y")`; `enum` = `dm_nurture`'s normaliser + allowed `values`; `authenticity_action` = `_coerce_authenticity_result` score ≥ threshold. Compared with `labels.expected`; `bm.aggregate_labels` turns the predictions into accuracy + macro-F1 | contract |
 | `slop_lint` | `slop_lint.lint_report`, HARD vs WARN per surface | repairable |
 | `comment_contract` | `content_framework.comment_contract_report` | repairable |
 | `max_similarity`, `min_burstiness` | existing harness | repairable |
@@ -152,8 +231,10 @@ with the champion, but it is advisory, because production retries it (#910).
 
 ### Model graders (LLM-as-judge)
 
-- **Rubrics.** `tests/benchmarks/prompts/rubrics/<family>.md` has 3–5 binary criteria with pass/fail
-  anchors. The judge returns per-criterion JSON, and a case passes when every criterion passes.
+- **Rubrics.** `tests/benchmarks/prompts/rubrics/{comment,dm,post_longform}.md` each have 4–5
+  binary criteria with pass/fail anchors. A rubric judges only what code cannot (engages *this*
+  post, fits the intent, grounded in the inputs, voice); length, slop, meeting asks and invented
+  numbers are already code-graded. The judge returns per-criterion JSON, and a case passes when every criterion passes.
   A timeout or unparseable answer is recorded as `judge:timeout` or `judge:unparseable` and is
   **never** turned into a score.
 - **Judge model.** Claude Sonnet via OpenRouter (`models.yaml` → `judge`).
@@ -163,8 +244,9 @@ with the champion, but it is advisory, because production retries it (#910).
   - The judge is priced from its own entry.
   - Its family must differ from every candidate's. Sonnet is never a candidate, because
     `anthropic/*` ids are refused for adoption.
-- **Calibration.** Each run first re-scores about 20 hand-labelled outputs per family from
-  `rubrics/<family>.calibration.jsonl`. If agreement is below 0.85, model grades are reported as
+- **Calibration** *(sets shipped in phase 2; scoring in phase 3)*. Each run first re-scores the hand-labelled outputs in
+  `rubrics/<rubric>.calibration.jsonl`. There are 20 per rubric, 50–60% of them fails, with per-criterion
+  labels and an `overall` that must equal "all criteria pass". If agreement is below 0.85, model grades are reported as
   `judge:uncalibrated` and the verdict uses code graders only.
 - **Sampling.** The judge sees 4–6 cases per prompt per model, stratified by tag.
 - **Pairwise mode.** For a candidate against the champion, the judge picks between the two outputs,
@@ -247,6 +329,9 @@ Wording that changes voice or tone is `risk:product-decision`, and nothing here 
 | File | Written by |
 |---|---|
 | `tests/benchmarks/prompts/registry.yaml` | hand |
+| `tests/benchmarks/prompts/datasets/<id>.jsonl` | hand (synthetic only) |
+| `tests/benchmarks/prompts/personas.json` | hand (synthetic only) |
+| `tests/benchmarks/prompts/rubrics/<rubric>.md`, `.calibration.jsonl` | hand |
 | `tests/benchmarks/prompts/prompts.lock.json` | `prompt_capture.py --write` |
 | `tests/benchmarks/prompts/captured/<id>.json` | `prompt_capture.py --write` |
 | `tests/benchmarks/prompts/models.yaml` | hand |

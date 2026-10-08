@@ -97,7 +97,7 @@ import re
 import sys
 import time
 from datetime import datetime, timezone
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_HERE, "..", "src"))
@@ -270,7 +270,40 @@ def load_suite(doc: dict, *, name: str = "<suite>") -> dict:
     tier = str(doc.get("tier") or "").strip()
     if tier not in TIERS:
         raise SuiteError(f"{name}: unknown tier {tier!r}")
-    cases = doc.get("cases")
+    cases = validate_cases(doc.get("cases"), name=name)
+    return {
+        "tier": tier,
+        "version": int(doc.get("version") or 1),
+        "contract": str(doc.get("contract") or ""),
+        "judge_rubric": str(doc.get("judge_rubric") or ""),
+        "thresholds": normalize_thresholds(doc.get("thresholds")),
+        "cases": cases,
+    }
+
+
+def load_prompt_suite(doc: dict, *, name: str = "<prompt suite>") -> dict:
+    """Validate one PROMPT suite (docs/prompt-evals.md): a real production prompt rendered over its
+    dataset by `scripts/prompt_capture.py`. Same case rules as a tier suite, but keyed by
+    `prompt_id`; its tier is whatever the production call site asked for, which is reported, not
+    restricted to the benchmarked `TIERS`."""
+    if not isinstance(doc, dict):
+        raise SuiteError(f"{name}: suite must be a JSON object")
+    prompt_id = str(doc.get("prompt_id") or "").strip()
+    if not prompt_id:
+        raise SuiteError(f"{name}: prompt suite is missing its prompt_id")
+    return {
+        "prompt_id": prompt_id,
+        "tier": str(doc.get("tier") or ""),
+        "family": str(doc.get("family") or ""),
+        "version": doc.get("version"),
+        "judge_rubric": str(doc.get("judge_rubric") or ""),
+        "thresholds": normalize_thresholds(doc.get("thresholds")),
+        "cases": validate_cases(doc.get("cases"), name=f"{name}:{prompt_id}"),
+    }
+
+
+def validate_cases(cases: Any, *, name: str = "<suite>") -> list:
+    """The per-case rules every suite shares. Raises `SuiteError` on the first malformed case."""
     if not isinstance(cases, list) or not cases:
         raise SuiteError(f"{name}: suite has no cases")
     seen: set = set()
@@ -303,14 +336,7 @@ def load_suite(doc: dict, *, name: str = "<suite>") -> dict:
             if klass is not None and klass not in PRODUCTION_CLASSES:
                 raise SuiteError(f"{name}/{case_id}: assertion {kind!r} has an unknown production "
                                  f"class {klass!r}")
-    return {
-        "tier": tier,
-        "version": int(doc.get("version") or 1),
-        "contract": str(doc.get("contract") or ""),
-        "judge_rubric": str(doc.get("judge_rubric") or ""),
-        "thresholds": normalize_thresholds(doc.get("thresholds")),
-        "cases": cases,
-    }
+    return cases
 
 
 def normalize_thresholds(raw: Optional[dict]) -> dict:
@@ -515,6 +541,110 @@ def _a_max_lines(spec: dict, output: str, case: dict) -> dict:
         f"{len(lines)} non-empty lines > {limit}")
 
 
+def _a_production_json(spec: dict, output: str, case: dict) -> dict:
+    """JSON the way the call site PARSES it (`ai_helper._loads_json_object`), not strict JSON: a
+    fence or a sentence around the object is tolerated in production, so failing it here would grade
+    a contract nobody consumes. `json_object` stays the strict check where strictness is the point."""
+    from cqc_lem.utilities.ai.ai_helper import _loads_json_object
+    parsed = _loads_json_object(output)
+    if not isinstance(parsed, dict):
+        return _fail("no JSON object production could parse")
+    missing = [k for k in (spec.get("required_keys") or []) if k not in parsed]
+    return _fail(f"missing keys: {', '.join(missing)}") if missing else _pass()
+
+
+def _normalise_enum(output: str) -> str:
+    # The SAME normalisation `dm_nurture._llm_intent` applies before its lookup — grading a looser
+    # one would pass answers production throws away.
+    return str(output or "").strip().lower().strip(".'\"").replace(" ", "_").replace("-", "_")
+
+
+def _predict_label(spec: dict, output: str) -> Optional[str]:
+    """The label PRODUCTION would read off this answer, or None when it would read none."""
+    parse = str(spec.get("parse") or "yes_no")
+    if parse == "yes_no":
+        return "yes" if str(output or "").strip().lower().startswith("y") else "no"
+    if parse == "enum":
+        value = _normalise_enum(output)
+        return value if value in {str(v) for v in (spec.get("values") or [])} else None
+    if parse == "authenticity_action":
+        from cqc_lem.utilities.ai.content_alignment import _coerce_authenticity_result
+        parsed = _coerce_authenticity_result(output)
+        if parsed is None:
+            return None
+        return "keep" if parsed["score"] >= int(spec.get("threshold", 60)) else "demote"
+    raise ValueError(f"unknown label parse {parse!r}")
+
+
+def _a_label_match(spec: dict, output: str, case: dict) -> dict:
+    """A classifier's answer, read the way its call site reads it, against the row's label."""
+    expected = (case.get("labels") or {}).get("expected")
+    predicted = _predict_label(spec, output)
+    if expected is None:
+        return {"passes": None, "detail": "row carries no expected label", "predicted": predicted}
+    if predicted is None:
+        return {**_fail(f"unreadable as a label (expected {expected!r})"), "predicted": None}
+    outcome = _pass(f"{predicted}") if predicted == str(expected) else _fail(
+        f"predicted {predicted!r}, expected {expected!r}")
+    return {**outcome, "predicted": predicted}
+
+
+def _a_meeting_ask(spec: dict, output: str, case: dict) -> dict:
+    from cqc_lem.utilities.ai.content_alignment import contains_meeting_ask
+    return _fail("asks for a meeting/call") if contains_meeting_ask(output) else _pass()
+
+
+def _a_ungrounded_metrics(spec: dict, output: str, case: dict) -> dict:
+    """First-person numbers the source never gave — `_gated_comment`'s grounding check. Run with no
+    user, so it never reads a story bank: an eval row's only ground truth is its own context."""
+    from cqc_lem.utilities.ai.ai_helper import _ungrounded_first_person_metrics
+    context = case.get("context") or {}
+    source = context.get("post_content") or context.get("source") or ""
+    hits = _ungrounded_first_person_metrics(output, source)
+    return _fail("ungrounded: " + "; ".join(str(h)[:60] for h in hits)) if hits else _pass()
+
+
+def _a_dwell(spec: dict, output: str, case: dict) -> dict:
+    from cqc_lem.utilities.ai.content_framework import dwell_report
+    report = dwell_report(output) or {}
+    score = report.get("score")
+    if not isinstance(score, (int, float)):
+        return {"passes": None, "detail": "no dwell score"}
+    floor = float(spec.get("min_score") or 0)
+    return _pass(f"dwell {score}") if score >= floor else _fail(f"dwell {score} < {floor}")
+
+
+def aggregate_labels(cases: list, evaluations: list) -> dict:
+    """Accuracy and macro-F1 for a classifier suite, from the `label_match` predictions.
+
+    Only cases that carry an expected label count. An unreadable answer counts as wrong — it is the
+    worst answer a classifier can give its call site — and as a prediction of no class.
+    """
+    expected_by_id = {str(c.get("id")): (c.get("labels") or {}).get("expected") for c in cases}
+    pairs = []
+    for evaluation in evaluations:
+        expected = expected_by_id.get(str(evaluation.get("case_id")))
+        if expected is None:
+            continue
+        match = next((a for a in evaluation.get("assertions") or []
+                      if a.get("type") == "label_match"), None)
+        pairs.append((str(expected), match.get("predicted") if match else None))
+    if not pairs:
+        return {"n": 0, "accuracy": None, "macro_f1": None}
+    labels = sorted({e for e, _ in pairs})
+    f1s = []
+    for label in labels:
+        tp = sum(1 for e, p in pairs if e == label and p == label)
+        fp = sum(1 for e, p in pairs if e != label and p == label)
+        fn = sum(1 for e, p in pairs if e == label and p != label)
+        precision = tp / (tp + fp) if tp + fp else 0.0
+        recall = tp / (tp + fn) if tp + fn else 0.0
+        f1s.append(2 * precision * recall / (precision + recall) if precision + recall else 0.0)
+    correct = sum(1 for e, p in pairs if e == p)
+    return {"n": len(pairs), "accuracy": round(correct / len(pairs), 4),
+            "macro_f1": round(sum(f1s) / len(f1s), 4)}
+
+
 # ───────────────── what production does with a failure (#910, pure) ─────────────────
 #
 # The #842 run measured 40–80% deterministic pass rates for every model including both reigning
@@ -539,7 +669,8 @@ PRODUCTION_CLASSES = (PRODUCTION_CONTRACT, PRODUCTION_REPAIRABLE)
 # Type-level defaults. A fixture may override per assertion with `"production": "..."` — whether a
 # check is repairable is a property of the CALL SITE, not of the check (a craft-target `max_chars`
 # on long-form is repairable; the same assertion carrying LinkedIn's hard limit is not).
-REPAIRABLE_BY_DEFAULT = ("slop_lint", "comment_contract", "max_similarity", "min_burstiness")
+REPAIRABLE_BY_DEFAULT = ("slop_lint", "comment_contract", "max_similarity", "min_burstiness",
+                         "meeting_ask", "ungrounded_metrics", "dwell")
 
 
 def assertion_production_class(spec: Optional[dict]) -> str:
@@ -566,6 +697,11 @@ ASSERTIONS: dict = {
     "forbidden_phrases": _a_forbidden_phrases,
     "required_phrases": _a_required_phrases,
     "max_lines": _a_max_lines,
+    "production_json": _a_production_json,
+    "label_match": _a_label_match,
+    "meeting_ask": _a_meeting_ask,
+    "ungrounded_metrics": _a_ungrounded_metrics,
+    "dwell": _a_dwell,
 }
 
 
@@ -604,8 +740,11 @@ def evaluate_case(case: dict, output: Optional[str],
             outcome = fn(resolved, str(output), case)
         except Exception as exc:  # noqa: BLE001 - one bad assertion must not sink the whole run
             outcome = _fail(f"assertion raised {type(exc).__name__}: {str(exc)[:80]}")
-        results.append({"type": kind, "passes": outcome.get("passes"), "production": production,
-                        "detail": outcome.get("detail", "")})
+        result = {"type": kind, "passes": outcome.get("passes"), "production": production,
+                  "detail": outcome.get("detail", "")}
+        if "predicted" in outcome:
+            result["predicted"] = outcome["predicted"]
+        results.append(result)
     failures = [f"{r['type']}: {r['detail']}" for r in results if r["passes"] is False]
     contract_failures = [f"{r['type']}: {r['detail']}" for r in results
                          if r["passes"] is False and r["production"] == PRODUCTION_CONTRACT]

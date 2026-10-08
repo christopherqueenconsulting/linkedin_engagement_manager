@@ -250,6 +250,132 @@ class TestAssertions:
         assert result["assertions"][1]["passes"] is True
 
 
+# ───────── prompt-eval graders: production's own gates, read the way it reads them ─────────
+
+class TestPromptEvalGraders:
+    """Prompt-eval graders (docs/prompt-evals.md §4).
+
+    Each wraps the gate production applies, so an eval fails for the reason production would.
+    """
+
+    def test_production_json_tolerates_what_production_parses(self):
+        case = _case(assertions=[{"type": "production_json", "required_keys": ["score"]}])
+        assert bm.evaluate_case(case, '```json\n{"score": 80}\n```')["passes"] is True
+        assert bm.evaluate_case(case, 'Here: {"score": 80} done')["passes"] is True
+        assert bm.evaluate_case(case, '{"reasons": []}')["passes"] is False
+        assert bm.evaluate_case(case, "no json here")["passes"] is False
+
+    @pytest.mark.parametrize("output, expected, ok, predicted", [
+        ("yes", "yes", True, "yes"), ("Yes.", "yes", True, "yes"), ("no", "yes", False, "no"),
+        ("Absolutely", "yes", False, "no"),  # production reads startswith("y") — so does the grader
+    ])
+    def test_label_match_yes_no(self, output, expected, ok, predicted):
+        case = _case(assertions=[{"type": "label_match", "parse": "yes_no"}],
+                     labels={"expected": expected})
+        result = bm.evaluate_case(case, output)
+        assert result["passes"] is ok
+        assert result["assertions"][0]["predicted"] == predicted
+
+    def test_label_match_enum_uses_productions_normaliser(self):
+        spec = {"type": "label_match", "parse": "enum", "values": ["not_now", "neutral"]}
+        case = _case(assertions=[spec], labels={"expected": "not_now"})
+        assert bm.evaluate_case(case, "Not-now.")["passes"] is True
+        assert bm.evaluate_case(case, '"not now"')["passes"] is True
+        unreadable = bm.evaluate_case(case, "later maybe")
+        assert unreadable["passes"] is False
+        assert unreadable["assertions"][0]["predicted"] is None
+
+    def test_label_match_authenticity_action_thresholds_the_score(self):
+        spec = {"type": "label_match", "parse": "authenticity_action", "threshold": 60}
+        keep = _case(assertions=[spec], labels={"expected": "keep"})
+        assert bm.evaluate_case(keep, '{"score": 60, "reasons": []}')["passes"] is True
+        assert bm.evaluate_case(keep, '{"score": 59}')["passes"] is False
+        assert bm.evaluate_case(keep, "not json")["passes"] is False
+
+    def test_label_match_without_a_label_is_unscored(self):
+        result = bm.evaluate_case(_case(assertions=[{"type": "label_match"}]), "yes")
+        assert result["unscored"] == 1 and result["passes"] is True
+
+    def test_label_match_unknown_parse_fails_rather_than_passing(self):
+        case = _case(assertions=[{"type": "label_match", "parse": "vibes"}], labels={"expected": "x"})
+        assert bm.evaluate_case(case, "x")["passes"] is False
+
+    def test_meeting_ask(self):
+        case = _case(assertions=[{"type": "meeting_ask"}])
+        assert bm.evaluate_case(case, "Want to hop on a quick call next week?")["passes"] is False
+        assert bm.evaluate_case(case, "Which reconciliation broke most often?")["passes"] is True
+
+    def test_ungrounded_metrics_reads_the_rows_own_context(self):
+        case = _case(assertions=[{"type": "ungrounded_metrics"}],
+                     context={"post_content": "We cut our close from 9 days to 4."})
+        assert bm.evaluate_case(case, "Going from 9 days to 4 is real progress.")["passes"] is True
+        assert bm.evaluate_case(case, "We cut ours by 73% last year.")["passes"] is False
+
+    def test_dwell_floor(self):
+        case = _case(assertions=[{"type": "dwell", "min_score": 101}])
+        assert bm.evaluate_case(case, "A post.\n\nWith lines.")["passes"] is False
+        case = _case(assertions=[{"type": "dwell", "min_score": 0}])
+        assert bm.evaluate_case(case, "A post.\n\nWith lines.")["passes"] is True
+
+    def test_dwell_without_a_score_is_unscored(self, monkeypatch):
+        from cqc_lem.utilities.ai import content_framework
+        monkeypatch.setattr(content_framework, "dwell_report", lambda text: {})
+        result = bm.evaluate_case(_case(assertions=[{"type": "dwell", "min_score": 1}]), "x")
+        assert result["unscored"] == 1
+
+    def test_the_wrapped_gates_default_to_repairable(self):
+        for kind in ("meeting_ask", "ungrounded_metrics", "dwell"):
+            assert bm.assertion_production_class({"type": kind}) == bm.PRODUCTION_REPAIRABLE
+        for kind in ("production_json", "label_match"):
+            assert bm.assertion_production_class({"type": kind}) == bm.PRODUCTION_CONTRACT
+
+
+class TestAggregateLabels:
+    def _eval(self, case_id, predicted):
+        return {"case_id": case_id, "assertions": [{"type": "label_match", "predicted": predicted}]}
+
+    def test_accuracy_and_macro_f1(self):
+        cases = [_case(f"c{i}", labels={"expected": e}) for i, e in enumerate("yyyynnnn")]
+        evals = [self._eval(f"c{i}", p) for i, p in enumerate(["y", "y", "y", "n", "n", "n", "n", None])]
+
+        result = bm.aggregate_labels(cases, evals)
+
+        assert result["n"] == 8 and result["accuracy"] == 0.75
+        # y: P=1.0 R=0.75 F1=.857; n: P=.75 R=.75 F1=.75  (the unreadable answer is wrong for both)
+        assert result["macro_f1"] == pytest.approx(0.8036, abs=1e-4)
+
+    def test_rows_without_labels_and_empty_input(self):
+        assert bm.aggregate_labels([_case("c1")], [self._eval("c1", "y")])["n"] == 0
+        assert bm.aggregate_labels([], [])["accuracy"] is None
+
+    def test_a_case_without_label_match_counts_as_unreadable(self):
+        cases = [_case("c1", labels={"expected": "y"})]
+        assert bm.aggregate_labels(cases, [{"case_id": "c1", "assertions": []}])["accuracy"] == 0.0
+
+
+class TestPromptSuites:
+    def test_load_prompt_suite_accepts_any_tier_and_validates_cases(self):
+        doc = {"prompt_id": "p.x", "tier": "lem-vision", "family": "classifier", "cases": [_case()]}
+
+        suite = bm.load_prompt_suite(doc)
+
+        assert suite["prompt_id"] == "p.x" and suite["tier"] == "lem-vision"
+
+    @pytest.mark.parametrize("doc, message", [
+        ([], "must be a JSON object"),
+        ({"cases": [_case()]}, "missing its prompt_id"),
+        ({"prompt_id": "p", "cases": []}, "no cases"),
+        ({"prompt_id": "p", "cases": [_case(assertions=[{"type": "nope"}])]}, "unknown assertion"),
+    ])
+    def test_load_prompt_suite_refuses_malformed(self, doc, message):
+        with pytest.raises(bm.SuiteError, match=message):
+            bm.load_prompt_suite(doc)
+
+    def test_tier_suites_still_refuse_an_unknown_tier(self):
+        with pytest.raises(bm.SuiteError, match="unknown tier"):
+            bm.load_suite({"tier": "lem-vision", "cases": [_case()]})
+
+
 # ─────────── what production does with a failure — the #910 calibration ──────────
 
 class TestProductionClass:

@@ -180,6 +180,12 @@ class TestLockChecks:
                             "gone: in prompts.lock.json but no longer a tracked prompt",
                             "new: tracked prompt missing from prompts.lock.json"]
 
+    def test_a_dataset_only_change_is_named_as_one(self):
+        committed = {"p": {"version": 1, "dataset_hash": "d1", "dataset_version": 1}}
+        current = {"p": {"version": 1, "dataset_hash": "d2", "dataset_version": 2}}
+
+        assert pc.lock_problems(committed, current) == ["p: dataset changed since it was versioned"]
+
     def test_a_hand_edited_hash_without_a_bump_fails_against_the_base(self):
         base = {"p": {"version": 2, "source_hash": "s1", "content_hash": "c1"},
                 "q": {"version": 1, "source_hash": "s1", "content_hash": None}}
@@ -273,3 +279,131 @@ class TestTheRealTree:
         problems = pc.base_version_problems(json.loads(shown.stdout), pr.load_json(pr.LOCK_PATH))
 
         assert not problems, problems
+
+
+# ───────────────────────────── datasets (phase 2) ──────────────────────────────
+
+_PERSONAS = {"cfo": {"profile": {"full_name": "Test CFO", "job_title": "CFO"}, "synthesis": "Dry, numeric."}}
+
+
+class TestMaterialize:
+    def test_resolves_persona_and_synthesis_placeholders_recursively(self):
+        out = pc.materialize({"profile": {"$persona": "cfo"}, "voice": {"$synthesis": "cfo"},
+                              "nested": [{"$persona": "cfo"}], "plain": {"a": 1}}, _PERSONAS)
+
+        assert out["profile"].full_name == "Test CFO"
+        assert out["nested"][0].job_title == "CFO"
+        assert out["voice"] == "Dry, numeric."
+        assert out["plain"] == {"a": 1}
+
+    def test_an_unknown_persona_is_a_key_error(self):
+        with pytest.raises(KeyError):
+            pc.materialize({"$persona": "nobody"}, _PERSONAS)
+
+    def test_the_shipped_personas_all_build_a_profile(self):
+        for name in pc.load_personas():
+            assert pc.materialize({"$persona": name}, pc.load_personas()).full_name
+
+
+class TestRenderCase:
+    _ENTRY = {"id": "p.classify", "family": "classifier",
+              "capture": {"target": "fake_prompt_builders.classify", "select": 0},
+              "assertions": [{"type": "max_chars", "value": 10}]}
+    _FAMILIES = {"classifier": {"assertions": [{"type": "no_preamble"}]}}
+
+    def test_renders_a_harness_case_without_sampling_params(self, fake_builders):
+        row = {"id": "r1", "inputs": {"text": "hello"}, "labels": {"expected": "yes"},
+               "tags": ["edge:x"], "canned": {"output": "yes"},
+               "assertions": [{"type": "label_match"}]}
+
+        case = pc.render_case(self._ENTRY, row, _PERSONAS, self._FAMILIES)
+
+        assert case["id"] == "r1" and case["tier"] == "lem-simple"
+        assert case["messages"][1] == {"role": "user", "content": "hello"}
+        assert case["params"] == {"max_tokens": 3}  # temperature is sampling, model is the tier
+        assert [a["type"] for a in case["assertions"]] == ["no_preamble", "max_chars", "label_match"]
+        assert case["labels"] == {"expected": "yes"} and case["tags"] == ["edge:x"]
+
+    def test_row_patches_replace_an_upstream_step(self, fake_builders, monkeypatch):
+        def uses_upstream(text):
+            from cqc_lem.utilities.ai.client import client
+            upstream = fake_builders.upstream()
+            client.chat.completions.create(model="lem-complex", messages=[
+                {"role": "user", "content": f"{text} / {upstream['analysis']}"}])
+
+        monkeypatch.setattr(fake_builders, "upstream", lambda: {"analysis": "live"}, raising=False)
+        monkeypatch.setattr(fake_builders, "uses_upstream", uses_upstream, raising=False)
+        entry = {"id": "p.up", "capture": {"target": "fake_prompt_builders.uses_upstream"}}
+        row = {"id": "r", "inputs": {"text": "t"},
+               "patches": {"fake_prompt_builders.upstream": {"analysis": "from the row"}}}
+
+        case = pc.render_case(entry, row, _PERSONAS, {})
+
+        assert case["messages"][0]["content"] == "t / from the row"
+
+    def test_expect_no_request_returns_none_and_is_enforced_both_ways(self, fake_builders):
+        silent = {"id": "p.s", "capture": {"target": "fake_prompt_builders.silent"}}
+        assert pc.render_case(silent, {"id": "r", "inputs": {"text": "x"},
+                                       "expect_no_request": True}, _PERSONAS, {}) is None
+        with pytest.raises(RuntimeError, match="sent no LLM request"):
+            pc.render_case(silent, {"id": "r", "inputs": {"text": "x"}}, _PERSONAS, {})
+        with pytest.raises(RuntimeError, match="expected no LLM request"):
+            pc.render_case(self._ENTRY, {"id": "r", "inputs": {"text": "x"},
+                                         "expect_no_request": True}, _PERSONAS, {})
+
+    def test_row_seed_is_stable_and_varies_by_row(self):
+        assert pc.row_seed("a") == pc.row_seed("a") != pc.row_seed("b")
+
+
+class TestDatasetFiles:
+    def test_load_dataset_skips_blank_lines_and_hashes_the_file(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(pr, "PROMPTS_DIR", tmp_path)
+        (tmp_path / "d.jsonl").write_text('{"id": "a"}\n\n{"id": "b"}\n', encoding="utf-8")
+        entry = {"dataset": "d.jsonl"}
+
+        assert [r["id"] for r in pc.load_dataset(entry)] == ["a", "b"]
+        assert pc.dataset_hash(entry).startswith("sha256:")
+        assert pc.dataset_hash({}) is None
+
+    def test_render_suite_carries_family_rubric_and_tier(self, fake_builders, monkeypatch, tmp_path):
+        monkeypatch.setattr(pr, "PROMPTS_DIR", tmp_path)
+        (tmp_path / "d.jsonl").write_text(json.dumps({"id": "r1", "inputs": {"text": "x"},
+                                                      "canned": {"output": "yes"}}) + "\n")
+        monkeypatch.setattr(pc, "load_personas", lambda: {})
+        monkeypatch.setattr(pr, "load_families", lambda: {"classifier": {"rubric": None,
+                                                                         "assertions": []}})
+        entry = {**TestRenderCase._ENTRY, "dataset": "d.jsonl"}
+
+        suite = pc.render_suite(entry, version=3)
+
+        assert suite["prompt_id"] == "p.classify" and suite["version"] == 3
+        assert suite["tier"] == "lem-simple" and len(suite["cases"]) == 1
+
+
+class TestDatasetVersioning:
+    def test_a_dataset_is_versioned_from_one_and_bumps_on_change(self):
+        first = pc.next_lock_entry(None, "s", "c", "2026-10-01", dataset="sha256:d1")
+        same = pc.next_lock_entry(first, "s", "c", "2026-10-02", dataset="sha256:d1")
+        edited = pc.next_lock_entry(first, "s", "c", "2026-10-08", dataset="sha256:d2")
+
+        assert first["dataset_version"] == 1 and first["dataset_history"] == []
+        assert same == first
+        assert edited["dataset_version"] == 2 and edited["version"] == 1  # the prompt did not change
+        assert edited["dataset_history"] == [{"version": 1, "hash": "sha256:d1", "retired": "2026-10-08"}]
+
+    def test_dropping_a_dataset_drops_its_keys(self):
+        with_data = pc.next_lock_entry(None, "s", "c", "2026-10-01", dataset="sha256:d1")
+
+        assert "dataset_version" not in pc.next_lock_entry(with_data, "s", "c", "2026-10-02")
+
+
+class TestRenderCli:
+    def test_render_prints_the_suite_as_json(self, capsys):
+        assert pc.main(["--render", "classify.lead_intent"]) == 0
+
+        suite = json.loads(capsys.readouterr().out)
+        assert suite["prompt_id"] == "classify.lead_intent" and len(suite["cases"]) >= 20
+
+    def test_render_refuses_a_prompt_without_a_dataset(self, capsys):
+        assert pc.main(["--render", "post.carousel"]) == 2
+        assert "not an evaluated prompt" in capsys.readouterr().err

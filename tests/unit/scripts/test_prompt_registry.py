@@ -136,6 +136,17 @@ class TestRegistry:
         with pytest.raises(ValueError, match="used by both"):
             pr.load_registry(path)
 
+    def test_families_are_read_from_the_same_file(self, tmp_path):
+        path = self._write(tmp_path, """
+            families:
+              comment: {rubric: comment, assertions: [{type: no_preamble}]}
+            sites: {}
+            """)
+
+        assert pr.load_families(path) == {"comment": {"rubric": "comment",
+                                                      "assertions": [{"type": "no_preamble"}]}}
+        assert pr.load_families(self._write(tmp_path, "")) == {}
+
     def test_empty_file_is_an_empty_registry(self, tmp_path):
         assert pr.load_registry(self._write(tmp_path, "")) == {}
 

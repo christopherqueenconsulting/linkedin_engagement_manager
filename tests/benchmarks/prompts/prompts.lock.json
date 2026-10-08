@@ -30,6 +30,9 @@
   "classify.dm_reply_intent": {
     "changed_in": null,
     "content_hash": "sha256:75aada1a571fffff5079048108f692c67d5902d6bf0b436cea2471cceb6541d9",
+    "dataset_hash": "sha256:96b6dfc2bd9e700d275012cfadd7244a3d69094b57e72997bf8e67f5c035e4b9",
+    "dataset_history": [],
+    "dataset_version": 1,
     "history": [],
     "source_hash": "sha256:77ebd2ccb70020195341048386754d8c3fd670cecc19623fec76bdf99d109982",
     "version": 1
@@ -44,6 +47,9 @@
   "classify.lead_intent": {
     "changed_in": null,
     "content_hash": "sha256:8b301f0684a2aa68dc0bebe919c78c79c31340ccf56bf3d36911db7cd72cc74e",
+    "dataset_hash": "sha256:ee266c3cbab97bc05896a33372c88b99b2a4e9d30cf78ea63c22077bd9129205",
+    "dataset_history": [],
+    "dataset_version": 1,
     "history": [],
     "source_hash": "sha256:a8fdd551f3bf7d2f6a776159212b1dfaedcb0f68fae78a9d89eb3e00af872bc0",
     "version": 1
@@ -58,13 +64,19 @@
   "classify.post_relevance": {
     "changed_in": null,
     "content_hash": "sha256:8b16bd501a6743f2f9308d9b99d212a0d81876881e8f6d1cf9bcffbb0ab94ce8",
+    "dataset_hash": "sha256:ba8ce49a0b5a8d9a11538b92cafdb486c1044f998cd35a8c085fe44aeddc8cea",
+    "dataset_history": [],
+    "dataset_version": 1,
     "history": [],
     "source_hash": "sha256:374e33f91b7f7f96d4ae7085c5713af3258338797d3932e37b3fce55e100a4d0",
     "version": 1
   },
   "comment.feed": {
     "changed_in": null,
-    "content_hash": null,
+    "content_hash": "sha256:02c2d8ac8dd41df93dc8b89e82c5d1f4e2d3781f397cdd741b3957f22bbdb033",
+    "dataset_hash": "sha256:ff5f1bf890479af2a8b1520e699772362a3859c7925d5aa138807aca72764ad5",
+    "dataset_history": [],
+    "dataset_version": 1,
     "history": [],
     "source_hash": "sha256:caa030e5a6f848a3669bd78f02826e2cae08772ea983352da2f152d5a34735db",
     "version": 1
@@ -85,7 +97,10 @@
   },
   "comment.seed": {
     "changed_in": null,
-    "content_hash": null,
+    "content_hash": "sha256:b8a78a2131b07c7fe62a0a176f481b1805d7903add3242f8c7519faff780ff33",
+    "dataset_hash": "sha256:f1bc8e4c29e4a2ff60075cd2ecfcf7e10b82aa41d1bc09aaa7d840bef49fc9db",
+    "dataset_history": [],
+    "dataset_version": 1,
     "history": [],
     "source_hash": "sha256:e90a1bf864eb49ff225fa8aa4fbde125b6ae0e214b6e4e68fb5dc0f2da3e8b4f",
     "version": 1
@@ -134,7 +149,10 @@
   },
   "dm.nurture": {
     "changed_in": null,
-    "content_hash": null,
+    "content_hash": "sha256:679d59cc08ed4846c4dbc66d1cebc1f4b9be5c237ebe8fd13fdb5e7a520a9c41",
+    "dataset_hash": "sha256:9da0e7a58e8bff8f273e5c910e821dc99f9160f3a5e7533fa729d235a084d525",
+    "dataset_history": [],
+    "dataset_version": 1,
     "history": [],
     "source_hash": "sha256:0b53b9e6dedd19fa367c77239b4d6b4898146ca4ef201c450c2c50804286cb56",
     "version": 1
@@ -191,6 +209,9 @@
   "judge.authenticity": {
     "changed_in": null,
     "content_hash": "sha256:3863b349bf730caaeea3c0da49c8e8c468ae4f038a8da6672cce3a1395ca819e",
+    "dataset_hash": "sha256:3d17e4d0e0f1d2eadbeb8d175ba90b8850fa6099ced167731ea8f449cdf24bd9",
+    "dataset_history": [],
+    "dataset_version": 1,
     "history": [],
     "source_hash": "sha256:3b56489b1d34516dd136d0cd68b7ae876e42e2c89c73e80bbb414b98acb37df6",
     "version": 1
@@ -309,7 +330,10 @@
   },
   "post.thought_leadership": {
     "changed_in": null,
-    "content_hash": null,
+    "content_hash": "sha256:5220a3998e64ca2e21f9c8cb72602d7b88b061940049147a8314b4cc91ddd409",
+    "dataset_hash": "sha256:e0d04cb444b963d565e2f9abbc66c22ee3d7a87198493630d09851f0cade3d06",
+    "dataset_history": [],
+    "dataset_version": 1,
     "history": [],
     "source_hash": "sha256:2a0a5c012fd7db1848c49761271f8c61a508197c7dac61c6c978bd5db268ff92",
     "version": 1

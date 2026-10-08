@@ -29,6 +29,7 @@ when the committed lock is stale; the unit lane runs the same check.
 Usage:
     python scripts/prompt_capture.py --check
     python scripts/prompt_capture.py --write [--changed-in "PR #123"]
+    python scripts/prompt_capture.py --render comment.feed   # one dataset rendered as a suite
 """
 
 from __future__ import annotations
@@ -97,10 +98,11 @@ PRELOAD: tuple[str, ...] = ("cqc_lem.utilities.ai.client", "cqc_lem.utilities.ai
 
 @contextlib.contextmanager
 def pinned_environment(extra_env: dict[str, str] | None = None,
-                       preload: tuple[str, ...] = ()) -> Iterator[None]:
+                       preload: tuple[str, ...] = (), seed: int = CAPTURE_SEED) -> Iterator[None]:
     """Run with ``CAPTURE_ENV`` (plus a spec's own ``env``) as the WHOLE environment.
 
-    ``preload`` modules are imported under that environment but before the clock is frozen.
+    ``preload`` modules are imported under that environment but before the clock is frozen, and
+    ``random`` is seeded with ``seed`` for the duration.
     """
     from freezegun import freeze_time
 
@@ -118,17 +120,20 @@ def pinned_environment(extra_env: dict[str, str] | None = None,
                     flags.reset_flag_state()
                 except ImportError:
                     pass
-                random.seed(CAPTURE_SEED)
+                random.seed(seed)
                 yield
     finally:
         random.setstate(state)
 
 
 def record_calls(target: str, kwargs: dict[str, Any], reply: str = "",
-                 env: dict[str, str] | None = None) -> list[dict[str, Any]]:
+                 env: dict[str, str] | None = None, seed: int = CAPTURE_SEED,
+                 patches: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Call the production builder ``target`` and return every LLM request it made, in order.
 
     Each request is a deep copy of the keyword arguments handed to ``chat.completions.create``.
+    ``patches`` maps a dotted name to the value it returns for the call (an upstream step the
+    dataset row supplies instead of running, e.g. the trend research behind a post).
 
     Raises:
         ValueError: ``target`` is not a dotted ``module.function`` path.
@@ -144,9 +149,12 @@ def record_calls(target: str, kwargs: dict[str, Any], reply: str = "",
         calls.append(copy.deepcopy(call_kwargs))
         return _fake_completion(reply, str(call_kwargs.get("model", "")))
 
-    with pinned_environment(env, preload=(module_name,)), hermetic_io():
+    with pinned_environment(env, preload=(module_name,), seed=seed), hermetic_io(), \
+            contextlib.ExitStack() as stack:
         from cqc_lem.utilities.ai.client import client
 
+        for dotted, value in (patches or {}).items():
+            stack.enter_context(patch(dotted, return_value=copy.deepcopy(value)))
         func = getattr(importlib.import_module(module_name), func_name)
         with patch.object(client.chat.completions, "create", side_effect=_record):
             func(**kwargs)
@@ -169,8 +177,9 @@ def capture_entry(entry: dict[str, Any]) -> dict[str, Any]:
             failure branch swallowed a missing patch) — a capture of nothing is never written.
     """
     spec = entry["capture"]
-    calls = record_calls(spec["target"], dict(spec.get("canonical") or {}),
-                         reply=str(spec.get("reply", "")), env=spec.get("env"))
+    canonical = materialize(dict(spec.get("canonical") or {}), load_personas())
+    calls = record_calls(spec["target"], canonical, reply=str(spec.get("reply", "")),
+                         env=spec.get("env"), patches=spec.get("patches"))
     if not calls:
         raise RuntimeError(f"{entry['id']}: {spec['target']} made no LLM request on its canonical input")
     call = calls[int(spec.get("select", -1))]
@@ -184,16 +193,165 @@ def capture_entry(entry: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+PERSONAS_PATH = registry.PROMPTS_DIR / "personas.json"
+
+#: Sampling parameters are left out of a rendered case: the eval runs at the suite's own fixed
+#: settings, and production's per-call draws are not part of the prompt under test.
+SAMPLING_PARAMS: frozenset[str] = frozenset({"temperature", "top_p", "frequency_penalty",
+                                             "presence_penalty", "seed", "extra_body"})
+
+
+def row_seed(row_id: str) -> int:
+    """Return the RNG seed for one dataset row, so each row renders the same text on every run.
+
+    Seeding per ROW rather than per capture keeps a builder's random choices (a comment blueprint)
+    varied across the dataset instead of identical on every row.
+    """
+    return int(hashlib.sha256(row_id.encode("utf-8")).hexdigest()[:8], 16)
+
+
+def load_personas(path: pathlib.Path | None = None) -> dict[str, dict[str, Any]]:
+    """Return the synthetic personas datasets reference by name."""
+    return json.loads((path or PERSONAS_PATH).read_text(encoding="utf-8"))
+
+
+def materialize(value: Any, personas: dict[str, dict[str, Any]]) -> Any:
+    """Resolve dataset placeholders into the objects a builder takes.
+
+    ``{"$persona": name}`` becomes a ``LinkedInProfile`` built from that persona's ``profile``;
+    ``{"$synthesis": name}`` becomes its voice-synthesis text. Everything else passes through.
+
+    Raises:
+        KeyError: A placeholder names a persona that does not exist.
+    """
+    if isinstance(value, dict):
+        if set(value) == {"$persona"}:
+            from cqc_lem.utilities.linkedin.profile import LinkedInProfile
+
+            return LinkedInProfile(**personas[value["$persona"]]["profile"])
+        if set(value) == {"$synthesis"}:
+            return personas[value["$synthesis"]]["synthesis"]
+        return {k: materialize(v, personas) for k, v in value.items()}
+    if isinstance(value, list):
+        return [materialize(v, personas) for v in value]
+    return value
+
+
+def dataset_path(entry: dict[str, Any]) -> pathlib.Path:
+    """Return the dataset file a registry entry names."""
+    return registry.PROMPTS_DIR / str(entry["dataset"])
+
+
+def load_dataset(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return the dataset rows of a registry entry, one JSON object per non-blank line."""
+    lines = dataset_path(entry).read_text(encoding="utf-8").splitlines()
+    return [json.loads(line) for line in lines if line.strip()]
+
+
+def dataset_hash(entry: dict[str, Any]) -> str | None:
+    """Return the hash a dataset is versioned by, or ``None`` when the entry has no dataset."""
+    if not entry.get("dataset"):
+        return None
+    return "sha256:" + hashlib.sha256(dataset_path(entry).read_bytes()).hexdigest()
+
+
+def case_assertions(entry: dict[str, Any], row: dict[str, Any],
+                    families: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return the graders a row is scored by: family defaults, then the entry's, then the row's."""
+    family = families.get(str(entry.get("family")), {})
+    return [dict(a) for a in (*(family.get("assertions") or ()), *(entry.get("assertions") or ()),
+                              *(row.get("assertions") or ()))]
+
+
+def render_case(entry: dict[str, Any], row: dict[str, Any], personas: dict[str, dict[str, Any]],
+                families: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    """Render one dataset row through the REAL builder into a harness case.
+
+    Returns ``None`` for a row marked ``expect_no_request`` once the builder is confirmed to send
+    nothing for it (an empty post short-circuits before any model call).
+
+    Raises:
+        RuntimeError: The row sent nothing when a request was expected, or sent one when none was.
+    """
+    spec = entry["capture"]
+    canned = row.get("canned") or {}
+    calls = record_calls(
+        spec["target"], materialize(row.get("inputs") or {}, personas),
+        reply=str(canned.get("output", spec.get("reply", ""))),
+        env={**(spec.get("env") or {}), **(row.get("env") or {})},
+        seed=row_seed(str(row["id"])),
+        patches={**(spec.get("patches") or {}), **(row.get("patches") or {})},
+    )
+    if row.get("expect_no_request"):
+        if calls:
+            raise RuntimeError(f"{entry['id']}/{row['id']}: expected no LLM request, got {len(calls)}")
+        return None
+    if not calls:
+        raise RuntimeError(f"{entry['id']}/{row['id']}: the builder sent no LLM request")
+    call = calls[int(spec.get("select", -1))]
+    return {
+        "id": str(row["id"]),
+        "title": str(row.get("title") or row["id"]),
+        "tier": call.get("model"),
+        "messages": call.get("messages", []),
+        "params": {k: v for k, v in sorted(call.items())
+                   if k not in SAMPLING_PARAMS and k not in ("messages", "model")},
+        "context": row.get("context") or {},
+        "labels": row.get("labels") or {},
+        "tags": list(row.get("tags") or []),
+        "assertions": case_assertions(entry, row, families),
+        "canned": canned,
+    }
+
+
+def render_suite(entry: dict[str, Any], version: int | None = None) -> dict[str, Any]:
+    """Render every row of an entry's dataset into a prompt suite the harness can score."""
+    personas = load_personas()
+    families = registry.load_families()
+    cases = [case for row in load_dataset(entry)
+             if (case := render_case(entry, row, personas, families)) is not None]
+    family = families.get(str(entry.get("family")), {})
+    return {
+        "prompt_id": entry["id"],
+        "version": version,
+        "family": entry.get("family"),
+        "tier": cases[0]["tier"] if cases else None,
+        "judge_rubric": family.get("rubric"),
+        "cases": cases,
+    }
+
+
+def _with_dataset(entry: dict[str, Any], previous: dict[str, Any] | None, dataset: str | None,
+                  today: str) -> dict[str, Any]:
+    """Version a prompt's dataset alongside it: ``dataset_version`` moves when the file does."""
+    for key in ("dataset_hash", "dataset_version", "dataset_history"):
+        entry.pop(key, None)
+    if dataset is None:
+        return entry
+    old = previous or {}
+    version = int(old.get("dataset_version") or 0)
+    history = list(old.get("dataset_history") or [])
+    if old.get("dataset_hash") != dataset:
+        if old.get("dataset_hash"):
+            history.append({"version": version, "hash": old["dataset_hash"], "retired": today})
+        version += 1
+    entry.update(dataset_hash=dataset, dataset_version=version, dataset_history=history)
+    return entry
+
+
 def next_lock_entry(previous: dict[str, Any] | None, source: str, content: str | None,
-                    today: str, changed_in: str | None = None) -> dict[str, Any]:
+                    today: str, changed_in: str | None = None,
+                    dataset: str | None = None) -> dict[str, Any]:
     """Return a prompt's lock entry after a re-render, bumping the version when its hash moved.
 
     The version follows ``content`` once a prompt is captured and ``source`` before that. Becoming
-    captured is not a change: the first content hash is recorded without a bump.
+    captured is not a change: the first content hash is recorded without a bump. A dataset is
+    versioned separately (``dataset_version``), so editing a row re-runs the eval without claiming
+    the prompt changed.
     """
     if not previous:
-        return {"version": 1, "source_hash": source, "content_hash": content,
-                "changed_in": changed_in, "history": []}
+        return _with_dataset({"version": 1, "source_hash": source, "content_hash": content,
+                              "changed_in": changed_in, "history": []}, None, dataset, today)
     entry = dict(previous)
     entry["history"] = list(previous.get("history") or [])
     prev_content = previous.get("content_hash")
@@ -209,7 +367,7 @@ def next_lock_entry(previous: dict[str, Any] | None, source: str, content: str |
         entry["changed_in"] = changed_in
     entry["source_hash"] = source
     entry["content_hash"] = content
-    return entry
+    return _with_dataset(entry, previous, dataset, today)
 
 
 def build_lock(previous: dict[str, Any], today: str, changed_in: str | None = None,
@@ -223,7 +381,7 @@ def build_lock(previous: dict[str, Any], today: str, changed_in: str | None = No
         captured = captures.get(pid)
         lock[pid] = next_lock_entry(previous.get(pid), registry.source_hash(site),
                                     captured["content_hash"] if captured else None,
-                                    today, changed_in)
+                                    today, changed_in, dataset_hash(entry))
     return lock
 
 
@@ -245,7 +403,11 @@ def lock_problems(committed: dict[str, Any], current: dict[str, Any]) -> list[st
         elif pid not in committed:
             problems.append(f"{pid}: tracked prompt missing from prompts.lock.json")
         elif committed[pid] != current[pid]:
-            problems.append(f"{pid}: prompt changed since it was versioned")
+            dataset_keys = ("dataset_hash", "dataset_version", "dataset_history")
+            only_dataset = all(committed[pid].get(k) == current[pid].get(k)
+                               for k in set(committed[pid]) | set(current[pid]) if k not in dataset_keys)
+            what = "dataset" if only_dataset else "prompt"
+            problems.append(f"{pid}: {what} changed since it was versioned")
     return problems
 
 
@@ -285,10 +447,22 @@ def main(argv: list[str] | None = None) -> int:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--check", action="store_true", help="exit 1 when the lock is stale")
     mode.add_argument("--write", action="store_true", help="re-render, bump versions, write")
+    mode.add_argument("--render", metavar="PROMPT_ID", help="print one prompt's rendered suite as JSON")
     parser.add_argument("--changed-in", default=None, help='recorded on bumped prompts, e.g. "PR #123"')
     args = parser.parse_args(argv)
 
     committed = registry.load_json(registry.LOCK_PATH)
+    if args.render:
+        tracked = registry.tracked_prompts(registry.scan(), registry.load_registry())
+        if args.render not in tracked or not tracked[args.render][1].get("dataset"):
+            sys.stderr.write(f"{args.render}: not an evaluated prompt with a dataset\n")
+            return 2
+        version = (committed.get(args.render) or {}).get("version")
+        # The builders log as they run; keep stdout the JSON alone so it can be piped.
+        with contextlib.redirect_stdout(sys.stderr):
+            suite = render_suite(tracked[args.render][1], version)
+        sys.stdout.write(json.dumps(suite, indent=2, ensure_ascii=False) + "\n")
+        return 0
     captures = capture_all()
     today = datetime.date.today().isoformat()
     current = build_lock(committed, today, args.changed_in, captures)

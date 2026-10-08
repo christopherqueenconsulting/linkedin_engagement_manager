@@ -206,6 +206,16 @@ def load_registry(path: pathlib.Path = REGISTRY_PATH) -> dict[str, dict[str, Any
     return sites
 
 
+def load_families(path: pathlib.Path = REGISTRY_PATH) -> dict[str, dict[str, Any]]:
+    """Return the per-family grader defaults: ``{family: {"assertions": [...], "rubric": name}}``.
+
+    A family's assertions apply to every row of every evaluated prompt in it; an entry and a row
+    can each add more (``prompt_capture.case_assertions``).
+    """
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return dict(raw.get("families") or {})
+
+
 def drift(sites: list[CallSite], registry: dict[str, dict[str, Any]]) -> tuple[list[str], list[str]]:
     """Return ``(unregistered, stale)`` call-site keys.
 
