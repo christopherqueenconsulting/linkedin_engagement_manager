@@ -1,0 +1,125 @@
+# OWNER: copy this file to .github/workflows/prompt-evals.yml and commit it yourself.
+# The agent pipeline's credential has no `workflows` scope (docs/contribution-security.md), so it
+# cannot land a workflow file; this copy is kept in docs/ so the content is reviewed with the code.
+#
+# Prompt evals — the weekly, change-driven run (docs/prompt-evals.md §7).
+#
+# Grades only what changed since tests/benchmarks/prompts/eval_state.json (a new prompt version, a
+# new dataset version, a new candidate model, a deployment or grader change); a quiet week is "No
+# work" and costs nothing. Results land as ONE PR on `bot/prompt-evals`; each champion/fallback that
+# misses a floor gets ONE deduplicated `prompt-eval:failing` issue (scripts/prompt_eval_publish.py).
+#
+# Secrets:
+#   PROMPT_EVAL_OPENROUTER_KEY  a DEDICATED OpenRouter key with a hard monthly limit (~$40 suggested).
+#                               The runner refuses any plan over --max-spend-usd before a single call.
+#   RELEASE_DISPATCH_TOKEN      (existing) opens the results PR as a PAT so its required checks run;
+#                               falls back to GITHUB_TOKEN, whose PRs do not trigger workflows.
+#
+# NOT a gate: no pull_request / push trigger. The free PR-time guards (registry drift, capture
+# freshness, version bumps, dataset rules) already run inside `Unit Tests (Python 3.12)`.
+
+name: Prompt Evals
+
+on:
+  schedule:
+    # Monday 04:00 UTC — clear of slow-tests (03:00 daily), the release windows (05/11/17/23) and the
+    # Monday CodeQL sweeps (09:00/10:00).
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+    inputs:
+      prompt_ids:
+        description: "Comma-separated prompt ids to limit the run to (blank = all evaluated)"
+        required: false
+        default: ""
+      models:
+        description: "Extra candidate model ids to grade, comma-separated (blank = models.yaml only)"
+        required: false
+        default: ""
+      max_spend:
+        description: "Spend cap in USD; the plan is refused above it"
+        required: false
+        default: "15"
+      force_full:
+        description: "Regenerate everything in scope (the baseline run)"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write        # push the results branch
+  pull-requests: write   # open the results PR
+  issues: write          # file prompt-eval:failing issues
+  actions: read          # download the previous run's outputs for re-grades
+
+concurrency:
+  group: prompt-evals
+  cancel-in-progress: false  # never kill a run that has already spent
+
+jobs:
+  evals:
+    name: Prompt evals
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Poetry and dependencies
+        uses: ./.github/actions/poetry_setup
+        with:
+          python-version: "3.12"
+          install-args: --with test
+
+      - name: Fetch the previous run's outputs (for re-grades)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p prev
+          prev_id="$(gh run list --workflow prompt-evals.yml --status success --limit 1 \
+            --json databaseId --jq '.[0].databaseId // empty')"
+          if [ -n "$prev_id" ]; then
+            gh run download "$prev_id" --name prompt-eval-outputs --dir prev \
+              || echo "no outputs artifact on run $prev_id (expired or none) — re-grades will regenerate"
+          else
+            echo "no previous successful run — nothing to re-grade from"
+          fi
+
+      - name: Plan and run
+        id: run
+        env:
+          PROMPT_EVALS_ENABLED: "1"
+          OPENROUTER_API_KEY: ${{ secrets.PROMPT_EVAL_OPENROUTER_KEY }}
+          PROMPT_IDS: ${{ inputs.prompt_ids }}
+          MODELS: ${{ inputs.models }}
+          MAX_SPEND: ${{ inputs.max_spend || '15' }}
+          FORCE_FULL: ${{ inputs.force_full && '--force-full' || '' }}
+        run: |
+          set +e
+          poetry run python scripts/benchmark_prompts.py --run \
+            --max-spend-usd "$MAX_SPEND" \
+            --prompt-ids "$PROMPT_IDS" --models "$MODELS" $FORCE_FULL \
+            --outputs-in prev/outputs.json --outputs-out outputs.json \
+            --artifact-ref "${{ github.run_id }}" --results-out results.json
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          # 0 = ok or no work, 2 = a floor was missed (reported as issues below, not a red run),
+          # anything else = a refusal or an error, which fails the job.
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then exit "$rc"; fi
+
+      - name: Keep this run's outputs (re-grades read them; never committed)
+        if: hashFiles('outputs.json') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: prompt-eval-outputs
+          path: outputs.json
+          retention-days: 90
+
+      - name: Publish results PR and failure issues
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_DISPATCH_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          poetry run python scripts/prompt_eval_publish.py --results results.json \
+            --repo "${{ github.repository }}" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
