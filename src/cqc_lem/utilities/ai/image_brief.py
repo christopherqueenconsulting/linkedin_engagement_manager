@@ -1161,6 +1161,82 @@ def usable_anchors(concept: Optional[ImageConcept]) -> list[str]:
             and not prop_failure(a) and not tech_hardware(a)]
 
 
+# Showcase round 9: covers 17 and 19 were stock people talking in an office and a hallway — the
+# owner's original complaint (a cover unrelated to its article) with people instead of pipes. A
+# people_scene COVER must put something from the edition's own ``specific_entities`` in frame. The
+# words below are a scene's furniture or an abstraction, never what makes it THIS article's.
+_GENERIC_SCENE_WORDS = frozenset((
+    "office", "offices", "meeting", "meetings", "team", "teams", "colleague", "colleagues",
+    "professional", "professionals", "business", "businesses", "people", "person", "desk", "table",
+    "laptop", "conference", "hallway", "lobby", "room", "coffee", "founder", "founders", "owner",
+    "owners", "manager", "managers", "officer", "officers", "leader", "leaders", "executive",
+    "executives", "client", "clients", "customer", "customers", "company", "companies",
+    "industry", "work", "workplace", "solution", "solutions", "strategy", "strategies",
+    "leadership", "thought", "content", "insight", "insights", "impact", "growth", "value",
+    "success", "results", "result", "data", "information", "technology", "tools", "tool",
+    "system", "systems", "process", "processes", "approach", "decision", "decisions", "makers",
+    "marketing", "sales", "buyer", "buyers", "audience", "chat", "conversation", "model",
+    "models",
+))
+# The surfaces this binds on: a cover is read alone, with no post text above it.
+ARTICLE_SCENE_SURFACES = frozenset({"newsletter"})
+_TERM_WORD = re.compile(r"[A-Za-z][A-Za-z'-]{3,}")
+
+
+def article_scene_terms(concept: Optional[ImageConcept]) -> list[str]:
+    """The depictable words of the edition's own ``specific_entities`` (showcase round 9).
+
+    A name (any capitalised word — Stage 1 writes common nouns lower-case), a stock symbol or a
+    generic scene word (``_GENERIC_SCENE_WORDS``) never counts. "Decoder benchmark" gives
+    "benchmark"; "procurement officer" gives "procurement".
+
+    Args:
+        concept: Stage 1's analysis, or None.
+
+    Returns:
+        The terms, lower-case, de-duplicated, in order; empty when nothing is depictable.
+    """
+    out: list[str] = []
+    for entity in (concept.specific_entities if concept is not None else ()):
+        for match in _TERM_WORD.finditer(str(entity or "")):
+            word = match.group(0)
+            lowered = word.lower().strip("'-")
+            if (word[:1].isupper() or lowered in _GENERIC_SCENE_WORDS or lowered in out
+                    or cliche_hit(lowered)):
+                continue
+            out.append(lowered)
+    return out
+
+
+def article_term_in(term: str, text: Optional[str]) -> bool:
+    """Is ``term`` (or its stem without a plural "s") a word start in ``text``?"""
+    stem = term[:-1] if term.endswith("s") and not term.endswith("ss") else term
+    return bool(re.search(r"\b" + re.escape(stem), (text or "").lower()))
+
+
+def article_scene_failure(prompt: str, concept: Optional[ImageConcept],
+                          surface: Optional[str]) -> Optional[str]:
+    """Why a people_scene cover prompt shows nothing from its article, or None (Stage 3, round 9).
+
+    Args:
+        prompt: The authored render prompt.
+        concept: Stage 1's analysis.
+        surface: The brief's surface; only ``ARTICLE_SCENE_SURFACES`` bind.
+
+    Returns:
+        The repair directive, or None when the prompt names an article term (or none exists).
+    """
+    if (surface not in ARTICLE_SCENE_SURFACES or concept is None
+            or concept.treatment != TREATMENT_PEOPLE):
+        return None
+    terms = article_scene_terms(concept)
+    if not terms or any(article_term_in(t, prompt) for t in terms):
+        return None
+    return ("generic people in a room is a cliché on a cover — a stranger must be able to guess "
+            "the article: put one of these from the article in frame, as a physical object, a "
+            f"printout (no legible text) or an action: {'; '.join(terms[:5])}")
+
+
 def fact_name_tokens(concept: Optional[ImageConcept]) -> set[str]:
     """Every name/number token of the concept's FACTS — what a render prompt must never carry.
 
@@ -1350,7 +1426,8 @@ def _shows_nobody(concept: Optional[ImageConcept]) -> bool:
 
 
 def check_prompt_against_concept(prompt: str, concept: Optional[ImageConcept],
-                                 hook_text: Optional[str]) -> tuple[bool, str]:
+                                 hook_text: Optional[str],
+                                 surface: Optional[str] = None) -> tuple[bool, str]:
     """Stage 3: is this prompt worth rendering? Deterministic checks first, then ONE judge call.
 
     The deterministic half (stock symbols, stray quoted text, fact names, words on a surface,
@@ -1362,6 +1439,8 @@ def check_prompt_against_concept(prompt: str, concept: Optional[ImageConcept],
         prompt: The authored render prompt.
         concept: Stage 1's analysis; without one only the deterministic checks run.
         hook_text: The one string the image may carry, or None.
+        surface: The brief's surface; a people_scene COVER must name an article term
+            (``article_scene_failure``, round 9).
 
     Returns:
         ``(ok, reason)`` — ``reason`` is the repair directive when ``ok`` is False.
@@ -1371,6 +1450,7 @@ def check_prompt_against_concept(prompt: str, concept: Optional[ImageConcept],
                                      weak=_concept_is_weak(concept, anchors),
                                      hook_text=None, names=fact_name_tokens(concept),
                                      no_people=_shows_nobody(concept))
+    failure = failure or article_scene_failure(prompt, concept, surface)
     if failure:
         return False, failure
     if concept is None:
@@ -1866,6 +1946,9 @@ def _author_image_brief(content: str, *, surface: str, ratio: str = "1:1",
                                    no_people=no_people)
             if not rejection and surface == "video":
                 rejection = video_frame_failure(str(parsed.get("prompt") or ""))
+            if not rejection:
+                rejection = article_scene_failure(str(parsed.get("prompt") or ""), concept,
+                                                  surface)
             if not rejection and hook:
                 rejection = render_framing_failure(str(parsed.get("prompt") or ""), hook,
                                                    kicker, anchors)
@@ -1886,7 +1969,7 @@ def _author_image_brief(content: str, *, surface: str, ratio: str = "1:1",
                 brief.prompt_check = (f"repaired after: {reason}" if judged
                                       else "deterministic checks passed")
                 return _photo_only(brief, hook, kicker, anchors)
-            ok, why = check_prompt_against_concept(prompt, concept, hook)
+            ok, why = check_prompt_against_concept(prompt, concept, hook, surface)
             brief.prompt_check = why
             if ok or attempt == attempts:
                 return _photo_only(brief, hook, kicker, anchors)

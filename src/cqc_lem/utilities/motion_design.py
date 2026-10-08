@@ -668,6 +668,32 @@ def _plan_before_after(graphic: dict, region: tuple, size: tuple, palette: Any) 
     return {"layers": layers, "facts": pair}
 
 
+def stat_repeats_hook(hook: Optional[str], fact: dict) -> bool:
+    """Would a stat counter print what the hook above it already says (showcase round 9)?
+
+    slot_123's card set "…read a 90 GB file line by line." and, under it, the hero "90" over
+    "GB file line by line" — one line printed twice. A stat whose figure the hook states, or
+    whose label (two words or more) is every word the hook already carries, is not drawn under
+    that hook.
+
+    Args:
+        hook: The card's headline.
+        fact: The stat section (``display`` / ``amount`` / ``label``).
+
+    Returns:
+        True when the counter would repeat the hook.
+    """
+    from cqc_lem.utilities.ai.image_graphics import hook_repeats_figure
+
+    if not fact:
+        return False
+    if hook_repeats_figure(hook, fact):
+        return True
+    label = re.findall(r"[a-z0-9]+", str(fact.get("label") or "").lower())
+    head = set(re.findall(r"[a-z0-9]+", (hook or "").lower()))
+    return len(label) >= 2 and all(w in head for w in label)
+
+
 def plan_data(style: str, graphic: dict, hook: str, *, size: tuple, palette: Any,
               kicker: str = "", byline: str = "", seconds: float = 7.0,
               mode: str = MODE_MP4) -> MotionPlan:
@@ -697,6 +723,8 @@ def plan_data(style: str, graphic: dict, hook: str, *, size: tuple, palette: Any
     hook = " ".join(tidy_figures(hook or "").split())
     if not hook:
         raise ValueError("a motion piece needs a hook")
+    if style == STYLE_STAT_COUNTER and stat_repeats_hook(hook, (graphic or {}).get("stat") or {}):
+        raise ValueError("the hook already states the stat — the card would print it twice")
     planners = {STYLE_STAT_COUNTER: _plan_stat, STYLE_CHART_DRAW: _plan_chart,
                 STYLE_CHECKLIST_TICK: _plan_checklist,
                 STYLE_BEFORE_AFTER_WIPE: lambda g, r, s: _plan_before_after(g, r, s, palette)}

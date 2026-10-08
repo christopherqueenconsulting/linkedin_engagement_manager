@@ -523,6 +523,36 @@ def drop_repeated_pivot(text: Optional[str], recent_curated: Optional[list]) -> 
     return re.sub(r"(?m)^([a-z])", lambda m: m.group(1).upper(), out)
 
 
+# Showcase round 9: curated_4 said "I redrew the cost comparison chart… The visual shows a steep
+# drop from the 4.5 line to the 5.5 line" over a one-figure stat card — no chart rendered. A
+# sentence that claims a chart, graph or redrawn visual is cut unless a chart actually drew.
+_CHART_CLAIM_RE = re.compile(
+    r"\b(?:re-?drew|re-?drawn|redrawn|re-?charted|re-?plotted|plotted|graphed)\b|"
+    r"\b(?:chart|charts|graph|graphs|plot|diagram|visual|visualization|bar\s+chart|line\s+chart)\b",
+    re.IGNORECASE)
+
+
+def drop_unrendered_chart_claims(text: Optional[str], chart_drawn: bool) -> str:
+    """``text`` without the sentences that describe a chart, when no chart rendered. Deterministic.
+
+    Args:
+        text: The commentary.
+        chart_drawn: Whether the post's image IS a drawn chart (``highlight_chart``).
+
+    Returns:
+        The commentary; unchanged when a chart drew or no sentence claims one.
+    """
+    if chart_drawn or not text or not _CHART_CLAIM_RE.search(text):
+        return text or ""
+    paragraphs = []
+    for paragraph in re.split(r"\n\s*\n", text):
+        kept = [x for x in re.split(r"(?<=[.!?])\s+", paragraph.strip())
+                if x.strip() and not _CHART_CLAIM_RE.search(x)]
+        if kept:
+            paragraphs.append(" ".join(kept))
+    return "\n\n".join(paragraphs)
+
+
 def finish_post_text(text: Optional[str]) -> str:
     """The same deterministic finish a generated text post gets: no markdown, no wall of text.
 
@@ -541,7 +571,9 @@ def finish_post_text(text: Optional[str]) -> str:
     """
     from cqc_lem.utilities.linkedin_formatter import sanitize_for_linkedin
 
-    return _framework.shape_for_dwell(sanitize_for_linkedin(text or "") or "") or ""
+    # Round 9: the generated post's "It works." tic strip applies here too.
+    plain = _framework.strip_verbal_tics(sanitize_for_linkedin(text or "") or "")[0]
+    return _framework.shape_for_dwell(plain or "") or ""
 
 
 def source_anchors(source: dict) -> list:

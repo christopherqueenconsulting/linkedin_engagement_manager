@@ -336,7 +336,11 @@ _COUNT_NOUN_RE = "|".join(sorted((re.escape(n) for n in _COUNT_NOUN_TO_CLASS), k
                                  reverse=True))
 _COUNT_MODIFIERS = r"(?:[a-z][a-z'-]*\s+){0,2}?"
 _TOTAL_COUNT_RES = (
-    re.compile(r"\b(?:sent|emailed|messaged|contacted|pitched|reached\s+out\s+to|wrote)\s+"
+    # Round 9: slot_135 wrote "after sending 51 cold emails" — the round-8 verbs were past tense
+    # only, so the total was never read and 51 vs 63 shipped unreconciled.
+    re.compile(r"\b(?:sent|send|sends|sending|emailed|emailing|messaged|messaging|contacted|"
+               r"contacting|pitched|pitching|reached\s+out\s+to|reaching\s+out\s+to|wrote|"
+               r"writing)\s+"
                r"(?:out\s+)?(?P<n>\d[\d,]*)\s+" + _COUNT_MODIFIERS + r"(?P<noun>" + _COUNT_NOUN_RE
                + r")\b", re.IGNORECASE),
     re.compile(r"\bout\s+of\s+(?:the\s+|those\s+|all\s+|my\s+)?(?P<n>\d[\d,]*)\s+"
@@ -386,9 +390,52 @@ def _numbers_in(sentence: str) -> set:
     return {n.replace(",", "") for n in re.findall(r"\d[\d,]*", sentence or "")}
 
 
+# --- (e) one story per post (showcase round 9) ------------------------------------------------------
+
+# slot_130 opened on the story-bank anchor (an AI agent negotiating a Lincoln Nautilus) and then
+# told a second, unrelated case ("A client needed trustworthy AI for a critical platform…") with
+# its own invented result. A paragraph that OPENS a different protagonist's case, on a post whose
+# anchor never mentions that protagonist, is a second story.
+_CASE_OPENER_RE = re.compile(
+    r"^\W*(?:(?:A|One|Another)\s+(?:of\s+my\s+)?|Last\s+\w+,?\s+(?:a|one)\s+|"
+    r"(?:I|We)\s+(?:recently\s+)?(?:worked\s+with|helped|advised|consulted\s+for)\s+(?:a|an|one|"
+    r"another)\s+)(?:[a-z-]+\s+){0,2}?(?P<who>clients?|customers?|compan(?:y|ies)|startups?|"
+    r"retailers?|agenc(?:y|ies)|founders?|teams?|prospects?|brands?|firms?)\b")
+
+
+def second_story_issues(text: Optional[str], story_text: Optional[str]) -> list:
+    """A paragraph telling a second case beside the post's ONE story-bank anchor. Deterministic.
+
+    Args:
+        text: The draft.
+        story_text: The anchoring story-bank entry's title and body; None or '' skips the check
+            (a post with no anchor has no story to stay inside).
+
+    Returns:
+        One plain-English issue for the first second-story opener found.
+    """
+    if not text or not (story_text or "").strip():
+        return []
+    anchor = (story_text or "").lower()
+    for paragraph in re.split(r"\n\s*\n", text):
+        line = " ".join(paragraph.split())
+        match = _CASE_OPENER_RE.match(line)
+        if not match:
+            continue
+        who = match.group("who").lower()
+        stem = who[:4]
+        if stem in anchor:
+            continue
+        opener = " ".join(line.split()[:8])
+        return [f"the post tells a second story (\"{opener}…\") beside its story-bank anchor: "
+                f"tell only the anchor's story, or drop that paragraph"]
+    return []
+
+
 def consistency_report(text: Optional[str], happened_at: Any = None, now: Any = None,
                        hook_facts: Optional[list] = None,
-                       hook_flagged: Optional[list] = None) -> dict:
+                       hook_flagged: Optional[list] = None,
+                       story_text: Optional[str] = None) -> dict:
     """Every date/timeline/count consistency check on one draft. Deterministic.
 
     Args:
@@ -399,6 +446,8 @@ def consistency_report(text: Optional[str], happened_at: Any = None, now: Any = 
             ``hook_provenance_issues``). None skips the hook check — only a caller holding the
             allow-list can run it.
         hook_flagged: Figures the fact-grounding gate already holds the post for.
+        story_text: The anchoring story-bank entry's text; a second story beside it is a finding
+            (``second_story_issues``, round 9). None skips that check.
 
     Returns:
         ``{passes, issues, weekday, deadline, timeline, provenance, counts}`` — ``issues`` is the
@@ -412,10 +461,12 @@ def consistency_report(text: Optional[str], happened_at: Any = None, now: Any = 
     provenance = (hook_provenance_issues(text, hook_facts, hook_flagged)
                   if hook_facts is not None else [])
     counts = count_conflicts(text)
+    stories = second_story_issues(text, story_text)
     # A deck's caption and slides read as one text, so one claim can surface twice: one issue.
-    issues = list(dict.fromkeys(weekday + deadline + timeline + provenance + counts))
+    issues = list(dict.fromkeys(weekday + deadline + timeline + provenance + counts + stories))
     return {"passes": not issues, "issues": issues, "weekday": weekday, "deadline": deadline,
-            "timeline": timeline, "provenance": provenance, "counts": counts}
+            "timeline": timeline, "provenance": provenance, "counts": counts,
+            "stories": stories}
 
 
 # --- Leaked sign-offs ------------------------------------------------------------------------------
@@ -469,7 +520,8 @@ def strip_signature_lines(text: Optional[str]) -> Optional[str]:
 # Words that open a sentence or a noun phrase but name nobody: "The report", "A 2025 survey".
 _NOT_A_NAME = (r"(?!(?:The|This|That|These|Those|A|An|Our|Their|Its|One|New|Recent|Latest|Some|"
                r"Many|Most|Another|Each|Every|Industry|Market|Internal)\b)")
-_SOURCE_NOUN = r"(?:survey|study|report|research|poll|index|census|analysis|data|benchmark|findings)"
+_SOURCE_NOUN = (r"(?:survey|study|report|research|poll|index|census|analysis|data|benchmark|findings|"
+                r"results?)")
 _NAMED_SOURCE_RE = re.compile(
     r"\[\d{1,2}\]|https?://|\b(?i:according\s+to|sources?:|cited\s+by|reported\s+by)|"
     r"\b(?i:per|via)\s+(?:the\s+)?" + _NOT_A_NAME + r"[A-Z][\w&.'-]+|"
@@ -556,6 +608,45 @@ def _fact_values(facts: Optional[list]) -> set:
     return _anchor_numbers([str(f) for f in (facts or []) if f])
 
 
+# Showcase round 9: cover_18's body opens "53.7% of long-form LinkedIn posts in 2025 were probably
+# AI-generated" and names its source two paragraphs on: "a striking result from Originality.ai:
+# they scanned more than 3,000 posts … found that over half were likely AI-generated". The figure
+# IS sourced — by a sentence that restates the same finding. A source-naming sentence that shares
+# at least RESTATED_MIN_SHARED distinctive words with the figure's own sentence vouches for it.
+RESTATED_MIN_SHARED = 3
+_FINDING_WORD = re.compile(r"[a-z][a-z'-]{3,}|(?:19|20)\d{2}")
+_FINDING_STOP = frozenset((
+    "that", "this", "with", "from", "were", "they", "them", "their", "have", "been", "more", "than",
+    "over", "about", "into", "what", "when", "which", "while", "also", "only", "just", "some",
+    "most", "many", "much", "very", "same", "such", "those", "these", "there", "here", "will",
+    "would", "could", "should", "found", "showed", "shows", "said", "says", "likely",
+    "probably", "half", "nearly", "almost", "around", "least",
+))
+
+
+def _finding_words(sentence: str) -> set:
+    return {w for w in _FINDING_WORD.findall((sentence or "").lower()) if w not in _FINDING_STOP}
+
+
+def restated_by_source(figure_sentences: list, body: Optional[str]) -> bool:
+    """Does a body sentence that NAMES a source restate the finding a figure states?
+
+    Args:
+        figure_sentences: The body sentences that state the figure.
+        body: The post body.
+
+    Returns:
+        True when one source-naming sentence shares ``RESTATED_MIN_SHARED`` distinctive words
+        (four letters or more, or a year) with one of them.
+    """
+    sourced = [s for s in _sentences(body) if _names_source(s)]
+    for sentence in figure_sentences:
+        words = _finding_words(sentence)
+        if any(len(words & _finding_words(s)) >= RESTATED_MIN_SHARED for s in sourced):
+            return True
+    return False
+
+
 def figure_provenance(value: str, body: Optional[str], facts: Optional[list] = None) -> str:
     """How the post vouches for ONE figure, or '' when it does not. Deterministic.
 
@@ -584,6 +675,8 @@ def figure_provenance(value: str, body: Optional[str], facts: Optional[list] = N
     if facts is not None and value in _fact_values(facts):
         return PROVENANCE_FACT
     if any(_names_source(w) for _, window in windows for w in window):
+        return PROVENANCE_SOURCE
+    if restated_by_source([s for s, _ in windows], body):
         return PROVENANCE_SOURCE
     if facts is None and any(_FIRST_PERSON_RE.search(s) for s, _ in windows):
         return PROVENANCE_FIRST_HAND

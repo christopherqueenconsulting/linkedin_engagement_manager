@@ -751,6 +751,14 @@ def _drawn_archetypes() -> tuple[str, ...]:
     return CODE_DRAWN_ARCHETYPES + (QUOTE_CARD,)
 
 
+def _is_people_scene(concept: Any) -> bool:
+    """A people_scene: by its treatment, or by the archetype the render actually shipped as."""
+    from cqc_lem.utilities.ai.image_concept import TREATMENT_PEOPLE
+
+    archetype = getattr(concept, "archetype", "") or ""
+    return (archetype or getattr(concept, "treatment", "")) == TREATMENT_PEOPLE
+
+
 def _code_drawn(concept: Any) -> bool:
     return getattr(concept, "archetype", "") in _drawn_archetypes()
 
@@ -863,9 +871,40 @@ def trivial_mark(text: str, blind: str) -> bool:
     return True
 
 
+def generic_people_scene(answer: dict, blind: str, article_terms: list) -> bool:
+    """Does a people_scene cover show NOTHING from its article (showcase round 9)?
+
+    True when the judge saw none of the edition's article terms
+    (``image_brief.article_scene_terms``) and the blind description names none either, or when
+    the judge says a viewer would not get the gist. "Two people talking in a bright office" is
+    then a stock-people cliché, however well it is lit.
+
+    Args:
+        answer: The targeted judge's JSON.
+        blind: The blind description of the raw render.
+        article_terms: The terms the cover had to show; empty means the rule does not apply.
+
+    Returns:
+        Whether the scene is generic.
+    """
+    from cqc_lem.utilities.ai.image_brief import article_term_in
+
+    if not article_terms:
+        return False
+    if answer.get("thesis_inferable") is False:
+        return True
+    seen = answer.get("entities_depicted") or {}
+    judged = isinstance(seen, dict) and any(seen.get(t) is True for t in article_terms)
+    return not judged and not any(article_term_in(t, blind) for t in article_terms)
+
+
+GENERIC_PEOPLE_ISSUE = "generic people scene: nothing from the article is visible"
+
+
 def _apply_overlays(rubric: dict, *, blind: str, answer: dict, entities: list,
                     hook_text: Optional[str], face_expected: bool = False,
-                    no_face: bool = False, code_drawn: bool = False) -> dict:
+                    no_face: bool = False, code_drawn: bool = False,
+                    article_terms: Optional[list] = None) -> dict:
     """Deterministic corrections the judge cannot talk its way past.
 
     ``text_accuracy`` is DECIDED here: any text the blind look found on the raw render is a 2,
@@ -879,6 +918,10 @@ def _apply_overlays(rubric: dict, *, blind: str, answer: dict, entities: list,
     missing or mismatched emotion; a code-drawn graphic's text is correct by construction, so
     its ``text_accuracy`` is n/a. The "piques interest" scores fold in: under
     ``POP_SHIP_FLOOR`` caps ``scroll_stop`` at 3, a zero ``thesis_fit`` caps ``specificity`` at 3.
+
+    Round 9: a people_scene cover that shows nothing from its article (``generic_people_scene``
+    over ``article_terms``) is a stock-people cliché — ``no_cliche`` capped at 2 and
+    ``specificity`` at 3, so the gate cannot pass it.
     """
     from cqc_lem.utilities.ai.image_brief import cliche_hit
 
@@ -909,6 +952,9 @@ def _apply_overlays(rubric: dict, *, blind: str, answer: dict, entities: list,
         rubric["craft"] = min(rubric.get("craft") or 3, 3)
     if answer.get("bright_enough") is False:
         rubric["thumbnail_read"] = min(rubric.get("thumbnail_read") or 3, 3)
+    if generic_people_scene(answer, blind, list(article_terms or [])):
+        rubric["no_cliche"] = min(rubric.get("no_cliche") or 5, 2)
+        rubric["specificity"] = min(rubric.get("specificity") or 3, 3)
     return rubric
 
 
@@ -959,9 +1005,18 @@ def _staged_inspect(image_path: str, concept: Any, hook_text: Optional[str],
     video — reaches the TARGETED step only, where it reshapes the specificity question. The blind
     look never sees it: it must describe the picture as a stranger would.
     """
-    from cqc_lem.utilities.ai.image_brief import CLICHE_OBJECTS, usable_anchors
+    from cqc_lem.utilities.ai.image_brief import (
+        ARTICLE_SCENE_SURFACES,
+        CLICHE_OBJECTS,
+        article_scene_terms,
+        usable_anchors,
+    )
 
     code_drawn = _code_drawn(concept)
+    # Round 9: a people_scene cover is asked about its ARTICLE's own terms too, and fails when it
+    # shows none of them (``generic_people_scene``).
+    article = (article_scene_terms(concept) if surface in ARTICLE_SCENE_SURFACES and not code_drawn
+               and _is_people_scene(concept) else [])
     try:
         raw_part = _image_part(image_path)
         blind_response = client.chat.completions.create(
@@ -973,6 +1028,7 @@ def _staged_inspect(image_path: str, concept: Any, hook_text: Optional[str],
         )
         blind = " ".join(str(blind_response.choices[0].message.content or "").split())[:1200]
         entities = usable_anchors(concept)
+        entities += [t for t in article if t not in entities]
         valence = getattr(concept, "valence", "") or "mixed"
         targeted = client.chat.completions.create(
             model="lem-vision",
@@ -1004,7 +1060,8 @@ def _staged_inspect(image_path: str, concept: Any, hook_text: Optional[str],
                          and not _shows_no_face(concept))
         rubric = _apply_overlays(rubric, blind=blind, answer=answer, entities=entities,
                                  hook_text=hook_text, face_expected=face_expected,
-                                 no_face=_shows_no_face(concept), code_drawn=code_drawn)
+                                 no_face=_shows_no_face(concept), code_drawn=code_drawn,
+                                 article_terms=article)
     except Exception as e:
         return _unchecked(e, surface, "staged")
 
@@ -1019,6 +1076,8 @@ def _staged_inspect(image_path: str, concept: Any, hook_text: Optional[str],
         issues.append(f"pop {sum(pop.values())}/{2 * len(POP_CRITERIA)}")
     if not code_drawn:
         issues += [f"stray text: {t}" for t in stray_texts(blind)][:3]
+    if generic_people_scene(answer, blind, article):
+        issues.append(f"{GENERIC_PEOPLE_ISSUE} — show one of: {'; '.join(article[:3])}")
     issues += advisory_issues(answer, entities, hook_text)
     issues += [str(i) for i in (answer.get("issues") or []) if str(i).strip()]
     emotion_weak = (answer.get("face_emotion") is False or answer.get("emotion_matches") is False

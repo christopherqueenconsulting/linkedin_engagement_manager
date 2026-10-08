@@ -186,9 +186,15 @@
   "image.brief": {
     "changed_in": null,
     "content_hash": null,
-    "history": [],
-    "source_hash": "sha256:2cc4615c5420b55a5515320b653e13241a88ee99416e4945385ba7a5a90ea8ec",
-    "version": 1
+    "history": [
+      {
+        "hash": "sha256:2cc4615c5420b55a5515320b653e13241a88ee99416e4945385ba7a5a90ea8ec",
+        "retired": "2026-10-08",
+        "version": 1
+      }
+    ],
+    "source_hash": "sha256:d51f91341f399817ad9bfa243bd68fcda19a1e513f36e4a820e3cba4569fc981",
+    "version": 2
   },
   "image.ensure_hook": {
     "changed_in": null,
@@ -207,9 +213,15 @@
   "image.prompt_concept_check": {
     "changed_in": null,
     "content_hash": null,
-    "history": [],
-    "source_hash": "sha256:5c0581245cb95d90e2958f39c0aa8b76e137afe89af76b89ef65f839ff3b9775",
-    "version": 1
+    "history": [
+      {
+        "hash": "sha256:5c0581245cb95d90e2958f39c0aa8b76e137afe89af76b89ef65f839ff3b9775",
+        "retired": "2026-10-08",
+        "version": 1
+      }
+    ],
+    "source_hash": "sha256:fd3c8abdc9118e7bcc7790722e5dd0d23a62873b4901f8aed7b1bc7218263876",
+    "version": 2
   },
   "image.visual_idea": {
     "changed_in": null,

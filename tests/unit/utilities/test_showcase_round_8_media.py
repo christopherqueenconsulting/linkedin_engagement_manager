@@ -317,8 +317,9 @@ class TestCoverRatio:
 
 class TestCoverLayoutPairs:
     def test_a_render_on_a_recent_split_moves_side(self):
-        # cover_17 and cover_20: two AI renders on split_left, three covers apart.
-        recent = [("split_right", "drawn"), ("full_bleed", "render"), ("split_left", "render")]
+        # cover_17 and cover_20: two AI renders on split_left, three covers apart. (Round 9: the
+        # previous cover's layout is never reused, whatever its family.)
+        recent = [("full_bleed", "drawn"), ("split_right", "drawn"), ("split_left", "render")]
         got = nc.fresh_cover_layout(_concept(layout="split_left"), recent)
         assert got.layout == "split_right"
 
@@ -326,12 +327,12 @@ class TestCoverLayoutPairs:
         recent = [("split_right", "render"), ("split_left", "render")]
         assert nc.fresh_cover_layout(_concept(layout="split_left"), recent).layout == "full_bleed"
 
-    def test_a_fresh_pair_or_a_non_split_is_kept(self):
+    def test_a_fresh_pair_or_a_non_cover_layout_is_kept(self):
         concept = _concept(layout="split_left", archetype="stat_card")
-        assert nc.fresh_cover_layout(concept, [("split_left", "render")]) is concept
+        assert nc.fresh_cover_layout(concept, [("split_right", "render")]) is concept
         assert nc.fresh_cover_layout(None, []) is None
-        full = _concept(layout="full_bleed")
-        assert nc.fresh_cover_layout(full, [("full_bleed", "render")]) is full
+        band = _concept(layout="band_top")
+        assert nc.fresh_cover_layout(band, [("band_top", "render")]) is band
 
     def test_pairs_are_read_off_receipts(self):
         receipts = [{"concept": {"layout": "split_left", "archetype": "editorial_concept"}},

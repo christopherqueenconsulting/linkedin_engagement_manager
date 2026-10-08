@@ -150,12 +150,21 @@ class TestCompose:
         assert compose_headline(raw, "Who buys?") == raw[:-4] + "_headline.png"
 
     def test_full_bleed_adds_a_scrim_not_a_panel(self, tmp_path):
-        out = compose_headline(_render(tmp_path, _COVER, color=(250, 250, 250)), "Who buys?",
+        out = compose_headline(_render(tmp_path, _COVER, color=(70, 70, 70)), "Who buys?",
                                layout="full_bleed")
         image = Image.open(out).convert("RGB")
         # The scrim darkens the chosen third's centre, but never to the solid panel color.
         centre = image.getpixel((_COVER[0] // 6, _COVER[1] - 5))
-        assert centre != (250, 250, 250) and centre != (0x1F, 0x1F, 0x1F)
+        assert centre != (70, 70, 70) and centre != (0x1F, 0x1F, 0x1F)
+
+    def test_a_full_bleed_on_a_light_render_is_reset_on_a_solid_panel(self, tmp_path):
+        # Round 9, cover_18: gold type on a translucent strip over a light photograph.
+        out = compose_headline(_render(tmp_path, _COVER, color=(250, 250, 250)), "Who buys?",
+                               layout="full_bleed")
+        image = Image.open(out).convert("RGB")
+        assert image.size == _COVER
+        # The split panel's solid charcoal fills its corner; a scrim never reaches that color.
+        assert image.getpixel((5, 5)) == (0x1F, 0x1F, 0x1F)
 
     def test_a_missing_bundled_font_falls_back_to_a_system_bold(self, tmp_path):
         with patch.object(ic, "BRAND_FONT", tmp_path / "nope.ttf"):

@@ -1438,7 +1438,11 @@ def hook_without_figures(hook: Optional[str]) -> str:
     Returns:
         The context line ("Audit cut AI spend"), or ''.
     """
-    rest = _HOOK_FIGURE.sub(" ", hook or "")
+    # Round 9: "The $30K We Nearly Squandered" lost its figure and kept "The We…" — a determiner
+    # that only introduced the figure goes with it.
+    rest = re.sub(r"\b(?:the|a|an|our|this|that)\s+(?=" + _HOOK_FIGURE.pattern + r")", " ",
+                  hook or "", flags=re.IGNORECASE)
+    rest = _HOOK_FIGURE.sub(" ", rest)
     rest = re.sub(r"\b(?:by|of|to)\s+(?=[,.;:]|$)", " ", rest)
     rest = " ".join(rest.split()).strip(" ,.;:-–—")
     return rest if len(rest.split()) >= PANEL_CONTEXT_MIN_WORDS else ""
@@ -1493,7 +1497,11 @@ def complete_context(label: str, sentence: str, value: str) -> str:
                                     for i in range(len(have) - len(want) + 1))
     # "cut AI costs by" under a hero is contiguous but still dangles — its object was the figure.
     dangling = bool(want) and want[-1] in _DANGLING
-    if contiguous and not dangling and not (digits and any(digits in w for w in want)):
+    # Round 9: curated_4 kept Stage 1's one-word "costs" under "75%" — "75% costs" says the
+    # opposite of "costs around 75% less than Claude Haiku 4.5". A kept label is a PHRASE (2+
+    # words); a single word gives way to the words that follow the figure in its sentence.
+    if (contiguous and len(want) >= 2 and not dangling
+            and not (digits and any(digits in w for w in want))):
         return label
     norm = _norm(sentence)
     at = norm.find(str(value))
@@ -1604,7 +1612,8 @@ _MONTHS = ("january", "february", "march", "april", "may", "june", "july", "augu
            "jul", "aug", "sep", "sept", "oct", "nov", "dec")
 # A plain count needs to be a quantity worth a hero numeral: not a year, a date or a step number.
 _MIN_COUNT = 10
-_LABEL_BREAK = re.compile(r"[,;:.!?()]|\s-\s|\s—\s|"
+# A "." inside a number ("Claude Haiku 4.5") is no clause break (round 9).
+_LABEL_BREAK = re.compile(r"[,;:!?()]|\.(?!\d)|\s-\s|\s—\s|"
                           r"\s(?:to|but|while|because|which|so|after|before|when|since|once)\s",
                           re.IGNORECASE)
 _POINT_MARKER = re.compile(r"^\s*(?:[-*•+]|->|\d+[.)])\s*")
