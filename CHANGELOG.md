@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.185.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.184.0...v0.185.0) (2026-10-08)
+
+
+### Features
+
+* **prompt-evals:** change-driven runner with code + model graders (phase 3) ([#2290](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2290)) ([57f104c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/57f104cf36af543c9cababe87eb55cd81763e396))
+
 ## [0.184.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.183.0...v0.184.0) (2026-10-08)
 
 
