@@ -12,4 +12,10 @@ Environment=BASE=/home/lem/agent-pipeline
 # Deliberately OUTSIDE the daemon: an alert that lives inside the process it watches cannot fire
 # when that process is the thing that died. Checks liveness AND heartbeat freshness, because a
 # daemon can be "active" while wedged — systemd only knows the pid still exists.
-ExecStart=/home/lem/agent-pipeline/v2/watchdog.sh
+# The script is installed root-owned outside the deploy tree by install-root-scripts.sh, so the
+# unattended sync never changes what this unit executes.
+ExecStart=/usr/local/lib/lem/watchdog.sh
+# Writes only its log. A path in $BASE/logs that resolves elsewhere lands on a read-only mount.
+ProtectSystem=strict
+ReadWritePaths=/home/lem/agent-pipeline/logs
+PrivateTmp=yes

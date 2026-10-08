@@ -161,3 +161,62 @@ def test_cron_line_targets_the_install_destination():
     text = (Path(__file__).resolve().parents[2] / "scripts" / "agent-pipeline"
             / "install.sh").read_text()
     assert 'LINE="*/5 * * * * $DEST/tick.sh' in text
+
+
+ROOT_RUN = ["lib/gh_app_token.sh", "v2/watchdog.sh"]
+
+
+def test_root_run_scripts_are_not_shipped_into_the_deploy_tree(box):
+    """Scripts a root unit executes are installed root-owned elsewhere, never by this installer."""
+    _, dest, _ = box
+    assert _run(box).returncode == 0
+    for rel in ROOT_RUN:
+        assert not (dest / rel).exists(), rel
+    manifest = (dest / ".installed.sha256").read_text()
+    for rel in ROOT_RUN:
+        assert f" {rel}\n" not in manifest
+    # The rest of lib/ and v2/ still ships.
+    assert (dest / "lib" / "posthog.sh").exists()
+    assert (dest / "v2" / "cutover.sh").exists()
+
+
+def test_sync_leaves_a_stale_root_run_copy_and_says_so(box):
+    """An older install placed these here; a unit may still use one until it is repointed."""
+    _, dest, _ = box
+    assert _run(box).returncode == 0
+    stale = dest / "lib" / "gh_app_token.sh"
+    stale.write_text("# old copy\n", encoding="utf-8")
+    r = _run(box, "--sync")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert stale.read_text() == "# old copy\n"
+    assert "lib/gh_app_token.sh is no longer shipped" in r.stdout
+
+
+def test_root_installer_lists_the_set_and_refuses_non_root(box):
+    src, _, env = box
+    script = src / "install-root-scripts.sh"
+    r = subprocess.run(["bash", str(script), "--list"], capture_output=True, text=True, env=env)
+    assert r.returncode == 0 and r.stdout.split() == ROOT_RUN
+    if os.geteuid() != 0:
+        r = subprocess.run(["bash", str(script), "--yes"], capture_output=True, text=True,
+                           env={**env, "LEM_ROOT_LIB": str(src.parent / "rootlib")})
+        assert r.returncode == 1 and "must run as root" in r.stderr
+        assert not (src.parent / "rootlib").exists()
+
+
+@pytest.mark.parametrize("unit", ["systemd/lem-gh-token.service",
+                                  "v2/systemd/lem-agentd-watchdog.service"])
+def test_root_units_execute_only_the_root_owned_copies(unit):
+    text = (PIPELINE_DIR / unit).read_text()
+    exec_lines = [ln for ln in text.splitlines() if ln.startswith("ExecStart")]
+    assert exec_lines and all("/usr/local/lib/lem/" in ln for ln in exec_lines)
+    assert all("/home/lem" not in ln for ln in exec_lines)
+
+
+def test_root_run_scripts_source_nothing_from_the_deploy_tree():
+    """A root copy that sources a runner-owned file would hand that file root."""
+    import re
+    for rel in ROOT_RUN:
+        for line in (PIPELINE_DIR / rel).read_text().splitlines():
+            if re.match(r"\s*(source|\.)\s", line):
+                pytest.fail(f"{rel} sources at top level: {line.strip()}")

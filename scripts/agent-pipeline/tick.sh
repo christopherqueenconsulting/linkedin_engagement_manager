@@ -124,7 +124,11 @@ _TICK_LOG="$LOG"
 EXECUTION_ID="tick-$$-$(date +%s)"
 export BASE _TICK_LOG EXECUTION_ID REPO SLUG
 # shellcheck disable=SC1091
-for _l in posthog labels capacity dispatch run_lane gh_app_token ledger; do . "$BASE/lib/$_l.sh" 2>/dev/null || true; done
+for _l in posthog labels capacity dispatch run_lane ledger; do . "$BASE/lib/$_l.sh" 2>/dev/null || true; done
+# gh_app_token.sh is also run by the root token unit, so it is installed root-owned outside $BASE
+# (install-root-scripts.sh) and the runner reads that same copy.
+# shellcheck disable=SC1091
+. "${LEM_ROOT_LIB:-/usr/local/lib/lem}/gh_app_token.sh" 2>/dev/null || true
 # guards.sh is sourced STRICTLY, unlike the list above. It holds the trust boundary (author_trusted,
 # label_actor_trusted, pr_is_upstream) and the worktree lifecycle, both moved here so v2's bash
 # actions run the SAME bytes rather than a second implementation that drifts. `|| true` on this one

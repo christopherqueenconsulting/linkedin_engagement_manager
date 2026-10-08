@@ -100,6 +100,17 @@ if ! "$SRC/scripts/agent-pipeline/install.sh" --sync >>"$LOG" 2>&1; then
   exit 1
 fi
 
+# Root-run scripts are not part of this deploy (install.sh leaves them out). If the repo copy differs
+# from the installed one, say so once: the update needs a deliberate root step, not this updater.
+ROOT_LIB="${LEM_ROOT_LIB:-/usr/local/lib/lem}"
+root_pending=""
+while IFS= read -r rel; do
+  [ -n "$rel" ] || continue
+  cmp -s "$SRC/scripts/agent-pipeline/$rel" "$ROOT_LIB/$(basename "$rel")" || root_pending="$root_pending $rel"
+done < <("$SRC/scripts/agent-pipeline/install-root-scripts.sh" --list 2>/dev/null)
+[ -n "$root_pending" ] && \
+  log "NOTE: root-run scripts changed:$root_pending — re-run 'sudo $SRC/scripts/agent-pipeline/install-root-scripts.sh' by hand."
+
 V2_AFTER="$(find "$BASE/v2" -name '*.py' -o -name '*.sh' 2>/dev/null | sort | xargs sha256sum 2>/dev/null | sha256sum)"
 printf '%s\n' "$NOW_HASH" > "$BASE/state/synced.sha"
 

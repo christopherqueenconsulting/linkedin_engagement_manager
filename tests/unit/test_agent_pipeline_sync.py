@@ -227,3 +227,29 @@ def test_the_mirror_is_not_the_human_workspace():
     body = SYNC.read_text()
     assert "/home/lem/agent-pipeline-src" in body
     assert "linkedin_engagement_manager" not in body.split("LEM_SYNC_SRC")[1][:200]
+
+
+@pytest.mark.parametrize("installed, noted", [("same", False), ("old", True)])
+def test_a_changed_root_run_script_is_noted_not_deployed(box, tmp_path, installed, noted):
+    """Root-run scripts reach the box only through install-root-scripts.sh, run by hand as root.
+
+    The updater cannot apply them, so when the repo copy differs from the installed one it must say
+    so once instead of staying silent.
+    """
+    base, src, _, _, env = box
+    pipeline = src / "scripts" / "agent-pipeline"
+    (pipeline / "lib").mkdir()
+    (pipeline / "lib" / "gh_app_token.sh").write_text("# new\n")
+    (pipeline / "install-root-scripts.sh").write_text(
+        "#!/usr/bin/env bash\n[ \"$1\" = --list ] && echo lib/gh_app_token.sh\n")
+    (pipeline / "install-root-scripts.sh").chmod(0o755)
+    root_lib = tmp_path / "rootlib"
+    root_lib.mkdir()
+    (root_lib / "gh_app_token.sh").write_text("# new\n" if installed == "same" else "# old\n")
+    for cmd in (["git", "add", "-A"], ["git", "commit", "-qm", "root-run"],
+                ["git", "update-ref", "refs/remotes/origin/main", "HEAD"]):
+        subprocess.run(cmd, cwd=src, env=env, check=True, capture_output=True)
+
+    r = _run(box, LEM_ROOT_LIB=str(root_lib))
+    assert ("root-run scripts changed: lib/gh_app_token.sh" in r.stdout) is noted
+    assert not (base / "lib" / "gh_app_token.sh").exists()

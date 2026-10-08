@@ -15,7 +15,7 @@ Environment=BASE=/home/lem/agent-pipeline
 Environment=LEM_RUNNER_USER=lem
 EnvironmentFile=/etc/lem/github-app.env
 
-ExecStart=/bin/bash -c '. /home/lem/agent-pipeline/lib/gh_app_token.sh && gh_app_mint_token >/dev/null'
+ExecStart=/bin/bash -c '. /usr/local/lib/lem/gh_app_token.sh && gh_app_mint_token >/dev/null'
 
 NoNewPrivileges=yes
 PrivateTmp=yes

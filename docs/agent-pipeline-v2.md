@@ -695,7 +695,7 @@ box-local edit is never silently overwritten.
 |---|---|---|
 | `lem-agentd.service` | `lem` | the scheduler. `KillMode=process` so 45-minute agent children survive a restart |
 | `lem-agent-webhook.service` | `lem` | the receiver, hardened, `MemoryMax=256M`, secret from a root-owned file |
-| `lem-agentd-watchdog.timer` | root (see note) | liveness + heartbeat freshness every 15 min |
+| `lem-agentd-watchdog.timer` | root (see below) | liveness + heartbeat freshness every 15 min |
 | `lem-gh-token.timer` | root | mints the App installation token every 45 min; root holds the key |
 | `lem-agent.slice` | — | the CPU/memory envelope (`CPUQuota=300%`, `MemoryMax=3G`). **Box-only — not in the repo** |
 
@@ -709,10 +709,12 @@ touch PAUSED                           # stop everything (shared with v1)
 v2/rollback.sh                         # hand dispatch back to v1
 ```
 
-⚠️ The watchdog unit sets `User=root`, but `watchdog.sh` documents itself as running as `lem` and
-uses `sudo -n systemctl restart` on that basis. One of the two is stale: if the unit is right the
-`sudo -n` path and its failure branch are dead code; if the script is right the unit drifted. Resolve
-before touching either half.
+The watchdog unit runs as root and restarts the daemon with a plain `systemctl restart`; `watchdog.sh`
+keeps a `sudo -n` path only for a manual run as `lem`. Scripts that a root unit executes
+(`v2/watchdog.sh`, `lib/gh_app_token.sh`) are not deployed by `install.sh`/`sync.sh`. They are installed
+root-owned in `/usr/local/lib/lem` by `scripts/agent-pipeline/install-root-scripts.sh`, run by hand as
+root after reading the diff it prints. `sync.sh` logs a NOTE when the repo copy differs from the
+installed one.
 
 **Pause vs retire.** `PAUSED` stops both runners. `V1_RETIRED` demotes v1 to the failsafe cron and is
 what `cutover.sh` writes — deliberately not `PAUSED`, because `tick.sh` exits unconditionally on

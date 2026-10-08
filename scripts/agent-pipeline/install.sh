@@ -42,7 +42,7 @@ done
 # The file set the installer owns on the box. Relative to $SRC and $DEST alike. Every entry is
 # existence-guarded so the list degrades gracefully across branches (docs/ may be empty in a
 # stripped checkout, and status.sh only exists from #1238 on).
-files() {
+all_files() {
   # status.sh lives next to tick.sh so it is where someone looks when they SSH in.
   # sync.sh is the self-updater. It must ship like anything else, or the box keeps running whatever
   # version of the updater it was first installed with — which is the same class of staleness the
@@ -90,6 +90,14 @@ files() {
   for f in "$SRC"/systemd/*; do [ -e "$f" ] && echo "systemd/$(basename "$f")"; done
 }
 
+# Scripts that root-run units execute are installed root-owned outside this tree by
+# install-root-scripts.sh, so they are left out here. A copy this installer placed would be writable
+# by the uid every agent run executes as, and the unit running it would not be.
+ROOT_RUN="$("$SRC/install-root-scripts.sh" --list)"
+files() {
+  all_files | grep -vxF -e "" -f <(printf '%s\n' "$ROOT_RUN")
+}
+
 sha() { sha256sum "$1" 2>/dev/null | cut -d' ' -f1; }
 
 manifest_sha() {  # <relpath> -> recorded sha or ""
@@ -127,6 +135,17 @@ write_manifest() {
   mv "$MANIFEST.new" "$MANIFEST"
 }
 
+# An older install placed the root-run scripts here. Leave them (a unit may still point at one until
+# it is repointed by hand) but say so, because nothing updates them any more.
+stale_root_run_note() {
+  local rel
+  while IFS= read -r rel; do
+    [ -n "$rel" ] && [ -e "$DEST/$rel" ] && \
+      echo "note: $DEST/$rel is no longer shipped (root-run, see install-root-scripts.sh); remove it once no unit uses it."
+  done <<< "$ROOT_RUN"
+  return 0
+}
+
 FIRST_INSTALL=1
 [ -f "$DEST/tick.sh" ] && FIRST_INSTALL=0
 
@@ -151,6 +170,7 @@ if [ "$SYNC" = 1 ]; then
   done < <(files)
   write_manifest ${skipped[@]+"${skipped[@]}"}
   echo "sync: $updated updated, $same already current, ${#skipped[@]} refused."
+  stale_root_run_note
   if [ "${#skipped[@]}" -gt 0 ]; then
     echo "REFUSED (box-local edits — diff before deciding, then --sync --force):"
     for rel in "${skipped[@]}"; do
@@ -164,6 +184,7 @@ fi
 # ---- first install (or plain re-install over an existing tree) ----
 while IFS= read -r rel; do place "$rel"; done < <(files)
 write_manifest
+stale_root_run_note
 if [ "$FIRST_INSTALL" = 1 ]; then
   touch "$DEST/PAUSED"   # start paused — nothing runs until you remove this file
   echo "Installed to $DEST (PAUSED)."

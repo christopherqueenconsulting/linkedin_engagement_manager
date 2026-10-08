@@ -50,9 +50,13 @@ log() { echo "[$(date '+%F %T')] [v2/${V2_ACTION:-action}] $*" | tee -a "$LOG" ;
 
 # Best-effort libraries: losing PostHog telemetry or a lane label degrades observability, not safety.
 # shellcheck disable=SC1091
-for _l in posthog labels capacity dispatch run_lane gh_app_token ledger; do
+for _l in posthog labels capacity dispatch run_lane ledger; do
   . "$BASE/lib/$_l.sh" 2>/dev/null || true
 done
+# gh_app_token.sh is also run by the root token unit, so it is installed root-owned outside $BASE
+# (install-root-scripts.sh) and the runner reads that same copy.
+# shellcheck disable=SC1091
+. "${LEM_ROOT_LIB:-/usr/local/lib/lem}/gh_app_token.sh" 2>/dev/null || true
 
 # guards.sh is NOT best-effort. It is the trust boundary and the worktree lifecycle; a missing
 # function returns 127, which reads as "refused" for the trust calls (safe) but as a silent failure

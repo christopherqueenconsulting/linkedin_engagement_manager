@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Is the v2 daemon actually working? Run by lem-agentd-watchdog.timer every 15 minutes.
+# Installed root-owned in /usr/local/lib/lem by install-root-scripts.sh, not by install.sh.
 #
 # Deliberately lives OUTSIDE the daemon: an alert inside the process it watches cannot fire when
 # that process is what died. And it checks TWO things, because they fail independently —
@@ -40,19 +41,30 @@ else
   log "daemon active but heartbeat is ${age}s old (stale > ${STALE_AFTER}s) — restarting $UNIT."
 fi
 
-# `sudo -n`, not a bare `systemctl restart`. This script runs as `lem` (see the .service unit), and
-# a non-root caller with no login session gets polkit's "Interactive authentication required" on
-# `manage-units` — measured on this box, so the bare form would log a failure every 15 minutes and
-# never once recover the daemon. `is-active` above needs no privilege; only the restart does.
-if ! sudo -n systemctl restart "$UNIT" 2>>"$LOG"; then
-  log "restart FAILED (check: lem needs NOPASSWD systemctl restart $UNIT) — v1's failsafe cron is now the pipeline."
+# The unit runs this as root (see lem-agentd-watchdog.service), and root restarts the unit directly.
+# A non-root caller with no login session gets polkit's "Interactive authentication required" on
+# `manage-units`, so that case goes through `sudo -n`. `is-active` above needs no privilege.
+if [ "$(id -u)" = "0" ]; then
+  restart=(systemctl restart "$UNIT")
+else
+  restart=(sudo -n systemctl restart "$UNIT")
+fi
+if ! "${restart[@]}" 2>>"$LOG"; then
+  log "restart FAILED (non-root needs NOPASSWD systemctl restart $UNIT) — v1's failsafe cron is now the pipeline."
 fi
 
 # One PostHog breadcrumb so a restart loop is visible in the same place every other pipeline
 # signal lands. Best-effort: never let telemetry failure change the outcome.
+# posthog.sh reads $BASE/secrets.env, which belongs to the runner, so as root the breadcrumb is sent
+# as the runner's uid rather than sourcing that file here.
 if [ -r "$BASE/lib/posthog.sh" ]; then
-  # shellcheck disable=SC1091
-  . "$BASE/lib/posthog.sh" 2>/dev/null || true
-  posthog_capture "lemd_watchdog_restart" "agent-pipeline" \
-    "{\"active\":$active,\"heartbeat_age_s\":$age,\"unit\":\"$UNIT\"}" 2>/dev/null || true
+  props="{\"active\":$active,\"heartbeat_age_s\":$age,\"unit\":\"$UNIT\"}"
+  # shellcheck disable=SC2016
+  send='. "$1/lib/posthog.sh" 2>/dev/null && posthog_capture "lemd_watchdog_restart" "agent-pipeline" "$2"'
+  if [ "$(id -u)" = "0" ]; then
+    setpriv --reuid="${LEM_RUNNER_USER:-lem}" --regid="${LEM_RUNNER_USER:-lem}" --init-groups \
+      env BASE="$BASE" bash -c "$send" _ "$BASE" "$props" >/dev/null 2>&1 || true
+  else
+    bash -c "$send" _ "$BASE" "$props" >/dev/null 2>&1 || true
+  fi
 fi
