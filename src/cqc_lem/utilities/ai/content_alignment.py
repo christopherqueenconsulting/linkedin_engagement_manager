@@ -973,6 +973,50 @@ def _strip_soft_resource_offers(content: str, keyword: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", stripped)
 
 
+# Showcase round 8: slot_130 closed "Comment AUDIT and I'll DM it to you." — "it" was never named,
+# so the reader could not tell what commenting gets them. A keyword ask names its asset.
+_UNNAMED_ASSET_RES = (
+    (re.compile(r"\b(DM|send|share|message)\s+it\s+(?:over\s+)?to\s+you\b", re.IGNORECASE),
+     "{verb} you {resource}"),
+    (re.compile(r"\b(send)\s+it\s+your\s+way\b", re.IGNORECASE), "{verb} {resource} your way"),
+    (re.compile(r"\b(DM|send)\s+you\s+(?:the\s+)?(?:link|details|it|this)\b", re.IGNORECASE),
+     "{verb} you {resource}"),
+)
+
+
+def name_cta_asset(content: Optional[str], lead_magnet: Optional[dict]) -> Optional[str]:
+    """``content`` with an unnamed keyword-ask object ("I'll DM it to you") naming the resource.
+
+    Only the line carrying the comment-keyword mechanic is touched; a resource that cannot be
+    named from the configured message ("the resource") still replaces the bare "it".
+
+    Args:
+        content: The post.
+        lead_magnet: The author's lead-magnet settings.
+
+    Returns:
+        The post.
+    """
+    keyword = str((lead_magnet or {}).get("keyword") or "").strip()
+    if not content or not keyword:
+        return content
+    mechanic = _cta_mechanic_re(keyword)
+    resource = _resource_label(lead_magnet)
+    lines = content.split("\n")
+    for n, line in enumerate(lines):
+        # A line that already names the resource ("If you'd like my checklist, … send it") is
+        # named; its "it" points back at it.
+        if not mechanic.search(line) or resource.lower() in line.lower():
+            continue
+        for rx, form in _UNNAMED_ASSET_RES:
+            fixed = rx.sub(lambda m, f=form: f.format(verb=m.group(1), resource=resource), line,
+                           count=1)
+            if fixed != line:
+                lines[n] = fixed
+                break
+    return "\n".join(lines)
+
+
 def ensure_lead_magnet_cta(content: Optional[str], lead_magnet: Optional[dict], post_id: Optional[int],
                            use_emojis: bool = False, every_n: Optional[int] = None) -> Optional[str]:
     """Deterministic verify-and-repair run AFTER the refinement pipeline: if this post was selected
@@ -988,7 +1032,8 @@ def ensure_lead_magnet_cta(content: Optional[str], lead_magnet: Optional[dict], 
     # reads as a doubled CTA.
     deduped = _strip_soft_resource_offers(content, keyword)
     if has_lead_magnet_cta_mechanic(deduped, keyword):
-        return content if deduped == content else normalize_public_text(deduped)
+        named = name_cta_asset(deduped, lead_magnet)
+        return content if named == content else normalize_public_text(named)
     # Index by the SELECTION ORDINAL (post_id // n), not raw post_id: selected posts are all
     # multiples of n, so raw post_id % len(menu) would only ever hit gcd(n, len) of the variants —
     # the ordinal makes consecutive selected posts cycle through the whole menu.

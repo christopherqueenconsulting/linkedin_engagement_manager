@@ -179,6 +179,10 @@ def _link_preview(source: dict, user_id: int) -> Optional[str]:
     if known and image_fetchable(known):
         return known
     found = discover_og_image(source.get("url"))
+    # Showcase round 8: a discovered og:image was trusted unfetched, so a link post could still
+    # render bare (curated_3). It must load, exactly like a collected one.
+    if found and not image_fetchable(found):
+        found = None
     if found and found != known and source.get("id") is not None:
         update_curated_source_og_image(source["id"], found)
     if found:

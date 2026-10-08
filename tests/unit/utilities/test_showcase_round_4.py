@@ -62,9 +62,9 @@ class TestStyleBlocks:
         recent = [pt.STYLE_PEOPLE_PHOTO, pt.STYLE_QUOTE_CARD, "risograph", pt.STYLE_QUOTE_CARD,
                   "claymation"]
         assert "capped" in pt.style_blocks(recent)[pt.TREATMENT_QUOTE_CARD]
-        # The sixth post back has left the window.
+        # The sixth post back has left the window (one in six since round 8).
         assert pt.TREATMENT_QUOTE_CARD not in pt.style_blocks(
-            ["a", "b", "c", "d", pt.STYLE_QUOTE_CARD, pt.STYLE_QUOTE_CARD])
+            ["a", "b", "c", "d", "e", pt.STYLE_QUOTE_CARD])
 
     def test_a_data_card_never_follows_a_code_drawn_card(self):
         assert pt.TREATMENT_DATA_CARD in pt.style_blocks([pt.STYLE_CODE_DRAWN])
@@ -144,7 +144,9 @@ class TestTypesetLayouts:
     def test_availability(self):
         assert ig.typeset_layouts_for("Shipping became a non-event") == (ig.CARD_POSTER,
                                                                          ig.CARD_GRID_RULE)
-        assert ig.CARD_QUOTE_MARKS in ig.typeset_layouts_for("Exact words here.", verbatim=True)
+        # Round 8: a typeset card in quotation marks IS a quote card, so it is never offered.
+        assert ig.CARD_QUOTE_MARKS not in ig.typeset_layouts_for("Exact words here.",
+                                                                 verbatim=True)
         assert ig.CARD_NUMBER_LED in ig.typeset_layouts_for("160 releases without downtime")
         assert ig.CARD_NUMBER_LED not in ig.typeset_layouts_for("We shipped 160 releases")
 

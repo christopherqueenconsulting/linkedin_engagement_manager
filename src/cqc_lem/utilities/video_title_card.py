@@ -120,7 +120,9 @@ def title_card_hook(text: Optional[str], concept: Any = None) -> Optional[str]:
     Returns:
         The hook, or None.
     """
-    hook = str(getattr(concept, "hook_phrase", "") or "").strip()
+    from cqc_lem.utilities.video_captions import strip_list_marker
+
+    hook = strip_list_marker(str(getattr(concept, "hook_phrase", "") or "").strip())
     if hook:
         return hook
     from cqc_lem.utilities.ai.fact_consistency import prints_any, unprovenanced_figures
@@ -446,6 +448,11 @@ def pick_card_style(hook: Optional[str], recent: Sequence, seed: str = "") -> tu
     recent = list(recent)
     variant = pick_variant(hook, [v for v, _g in recent], seed)
     ground = pick_ground(seed)
+    # Showcase round 8: 123, 141 and 135 rotated their layout but all three hashed to charcoal,
+    # so the batch read as one template. The ground ALTERNATES: never the last card's.
+    last_ground = recent[0][1] if recent else None
+    if last_ground in GROUNDS and ground == last_ground:
+        ground = next(g for g in GROUNDS if g != last_ground)
     grounds = (ground, *[g for g in GROUNDS if g != ground])
     variant, ground, _changed = fresh_pair(variant, ground, available_variants(hook), grounds,
                                            [v for v, _g in recent], [g for _v, g in recent])

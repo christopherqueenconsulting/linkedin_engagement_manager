@@ -253,6 +253,10 @@ CLICHE_OBJECTS: tuple[str, ...] = (
     # "safe" alone is an everyday adjective ("feels safe"), so the object is matched by phrase.
     "safe dial", "wall safe", "steel safe", "office safe", "safe door", "vault", "combination lock",
     "padlock", "dial", "light switch", "toggle switch", "lever",
+    # Showcase round 8: cover_17 filled an engine block with props — the owner's original complaint
+    # was pipes, gears and water, and an engine is the same machine-as-metaphor.
+    "engine block", "car engine", "engine bay", "motor", "piston", "crankshaft", "flywheel",
+    "turbine", "gearbox", "sprocket", "clockwork", "machinery", "conveyor belt",
     # Stock office (issue #1992).
     "person at laptop", "man at laptop", "woman at laptop", "professional at laptop",
     "typing hands", "hands typing", "hands on keyboard", "coffee and notebook",
@@ -1645,6 +1649,35 @@ def video_accent_backstop(prompt: str, brand_kit: Optional[str] = None) -> str:
     return f"{body}{sep} One deliberate {color} accent object or wardrobe piece in frame.".strip()
 
 
+# Showcase round 8: cover_17's backdrop came back a saturated blue — the palette directive steers
+# objects and accents, and nothing named the GROUND. A render prompt on a composited surface that
+# names no neutral backdrop gets one, stated positively (a render draws what a prompt names).
+_NEUTRAL_WORDS = (r"off-white|cream|ivory|charcoal|grey|gray|beige|sand|stone|linen|warm\s+neutral|"
+                  r"neutral|white|black|paper")
+_BACKDROP_NAMED = re.compile(
+    r"\b(?:background|backdrop|wall|walls|ground|sky)\b[^.]{0,40}\b(?:" + _NEUTRAL_WORDS + r")\b|"
+    r"\b(?:" + _NEUTRAL_WORDS + r")\b[^.]{0,25}\b(?:background|backdrop|wall|walls)\b",
+    re.IGNORECASE)
+BRAND_BACKDROP_SENTENCE = "The backdrop is a warm off-white neutral, with gold kept to small accents."
+BACKDROP_SURFACES = frozenset({"newsletter", "post_image"})
+
+
+def palette_backdrop_backstop(prompt: str) -> str:
+    """``prompt`` plus ``BRAND_BACKDROP_SENTENCE`` when it names no neutral backdrop.
+
+    Args:
+        prompt: The final render prompt.
+
+    Returns:
+        The prompt, or the prompt with one positive backdrop sentence.
+    """
+    if not (prompt or "").strip() or _BACKDROP_NAMED.search(prompt):
+        return prompt
+    body = prompt.rstrip()
+    sep = "" if body.endswith((".", "!", "?")) else "."
+    return f"{body}{sep} {BRAND_BACKDROP_SENTENCE}"
+
+
 def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
                       profile=None, avatar: Optional[dict[str, Any]] = None,
                       extra_direction: Optional[str] = None,
@@ -1676,6 +1709,8 @@ def build_image_brief(content: str, *, surface: str, ratio: str = "1:1",
                                 concept=concept, brand_kit=brand_kit)
     if surface == "video":
         brief.prompt = video_accent_backstop(brief.prompt, brand_kit)
+    elif surface in BACKDROP_SURFACES:
+        brief.prompt = palette_backdrop_backstop(brief.prompt)
     return brief
 
 

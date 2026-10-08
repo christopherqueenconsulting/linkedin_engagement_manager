@@ -171,10 +171,12 @@ class TestVideoAccentReachesTheFinalPrompt:
         assert ib.video_accent_backstop(prompt) == prompt
 
     def test_other_surfaces_are_untouched(self):
-        bare = ib.ImageBrief(prompt="A desk.", ratio="1:1", surface="post_image",
+        # The prompt names its backdrop, so round 8's palette backstop has nothing to add either.
+        prompt = "A desk against a warm off-white wall."
+        bare = ib.ImageBrief(prompt=prompt, ratio="1:1", surface="post_image",
                              style_preset="post_image", focal_concept="x")
         with patch.object(ib, "_author_image_brief", return_value=bare):
-            assert ib.build_image_brief("post", surface="post_image").prompt == "A desk."
+            assert ib.build_image_brief("post", surface="post_image").prompt == prompt
 
     def test_the_real_fallback_path_carries_it_for_an_avatar_frame(self):
         with patch("cqc_lem.utilities.ai.ai_helper._call_llm", side_effect=RuntimeError("down")):

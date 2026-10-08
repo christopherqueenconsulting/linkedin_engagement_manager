@@ -22,6 +22,11 @@ _RECEIPT_WITH_INVENTED_NUMBERS = (
     "What it does: triages inbound support mail.\n\n"
     "It cut first-response time by 62%."
 )
+_BODY_ONLY_INVENTED_NUMBERS = (
+    "What it does: triages inbound support mail.\n\n"
+    "I shipped a 20-agent pipeline in 3 weeks.\n\n"
+    "It cut first-response time by 62%."
+)
 
 
 class TestFactGroundingGate:
@@ -155,11 +160,21 @@ class TestReviewGateSpendsItsRepairOnFabrication:
         regen.assert_called_once()
 
     def test_the_same_draft_under_another_archetype_is_left_alone_at_warn(self, monkeypatch):
+        # Body figures are ungraded at WARN off the fact-anchored archetypes. The HOOK's figures
+        # are checked on every post since showcase round 8, so this draft opens figure-free.
+        monkeypatch.setenv("FACT_GROUNDING_SEVERITY_POST", "warn")
+        out, regen = self._review(_BODY_ONLY_INVENTED_NUMBERS, "second draft",
+                                  {"format": "personal_lesson"})
+        assert out == _BODY_ONLY_INVENTED_NUMBERS
+        regen.assert_not_called()
+
+    def test_a_hook_figure_is_repaired_even_at_warn(self, monkeypatch):
+        # Showcase round 8: slot_141's tactical_list opened "by over 90 %" unchecked at WARN.
         monkeypatch.setenv("FACT_GROUNDING_SEVERITY_POST", "warn")
         out, regen = self._review(_RECEIPT_WITH_INVENTED_NUMBERS, "second draft",
                                   {"format": "personal_lesson"})
-        assert out == _RECEIPT_WITH_INVENTED_NUMBERS
-        regen.assert_not_called()
+        assert out == "second draft"
+        regen.assert_called_once()
 
     def test_a_placeholder_draft_needs_no_retry(self):
         out, regen = self._review(_RECEIPT_WITH_PLACEHOLDERS, "second draft",

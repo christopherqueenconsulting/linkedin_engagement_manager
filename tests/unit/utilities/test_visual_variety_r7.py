@@ -53,11 +53,12 @@ class TestPairs:
 
 
 class TestQuoteCap:
-    def test_one_quote_card_in_four_posts(self):
+    def test_one_quote_card_in_six_posts(self):
+        # Round 7 set one in four; round 8 widened it to one in six (QUOTE_CAP_WINDOW).
         assert pt.TREATMENT_QUOTE_CARD in pt.style_blocks(
-            [None, None, pt.STYLE_QUOTE_CARD])
+            [None, None, None, None, pt.STYLE_QUOTE_CARD])
         assert pt.TREATMENT_QUOTE_CARD not in pt.style_blocks(
-            [None, None, None, pt.STYLE_QUOTE_CARD])
+            [None, None, None, None, None, pt.STYLE_QUOTE_CARD])
 
 
 class TestTitleCards:

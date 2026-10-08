@@ -82,6 +82,28 @@ verified figures). With `ANIMATED_POST_ENABLED` on, that still now gets this $0 
 facts instead; Runway is still never called for it. A photo still is unchanged (the Runway
 cinemagraph, `docs/animated-posts.md`).
 
+## Round 8: every loop must visibly move
+
+- **Cards are animated in code.** gif_125 (a quote card) and gif_130 (the last-resort typeset card)
+  went to Runway: neither archetype was in `CODE_DRAWN_ARCHETYPES`, so a paid cinemagraph of a flat
+  card moved nothing at 4 MB. `animated_loop._code_drawn` now also takes `quote_card`,
+  `typeset_card`, a `code_drawn` / `last_resort` gate verdict and a `code_drawn*` render path. A
+  card's loop sets the words the STILL sets (its `quote`, else its `hook_text`) in kinetic type, and
+  never the concept's graphic, which is not on that still.
+- **A measured motion floor** (`loop_motion_score`, `MOTION_FLOOR` 0.6). The median grey-level
+  inter-frame delta over a loop's moving frames (frames under `_HOLD_DELTA` are holds or encoder
+  noise; fewer than `_MOVING_SHARE_MIN` moving frames is a flash, scored 0). gif_125/130 measured
+  about 0.3; every loop a reader saw move measured 1.0 or more. `produce_post_loop` checks it on
+  both paths (code-drawn and Runway): a loop under it logs "Loop has no visible motion — the static
+  image ships instead" (INFO) and the still ships. An unreadable file never blocks.
+- **The stat label stays up through the count** (gif_123 showed a bare "7"): the label draws at the
+  layer's alpha from the first build frame.
+- **A slide travels far enough to see** (gif_141 read as a dim): `kinetic_slide` rows exit
+  `_SLIDE_EXIT` (12%) and enter `_SLIDE_ENTER` (16%) of the width.
+- **Never a reverse.** The data reset is a fade (`_data_clock`). gif_135's "un-checking" came from
+  the showcase harness ping-ponging the title-card MP4 through `make_loop_from_video`; the
+  production loop of a code-drawn still is drawn forward by `create_motion_gif`.
+
 ## Failure posture
 
 Motion is the upgrade, not the asset. `_card_motion` failing logs a WARNING and the drifting card

@@ -494,7 +494,8 @@ with the cover treatment (`carousel_creator.deck_cover_chain`, `recent_deck_choi
 Each family reads its own receipts on disk, so it spans every surface that produces it: carousel and
 document decks share the deck receipts, post images and rhythm re-images share the post receipts.
 
-**Quote cards: one in four posts** (`QUOTE_CAP` 1 per `QUOTE_CAP_WINDOW` 4). **Covers: no third
+**Quote cards: one in four posts** (`QUOTE_CAP` 1 per `QUOTE_CAP_WINDOW` 4 — six since round 8).
+**Covers: no third
 split in a row** (`image_concept.split_run_exceeded`, `COVER_SPLIT_RUN` 2): the next cover is
 `full_bleed`, its headline in the render's darkest third over a scrim. Covers still land
 `pending_review`.
@@ -505,6 +506,45 @@ advanced by its own ink height, so a line with no descenders left the next one's
 size (`carousel_creator.line_pitch`), and the fit measure (`_lines_height`) uses the same pitch.
 
 Tests: `test_provenance_r7.py`, `test_visual_variety_r7.py`.
+
+## Showcase round 8 — the variety rules bind, covers stay 16:9
+
+The round-8 critic found the round-7 rotation in place but not binding. Cause, then fix:
+
+- **A typeset card set in quotation marks was a quote card past the cap** (rhythm_6's receipt said
+  `typeset_card`, `card_layout` `quote_marks`; slot_125's quote card followed it because it did not
+  count). `typeset_layouts_for` no longer offers `quote_marks` — a typeset card never draws a quote
+  glyph or a dashed attribution — and a receipt that recorded one counts as a quote card
+  (`rhythm_history`). One quote card in any `QUOTE_CAP_WINDOW` (6) posts.
+- **Title cards rotated their layout but not their ground** (123, 141, 135: three layouts, all
+  charcoal, which reads as one template). `pick_card_style` never repeats the last card's ground.
+- **Decks: the window was one deck short** (slot_144 repeated slot_128's `(stat_reveal, poster)`
+  four decks later). `deck_cover_chain` reads `DECK_PAIR_WINDOW` (the six-deck history).
+- **One stat panel per deck.** A `code_drawn` cover that borrowed a body slide's element (slot_143's
+  "18") leaves that slide typographic.
+- **Covers: no recent (split layout, family) pair** (`newsletter_cover.fresh_cover_layout`): cover_17
+  and cover_20 were both AI renders on `split_left`. The side moves, then the cover goes full-bleed.
+- **A cover is always 16:9** (`ensure_cover_ratio`). cover_18 shipped square: the avatar LoRA renders
+  1:1 and full-bleed composes onto the render itself. The raw render is fitted to 1920x1080 and its
+  headline composed again; with no raw render the composite is fitted; neither possible is refused.
+- **The byline fits** (`image_compose.fit_signature`): shrink to `SIGNATURE_MIN_SHARE`, then wrap at
+  the " · Source:" separator (cover_19's "…B2B Tho" ran off the panel).
+- **No empty stat panel**: a stat card whose hook repeats its figure keeps the hook's words without
+  the figure as the panel's context line (`hook_without_figures`, cover_16).
+- **The kicker never repeats the headline** (`kicker_repeats_headline`, in `headline_parts` and the
+  typeset card): cover_20's "OBSERVE-LOOP", rhythm_2's "FLEXIBLE INFRASTRUCTURE".
+- **No list marker on an image** (`video_captions.strip_list_marker`): captions, title-card hooks,
+  composites and typeset cards drop a leading "- ", "•" or "2)" (slot_141).
+- **Palette backdrop** (`image_brief.palette_backdrop_backstop`): a newsletter or post-image prompt
+  that names no neutral backdrop gets "a warm off-white neutral, with gold kept to small accents"
+  (cover_17's saturated blue), stated positively.
+- **Machinery is a cliché** (`CLICHE_OBJECTS`): engine block, motor, piston, crankshaft, flywheel,
+  turbine, gearbox, sprocket, clockwork, machinery, conveyor belt — the owner's pipes-gears-water
+  complaint in another form (cover_17). The vision judge's stock-symbol question reads the same list.
+- **Hedged figures stay hedged on the image** (rhythm_3, `fact_consistency.upgrades_hedge`):
+  `docs/content-core.md`, round 8.
+
+Tests: `test_showcase_round_8_media.py`.
 
 ## Post rhythm — treatments, panels, grades and the sameness gate (anti-monotony round)
 

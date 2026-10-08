@@ -375,6 +375,60 @@ image half (headlines, cards, covers, rotation) is in `docs/image-stack.md`, "Sh
 Tests: `test_provenance_r7.py`, `test_deck_claims_r7.py`, `test_batch_variety_r7.py`,
 `test_curated_faithfulness_r7.py`.
 
+### Numbers, timelines and endings that hold across a batch (showcase round 8)
+
+The round-8 critic (`gauntlet/critic8/critic_scores.json`) found the round-7 rules in place but not
+binding. Why each one slipped, and the fix:
+
+- **The hook check ran only where numbers are graded.** slot_141 (a `tactical_list` under
+  WARN-severity grounding) opened "by over 90 %" unchecked. `_review_generated_post` now passes
+  `hook_facts` on EVERY post, so a hook figure with no story-bank fact or named source is one editor
+  repair, then held at PENDING. Body figures stay ungraded at WARN off the fact-anchored archetypes.
+- **Hedged stays hedged** (`fact_consistency.upgrades_hedge`, inside `unprovenanced_figures`).
+  rhythm_3's body said "You could cut your AI spend by 60%", its image "AI spend cut by 60%". A
+  figure every body sentence states hedged ("could", "can", "up to", "if", lower-case "may") may only
+  be printed hedged; every surface that reads provenance (image hooks, title cards, quote
+  candidates, deck slides, covers) inherits it.
+- **Counts reconcile** (`count_conflicts`). Two TOTALS of one kind of thing ("sent 51 cold emails",
+  "Out of 63 recipients") in different sentences are a `fact_consistency` finding; a sentence that
+  states both relates them itself, and a subset ("3 emails bounced") is not a total.
+- **A dated event leaves time for its results** (`dated_outcome_violations`, `OUTCOME_MIN_DAYS` 14).
+  slot_125: "On Oct 1 2026 I helped three startups…" and, a week later, "those teams stayed stable,
+  delivered on schedule". The post's own first-person date is read, not the story's, so it needs no
+  story-bank date; a plan or conditional is never an outcome. Joins the report's `timeline` half.
+  Identical issues (a deck's caption and slides read as one text) are reported once.
+- **Deck copy** (`finalize_deck_claims`). Round 7's label pattern needed a colon, so a bare Title
+  Case "The <Noun>" heading of up to four words that asserts nothing ("The Challenge", "The Launch
+  Day Surprise") slipped; it is now a template heading. Platitude lines ("Clarity drives results.",
+  `platitude_line`) are dropped first; a body slide left empty is dropped from a list of slides, or
+  — on a schema's fixed slide, and wherever the body only repeats the heading — filled with the
+  caption's best unused sentence. A cover count ("3 Steps", "3 Things to Know") survives only when
+  the caption counts, lists as many items, or the slides are enumerated or name the noun
+  (`unbacked_count_promise`, read off the deck AS WRITTEN); reconciling the NUMBER alone made "How I
+  Saved My Launch: 3 Steps" true arithmetic over three narrative slides. "saved", "boosts",
+  "doubled"… joined the promise words. A slide's route preposition must agree with the caption's
+  for the same thing (`route_inversions`: slot_142's "from my own support address" vs the body's
+  "through").
+- **Endings** (`close_cap_reason`, `enforce_close_caps`). "Forward this." read as a question close
+  (its line ended on "?"); `_CTA_SHARE_RE` now folds forward / pass on / pass along / share this into
+  ONE share type. One share ask in any `SHARE_CTA_WINDOW` (6) posts, and at most
+  `CLOSING_QUESTION_CAP` (2) question closes in six: `select_cta_type` stops offering either over its
+  cap, and `run_content_plan._apply_close_caps` cuts a close that still breaks one — on text posts
+  (also those with no CTA type) and deck captions. The keyword close is never touched.
+- **A keyword ask names its asset** (`content_alignment.name_cta_asset`). "Comment AUDIT and I'll DM
+  it to you" becomes "…DM you my Friday status-email script" off the configured message, on the
+  mechanic line only.
+- **Curated** (`curated_commentary`). A draft under `COMMENTARY_MIN_SENTENCES` (3) is refused
+  (curated_2: two sentences, 282 characters, two over the old floor). "<Source> reports that…" opens
+  in the next form when one of the last two curated posts used it (`rotate_curated_opener`), and the
+  "For a small business," pivot is cut when the last two made it (`drop_repeated_pivot`). A
+  discovered og:image must load like a collected one, or the link item is skipped.
+  `extract_chart_facts` parses with `ai_helper._loads_json_object` — a non-JSON reply is "no chart"
+  at DEBUG, never a `JSONDecodeError` warning.
+
+Tests: `test_showcase_round_8_copy.py`, `test_save_targeted_wiring.py`,
+`test_story_bank_post_anchor.py`.
+
 ### Save-targeted archetypes (issue #619)
 
 Two save-targeted post archetypes live in the same `POST_FORMATS` menu: `build_receipt` and

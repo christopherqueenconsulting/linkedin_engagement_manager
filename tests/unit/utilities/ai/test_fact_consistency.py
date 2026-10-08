@@ -119,7 +119,7 @@ class TestReport:
     def test_no_story_date_skips_the_timeline(self):
         report = fc.consistency_report("Within the first quarter we doubled revenue.")
         assert report == {"passes": True, "issues": [], "weekday": [], "deadline": [],
-                          "timeline": [], "provenance": []}
+                          "timeline": [], "provenance": [], "counts": []}
 
 
 class TestSignature:

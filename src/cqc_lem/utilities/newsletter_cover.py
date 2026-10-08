@@ -276,6 +276,58 @@ def _recent_concept_field(user_id: int, field: str, limit: int) -> list:
     return values
 
 
+def _cover_family(archetype: Optional[str]) -> str:
+    """``drawn`` for a code-drawn cover, ``render`` for an AI render — what a reader tells apart."""
+    from cqc_lem.utilities.ai.image_concept import CODE_DRAWN_ARCHETYPES
+
+    return "drawn" if archetype in CODE_DRAWN_ARCHETYPES else "render"
+
+
+def recent_cover_pairs(user_id: int, limit: int) -> list:
+    """``(layout, family)`` of the last ``limit`` covers, most recent first (unknowns skipped)."""
+    pairs = []
+    for receipt in _recent_cover_receipts(user_id, limit):
+        concept = receipt.get("concept") if isinstance(receipt.get("concept"), dict) else {}
+        layout = concept.get("layout")
+        archetype = receipt.get("archetype_rendered") or concept.get("archetype")
+        if layout and archetype:
+            pairs.append((layout, _cover_family(archetype)))
+    return pairs
+
+
+def fresh_cover_layout(concept: Any, recent_pairs: list) -> Any:
+    """The concept on a split layout no recent cover of its family used (showcase round 8).
+
+    cover_17 and cover_20 were both AI renders on ``split_left`` — the same charcoal-left
+    composition three covers apart. The split side moves first; with both sides shown the cover
+    breaks to full-bleed. A concept off the split layouts is returned as is.
+
+    Args:
+        concept: Stage 1's concept (frozen), or None.
+        recent_pairs: ``recent_cover_pairs``, most recent first.
+
+    Returns:
+        The concept, its layout possibly changed.
+    """
+    import dataclasses
+
+    from cqc_lem.utilities.ai.image_concept import COVER_BREAK_LAYOUT, COVER_LAYOUTS
+    from cqc_lem.utilities.ai.post_treatment import PAIR_WINDOW
+
+    layout = getattr(concept, "layout", None)
+    if concept is None or layout not in COVER_LAYOUTS:
+        return concept
+    family = _cover_family(getattr(concept, "archetype", None))
+    shown = set(list(recent_pairs or [])[:PAIR_WINDOW - 1])
+    if (layout, family) not in shown:
+        return concept
+    pick = next((alt for alt in COVER_LAYOUTS if (alt, family) not in shown), COVER_BREAK_LAYOUT)
+    try:
+        return dataclasses.replace(concept, layout=pick)
+    except (TypeError, ValueError):
+        return concept
+
+
 def _recent_cover_archetypes(user_id: int, limit: int) -> list[str]:
     """The archetypes the last `limit` covers actually SHIPPED as, most-recent first.
 
@@ -531,6 +583,96 @@ def ensure_composed_cover(path: str, hook: Optional[str], render_info: dict, *, 
         return None
 
 
+# Showcase round 8: cover_18 shipped SQUARE (960x960 in the export, 1024x1024 on disk). The avatar
+# LoRA renders 1:1, and a full-bleed layout composes onto the render itself, so nothing restored the
+# 16:9 a cover slot needs. Every cover leaves here 16:9.
+COVER_SIZE = (1920, 1080)
+_COVER_RATIO_TOLERANCE = 0.02
+
+
+def is_cover_ratio(path: Optional[str]) -> bool:
+    """Is the image at ``path`` 16:9 (within ``_COVER_RATIO_TOLERANCE``)? False when unreadable."""
+    try:
+        from PIL import Image
+
+        with Image.open(path) as img:
+            width, height = img.size
+    except Exception:
+        return False
+    return height > 0 and abs(width / height - COVER_SIZE[0] / COVER_SIZE[1]) <= _COVER_RATIO_TOLERANCE
+
+
+def _to_cover_canvas(path: str) -> Optional[str]:
+    """``path`` scaled to cover 1920x1080 and centre-cropped to it, as a new PNG. Never raises."""
+    try:
+        from PIL import Image
+
+        from cqc_lem.utilities.ai.image_compose import Box, cover_fit
+
+        with Image.open(path) as img:
+            fitted = cover_fit(img.convert("RGB"), Box(0, 0, *COVER_SIZE))
+        out = f"{os.path.splitext(path)[0]}_16x9.png"
+        fitted.save(out, "PNG")
+        return out
+    except Exception as e:
+        log_debug("Cover could not be fitted to 16:9", error=str(e), action_type="newsletter_cover")
+        return None
+
+
+def ensure_cover_ratio(path: str, hook: Optional[str], render_info: dict, *, concept: Any,
+                       brand: str, byline: Optional[str],
+                       user_id: Optional[int] = None) -> Optional[str]:
+    """``path`` when it is 16:9; else the cover re-composed on a 16:9 canvas. Never raises.
+
+    The RAW render (``render_info["raw_render_path"]``) is fitted to 1920x1080 and its headline
+    composed again, so no headline is cropped; with no raw render the composed cover itself is
+    fitted. None only when neither could be made.
+
+    Args:
+        path: The composed cover.
+        hook: Its headline.
+        render_info: The gate's out-param.
+        concept: Stage 1's concept, for the layout and kicker.
+        brand: The brand clause.
+        byline: The cover byline.
+        user_id: For log context.
+
+    Returns:
+        A 16:9 cover's path, or None.
+    """
+    if is_cover_ratio(path):
+        return path
+    raw = render_info.get("raw_render_path")
+    if raw and os.path.isfile(raw) and hook:
+        try:
+            from cqc_lem.utilities.ai.image_compose import brand_style, compose_headline
+            from cqc_lem.utilities.ai.image_concept import derive_kicker
+            from cqc_lem.utilities.ai.image_gen import _kicker_for
+
+            canvas = _to_cover_canvas(raw)
+            if canvas:
+                kicker = (_kicker_for(concept) if concept is not None else "") or derive_kicker(hook)
+                composed = compose_headline(canvas, hook, layout=getattr(concept, "layout", None),
+                                            brand=brand_style(brand), surface="newsletter",
+                                            kicker=kicker or None, signature=byline,
+                                            canvas=COVER_SIZE)
+                if is_cover_ratio(composed):
+                    log_info("Cover re-composed at 16:9 from a non-16:9 render", user_id=user_id,
+                             action_type="newsletter_cover")
+                    render_info["cover_composed"] = "ratio_recompose"
+                    return composed
+        except Exception as e:
+            log_debug("Cover could not be re-composed at 16:9 — fitting the composite",
+                      error=str(e), user_id=user_id, action_type="newsletter_cover")
+    fitted = _to_cover_canvas(path)
+    if fitted and is_cover_ratio(fitted):
+        render_info["cover_composed"] = "ratio_fit"
+        return fitted
+    log_warning("A newsletter cover could not be made 16:9 — not shipping it", user_id=user_id,
+                action_type="newsletter_cover")
+    return None
+
+
 def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[str],
                                subtitle: Optional[str], body: Optional[str],
                                profile=None,
@@ -590,6 +732,7 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
             recent_archetypes=_recent_cover_archetypes(user_id, ARCHETYPE_WINDOW),
             recent_art_styles=_recent_concept_field(user_id, "art_style", ROTATION_WINDOW),
             facts=story_facts_for(user_id))
+        concept = fresh_cover_layout(concept, recent_cover_pairs(user_id, ROTATION_WINDOW))
         # Round 8: the avatar is resolved AFTER Stage 1, so the fit rule can read the concept.
         avatar = _resolve_cover_avatar(user_id, use_avatar, title, subtitle, body,
                                        concept=concept)
@@ -651,6 +794,10 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
                                      brand=brand, byline=byline, user_id=user_id)
     if not composed:
         return None, "The cover could not be composed with its headline"
+    composed = ensure_cover_ratio(composed, hook, render_info, concept=brief.concept, brand=brand,
+                                  byline=byline, user_id=user_id)
+    if not composed:
+        return None, "The cover could not be made 16:9"
     if composed != generated_path:
         generated_path = composed
         verdict = inspect_cover_file(generated_path)

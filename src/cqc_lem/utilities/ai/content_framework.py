@@ -3518,17 +3518,43 @@ _PROMISE_FROM_TO_RE = re.compile(r"\bfrom\s+[\w'’-]+(?:\s+[\w'’-]+)?\s+to\s+
 _PROMISE_WORDS = frozenset(("success", "successes", "results", "win", "wins", "growth",
                             "breakthrough", "transformation", "solved", "fixed", "secret",
                             "secrets", "guaranteed", "profit", "profits", "revenue", "turnaround",
-                            "victory", "payoff"))
+                            "victory", "payoff",
+                            # Round 8: "How I Saved My Launch" over a deck that paused it;
+                            # "boosts user trust" over slides that never show the boost.
+                            "saved", "rescued", "boosts", "boosted", "doubled", "tripled",
+                            "skyrocketed", "transformed"))
 # Words too short to compare by prefix.
 _PROMISE_STEM = 5
 # The longest sentence a deterministic re-heading may use.
 DECK_HEADING_MAX_WORDS = 12
 
 
+# Showcase round 8: "The Challenge", "The Solution", "The Launch Day Surprise", "The Quick
+# Decision" — the round-7 pattern needed a colon after the label, so a bare "The <Noun>" heading
+# slipped. A Title-Case "The" phrase of at most four words that asserts nothing is a role label.
+_BARE_THE_HEADING_RE = re.compile(r"^\s*The(?:\s+[A-Z][\w'’-]*){1,4}\s*[.!:]?\s*$")
+_HEADING_VERBS = frozenset((
+    "is", "are", "was", "were", "has", "have", "had", "will", "can", "could", "did", "does", "do",
+    "took", "made", "got", "cut", "saved", "works", "worked", "broke", "failed", "shipped", "won",
+    "lost", "beats", "beat", "kills", "killed", "costs", "cost", "pays", "paid", "needs", "needed",
+))
+
+
+def _bare_role_heading(title: str) -> bool:
+    if not _BARE_THE_HEADING_RE.match(title or "") or any(ch.isdigit() for ch in title):
+        return False
+    words = re.findall(r"[a-z'’]+", title.lower())
+    return not any(w in _HEADING_VERBS or (len(w) > 4 and w.endswith("ed")) for w in words[1:])
+
+
 def template_heading(title: Optional[str]) -> str:
-    """The role label a slide heading opens with ("The Stakes:", "Step 1:"), or ''."""
+    """The role label a slide heading opens with ("The Stakes:", "Step 1:", "The Challenge"), or ''."""
     match = _TEMPLATE_HEADING_RE.match(title or "")
-    return " ".join(match.group(0).split()) if match else ""
+    if match:
+        return " ".join(match.group(0).split())
+    if _bare_role_heading(title or ""):
+        return " ".join((title or "").split())
+    return ""
 
 
 def _first_sentence(text: Optional[str], max_words: int = DECK_HEADING_MAX_WORDS) -> str:
@@ -3558,7 +3584,8 @@ def heading_as_claim(title: Optional[str], body: Optional[str]) -> str:
     label = template_heading(title)
     if not label:
         return title or ""
-    rest = _TEMPLATE_HEADING_RE.sub("", title or "", count=1).strip(" :—–-")
+    rest = ("" if _bare_role_heading(title or "")
+            else _TEMPLATE_HEADING_RE.sub("", title or "", count=1).strip(" :—–-"))
     if rest and asserts_something(rest) and len(rest.split()) >= 3:
         return rest[:1].upper() + rest[1:]
     sentence = _first_sentence(body)
@@ -3634,7 +3661,7 @@ def deck_claims_report(carousel: Optional[dict], post_text: Optional[str] = None
     """
     headings = [_slide_label(s) for s in deck_slides(carousel)
                 if s["graded"] and template_heading(s["title"])]
-    promise = cover_promise_gap(carousel)
+    promise = cover_promise_gap(carousel) or unbacked_count_promise(carousel, post_text)
     figures = deck_figure_issues(carousel, post_text, sources)
     reasons = [f"slide “{name}” is headed with a template label, not a claim" for name in headings]
     if promise:
@@ -3695,6 +3722,245 @@ def _drop_lead_sentence(carousel: dict, slide: dict, content: str, heading: str)
             _set_slide(carousel, slide, "content", rest)
 
 
+# --- Showcase round 8: platitudes, thin slides, unbacked counts, inverted facts -------------------
+
+# "Trustworthy data is the foundation." / "Clarity drives results." — a slide line that could sit
+# under any heading of any deck. Short, no figure, no name, and nothing but these words (plus at
+# most one other).
+_PLATITUDE_WORDS = frozenset((
+    "foundation", "foundations", "clarity", "drives", "drive", "driven", "trust", "trustworthy",
+    "matters", "matter", "everything", "power", "powerful", "truth", "true", "real", "wins", "win",
+    "beats", "always", "never", "simple", "simplicity", "better", "best", "great", "good",
+    "smart", "smarter", "success", "successful", "results", "result", "progress", "excellence",
+    "quality", "data", "difference", "game", "changer", "unlock", "unlocks", "journey",
+    "transparency", "accountability", "consistency", "discipline", "mindset", "secret", "built",
+    "build", "starts", "start", "begins", "begin", "count", "counts", "essential", "vital",
+))
+PLATITUDE_MAX_WORDS = 8
+# A body slide with fewer words than this after clean-up (platitudes gone, a line that only
+# repeats its heading gone) carries nothing. A short punchy line ("Reach fell 63%.") is a slide.
+THIN_SLIDE_MIN_WORDS = 3
+# The longest caption sentence a thin slide may borrow.
+SLIDE_FILL_MAX_WORDS = 32
+
+
+def platitude_line(sentence: Optional[str]) -> bool:
+    """Is ``sentence`` a platitude a deck could print under any heading?
+
+    Args:
+        sentence: One slide sentence.
+
+    Returns:
+        True for a short line with no figure, no name and no particular of its own.
+    """
+    text = (sentence or "").strip()
+    words = text.split()
+    if not words or len(words) > PLATITUDE_MAX_WORDS or _DIGIT_RE.search(text) \
+            or text.endswith("?") or _names_something(text[:1].lower() + text[1:]):
+        return False
+    tokens = content_tokens(text)
+    other = [t for t in tokens if t not in DECK_TEMPLATE_WORDS and t not in _PLATITUDE_WORDS]
+    return bool(tokens) and len(other) <= 1 and len(tokens) - len(other) >= 1
+
+
+def _without_platitudes(content: str) -> str:
+    lines = []
+    for line in (content or "").split("\n"):
+        kept = [x for x in _PROOF_SENTENCE_SPLIT.split(line) if x.strip() and not platitude_line(x)]
+        lines.append(" ".join(kept))
+    return "\n".join(ln for ln in lines if ln.strip())
+
+
+def _caption_sentences(post_text: Optional[str]) -> list:
+    out = []
+    for sentence in _PROOF_SENTENCE_SPLIT.split(post_text or ""):
+        sentence = re.sub(r"^\s*(?:[-•*▪✓✔]|\d{1,2}[.)])\s+", "", sentence).strip()
+        words = sentence.split()
+        if (3 <= len(words) <= SLIDE_FILL_MAX_WORDS and not sentence.endswith("?")
+                and cta_type_of(sentence) == CTA_TYPE_NONE and not platitude_line(sentence)):
+            out.append(sentence)
+    return out
+
+
+def _fill_sentence(title: str, candidates: list, used: str) -> str:
+    """The caption sentence that best carries ``title``'s slide, not already on another slide."""
+    used_tokens = content_tokens(used)
+    want = content_tokens(title)
+    best, best_score = "", -1
+    for sentence in candidates:
+        tokens = content_tokens(sentence)
+        if not tokens or len(tokens & used_tokens) / len(tokens) >= 0.6:
+            continue
+        score = len(tokens & want)
+        if score > best_score:
+            best, best_score = sentence, score
+    return best
+
+
+def _remove_slide(carousel: dict, slide: dict) -> bool:
+    """Drop a body slide from a LIST of slides (never a schema's fixed slide). True on success."""
+    holder = carousel.get(slide["key"])
+    if slide["index"] is None or not isinstance(holder, list) or len(holder) < 2:
+        return False
+    holder.pop(slide["index"])
+    return True
+
+
+def _count_promise_backed(cover_title: str, count: int, carousel: dict,
+                          post_text: Optional[str]) -> bool:
+    if deck_count_claims(post_text):
+        return True
+    if len(_DECK_LIST_ITEM_RE.findall(post_text or "")) >= count:
+        return True
+    titles = [x["title"] for x in deck_slides(carousel) if x["graded"]]
+    if any(re.match(r"^\s*(?:step|tip|part|rule|lesson|point|\d{1,2}[.)])", t, re.IGNORECASE)
+           for t in titles):
+        return True
+    match = _DECK_COUNT_CLAIM_RE.search(cover_title)
+    stem = (match.group(2) if match else "").lower().rstrip("s")
+    return bool(stem) and sum(1 for t in titles if stem in t.lower()) >= 2
+
+
+_COUNT_TAIL_RE = r"(?:\s+(?:to\s+know|you\s+need(?:\s+to\s+know)?|that\s+matter\w*|worth\s+\w+))?"
+
+
+def unbacked_count_promise(carousel: Optional[dict], post_text: Optional[str]) -> str:
+    """The cover's "3 Steps" / "3 Things to Know" when nothing in the post makes them steps.
+
+    Showcase round 8: reconciling the NUMBER to the body-slide count made "How I Saved My Launch:
+    3 Steps" arithmetically true over three narrative slides that are no steps at all. A count
+    promise is backed by a caption that counts, a caption list as long, enumerated slide
+    headings, or headings naming the promised noun.
+
+    Args:
+        carousel: The deck.
+        post_text: The caption.
+
+    Returns:
+        The promise phrase as the cover writes it, or ''.
+    """
+    cover = next((x for x in deck_slides(carousel) if x["key"].lower() == "cover"), None)
+    if not cover or not cover["title"]:
+        return ""
+    claims = deck_count_claims(cover["title"])
+    if not claims or _count_promise_backed(cover["title"], claims[0]["count"], carousel or {},
+                                           post_text):
+        return ""
+    return claims[0]["phrase"]
+
+
+def _drop_count_promise(title: str, phrase: str) -> str:
+    out = re.sub(r"\s*[:—–-]?\s*" + re.escape(phrase) + _COUNT_TAIL_RE, "", title, count=1,
+                 flags=re.IGNORECASE)
+    out = " ".join(out.split()).strip(" :—–-")
+    return out[:1].upper() + out[1:] if out else ""
+
+
+# Showcase round 8: slot_142's slide said the phish "came FROM my own support address"; the body
+# said it arrived THROUGH the support group address. A route preposition on a slide must agree with
+# the body's for the same thing.
+_ROUTE_RE = re.compile(r"\b(from|through|via)\s+((?:[\w'’-]+\s+){0,4}[\w'’-]+)", re.IGNORECASE)
+_ROUTE_SKIP = frozenset(("my", "our", "your", "their", "his", "her", "its", "the", "a", "an",
+                         "own", "this", "that", "of"))
+
+
+def _body_route_preps(head: str, body: str) -> set:
+    rx = re.compile(r"\b(from|through|via)\s+(?:[\w'’-]+\s+){0,4}?" + re.escape(head) + r"\b",
+                    re.IGNORECASE)
+    return {m.group(1).lower() for m in rx.finditer(body or "")}
+
+
+def route_inversions(text: Optional[str], body: Optional[str]) -> list:
+    """``(wrong, right, phrase)`` for each route preposition ``text`` inverts against ``body``.
+
+    The thing routed is the first content word after the preposition ("support" in "from my own
+    support address"); the body's preposition for that same word wins.
+
+    Args:
+        text: A slide's text.
+        body: The post body.
+
+    Returns:
+        The inversions, in order.
+    """
+    out = []
+    for m in _ROUTE_RE.finditer(text or ""):
+        prep = m.group(1).lower()
+        for word in m.group(2).split():
+            if word.lower() in _ROUTE_SKIP or len(word) < 4:
+                continue
+            body_preps = _body_route_preps(word, body or "")
+            if body_preps and prep not in body_preps:
+                out.append((m.group(1), sorted(body_preps)[0], m.group(0)))
+            break
+    return out
+
+
+def _fix_routes(text: str, body: str) -> str:
+    for wrong, right, phrase in route_inversions(text, body):
+        fixed = (right.capitalize() if wrong[:1].isupper() else right) + phrase[len(wrong):]
+        text = text.replace(phrase, fixed, 1)
+    return text
+
+
+def _clean_slide_copy(out: dict, post_text: Optional[str]) -> list:
+    """Round 8, before headings are fixed: inverted route facts and platitude lines go."""
+    changes: list = []
+    body = post_text or ""
+    for slide in deck_slides(out):
+        for field in ("title", "content"):
+            fixed = _fix_routes(slide[field], body)
+            if fixed != slide[field]:
+                _set_slide(out, slide, field, fixed)
+                changes.append(f"“{slide[field]}” -> “{fixed}” (the post's own route)")
+        if slide["graded"]:
+            content = _without_platitudes(_fix_routes(slide["content"], body))
+            if content != _fix_routes(slide["content"], body):
+                _set_slide(out, slide, "content", content)
+                changes.append(f"dropped a platitude from “{_slide_label(slide)}”")
+    return changes
+
+
+def _same_line(a: str, b: str) -> bool:
+    return a.strip().rstrip(".!").lower() == b.strip().rstrip(".!").lower()
+
+
+def _fill_thin_slides(out: dict, post_text: Optional[str]) -> list:
+    """Round 8, last: a body slide left near-empty is dropped from a list, else filled from the post.
+
+    A slide whose body only repeats its heading counts as empty. A role label still heading an
+    emptied slide is re-headed from the post's best short sentence first.
+    """
+    changes: list = []
+    candidates = _caption_sentences(post_text)
+    headable = [c for c in candidates if len(c.split()) <= DECK_HEADING_MAX_WORDS]
+    for slide in reversed(deck_slides(out)):
+        if not slide["graded"]:
+            continue
+        title = slide["title"]
+        repeats = _same_line(slide["content"], title)
+        content = "" if repeats else slide["content"]
+        if len(content.split()) >= THIN_SLIDE_MIN_WORDS:
+            continue
+        # An EMPTY slide in a list goes; one whose body repeats its heading still says something.
+        if not repeats and _remove_slide(out, slide):
+            changes.append(f"dropped the empty slide “{_slide_label(slide)}”")
+            continue
+        if template_heading(title):
+            head = _fill_sentence(title, headable, deck_text(out))
+            if head:
+                _set_slide(out, slide, "title", head.rstrip("."))
+                changes.append(f"“{title}” -> “{head.rstrip('.')}”")
+                title = head
+                if _same_line(content, title):
+                    content = ""
+        fill = _fill_sentence(title, candidates, f"{deck_text(out)}\n{title}")
+        if fill:
+            _set_slide(out, slide, "content", f"{content} {fill}".strip() if content else fill)
+            changes.append(f"filled the thin slide “{_slide_label(slide)}” from the post")
+    return changes
+
+
 def finalize_deck_claims(carousel: Optional[dict], post_text: Optional[str] = None,
                          sources: Optional[list] = None) -> tuple:
     """Fix what the deck's ONE regeneration left, in code, before anything renders.
@@ -3718,8 +3984,10 @@ def finalize_deck_claims(carousel: Optional[dict], post_text: Optional[str] = No
 
     if not isinstance(carousel, dict):
         return carousel, []
+    # Read off the deck AS WRITTEN: a "Step 1:" heading backs "3 Steps" before it is re-headed.
+    counted = unbacked_count_promise(carousel, post_text)
     out = _deck_copy(carousel)
-    changes: list = []
+    changes: list = _clean_slide_copy(out, post_text)
     figures_by_slide = {f["slide"]: f["figures"] for f in deck_figure_issues(out, post_text,
                                                                               sources)}
     for slide in deck_slides(out):
@@ -3743,7 +4011,16 @@ def finalize_deck_claims(carousel: Optional[dict], post_text: Optional[str] = No
                 _set_slide(out, slide, "title", claim)
                 changes.append(f"“{title}” -> “{claim}”")
                 _drop_lead_sentence(out, slide, content, claim)
-    promise = cover_promise_gap(out)
+    changes += _fill_thin_slides(out, post_text)
+    if counted:
+        cover = next((x for x in deck_slides(out) if x["key"].lower() == "cover"), None)
+        trimmed = _drop_count_promise(cover["title"], counted) if cover else ""
+        if cover and len(trimmed.split()) >= 2:
+            _set_slide(out, cover, "title", trimmed)
+            changes.append(f"cover “{cover['title']}” promised “{counted}” the slides are not; "
+                           f"re-set to “{trimmed}”")
+            counted = ""
+    promise = cover_promise_gap(out) or counted
     if promise:
         slides = deck_slides(out)
         cover = next((s for s in slides if s["key"].lower() == "cover"), None)
@@ -3880,6 +4157,12 @@ CTA_TYPES = (CTA_TYPE_ARTIFACT, CTA_TYPE_QUESTION, CTA_TYPE_SAVE, CTA_TYPE_SHARE
              CTA_TYPE_NONE)
 # Never the same CTA type twice in any `CTA_TYPE_WINDOW` consecutive posts.
 CTA_TYPE_WINDOW = 3
+# Showcase round 8: "Forward this" / "pass this on" / "Pass this along" closed three posts of ten,
+# and about 8 of 14 posts ended on a question. One share ask in any six posts; at most two question
+# closes (a third) in any six.
+SHARE_CTA_WINDOW = 6
+CLOSING_QUESTION_CAP = 2
+CLOSING_QUESTION_WINDOW = 6
 # The keyword artifact ask ("Comment AUDIT") at most once in any window of this many days, and only
 # on the promo slot (showcase round 5: four of ten posts closed on it).
 ARTIFACT_CTA_COOLDOWN_DAYS = 7
@@ -3905,9 +4188,11 @@ _CTA_DM_RE = re.compile(r"\b(?:dm|message|msg)\s+me\b|\bsend me a (?:dm|message|
                         r"\bin (?:my|the) dms?\b", re.IGNORECASE)
 _CTA_SAVE_RE = re.compile(r"\bsave (?:this|it)\b|\bbookmark\b|\bworth saving\b|\bkeep this\b",
                           re.IGNORECASE)
+# Showcase round 8: "Forward this." read as a question close (its line ended on "?") and slipped
+# the rotation; forward / pass on / pass along / share this are ONE share ask.
 _CTA_SHARE_RE = re.compile(
-    r"\b(?:share|send|forward)\b[^\n]{0,30}\b(?:with|to)\b|\bpass (?:this|it) (?:on|along)\b|"
-    r"\bknow someone who\b", re.IGNORECASE)
+    r"\b(?:share|send|forward)\b[^\n]{0,30}\b(?:with|to)\b|\bpass (?:this|it)(?: (?:on|along))?\b|"
+    r"\b(?:forward|share|send|repost) (?:this|it)\b|\bknow someone who\b", re.IGNORECASE)
 
 
 def _closing_lines(text: Optional[str]) -> list:
@@ -3973,6 +4258,12 @@ def select_cta_type(recent_types: Optional[list], promo: bool = False, allow_dm:
         return CTA_TYPE_ARTIFACT
     recent = [t for t in (recent_types or []) if t in CTA_TYPES]
     blocked = set(recent[:CTA_TYPE_WINDOW - 1])
+    # Showcase round 8: one share ask per `SHARE_CTA_WINDOW` posts, and at most
+    # `CLOSING_QUESTION_CAP` question closes in any `CLOSING_QUESTION_WINDOW`.
+    if CTA_TYPE_SHARE in recent[:SHARE_CTA_WINDOW - 1]:
+        blocked.add(CTA_TYPE_SHARE)
+    if recent[:CLOSING_QUESTION_WINDOW - 1].count(CTA_TYPE_QUESTION) >= CLOSING_QUESTION_CAP:
+        blocked.add(CTA_TYPE_QUESTION)
     rotation = (_CTA_ROTATION if smb is None
                 else _CTA_ROTATION_SMB if smb else _CTA_ROTATION_PRACTITIONER)
     menu = [t for t in rotation if t != CTA_TYPE_DM or allow_dm]
@@ -4078,6 +4369,77 @@ def strip_closing_ask(text: Optional[str]) -> Optional[str]:
     if len(paragraphs) < 3 or cta_type_of(paragraphs[-1]) == CTA_TYPE_NONE:
         return text
     return "\n\n".join(paragraphs[:-1]).strip()
+
+
+def close_cap_reason(text: Optional[str], recent_texts: Optional[list]) -> str:
+    """Why this post's close breaks a batch cap (showcase round 8), or '' when it does not.
+
+    A share ask when one of the last ``SHARE_CTA_WINDOW - 1`` posts already closed on one; a
+    question close when ``CLOSING_QUESTION_CAP`` of the last ``CLOSING_QUESTION_WINDOW - 1`` did.
+
+    Args:
+        text: The post.
+        recent_texts: The author's recent posts, most recent first.
+
+    Returns:
+        The reason, or ''.
+    """
+    shipped = cta_type_of(text)
+    recent = [cta_type_of(t) for t in list(recent_texts or [])]
+    if shipped == CTA_TYPE_SHARE and CTA_TYPE_SHARE in recent[:SHARE_CTA_WINDOW - 1]:
+        return f"a share ask inside {SHARE_CTA_WINDOW} posts of the last one"
+    if (shipped == CTA_TYPE_QUESTION and recent[:CLOSING_QUESTION_WINDOW - 1].count(
+            CTA_TYPE_QUESTION) >= CLOSING_QUESTION_CAP):
+        return (f"a question close over the cap of {CLOSING_QUESTION_CAP} in "
+                f"{CLOSING_QUESTION_WINDOW} posts")
+    return ""
+
+
+def drop_closing_question(text: Optional[str]) -> Optional[str]:
+    """The post with its closing QUESTION cut, so it ends on its last statement.
+
+    A final paragraph that is only questions goes when two paragraphs remain; otherwise the
+    trailing question sentences of the final paragraph go when a statement stays before them.
+    Unchanged when neither stands.
+
+    Args:
+        text: The post.
+
+    Returns:
+        The trimmed post, or the input.
+    """
+    paragraphs = [p for p in re.split(r"\n\s*\n", (text or "").strip()) if p.strip()]
+    if not paragraphs:
+        return text
+    last = paragraphs[-1].strip()
+    sentences = [s for s in re.split(r"(?<=[.!?])\s+", last) if s.strip()]
+    kept = list(sentences)
+    while kept and kept[-1].rstrip().endswith("?"):
+        kept.pop()
+    if len(kept) == len(sentences):
+        return text
+    if kept:
+        return "\n\n".join(paragraphs[:-1] + [" ".join(kept)]).strip()
+    if len(paragraphs) >= 3:
+        return "\n\n".join(paragraphs[:-1]).strip()
+    return text
+
+
+def enforce_close_caps(text: Optional[str], recent_texts: Optional[list]) -> tuple:
+    """``(text, reason)``: the close cut when it breaks a batch cap (``close_cap_reason``).
+
+    A share ask is cut whole (``strip_closing_ask``); a question close loses its question
+    (``drop_closing_question``). The promo slot's keyword close is never a share or a question,
+    so it is never touched. ``reason`` is '' when nothing was cut.
+    """
+    reason = close_cap_reason(text, recent_texts)
+    if not reason:
+        return text, ""
+    if cta_type_of(text) == CTA_TYPE_QUESTION:
+        trimmed = drop_closing_question(text)
+    else:
+        trimmed = strip_closing_ask(text)
+    return (trimmed, reason) if trimmed != text else (text, "")
 
 
 # --- Topic diversity across the plan ------------------------------------------------------------

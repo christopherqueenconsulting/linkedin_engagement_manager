@@ -758,6 +758,12 @@ def _data_clock(t: float) -> tuple:
     return t - _BUILD_AT, 1.0
 
 
+# How far a kinetic_slide row travels, as a share of the width. Round 8: gif_141's 6% / 8% read as
+# a dim, "barely perceptible" — a slide a reader sees travels a sixth of the frame.
+_SLIDE_EXIT = 0.12
+_SLIDE_ENTER = 0.16
+
+
 def _kinetic_row(plan: MotionPlan, sprite: _Sprite, index: int, t: float) -> tuple:
     """``(dx, dy, alpha, scale)`` for one row at ``t``: at rest outside its own window."""
     width = plan.size[0]
@@ -772,13 +778,13 @@ def _kinetic_row(plan: MotionPlan, sprite: _Sprite, index: int, t: float) -> tup
             return 0, 0, 1 - exit_p, 1.0 - 0.2 * exit_p
         if plan.style == STYLE_KINETIC_MASK:
             return 0, -round(height * exit_p), 1.0, 1.0
-        return round(width * 0.06 * exit_p), 0, 1 - exit_p, 1.0
+        return round(width * _SLIDE_EXIT * exit_p), 0, 1 - exit_p, 1.0
     enter_p = ease_out_cubic(enter_t)
     if sprite.hero:
         return 0, 0, min(1.0, enter_t * 2), 0.6 + 0.4 * ease_out_back(enter_t)
     if plan.style == STYLE_KINETIC_MASK:
         return 0, round(height * (1 - enter_p)), 1.0, 1.0
-    return -round(width * 0.08 * (1 - enter_p)), 0, enter_p, 1.0
+    return -round(width * _SLIDE_ENTER * (1 - enter_p)), 0, enter_p, 1.0
 
 
 def _underline_span(plan: MotionPlan, t: float) -> tuple:
@@ -842,7 +848,9 @@ def _render_stat(plan: MotionPlan, tb: float, frame: Any, inks: dict, alpha: flo
     if filled > 0:
         draw.rectangle((x0, d["bar_y"], x0 + filled, d["bar_y"] + d["bar_h"]),
                        fill=(*inks["gold"], a))
-    label = _progress(tb, _COUNT_SECONDS, 0.45) * alpha
+    # Round 8: gif_123's mid-loop frames showed a bare "7" — the label waited for the count to
+    # finish. The label stays up through the count, so any frame reads "7 tests passed".
+    label = alpha
     if label > 0:
         for n, line in enumerate(d["label_lines"]):
             draw.text((x0, d["label_y"] + n * d["label_h"]), line, font=d["label_font"],
@@ -1201,8 +1209,13 @@ def loop_from_receipt(receipt: Optional[dict], *, user_id: Optional[int],
     """
     receipt = receipt or {}
     concept = receipt.get("concept") if isinstance(receipt.get("concept"), dict) else {}
-    hook = str(receipt.get("hook_text") or concept.get("hook_phrase") or "").strip()
-    graphic = concept.get("graphic") if isinstance(concept.get("graphic"), dict) else None
+    # Round 8: a quote or typeset card's loop sets the words the STILL sets — its quote or its
+    # headline — in kinetic type; the concept's graphic is not on that still, so it never moves.
+    card = str(receipt.get("archetype_rendered") or "") in ("quote_card", "typeset_card")
+    hook = str(receipt.get("hook_text") or (receipt.get("quote") if card else "")
+               or concept.get("hook_phrase") or "").strip()
+    graphic = (concept.get("graphic") if isinstance(concept.get("graphic"), dict)
+               and not card else None)
     return create_motion_gif(hook, graphic=graphic, user_id=user_id, post_id=post_id,
                              kicker=str(concept.get("kicker") or ""), ratio=ratio,
                              prefer=ARCHETYPE_STYLE.get(str(receipt.get("archetype_rendered"))))
