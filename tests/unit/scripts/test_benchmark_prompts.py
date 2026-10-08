@@ -754,7 +754,9 @@ class TestCli:
 
         assert rc == 2  # "yes" to everything fails the balanced classifier's accuracy floor
         recorded = json.loads(state.read_text())
-        assert all(row["outputs_artifact"] == "123" for row in recorded["classify.lead_intent@1"].values())
+        version = bp.registry.load_json(bp.registry.LOCK_PATH)["classify.lead_intent"]["version"]
+        assert all(row["outputs_artifact"] == "123"
+                   for row in recorded[f"classify.lead_intent@{version}"].values())
         assert json.loads((tmp / "outputs.json").read_text())
         assert json.loads((tmp / "res.json").read_text())["failing"]
         assert (tmp / "out" / "2026-10-08-pe-t.md").exists()
