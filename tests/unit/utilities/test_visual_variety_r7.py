@@ -78,9 +78,10 @@ class TestTitleCards:
             tc.record_variant(3, tc.VARIANT_QUESTION, tc.GROUND_OFF_WHITE)
             assert tc.recent_cards(3)[0] == (tc.VARIANT_QUESTION, tc.GROUND_OFF_WHITE)
             assert tc.recent_variants(3)[:2] == [tc.VARIANT_QUESTION, tc.VARIANT_NUMBER]
+            # The motion round keeps the cards under "variants", beside "motions".
             with open(path) as fh:
-                assert json.load(fh)[0] == {"variant": tc.VARIANT_QUESTION,
-                                            "ground": tc.GROUND_OFF_WHITE}
+                assert json.load(fh)["variants"][0] == {"variant": tc.VARIANT_QUESTION,
+                                                        "ground": tc.GROUND_OFF_WHITE}
 
 
 class TestDecks:

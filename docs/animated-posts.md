@@ -75,6 +75,11 @@ for it and reads the format from the bytes.
    is the binding**: replacing or removing the still (`remove_post_image_file` deletes the loop too)
    can never leave the publisher holding a loop of a different picture.
 
+A **code-drawn** still (its receipt's `archetype_rendered` is a data graphic) never goes to Runway —
+an image model would re-draw its verified figures. It gets a $0 kinetic loop of its OWN facts
+instead (`motion_design.loop_from_receipt`: a stat counts up, a chart draws in, a checklist ticks),
+under the same ≤250-frame / ≤5 MB / seamless rules ([motion-design.md](motion-design.md)).
+
 `make_loop_mp4` is the alternative output (a ≤15 s ping-pong H.264 MP4). It is built and tested but
 NOT wired to publishing: an MP4 would turn an image post into a video post, which is a different
 decision.

@@ -30,7 +30,7 @@ import re
 import secrets
 import subprocess
 from dataclasses import dataclass
-from typing import Any, Optional, Sequence
+from typing import Any, Iterable, Optional, Sequence
 
 from cqc_lem.utilities.env_constants import isTrue
 from cqc_lem.utilities.logger import log_debug, log_info, log_warning
@@ -339,11 +339,70 @@ def variant_history_path(user_id: int) -> str:
     return os.path.join(title_card_dir(), "history", f"{int(user_id)}.json")
 
 
+def read_card_history(user_id: Optional[int]) -> dict:
+    """This author's card history: ``{"variants": [...], "motions": [...]}``. Never raises.
+
+    Read from disk, not process state, so a rotation spans workers and restarts. ``variants``
+    holds the raw card entries (``{"variant", "ground"}`` since showcase round 7, a bare layout
+    name before it); ``motions`` the ``motion_design`` styles. A file from before the motion
+    round is a bare list of either entry shape and still reads as ``variants``.
+
+    Args:
+        user_id: The author; None reads nothing.
+
+    Returns:
+        Both lists, most recent first (empty when unknown or unreadable).
+    """
+    import json
+
+    empty: dict = {"variants": [], "motions": []}
+    if user_id is None:
+        return empty
+    try:
+        with open(variant_history_path(user_id), "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return empty
+    if isinstance(data, list):
+        data = {"variants": data}
+    if not isinstance(data, dict):
+        return empty
+    return {"variants": [v for v in data.get("variants") or [] if isinstance(v, (str, dict))]
+            if isinstance(data.get("variants"), list) else [],
+            "motions": [m for m in data.get("motions") or [] if isinstance(m, str)]
+            if isinstance(data.get("motions"), list) else []}
+
+
+def write_card_history(user_id: Optional[int], **lists: list) -> None:
+    """Replace the named history lists (``variants=`` / ``motions=``), capped. Never raises.
+
+    A lost write costs one repeated layout or motion at most, so it logs at DEBUG.
+
+    Args:
+        user_id: The author; None records nothing.
+        **lists: The lists to replace, most recent first; the others are kept.
+    """
+    import json
+
+    if user_id is None:
+        return
+    path = variant_history_path(user_id)
+    history = read_card_history(user_id)
+    history.update({k: list(v)[:_VARIANT_HISTORY] for k, v in lists.items() if k in history})
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(history, handle)
+    except OSError as e:
+        log_debug("Title card layout history not written", error=str(e), user_id=user_id,
+                  task_name=TASK_NAME)
+
+
 def recent_cards(user_id: Optional[int]) -> list:
     """This author's recent title cards as ``(layout, ground)``, most recent first. Never raises.
 
-    Read from disk, not process state, so a rotation spans workers and restarts. An entry written
-    before showcase round 7 is a bare layout name; its ground reads as None (unknown).
+    An entry written before showcase round 7 is a bare layout name; its ground reads as None
+    (unknown).
 
     Args:
         user_id: The author; None reads nothing.
@@ -351,19 +410,8 @@ def recent_cards(user_id: Optional[int]) -> list:
     Returns:
         The cards ([] when unknown or unreadable).
     """
-    import json
-
-    if user_id is None:
-        return []
-    try:
-        with open(variant_history_path(user_id), "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-    except (OSError, ValueError):
-        return []
-    if not isinstance(data, list):
-        return []
     out = []
-    for entry in data:
+    for entry in read_card_history(user_id)["variants"]:
         variant = entry.get("variant") if isinstance(entry, dict) else entry
         ground = entry.get("ground") if isinstance(entry, dict) else None
         if variant in TITLE_CARD_VARIANTS:
@@ -413,21 +461,11 @@ def record_variant(user_id: Optional[int], variant: str, ground: Optional[str] =
         user_id: The author; None records nothing.
         variant: The layout that just rendered.
         ground: Its ground (charcoal or off-white), when known.
-    """
-    import json
 
-    if user_id is None:
-        return
-    path = variant_history_path(user_id)
-    history = [{"variant": v, "ground": g}
-               for v, g in [(variant, ground), *recent_cards(user_id)]][:_VARIANT_HISTORY]
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump(history, handle)
-    except OSError as e:
-        log_debug("Title card layout history not written", error=str(e), user_id=user_id,
-                  task_name=TASK_NAME)
+    The motion history beside it is kept (``write_card_history``).
+    """
+    write_card_history(user_id, variants=[{"variant": v, "ground": g}
+                                          for v, g in [(variant, ground), *recent_cards(user_id)]])
 
 
 def _fit_lines(draw: Any, text: str, width: int, height: int, high: int, low: int,
@@ -446,7 +484,7 @@ def _fit_lines(draw: Any, text: str, width: int, height: int, high: int, low: in
 
 def plan_title_card(hook: str, *, size: tuple, palette: TitleCardPalette, kicker: str = "",
                     byline: str = "", seconds: float = 7.0,
-                    variant: str = VARIANT_POSTER) -> TitleCardLayout:
+                    variant: str = VARIANT_POSTER, clear_caption: bool = True) -> TitleCardLayout:
     """Fit the hook and place every element. Raises ``ValueError`` when the hook cannot be set.
 
     Args:
@@ -458,6 +496,8 @@ def plan_title_card(hook: str, *, size: tuple, palette: TitleCardPalette, kicker
         seconds: The clip length.
         variant: One of ``TITLE_CARD_VARIANTS``; ``number_led`` without a leading figure is set
             as the poster.
+        clear_caption: Keep the caption band clear (a video). A GIF has no caption: the hook may
+            use the whole frame, set up to a third larger.
 
     Returns:
         The layout.
@@ -480,8 +520,8 @@ def plan_title_card(hook: str, *, size: tuple, palette: TitleCardPalette, kicker
     # rule + byline are reserved INSIDE it (`tail` below), so nothing the card draws can land there.
     from cqc_lem.utilities.video_captions import caption_band_top
 
-    floor_y = min(round(height * (1 - CAPTION_CLEARANCE)),
-                  caption_band_top((width, height))) - round(height * 0.08)
+    floor_y = (min(round(height * (1 - CAPTION_CLEARANCE)), caption_band_top((width, height)))
+               - round(height * 0.08)) if clear_caption else round(height * 0.92)
     usable_h = floor_y - top_zone
     kicker = (kicker or "").upper().strip()
     kicker_font = load_font(max(18, round(width * 0.03)))
@@ -517,7 +557,8 @@ def plan_title_card(hook: str, *, size: tuple, palette: TitleCardPalette, kicker
             kicker_xy = (left + pad, top - round(kh * 0.1))
             top_zone = max(top_zone, kicker_box[3] + round(height * 0.05))
             usable_h = floor_y - top_zone
-    high = round(width * (0.08 if variant == VARIANT_NUMBER else 0.105))
+    high = round(width * (0.08 if variant == VARIANT_NUMBER else 0.105)
+                 * (1.0 if clear_caption else 1.35))
     byline = (byline or "").strip()
     byline_font = _medium_font(max(18, round(width * 0.034)))
     rule_h = max(6, round(width * 0.008))
@@ -589,12 +630,16 @@ def _ease(p: float) -> float:
     return 1 - (1 - p) ** 3
 
 
-def render_title_card_frame(layout: TitleCardLayout, t: float) -> Any:
+def render_title_card_frame(layout: TitleCardLayout, t: float, *, hook: bool = True,
+                            backdrop: bool = True) -> Any:
     """One frame at ``t`` seconds, as a PIL RGB image — complete at ``t=0`` (the thumbnail).
 
     Args:
         layout: ``plan_title_card`` output.
         t: Seconds from the start.
+        hook: Draw the hook (and its hero). ``motion_design`` draws them itself, as sprites.
+        backdrop: Draw the ground and the drifting slab. Without it the frame is a transparent
+            RGBA layer of the type alone (``motion_design`` draws its own moving ground).
 
     Returns:
         The frame.
@@ -603,7 +648,10 @@ def render_title_card_frame(layout: TitleCardLayout, t: float) -> Any:
 
     pal = layout.palette
     width, height = layout.size
-    image = Image.new("RGB", (width, height), pal.ground)
+    if not backdrop:
+        image = Image.new("RGBA", (width, height), (*pal.ground, 0))
+    else:
+        image = Image.new("RGB", (width, height), pal.ground)
     draw = ImageDraw.Draw(image)
     # The slab drifts left across the whole clip: the card moves for its whole length. It sits
     # below the type block with a gold edge, under where the caption band will burn.
@@ -611,8 +659,9 @@ def render_title_card_frame(layout: TitleCardLayout, t: float) -> Any:
     sx = round(width * (0.46 - 0.12 * drift))
     sy = (layout.slab_top or round(height * 0.66)) + round(height * 0.02 * (1 - drift))
     edge = max(6, round(width * 0.008))
-    draw.rectangle((sx, sy, width, height), fill=pal.slab)
-    draw.rectangle((sx, sy, width, sy + edge - 1), fill=pal.rule)
+    if backdrop:
+        draw.rectangle((sx, sy, width, height), fill=pal.slab)
+        draw.rectangle((sx, sy, width, sy + edge - 1), fill=pal.rule)
     if layout.kicker:
         if layout.kicker_box:
             draw.rectangle(layout.kicker_box, fill=pal.rule)
@@ -621,9 +670,9 @@ def render_title_card_frame(layout: TitleCardLayout, t: float) -> Any:
             draw.text(layout.kicker_xy, layout.kicker, font=layout.kicker_font, fill=ink)
         else:
             draw.text(layout.kicker_xy, layout.kicker, font=layout.kicker_font, fill=pal.kicker)
-    if layout.hero and layout.hero_font is not None:
+    if hook and layout.hero and layout.hero_font is not None:
         draw.text(layout.hero_xy, layout.hero, font=layout.hero_font, fill=pal.hook)
-    for word in layout.words:
+    for word in layout.words if hook else ():
         draw.text((word.x, word.y), word.text, font=layout.hook_font, fill=pal.hook)
     left, top, right, bottom = layout.rule_box
     grow = 1 + _RULE_GROWTH * _ease(t / max(0.1, layout.seconds))
@@ -643,8 +692,59 @@ def _ffmpeg() -> Optional[str]:
     return shutil.which("ffmpeg")
 
 
+def encode_frames(command: list, frames: Iterable[bytes], out_path: str, *,
+                  what: str = "Title card", timeout: int = 300) -> bool:
+    """Pipe raw frames into one ffmpeg ``command``; True only when ``out_path`` is a real file.
+
+    A broken pipe, a non-zero exit or an empty output all return False and leave no partial
+    file behind. Shared by the MP4 card and ``motion_design``'s GIF.
+
+    Args:
+        command: The ffmpeg argv, reading ``rawvideo`` from ``-``.
+        frames: Each frame's raw RGB bytes, in order.
+        out_path: The file ffmpeg writes.
+        what: The product named in the (fixed-template) log lines.
+        timeout: Seconds ffmpeg may take to finish after the last frame.
+
+    Returns:
+        Whether a usable file was written.
+    """
+    product = what.lower()
+    try:
+        process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.PIPE)
+        try:
+            for frame in frames:
+                process.stdin.write(frame)
+            # communicate() flushes and closes stdin itself, then waits for the encoder.
+            _out, err = process.communicate(timeout=timeout)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            process.kill()
+            _out, err = process.communicate()
+    except (OSError, subprocess.SubprocessError) as e:
+        log_warning(f"{what} encode could not run — no {product}", exc=e, task_name=TASK_NAME)
+        _remove(out_path)
+        return False
+    if process.returncode != 0:
+        # A fixed template, the stderr tail at DEBUG: a per-file tail would never repeat a key.
+        log_warning(f"{what} encode failed — no {product}", task_name=TASK_NAME)
+        log_debug(f"ffmpeg {product} stderr: {(err or b'')[-300:]!r}", task_name=TASK_NAME)
+        _remove(out_path)
+        return False
+    try:
+        if os.path.getsize(out_path) <= 0:
+            raise OSError("empty output")
+    except OSError as e:
+        log_warning(f"{what} encode produced no usable file — no {product}", exc=e,
+                    task_name=TASK_NAME)
+        _remove(out_path)
+        return False
+    return True
+
+
 def write_title_card_video(layout: TitleCardLayout, out_path: str, *,
-                           fps: int = TITLE_CARD_FPS, timeout: int = 300) -> bool:
+                           fps: int = TITLE_CARD_FPS, timeout: int = 300,
+                           motion: Any = None) -> bool:
     """Encode the card to ``out_path`` (H.264 MP4, silent). True only when the file is real.
 
     Frames are piped as raw RGB into one ffmpeg process. A missing ffmpeg, a broken pipe, a
@@ -655,6 +755,8 @@ def write_title_card_video(layout: TitleCardLayout, out_path: str, *,
         out_path: The MP4 to write.
         fps: Frames per second.
         timeout: Seconds ffmpeg may take to finish after the last frame.
+        motion: A ``motion_design.MotionPlan`` (MP4 mode) whose frames replace the drifting
+            card's, or None for the card as it was.
 
     Returns:
         Whether a usable MP4 was written.
@@ -663,42 +765,26 @@ def write_title_card_video(layout: TitleCardLayout, out_path: str, *,
     if not ffmpeg:
         log_debug("ffmpeg is not installed — no title card", task_name=TASK_NAME)
         return False
-    width, height = layout.size
+    if motion is not None:
+        from cqc_lem.utilities.motion_design import render_motion_frame
+
+        size, seconds = motion.size, motion.seconds
+
+        def render(t: float) -> Any:
+            return render_motion_frame(motion, t)
+    else:
+        size, seconds = layout.size, layout.seconds
+
+        def render(t: float) -> Any:
+            return render_title_card_frame(layout, t)
+    width, height = size
     command = [ffmpeg, "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
                "-s", f"{width}x{height}", "-r", str(fps), "-i", "-", "-an", "-c:v", "libx264",
                "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
                "-movflags", "+faststart", out_path]
-    frames = max(1, round(layout.seconds * fps))
-    try:
-        process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                                   stderr=subprocess.PIPE)
-        try:
-            for index in range(frames):
-                process.stdin.write(render_title_card_frame(layout, index / fps).tobytes())
-            # communicate() flushes and closes stdin itself, then waits for the encoder.
-            _out, err = process.communicate(timeout=timeout)
-        except (OSError, ValueError, subprocess.SubprocessError):
-            process.kill()
-            _out, err = process.communicate()
-    except (OSError, subprocess.SubprocessError) as e:
-        log_warning("Title card encode could not run — no title card", exc=e, task_name=TASK_NAME)
-        _remove(out_path)
-        return False
-    if process.returncode != 0:
-        # A fixed template, the stderr tail at DEBUG: a per-file tail would never repeat a key.
-        log_warning("Title card encode failed — no title card", task_name=TASK_NAME)
-        log_debug(f"ffmpeg title card stderr: {(err or b'')[-300:]!r}", task_name=TASK_NAME)
-        _remove(out_path)
-        return False
-    try:
-        if os.path.getsize(out_path) <= 0:
-            raise OSError("empty output")
-    except OSError as e:
-        log_warning("Title card encode produced no usable file — no title card", exc=e,
-                    task_name=TASK_NAME)
-        _remove(out_path)
-        return False
-    return True
+    frames = max(1, round(seconds * fps))
+    return encode_frames(command, (render(index / fps).tobytes() for index in range(frames)),
+                         out_path, timeout=timeout)
 
 
 def _remove(path: str) -> None:
@@ -727,6 +813,28 @@ def _brand_for(user_id: Optional[int]) -> Any:
         log_debug("Brand kit unreadable for the title card — reference brand", error=str(e),
                   user_id=user_id, task_name=TASK_NAME)
         return brand_style(None)
+
+
+def _card_motion(layout: TitleCardLayout, hook: str, text: Optional[str], concept: Any,
+                 user_id: Optional[int], seed: str) -> Any:
+    """The card's kinetic motion (``motion_design``), or None for the drifting card. Never raises.
+
+    The data styles animate only the post's VERIFIED figures — Stage 1's validated graphic, else
+    the post's own (``motion_design.motion_graphic``); otherwise kinetic typography over
+    ``layout``. The style rotates from this author's card history.
+    """
+    try:
+        from cqc_lem.utilities.motion_design import build_motion, motion_graphic, recent_motions
+
+        return build_motion(hook, graphic=motion_graphic(text, concept), size=layout.size,
+                            palette=layout.palette, kicker=layout.kicker, byline=layout.byline,
+                            seconds=layout.seconds, recent=recent_motions(user_id), seed=seed,
+                            card_layout=layout)
+    except Exception as e:
+        # The drifting card still ships: motion is the upgrade, not the asset.
+        log_warning("Title card motion raised — the card ships without it", exc=e,
+                    user_id=user_id, task_name=TASK_NAME)
+        return None
 
 
 def create_title_card_video(text: Optional[str], *, user_id: Optional[int] = None,
@@ -764,16 +872,22 @@ def create_title_card_video(text: Optional[str], *, user_id: Optional[int] = Non
         layout = plan_title_card(hook, size=TITLE_CARD_SIZES.get(ratio, TITLE_CARD_SIZES["1:1"]),
                                  palette=palette, kicker=kicker, byline=byline or "",
                                  seconds=title_card_seconds(), variant=variant)
+        motion = _card_motion(layout, hook, text, concept, user_id, f"{post_id}:{hook}")
         directory = title_card_dir()
         create_folder_if_not_exists(directory)
         out_path = os.path.join(directory,
                                 f"{TITLE_CARD_PREFIX}{post_id or 0}_{secrets.token_hex(6)}.mp4")
-        if not write_title_card_video(layout, out_path):
+        if not write_title_card_video(layout, out_path, motion=motion):
             return None
         remember_headline(out_path, hook)
         record_variant(user_id, layout.variant, ground)
+        style = getattr(motion, "style", None)
+        if style:
+            from cqc_lem.utilities.motion_design import record_motion
+
+            record_motion(user_id, style)
         log_info("Rendered the branded title card video", user_id=user_id, post_id=post_id,
-                 task_name=TASK_NAME, ratio=ratio, variant=layout.variant)
+                 task_name=TASK_NAME, ratio=ratio, variant=layout.variant, motion=style or "none")
         return out_path
     except Exception as e:
         # The card is the fallback's fallback: a fault here is a defect worth an alert, and the
