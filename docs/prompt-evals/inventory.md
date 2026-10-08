@@ -54,7 +54,7 @@
 | `image.brief` | `cqc_lem.utilities.ai.image_brief` | `_author_image_brief` | media_prompt | planned | 2 | source | not yet measured |
 | `image.prompt_concept_check` | `cqc_lem.utilities.ai.image_brief` | `check_prompt_against_concept` | judge | planned | 2 | source | not yet measured |
 | `image.ensure_hook` | `cqc_lem.utilities.ai.image_concept` | `_ensure_hook` | json_planner | planned | 1 | source | not yet measured |
-| `image.analyze_content` | `cqc_lem.utilities.ai.image_concept` | `analyze_content_for_image` | json_planner | planned | 1 | source | not yet measured |
+| `image.analyze_content` | `cqc_lem.utilities.ai.image_concept` | `analyze_content_for_image` | json_planner | planned | 2 | source | not yet measured |
 | `image.hook_thesis_check` | `cqc_lem.utilities.ai.image_concept` | `check_hook_against_thesis` | judge | planned | 1 | source | not yet measured |
 | `image.visual_idea` | `cqc_lem.utilities.ai.image_concept` | `pick_visual_idea` | json_planner | planned | 1 | source | not yet measured |
 | `vision.legacy_inspect` | `cqc_lem.utilities.ai.image_gen` | `_legacy_inspect` | — | exempt:vision — graded by scripts/benchmark_media.py | — | — | — |

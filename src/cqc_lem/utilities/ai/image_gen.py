@@ -1237,13 +1237,21 @@ def _verdict_rank(verdict: QualityVerdict) -> tuple:
     return (verdict.acceptable, sum(scores), verdict.relevance or 0)
 
 
-def _scene_ratio(ratio: str, hook_text: Optional[str], surface: str) -> str:
+def _scene_ratio(ratio: str, hook_text: Optional[str], surface: str,
+                 layout: Optional[str] = None) -> str:
     """The render's ratio: SQUARE whenever ``image_compose`` will split it beside a type panel.
 
     Round 8: the split layouts centre-crop a square scene into a 0.9-1.2 aspect region on a 16:9
     or 4:5 canvas, so a centred subject survives either way; any other render keeps its ratio.
+    #2316: a FULL-BLEED cover (any overlay layout) sets its headline on the render itself, so it
+    renders at the cover's own ratio — a square one came back square, was re-composed on a split
+    to reach 16:9, and every cover in the batch shipped as a split.
     """
-    return "1:1" if hook_text and surface in COMPOSE_SURFACES else ratio
+    from cqc_lem.utilities.ai.image_compose import LAYOUTS, SPLIT_LAYOUTS
+
+    if not hook_text or surface not in COMPOSE_SURFACES:
+        return ratio
+    return ratio if layout in LAYOUTS and layout not in SPLIT_LAYOUTS else "1:1"
 
 
 def _emotion_beat(concept: Any) -> str:
@@ -1264,10 +1272,12 @@ def _kicker_for(concept: Any) -> str:
 
 def _composite(raw_path: str, hook_text: Optional[str], surface: str, layout: Optional[str],
                brand_kit: Optional[str], kicker: Optional[str] = None,
-               signature: Optional[str] = None, panel: Optional[str] = None) -> Optional[str]:
+               signature: Optional[str] = None, panel: Optional[str] = None,
+               report: Optional[dict] = None) -> Optional[str]:
     """The render with its headline typeset on, or None when there is no headline or it fails.
 
     A compositing failure is a warning, never a lost render: the raw image still ships.
+    ``report`` receives the layout the headline was actually set on (#2316).
     """
     if not hook_text or surface not in COMPOSE_SURFACES:
         return None
@@ -1276,7 +1286,7 @@ def _composite(raw_path: str, hook_text: Optional[str], surface: str, layout: Op
     try:
         return compose_headline(raw_path, hook_text, layout=layout,
                                 brand=brand_style(brand_kit), surface=surface, kicker=kicker,
-                                signature=signature, panel=panel)
+                                signature=signature, panel=panel, report=report)
     except Exception as e:
         log_warning("Headline compositing failed — shipping the render without it", exc=e,
                     surface=surface, action_type="image_compose")
@@ -1480,9 +1490,10 @@ def _gate_loop(render_once, *, prompt: str, surface: str, focal_concept: Optiona
                 f"{current_prompt}\n\n{emotion_boost}" if emotion_boost else current_prompt)
             if not cand_path:
                 return None
+            report: dict = {}
             composite = _composite(cand_path, hook_text, surface, layout, brand_kit,
                                    kicker=_kicker_for(concept) or None,
-                                   signature=signature, panel=panel)
+                                   signature=signature, panel=panel, report=report)
             gate_kwargs = ({"concept": concept, "hook_text": hook_text,
                             "composite_path": composite, "feed_context": feed_context}
                            if concept is not None else {})
@@ -1493,7 +1504,10 @@ def _gate_loop(render_once, *, prompt: str, surface: str, focal_concept: Optiona
                 # judge blip must not wave an ungraded render through (#2249 gauntlet).
                 verdict = inspect_render_quality(cand_path, focal_concept or prompt[:200],
                                                  surface=surface, **gate_kwargs)
-            info = dict(info, raw_render_path=cand_path) if composite else info
+            if composite:
+                info = dict(info, raw_render_path=cand_path)
+                if report.get("layout"):
+                    info["cover_layout"] = report["layout"]
             if best is None or _verdict_rank(verdict) > _verdict_rank(best[2]):
                 best = (composite or cand_path, backend, verdict, info)
             if verdict.acceptable or not verdict.checked:
@@ -1603,9 +1617,9 @@ def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[in
         marked = with_no_marks(current_prompt, "flux", scene=prompt)
         path, used_avatar = generate_image_with_avatar(
             apply_subject_clause(marked, avatar), avatar["model_ref"],
-            ratio=_scene_ratio(ratio, hook_text, surface), fallback_prompt=marked,
+            ratio=_scene_ratio(ratio, hook_text, surface, layout), fallback_prompt=marked,
             surface=surface)
-        path = conform_to_ratio(path, _scene_ratio(ratio, hook_text, surface)) if path else path
+        path = conform_to_ratio(path, _scene_ratio(ratio, hook_text, surface, layout)) if path else path
         if used_avatar and path:
             # Provenance for a synthetic likeness of a real person.
             _record_avatar_media(path, post_id, user_id)
@@ -1668,7 +1682,7 @@ def render_image_gated(prompt: str, *, surface: str, ratio: str = "1:1",
         # `scene=prompt`: from attempt 2 `current_prompt` carries the repair round too, and the
         # mark-magnet clauses must stay derived from what the AUTHOR described (issue #1376).
         path, backend = _render_with_backend(current_prompt,
-                                             ratio=_scene_ratio(ratio, hook_text, surface),
+                                             ratio=_scene_ratio(ratio, hook_text, surface, layout),
                                              quality=quality,
                                              user_id=user_id, post_id=post_id,
                                              image_model=image_model, surface=surface,

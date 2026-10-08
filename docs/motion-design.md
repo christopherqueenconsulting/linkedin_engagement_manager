@@ -32,8 +32,15 @@ Kinetic typography is two styles so the "never twice in a row" rule always has a
 - **Frame 0 is the COMPLETE piece** — the headline AND the final figure, chart or list — because
   LinkedIn may show frame 0 as the static thumbnail (`docs/content-quality-audits/video.md` § F3c).
   The timeline is hold → reset → build → hold: the complete state holds `MOTION_HOLD_SECONDS`
-  (0.8 s), the data fades out (`_RESET_SECONDS`), builds back from `_BUILD_AT`, and holds its
-  complete state again for at least `MOTION_FINAL_HOLD_SECONDS` (1.2 s) to the end.
+  (0.8 s), the data fades out (`_RESET_SECONDS`), sits fully BLANK for `RESET_BLANK_SECONDS`
+  (0.3 s, issue #2316), builds back from `_BUILD_AT`, and holds its complete state again for at
+  least `MOTION_FINAL_HOLD_SECONDS` (1.2 s) to the end. The blank beat is a cut: motion_123's
+  counter read 55 → 18 → 55 and motion_135's checklist read as building in reverse when one blank
+  frame was all that separated the complete figure from the rebuilding one. A visible count or list
+  only ever goes up.
+- **The caption band is never empty on a title card** (issue #2316): the burned caption's cue holds
+  for the whole title-card video (`video_captions.caption_hold_seconds`), not the muted-autoplay
+  window alone, so the lower area the card keeps clear for it is filled to the last frame.
 - **Ease-out cubic** (`ease_out_cubic`) on every motion; **ease-out-back** (`ease_out_back`, ~10%
   overshoot) on a hero's scale-in. MP4: 24 fps, 6-8 s (`VIDEO_TITLE_CARD_SECONDS`). GIF: ≤12 fps
   (`MOTION_GIF_MAX_FPS`), 6 s, 720 px wide.

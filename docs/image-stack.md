@@ -507,6 +507,55 @@ size (`carousel_creator.line_pitch`), and the fit measure (`_lines_height`) uses
 
 Tests: `test_provenance_r7.py`, `test_visual_variety_r7.py`.
 
+## Issue #2316 — the round-10 items, as engine rules
+
+The round-10 critic (`gauntlet/critic10/critic_scores.json`) found the items below unconverged
+after nine rounds of patches; #2316 turned each into a deterministic rule with a test
+(`test_issue_2316_media.py`, `test_issue_2316_copy.py`). Cause, then rule:
+
+- **People on covers** (covers 17 and 19). The owner's binding rule — the author's avatar, else no
+  person; stock people only for a third party; never a render the judge called generic — lives in
+  `newsletter_cover.resolve_people_cover` / `people_render_unrelated`; full posture in
+  `docs/newsletter-covers.md` ("People on a cover"). Likeness still renders ONLY through the
+  avatar path (`resolve_avatar_for` → `render_avatar_image_gated`), never `image_gen`'s base
+  renderer. `image_concept.without_people` is the deterministic move off a people_scene: the
+  human moment drops, the chain re-ranks, and the first OBJECT idea Stage 1 offered becomes the
+  chosen idea (no model call).
+- **All five covers were splits.** A full-bleed cover rendered square and was recomposed on a
+  split. `_scene_ratio(…, layout)` keeps the cover ratio for a non-split layout,
+  `compose_headline(report=)` reports the layout that shipped, and the cover rotation holds no
+  more than `COVER_SPLIT_MAX` (2) splits in any `COVER_SPLIT_WINDOW` (5), re-setting a split past
+  the budget as a typeset card (`docs/newsletter-covers.md`, "Layouts").
+- **All five decks opened on the poster.** #2293's TEMPLATE rotation was working (any three decks
+  in a row were three templates) — it was invisible because the COVER treatment draws over the
+  template's own cover, and the rotation's concept cover kept failing its judge and falling to the
+  poster again. `carousel_creator.deck_cover_chain` now moves any treatment two of the last four
+  decks opened on (`deck_cover_capped`, `DECK_COVER_WINDOW` 5) behind the template's own cover,
+  so any five decks open on at least three covers.
+- **128 and 144 had identical inside slides** — same template, motif and badge four decks apart
+  (the motif's four-deck LRU cycle met the template's). `deck_motif(…, template, …, badge, …)`
+  refuses a motif that would repeat a recent deck's `(template, motif, badge)` set while any
+  other is free; `internal_set_repeats` logs the (unreachable under the template gap) case where
+  none is.
+- **Motion.** motion_123's counter read 55 → 18 → 55 and motion_135's checklist read as building in
+  reverse: the fade-out met the rebuild with one blank frame between them. The data layer now sits
+  fully transparent for `motion_design.RESET_BLANK_SECONDS` (0.3 s) — a cut — so a visible count or
+  list only ever goes up. The title card's lower band sat empty for the last 40%: on a title card
+  the caption cue now holds for the whole video (`video_captions.caption_hold_seconds`).
+- **"75% less" on a chart** (curated_4). `image_graphics.comparative_with_noun`: a context line
+  that leads with a comparative takes the measured noun from the words before the figure ("costs
+  around 75% less" → "less cost than Claude Haiku 4.5"), or the line is dropped.
+- **Every figure on an image is in the body.** The deck half (143's "5,878", 144's "82 issues, 13
+  blocking" and "3 steps") is `docs/content-core.md`'s ONE figure gate. Image headlines were
+  already body-bound (`apply_figure_provenance` needs a body sentence stating the figure); the
+  hole there was a story-bank fact vouching for a figure of a DIFFERENT kind ("6 tools" for
+  "6%"), now `fact_consistency.fact_vouches`.
+- **cover_18's 53.7%.** The title was too long to be the headline, the hook rotation picked a
+  numberless claim and the checklist drew no stat. `image_concept.show_title_figure`: on a cover,
+  a title figure the body vouches for that neither the headline nor a leading stat card prints
+  becomes the headline — the title's own figure and claim, cut at its dash ("53.7% of LinkedIn
+  posts miss their mark").
+
 ## Showcase round 9 — covers about their article, legible recomposes, one line once
 
 The round-9 critic (`gauntlet/critic9/critic_scores.json`) found three of five covers unshippable.

@@ -34,7 +34,7 @@ _VARIETY_WINDOW = 5
 # The staged judge's findings, copied from the render gate onto the cover's brief receipt.
 _GATE_RECEIPT_KEYS = ("gate_rubric", "gate_failing", "gate_issues", "gate_blind_description",
                       "gate_pop", "archetype_rendered", "archetype_fallback_reason",
-                      "graphic_facts", "cover_composed", "cover_layout")
+                      "graphic_facts", "cover_composed", "cover_layout", "typeset_layout")
 
 COVER_SOURCE_UPLOAD = "upload"
 COVER_SOURCE_AI = "ai"
@@ -331,7 +331,8 @@ def _layout_penalty(layout: str, families: set, recent_pairs: list) -> int:
 COVER_LAYOUT_WINDOW = 3
 
 
-def fresh_cover_layout(concept: Any, recent_pairs: list) -> Any:
+def fresh_cover_layout(concept: Any, recent_pairs: list,
+                       recent_layouts: Optional[list] = None) -> Any:
     """The concept on the layout that repeats the recent covers least (showcase rounds 8 and 9).
 
     cover_17 and cover_20 were both AI renders on ``split_left`` — the same charcoal-left
@@ -342,9 +343,14 @@ def fresh_cover_layout(concept: Any, recent_pairs: list) -> Any:
     layout used longest ago, then to the concept's own. A concept off the cover layouts is returned
     as is.
 
+    #2316: with ``COVER_SPLIT_MAX`` splits already in the last ``COVER_SPLIT_WINDOW`` - 1 covers
+    (``recent_layouts``, what SHIPPED — a typeset card counts as non-split), every split option
+    weighs past any repeat, so the cover goes full-bleed.
+
     Args:
         concept: Stage 1's concept (frozen), or None.
         recent_pairs: ``recent_cover_pairs``, most recent first.
+        recent_layouts: ``recent_cover_layouts``, most recent first; None skips the split budget.
 
     Returns:
         The concept, its layout possibly changed.
@@ -359,10 +365,13 @@ def fresh_cover_layout(concept: Any, recent_pairs: list) -> Any:
         return concept
     families = _families_for(concept)
     recent = [p[0] for p in list(recent_pairs or [])]
+    over_budget = split_budget_spent(recent_layouts)
 
     def rank(option: str) -> tuple:
         last_seen = recent.index(option) if option in recent else len(recent) + 1
-        return (_layout_penalty(option, families, recent_pairs), -last_seen, option != layout)
+        budget = 10 if over_budget and is_split_layout(option) else 0
+        return (budget + _layout_penalty(option, families, recent_pairs), -last_seen,
+                option != layout)
 
     pick = min(options, key=rank)
     if pick == layout:
@@ -460,37 +469,130 @@ def _avatar_for_explicit_choice(user_id: int) -> Optional[dict]:
 
 def _resolve_cover_avatar(user_id: int, use_avatar: Optional[bool], title: Optional[str],
                           subtitle: Optional[str], body: Optional[str],
-                          concept: Any = None) -> Optional[dict]:
+                          concept: Any = None, names: Optional[list] = None) -> Optional[dict]:
     """Which avatar (if any) this cover renders with.
 
     ``use_avatar`` is the per-edition override: False never renders it, True skips only the
-    per-surface opt-in and the relevance classifier. ``None`` (Auto) needs BOTH the guardrails
-    (``avatar_use_newsletter`` opt-in + approval) AND the classifier to agree — the owner's ask
-    was "some newsletters, when it's relevant to the article", and this is that conjunction.
+    per-surface opt-in and the relevance classifier. ``None`` (Auto) with no Stage 1 concept needs
+    BOTH the guardrails (``avatar_use_newsletter`` opt-in + approval) AND the classifier to agree.
 
-    Round 8 (#2241): when the avatar guardrails offer ``resolve_avatar_for_concept`` — the fit rule
-    PR #2249 added for posts — Auto uses THAT, with Stage 1's concept, so a cover only carries the
-    author when the piece is about the author (ed18 rendered a blurry back-of-head). Without it,
-    the guardrails + classifier conjunction above still decides.
+    #2316 (the owner's rule, which replaced round 8's concept fit rule on covers): with a concept,
+    Auto renders the avatar exactly when the cover is a people scene that REFERENCES the author
+    (``guardrails.author_reference`` — the concept speaks of them, the edition names them, or it
+    is first-person about them) and the guardrails allow it. A people scene about someone else
+    never carries the author's likeness.
     """
     if use_avatar is False:
         return None
     if use_avatar is True:
         return _avatar_for_explicit_choice(user_id)
 
-    from cqc_lem.utilities.avatar import guardrails
-    from cqc_lem.utilities.avatar.guardrails import AVATAR_SURFACE_NEWSLETTER, resolve_avatar_for
+    from cqc_lem.utilities.avatar.guardrails import (
+        AVATAR_SURFACE_NEWSLETTER,
+        author_reference,
+        resolve_avatar_for,
+    )
 
-    fit_rule = getattr(guardrails, "resolve_avatar_for_concept", None)
-    # The fit rule judges a CONCEPT; with none (Stage 1 down) it has nothing to read, so the
-    # guardrails + classifier conjunction decides, exactly as before the rule existed.
-    if fit_rule is not None and concept is not None:
-        return fit_rule(user_id, surface=AVATAR_SURFACE_NEWSLETTER, concept=concept,
-                        source_text=_edition_full_text(subtitle, body))
+    if concept is not None:
+        text = "\n\n".join(p for p in (title, subtitle, body) if p)
+        if not _is_people_concept(concept) or not author_reference(concept, text, names):
+            return None
+        return resolve_avatar_for(user_id, surface=AVATAR_SURFACE_NEWSLETTER)
     avatar = resolve_avatar_for(user_id, surface=AVATAR_SURFACE_NEWSLETTER)
     if not avatar:
         return None
     return avatar if classify_avatar_relevance(title, subtitle, body) else None
+
+
+# #2316 — the owner's people-on-a-cover rule, as the receipt records it.
+PEOPLE_POLICY_AVATAR = "avatar"                      # about the author: their avatar renders
+PEOPLE_POLICY_STOCK = "third_party"                  # about someone else: an article-anchored scene
+PEOPLE_POLICY_NO_AVATAR = "non_people:no_avatar"     # about the author, no usable avatar
+PEOPLE_POLICY_OPTED_OUT = "non_people:opted_out"     # about the author, the author said no
+PEOPLE_POLICY_NONE = ""                              # not a people scene at all
+
+
+def _is_people_concept(concept: Any) -> bool:
+    from cqc_lem.utilities.ai.image_concept import ARCHETYPE_PEOPLE, TREATMENT_PEOPLE
+
+    return concept is not None and (
+        getattr(concept, "treatment", None) == TREATMENT_PEOPLE
+        or getattr(concept, "archetype", None) == ARCHETYPE_PEOPLE
+        or ARCHETYPE_PEOPLE in tuple(getattr(concept, "archetype_ranking", ()) or ()))
+
+
+def _avatar_opted_out(user_id: int, use_avatar: Optional[bool]) -> bool:
+    """The author said no: this edition's "Without me", or ``avatar_disabled``. Fails CLOSED."""
+    if use_avatar is False:
+        return True
+    try:
+        from cqc_lem.utilities.db import get_avatar_preferences
+
+        return bool(get_avatar_preferences(user_id).get("avatar_disabled"))
+    except Exception as e:
+        log_debug("Avatar preferences unreadable — treating the author as opted out",
+                  error=str(e), user_id=user_id, action_type="newsletter_cover")
+        return True
+
+
+def resolve_people_cover(user_id: int, use_avatar: Optional[bool], concept: Any,
+                         title: Optional[str], subtitle: Optional[str], body: Optional[str],
+                         profile: Any = None) -> "tuple[Any, Optional[dict], str]":
+    """Who a people_scene cover may show — the owner's rule, decided BEFORE the brief (#2316).
+
+    "Stock people when it makes sense, but if it references the user (or me, myself, or the user's
+    name) then it needs to use their avatar." So a people_scene cover is:
+
+    - about the AUTHOR (``guardrails.author_reference``: the concept speaks of them, the edition
+      names them, or it is first-person about them) — their avatar (``_resolve_cover_avatar``:
+      ``avatar_use_newsletter`` + approval; a per-edition "With me" skips only the opt-in). No
+      usable avatar, or the author opted out (this edition's "Without me", ``avatar_disabled``),
+      and the cover moves to a NON-people treatment (``image_concept.without_people``) — never a
+      stock stand-in for the author;
+    - about someone else — no avatar; a stock scene must still show the article's own entity
+      (round 9's ``article_scene_failure``).
+
+    Args:
+        user_id: The author.
+        use_avatar: The per-edition choice (True "With me", False "Without me", None Auto).
+        concept: Stage 1's concept, or None.
+        title: The edition title.
+        subtitle: The edition subtitle.
+        body: The edition body.
+        profile: The author's profile, for their name.
+
+    Returns:
+        ``(concept, avatar, policy)`` — the concept possibly moved off people, the avatar or None,
+        and one of the ``PEOPLE_POLICY_*`` values.
+    """
+    from cqc_lem.utilities.avatar.guardrails import author_names, author_reference
+
+    names = author_names(profile)
+    avatar = _resolve_cover_avatar(user_id, use_avatar, title, subtitle, body, concept=concept,
+                                   names=names)
+    if concept is None or not _is_people_concept(concept):
+        return concept, avatar, PEOPLE_POLICY_NONE
+    if avatar:
+        return concept, avatar, PEOPLE_POLICY_AVATAR
+    about_author = author_reference(concept, "\n\n".join(p for p in (title, subtitle, body) if p),
+                                    names)
+    if not about_author:
+        return concept, None, PEOPLE_POLICY_STOCK
+    policy = (PEOPLE_POLICY_OPTED_OUT if _avatar_opted_out(user_id, use_avatar)
+              else PEOPLE_POLICY_NO_AVATAR)
+    from cqc_lem.utilities.ai.image_concept import (
+        ARCHETYPE_WINDOW,
+        ROTATION_WINDOW,
+        assign_art_style,
+        without_people,
+    )
+
+    moved = without_people(concept, "newsletter", _recent_cover_archetypes(user_id,
+                                                                           ARCHETYPE_WINDOW))
+    moved = assign_art_style(moved, _recent_concept_field(user_id, "art_style", ROTATION_WINDOW))
+    log_info("Cover is about the author and no avatar may render — no person on it",
+             user_id=user_id, action_type="newsletter_cover", reason=about_author, policy=policy)
+    return moved, None, policy
 
 
 def cover_headline(brief_hook: Optional[str], concept: Any, title: Optional[str],
@@ -594,9 +696,10 @@ def ensure_composed_cover(path: str, hook: Optional[str], render_info: dict, *, 
     from cqc_lem.utilities.ai.image_compose import brand_style, compose_headline
     from cqc_lem.utilities.ai.image_concept import CODE_DRAWN_ARCHETYPES
     from cqc_lem.utilities.ai.image_gen import _kicker_for
-    from cqc_lem.utilities.ai.image_graphics import QUOTE_CARD, render_typeset_card
+    from cqc_lem.utilities.ai.image_graphics import QUOTE_CARD, TYPESET_CARD, render_typeset_card
 
-    drawn = render_info.get("archetype_rendered") in (*CODE_DRAWN_ARCHETYPES, QUOTE_CARD)
+    drawn = render_info.get("archetype_rendered") in (*CODE_DRAWN_ARCHETYPES, QUOTE_CARD,
+                                                      TYPESET_CARD)
     if render_info.get("raw_render_path") or drawn:
         return path
     if not hook:
@@ -609,10 +712,13 @@ def ensure_composed_cover(path: str, hook: Optional[str], render_info: dict, *, 
     # Every cover carries a kicker: Stage 1's, else one derived from the headline's own words.
     kicker = (_kicker_for(concept) if concept is not None else "") or derive_kicker(hook)
     try:
+        report: dict = {}
         composed = compose_headline(path, hook, layout=getattr(concept, "layout", None),
                                     brand=style, surface="newsletter", kicker=kicker or None,
-                                    signature=byline)
+                                    signature=byline, report=report)
         render_info["cover_composed"] = "late_compose"
+        if report.get("layout"):
+            render_info["cover_layout"] = report["layout"]
         return composed
     except Exception as e:
         log_info("Cover headline would not compose onto the render — drawing a typeset cover",
@@ -664,6 +770,23 @@ def _to_cover_canvas(path: str) -> Optional[str]:
         return None
 
 
+# A render this wide or wider loses little to a 16:9 crop (gpt-image's 3:2 "16:9" loses 16% of its
+# height); a square one (the avatar LoRA) would lose a face, so it is recomposed on a split.
+_FULL_BLEED_MIN_ASPECT = 1.4
+
+
+def _landscape(path: str) -> bool:
+    """Is the render at ``path`` landscape enough to set full-bleed on a 16:9 crop?"""
+    try:
+        from PIL import Image
+
+        with Image.open(path) as img:
+            width, height = img.size
+    except Exception:
+        return False
+    return height > 0 and width / height >= _FULL_BLEED_MIN_ASPECT
+
+
 def solid_cover_layout(layout: Optional[str]) -> str:
     """``layout`` when it sets the headline on a solid split panel, else the default split.
 
@@ -709,11 +832,26 @@ def ensure_cover_ratio(path: str, hook: Optional[str], render_info: dict, *, con
             from cqc_lem.utilities.ai.image_concept import derive_kicker
             from cqc_lem.utilities.ai.image_gen import _kicker_for
 
+            kicker = (_kicker_for(concept) if concept is not None else "") or derive_kicker(hook)
+            planned = getattr(concept, "layout", None)
+            if planned and not is_split_layout(planned) and _landscape(raw):
+                # #2316: a full-bleed cover renders at gpt-image's 3:2 "16:9" size; it is fitted to
+                # 16:9 and set full-bleed again. An overlay below the contrast bar still moves to
+                # a solid split inside the compositor (round 9), and says so in ``report``.
+                canvas = _to_cover_canvas(raw)
+                report: dict = {}
+                composed = compose_headline(canvas, hook, layout=planned,
+                                            brand=brand_style(brand), surface="newsletter",
+                                            kicker=kicker or None, signature=byline,
+                                            report=report) if canvas else None
+                if composed and is_cover_ratio(composed):
+                    render_info["cover_composed"] = "ratio_fit_full_bleed"
+                    render_info["cover_layout"] = report.get("layout") or planned
+                    return composed
             # Round 9: cover_18's recompose kept its full-bleed layout and set gold type on a
             # translucent strip over a light render, the byline lost in the photo. A recomposed
-            # cover is always set on a SOLID split panel, the raw render cropped into its scene.
-            layout = solid_cover_layout(getattr(concept, "layout", None))
-            kicker = (_kicker_for(concept) if concept is not None else "") or derive_kicker(hook)
+            # cover is otherwise set on a SOLID split panel, the raw render cropped into its scene.
+            layout = solid_cover_layout(planned)
             composed = compose_headline(raw, hook, layout=layout, brand=brand_style(brand),
                                         surface="newsletter", kicker=kicker or None,
                                         signature=byline, canvas=COVER_SIZE)
@@ -733,6 +871,145 @@ def ensure_cover_ratio(path: str, hook: Optional[str], render_info: dict, *, con
     log_warning("A newsletter cover could not be made 16:9 — not shipping it", user_id=user_id,
                 action_type="newsletter_cover")
     return None
+
+
+# #2316: all five covers of the round-10 batch were left/right splits. No more than COVER_SPLIT_MAX
+# splits in any COVER_SPLIT_WINDOW covers; the rest are full-bleed renders or full-canvas typeset
+# cards (the number-led card is the stat hero).
+COVER_SPLIT_WINDOW = 5
+COVER_SPLIT_MAX = 2
+COVER_LAYOUT_TYPESET = "typeset_card"
+
+
+def is_split_layout(layout: Optional[str]) -> bool:
+    """Is ``layout`` a type-panel-beside-scene split (every code-drawn graphic is one)?"""
+    from cqc_lem.utilities.ai.image_compose import SPLIT_LAYOUTS
+
+    return layout in SPLIT_LAYOUTS
+
+
+def recent_cover_layouts(user_id: int, limit: int = COVER_SPLIT_WINDOW - 1) -> list:
+    """The layouts the last ``limit`` covers SHIPPED on, most recent first (unknowns skipped)."""
+    from cqc_lem.utilities.ai.image_graphics import TYPESET_CARD
+
+    out = []
+    for receipt in _recent_cover_receipts(user_id, limit):
+        concept = receipt.get("concept") if isinstance(receipt.get("concept"), dict) else {}
+        layout = receipt.get("cover_layout") or (
+            COVER_LAYOUT_TYPESET if receipt.get("archetype_rendered") == TYPESET_CARD
+            else concept.get("layout"))
+        if layout:
+            out.append(str(layout))
+    return out
+
+
+def split_budget_spent(recent_layouts: Optional[list]) -> bool:
+    """Would one more split break "no more than ``COVER_SPLIT_MAX`` in any ``COVER_SPLIT_WINDOW``"?"""
+    window = list(recent_layouts or [])[:COVER_SPLIT_WINDOW - 1]
+    return sum(1 for layout in window if is_split_layout(layout)) >= COVER_SPLIT_MAX
+
+
+def shipped_cover_layout(render_info: dict, concept: Any) -> Optional[str]:
+    """The layout the cover actually shipped on: the compositor's report, else the concept's."""
+    from cqc_lem.utilities.ai.image_concept import CODE_DRAWN_ARCHETYPES
+    from cqc_lem.utilities.ai.image_graphics import QUOTE_CARD, TYPESET_CARD
+
+    if render_info.get("archetype_rendered") == TYPESET_CARD:
+        return COVER_LAYOUT_TYPESET
+    if render_info.get("cover_layout"):
+        return render_info["cover_layout"]
+    layout = getattr(concept, "layout", None)
+    if render_info.get("archetype_rendered") in (*CODE_DRAWN_ARCHETYPES, QUOTE_CARD):
+        # A code-drawn graphic is always set beside its panel (``image_graphics.render_graphic``).
+        return layout if is_split_layout(layout) else "split_left"
+    return layout
+
+
+# What the judge says when a people render is stock: round 9's capped issue, or its own words.
+_GENERIC_ISSUE_RE = re.compile(r"\b(?:generic|stock|unrelated|not\s+related|could\s+be\s+any|"
+                               r"nothing\s+from\s+the\s+article|off[-\s]topic)\b", re.IGNORECASE)
+
+
+def people_render_unrelated(render_info: dict, concept: Any) -> bool:
+    """Did a STOCK people render come back judged generic or unrelated after its repair (#2316)?
+
+    cover_17 (a worried warehouse worker) passed the rubric while the judge's own issues said
+    "scene is generic, not AI-specific". A people_scene that rendered without the avatar ships
+    only when the judge neither failed its specificity/cliché floor nor called it generic.
+
+    Args:
+        render_info: The gate's out-param.
+        concept: The brief's concept.
+
+    Returns:
+        True when the render must not ship as a people cover.
+    """
+    from cqc_lem.utilities.ai.image_concept import ARCHETYPE_PEOPLE
+
+    shipped = render_info.get("archetype_rendered") or getattr(concept, "archetype", None)
+    if shipped != ARCHETYPE_PEOPLE and not (shipped is None and _is_people_concept(concept)):
+        return False
+    if render_info.get("used_avatar"):
+        return False
+    failing = set(render_info.get("gate_failing") or [])
+    if render_info.get("gate_verdict") == "rejected" and failing & {"specificity", "no_cliche"}:
+        return True
+    return any(_GENERIC_ISSUE_RE.search(str(i)) for i in render_info.get("gate_issues") or [])
+
+
+def typeset_cover(hook: Optional[str], concept: Any, brand: str, byline: Optional[str],
+                  render_info: dict, reason: str, user_id: Optional[int] = None) -> Optional[str]:
+    """The cover as a full-canvas typeset card — non-people, non-split, $0 (#2316). Never raises.
+
+    A headline that leads with a figure takes the number-led card (the stat hero); any other the
+    poster. ``render_info`` records the card as what shipped.
+
+    Args:
+        hook: The cover headline.
+        concept: The brief's concept, for the kicker.
+        brand: The brand clause.
+        byline: The cover byline.
+        render_info: The gate's out-param, updated in place.
+        reason: Why the cover was re-set (``cover_composed``).
+        user_id: For the output directory and log context.
+
+    Returns:
+        The card's path, or None when the headline cannot be set.
+    """
+    if not (hook or "").strip():
+        return None
+    try:
+        from cqc_lem.utilities.ai.image_compose import brand_style
+        from cqc_lem.utilities.ai.image_concept import derive_kicker
+        from cqc_lem.utilities.ai.image_gen import _kicker_for
+        from cqc_lem.utilities.ai.image_graphics import (
+            CARD_NUMBER_LED,
+            CARD_POSTER,
+            TYPESET_CARD,
+            render_typeset_card,
+            typeset_layouts_for,
+        )
+
+        layout = CARD_NUMBER_LED if CARD_NUMBER_LED in typeset_layouts_for(hook) else CARD_POSTER
+        kicker = (_kicker_for(concept) if concept is not None else "") or derive_kicker(hook)
+        out_dir = os.path.join(assets_dir, "images", "generated", str(user_id or "system"))
+        os.makedirs(out_dir, exist_ok=True)
+        card = render_typeset_card(hook, surface="newsletter", kicker=kicker,
+                                   signature=byline or "", brand=brand_style(brand),
+                                   card_layout=layout,
+                                   out_path=os.path.join(out_dir,
+                                                         f"img_{secrets.token_hex(8)}.png"))
+    except Exception as e:
+        log_warning("Typeset cover could not be drawn", exc=e, user_id=user_id,
+                    action_type="newsletter_cover", reason=reason)
+        return None
+    render_info.update({"archetype_rendered": TYPESET_CARD, "cover_composed": reason,
+                        "cover_layout": COVER_LAYOUT_TYPESET, "typeset_layout": layout,
+                        "gate_verdict": "code_drawn"})
+    render_info.pop("raw_render_path", None)
+    log_info("Newsletter cover re-set as a typeset card", user_id=user_id,
+             action_type="newsletter_cover", reason=reason, card_layout=layout)
+    return card.path
 
 
 def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[str],
@@ -794,10 +1071,13 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
             recent_archetypes=_recent_cover_archetypes(user_id, ARCHETYPE_WINDOW),
             recent_art_styles=_recent_concept_field(user_id, "art_style", ROTATION_WINDOW),
             facts=story_facts_for(user_id))
-        concept = fresh_cover_layout(concept, recent_cover_pairs(user_id, ROTATION_WINDOW))
-        # Round 8: the avatar is resolved AFTER Stage 1, so the fit rule can read the concept.
-        avatar = _resolve_cover_avatar(user_id, use_avatar, title, subtitle, body,
-                                       concept=concept)
+        # #2316: who a people cover may show is decided first — it can move the concept off
+        # people, which changes the families the layout rotation weighs.
+        concept, avatar, people_policy = resolve_people_cover(user_id, use_avatar, concept, title,
+                                                              subtitle, body, profile)
+        recent_layouts = recent_cover_layouts(user_id)
+        concept = fresh_cover_layout(concept, recent_cover_pairs(user_id, ROTATION_WINDOW),
+                                     recent_layouts)
         # The avatar is resolved BEFORE the brief is authored: its declared subject clause is what
         # stops the prompt LLM inventing a different person for the LoRA to contradict (#744).
         brief = build_image_brief("\n\n".join(p for p in (title, subtitle, body) if p),
@@ -818,8 +1098,16 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
     hook = cover_headline(brief.hook_text, concept, title, subtitle)
     byline = cited_byline(byline, hook, brief.concept)
     render_info: dict = {}
+    from cqc_lem.utilities.ai.image_brief import person_word
+
     try:
-        if avatar:
+        if brief.concept is None and not avatar and person_word(brief.prompt):
+            # #2316, cover_19: with no Stage 1 concept there is nothing to tell the author from a
+            # stranger, nor an article entity to anchor a scene to — the fallback brief's "candid
+            # hallway conversation" shipped as a gala couple. No person renders without one.
+            generated_path = typeset_cover(hook, None, brand, byline, render_info,
+                                           "people_without_concept", user_id)
+        elif avatar:
             generated_path = render_avatar_image_gated(
                 brief.prompt, avatar=avatar, user_id=user_id, surface="newsletter",
                 ratio=COVER_IMAGE_RATIO, focal_concept=brief.focal_concept,
@@ -845,6 +1133,13 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
                     action_type="newsletter_cover")
         return None, "Image generation returned nothing"
 
+    if people_render_unrelated(render_info, brief.concept):
+        # #2316 (covers 17 and 19): a stock people render the judge called generic or unrelated,
+        # after its repair, never ships as one — the cover becomes a typeset card instead.
+        generated_path = typeset_cover(hook, brief.concept, brand, byline, render_info,
+                                       "people_generic", user_id) or generated_path
+        people_policy = people_policy or PEOPLE_POLICY_STOCK
+
     # The deterministic gate reads what the renderer produced FIRST — a truncated or undersized
     # render must not be rescued by being composed into a full-size canvas.
     verdict = inspect_cover_file(generated_path)
@@ -860,6 +1155,13 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
                                   byline=byline, user_id=user_id)
     if not composed:
         return None, "The cover could not be made 16:9"
+    if (is_split_layout(shipped_cover_layout(render_info, brief.concept))
+            and split_budget_spent(recent_layouts)):
+        # #2316: the rotation steered this cover full-bleed, yet it shipped as a split (a
+        # code-drawn graphic, a recompose, an overlay below the contrast bar) — and two of the
+        # last four covers already are. It is re-set as a non-split typeset card.
+        composed = typeset_cover(hook, brief.concept, brand, byline, render_info,
+                                 "split_budget", user_id) or composed
     if composed != generated_path:
         generated_path = composed
         verdict = inspect_cover_file(generated_path)
@@ -892,6 +1194,7 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
     write_brief_receipt(cover_public_url(relative), brief, user_id=user_id,
                         gate_verdict=render_info.get("gate_verdict"),
                         extra={"edition_id": edition_id, "edition_format": edition_format,
-                               "hook_style": hook_style, **gate_detail})
+                               "hook_style": hook_style, "people_policy": people_policy,
+                               **gate_detail})
     log_info("Generated newsletter cover", user_id=user_id, action_type="newsletter_cover")
     return relative, None

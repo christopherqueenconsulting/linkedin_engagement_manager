@@ -1500,16 +1500,59 @@ def complete_context(label: str, sentence: str, value: str) -> str:
     # Round 9: curated_4 kept Stage 1's one-word "costs" under "75%" — "75% costs" says the
     # opposite of "costs around 75% less than Claude Haiku 4.5". A kept label is a PHRASE (2+
     # words); a single word gives way to the words that follow the figure in its sentence.
-    if (contiguous and len(want) >= 2 and not dangling
-            and not (digits and any(digits in w for w in want))):
-        return label
     norm = _norm(sentence)
     at = norm.find(str(value))
+    if (contiguous and len(want) >= 2 and not dangling
+            and not (digits and any(digits in w for w in want))):
+        return comparative_with_noun(label, norm[:max(at, 0)])
     if at < 0:
         return ""
     tail = re.match(r"\s?(?:[KkMmBb]n?(?![A-Za-z])|%|x(?![A-Za-z])|percent\b|thousand\b|"
                     r"million\b|billion\b)?", norm[at + len(str(value)):])
-    return _label_after(norm, at + len(str(value)) + (tail.end() if tail else 0))
+    return comparative_with_noun(
+        _label_after(norm, at + len(str(value)) + (tail.end() if tail else 0)), norm[:at])
+
+
+# #2316, curated_4: "75% | less than Claude Haiku 4.5" — a comparative with nothing it compares.
+# A context line that LEADS with a comparative takes the measured noun from the words just before
+# the figure ("costs around 75% less" -> "less cost than …"), or is no line at all.
+_COMPARATIVE_LEAD = re.compile(r"^(?:less|more|lower|higher|cheaper|faster|slower|fewer|greater|"
+                               r"smaller|bigger|better|worse)\b", re.IGNORECASE)
+_MEASURED_NOUN = {"cost": "cost", "costs": "cost", "costing": "cost", "price": "price",
+                  "prices": "price", "priced": "price", "spend": "spend", "spending": "spend",
+                  "spends": "spend", "time": "time", "takes": "time", "latency": "latency",
+                  "energy": "energy", "power": "power", "memory": "memory", "tokens": "tokens",
+                  "revenue": "revenue", "errors": "errors", "churn": "churn", "usage": "usage",
+                  "uses": "usage", "budget": "budget", "fees": "fees", "traffic": "traffic"}
+# Words that leave a line hanging when they end it, beyond ``_label_after``'s articles.
+_LINE_DANGLERS = frozenset({"the", "a", "an", "and", "or", "of", "to", "in", "for", "with", "on",
+                            "at", "by", "most", "many", "some", "all", "than"})
+
+
+def comparative_with_noun(label: str, before: str) -> str:
+    """``label`` with the noun its leading comparative measures, or ``""`` when none is readable.
+
+    Args:
+        label: The context line ("less than Claude Haiku 4.5 for most tasks").
+        before: The source sentence up to the figure ("… and costs around ").
+
+    Returns:
+        The line ("less cost than Claude Haiku 4.5"), unchanged when it does not lead with a
+        comparative or already names what it measures, or ``""``.
+    """
+    words = (label or "").split()
+    if not words or not _COMPARATIVE_LEAD.match(words[0]):
+        return label
+    if len(words) > 1 and words[1].lower() not in _LINE_DANGLERS:
+        return label  # "less engagement than …" already names it
+    prior = re.findall(r"[a-z]+", (before or "").lower())[-4:]
+    noun = next((_MEASURED_NOUN[w] for w in reversed(prior) if w in _MEASURED_NOUN), "")
+    if not noun:
+        return ""
+    out = [words[0], noun, *words[1:]][:_LABEL_MAX_WORDS]
+    while len(out) > 2 and out[-1].lower() in _LINE_DANGLERS:
+        out.pop()
+    return " ".join(out)
 
 
 def render_graphic(archetype: str, graphic: dict, *, surface: str, hook: str,

@@ -2302,6 +2302,70 @@ def apply_figure_provenance(concept: ImageConcept, title: Optional[str], source:
     return dataclasses.replace(concept, **changed) if changed else concept
 
 
+def title_figure_hook(figure: str, claim: str) -> str:
+    """"53.7% of LinkedIn posts miss their mark" — the title's figure and claim, cut at a dash."""
+    words: list[str] = []
+    for word in (claim or "").split():
+        if word in ("-", "–", "—"):
+            break
+        if word.endswith(":"):
+            words.append(word[:-1])
+            break
+        words.append(word)
+    words = [w for w in words if w][:TITLE_HOOK_MAX_WORDS - 1]
+    while words and words[-1].lower() in _DANGLING_TAIL:
+        words.pop()
+    if not figure or len(words) < 2:
+        return ""
+    return " ".join([figure, *words]).strip(" ,;.?!")
+
+
+_DANGLING_TAIL = frozenset({"and", "or", "but", "of", "to", "with", "for", "a", "an", "the", "by",
+                            "in", "on", "why", "how", "what"})
+
+
+def show_title_figure(concept: ImageConcept, title: Optional[str], source: str,
+                      facts: Optional[Sequence[str]] = None) -> ImageConcept:
+    """A title figure the body vouches for is ON the cover — in the headline (#2316, cover_18).
+
+    cover_18's title was "53.7% of LinkedIn Posts Miss Their Mark - Why" and its body sourced the
+    figure (round 9), yet the cover read "Expertise wins over automation": the title was too long
+    to be the headline, the hook rotation picked a numberless claim, and the checklist archetype
+    drew no stat. When the title states a figure ``fact_consistency.figure_provenance`` vouches for
+    and neither the headline nor a leading stat card prints it, the headline becomes the title's
+    own figure and claim — so the cover says what the title says.
+
+    Args:
+        concept: The concept after ``apply_figure_provenance``.
+        title: The piece's title.
+        source: The analysed text (title first).
+        facts: The allow-list, or None.
+
+    Returns:
+        The concept, its headline possibly re-set.
+    """
+    figure, claim, _ = title_claim(title, source)
+    if not figure or not claim:
+        return concept
+    hook = concept.hook_phrase or ""
+    stat = (concept.graphic or {}).get("stat") or {}
+    drawn = concept.archetype == ARCHETYPE_STAT_CARD and str(stat.get("display") or "") == figure
+    if drawn or figure.lower() in tidy_figures(hook).lower():
+        return concept
+    body = provenance_body(title, source)
+    claims = _numeric_claims(figure)
+    if not claims or not figure_provenance(claims[0]["value"], body,
+                                           list(facts) if facts is not None else None,
+                                           claims[0]["raw"]):
+        return concept
+    new_hook = title_figure_hook(figure, claim)
+    if not new_hook:
+        return concept
+    return dataclasses.replace(concept, hook_phrase=new_hook, hook_shape=hook_shape_of(new_hook),
+                               hook_verified=new_hook,
+                               hook_options={**(concept.hook_options or {}), "title": new_hook})
+
+
 def check_hook_against_thesis(hook: str, thesis: str, cited: str = "") -> tuple[bool, str, str]:
     """ONE ``lem-simple`` call judging the hook: claim, grammar, length, truth and valence.
 
@@ -2591,6 +2655,41 @@ def select_archetype(concept: ImageConcept, surface: str,
                                cast=concept.cast if treatment == TREATMENT_PEOPLE else None)
 
 
+def without_people(concept: Optional[ImageConcept], surface: str = "newsletter",
+                   recent_archetypes: Optional[Sequence[str]] = None) -> Optional[ImageConcept]:
+    """The concept moved off ``people_scene`` onto a non-people treatment. Deterministic (#2316).
+
+    The owner's rule for a cover about the author: their avatar, or NO person — never a stock
+    stand-in. Without a usable avatar (or with the author opted out) the human moment is dropped
+    and the archetype chain is re-ranked (``select_archetype``), so a code-drawn graphic the data
+    supports leads and an ``editorial_concept`` (an object, never a person) ends it. The chosen
+    idea becomes the first object idea Stage 1 offered; no model call.
+
+    Args:
+        concept: Stage 1's concept, or None.
+        surface: The surface, for the re-rank.
+        recent_archetypes: The author's recent archetypes, most recent first.
+
+    Returns:
+        The concept with no person in it; None or a non-people concept is returned unchanged.
+    """
+    if concept is None or (concept.treatment != TREATMENT_PEOPLE
+                           and concept.archetype != ARCHETYPE_PEOPLE
+                           and ARCHETYPE_PEOPLE not in concept.archetype_ranking):
+        return concept
+    ideas = [i for i in concept.visual_ideas if not is_people_led(i)]
+    idea = next((i for i in ideas if not is_desk_still_life(i)), ideas[0] if ideas else "")
+    moved = dataclasses.replace(concept, human_moment=False, cast=None, shot="", people_idea="",
+                                chosen_idea=idea,
+                                idea_pick_reason="no person: the author's avatar is not usable")
+    moved = select_archetype(moved, surface, recent_archetypes)
+    if moved.treatment == TREATMENT_PEOPLE or moved.archetype == ARCHETYPE_PEOPLE:
+        moved = dataclasses.replace(moved, treatment=TREATMENT_EDITORIAL,
+                                    archetype=ARCHETYPE_EDITORIAL,
+                                    archetype_ranking=(ARCHETYPE_EDITORIAL,))
+    return moved
+
+
 def ai_archetype_only(concept: Optional[ImageConcept]) -> Optional[ImageConcept]:
     """The concept with its code-drawn archetypes stripped — for a caller that must render.
 
@@ -2727,6 +2826,9 @@ def analyze_content_for_image(text: str, *, title: Optional[str] = None,
         concept = apply_title_stat(concept, title, source)
         # Round 7: a figure the image prints must be one the body vouches for.
         concept = apply_figure_provenance(concept, title, source, facts, surface, user_id)
+        if surface == "newsletter":
+            # #2316: a sourced title figure is never dropped from the cover (cover_18's 53.7%).
+            concept = show_title_figure(concept, title, source, facts)
         # A code-drawn graphic needs the FINAL headline; re-rank against it (deterministic).
         concept = select_archetype(concept, surface, recent_archetypes)
     else:

@@ -479,6 +479,52 @@ and still escaped. Why each slipped, and the fix:
 
 Tests: `test_showcase_round_9_copy.py`.
 
+### The figure gate, stitched stories and laundered statistics (issue #2316)
+
+The round-10 critic found the round-9 copy rules in place and still escaped. Each is a
+deterministic rule now — repaired or dropped where code can, then a `fact_consistency` finding
+(text posts: one editor repair, then PENDING; decks, which have no editor: HELD):
+
+- **THE figure gate.** Every figure rendered on a slide, card, stat panel or cover must appear in
+  the post or edition BODY: `fact_consistency.figures_absent_from_body`. Round 7's slide check read
+  provenance against the caption AND the deck, so a slide vouched for itself, and
+  `numeric_claims` read "Found 82 issues" as a product version (a capitalised word before a number
+  — every slide heading is Title Case). The gate reads its own figures (`surface_figures`: years,
+  list markers and names like "GPT-4o" excluded), and a small count names its thing: "3 steps" is
+  stated only by a body that counts 3 STEPS, never by "all three payment links". On decks:
+  `content_framework.deck_absent_figures` over every slide (cover and CTA too; a count the deck
+  proves on its own pages is exempt), dropped in `finalize_deck_claims` like round 7's figures,
+  and whatever survives is `deck_figure_gate_issues` — recorded as a consistency finding that
+  HOLDS the post (`create_carousel_content`). The deck's regeneration report names them too.
+- **128's 51 vs 63.** `count_conflicts` read "sent 51 cold emails" but not "Every one of the 63
+  recipients": "every one of" / "each of" now read as totals.
+- **Two stories stitched together** (123: "Last Tuesday…" + Retail Dive's October 8 update; 130: an
+  April 2026 phishing email + "I recently worked with a client…"). Round 9's rule needed a
+  story-bank anchor. `stitched_story_issues` reads the post alone: `story_events` finds a
+  first-person dated `anecdote`, a dated `news` item someone else published, or a `case` opened in
+  so many words; two of different kinds in different paragraphs are two stories, as are two
+  anecdotes whose absolute dates are more than `STITCHED_SAME_STORY_DAYS` (14) apart. A relative
+  date beside an absolute one reads as one story (a story told in beats).
+- **The same dated story twice in a batch** (143 and 144, both "On September 15, 2026, I…").
+  `repeated_story_date_issues(text, recent_texts)`: a first-person anecdote on a day a post in the
+  story-cooldown window already told is a finding — the way a cooling bank entry is skipped.
+  `consistency_report(recent_texts=)` carries the window from `_review_generated_post` and the
+  deck path.
+- **Unsourced hook figures** (141's "6%", 130's "30%"). The escape: the allow-list matched BARE
+  DIGITS, so any story-bank fact holding a 6 ("6 tools") vouched for "6%". `fact_vouches` now
+  matches a figure written with a kind (%, money, ×) only to a fact stating it in that kind; a bare
+  number still matches by digits. `statistic_provenance_issues` extends the hook check to body
+  percentages and multipliers that a fact matched ONLY by digits — the laundering itself; a
+  statistic no fact mentions at all is still the fact-grounding gate's, at its archetype's
+  severity.
+- **Curated openers and closes** (all four opened "X reports that…"; two shared "what trade-off
+  feels most…?"). `rotate_curated_opener` reads "reports" with or without "that", in the opening
+  paragraph or the one after an opening question, against `CURATED_OPENER_WINDOW` (4) posts.
+  `drop_repeated_close` cuts a closing question sharing `CLOSE_SHARED_WORDS` (4) words in a row
+  with a recent curated close, unless that would leave a stub.
+
+Tests: `test_issue_2316_copy.py`.
+
 ### Save-targeted archetypes (issue #619)
 
 Two save-targeted post archetypes live in the same `POST_FORMATS` menu: `build_receipt` and

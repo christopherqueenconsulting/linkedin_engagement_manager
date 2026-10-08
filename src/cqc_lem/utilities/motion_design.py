@@ -73,9 +73,14 @@ STYLE_ARCHETYPE = {STYLE_STAT_COUNTER: "stat_card", STYLE_CHART_DRAW: "highlight
                    STYLE_CHECKLIST_TICK: "checklist", STYLE_BEFORE_AFTER_WIPE: "before_after"}
 ARCHETYPE_STYLE = {v: k for k, v in STYLE_ARCHETYPE.items()}
 
-# Data timeline (seconds): the complete piece holds, fades out (reset), then builds back.
+# Data timeline (seconds): the complete piece holds, fades out (reset), sits BLANK, then builds back.
 _RESET_SECONDS = 0.35
-_BUILD_AT = MOTION_HOLD_SECONDS + _RESET_SECONDS + 0.05
+# #2316: motion_123's counter read 55 -> 18 -> 55 and motion_135's checklist read as building in
+# reverse — a 0.05 s gap between the fade and the build was one frame, so the eye joined the
+# complete figure to the rebuilding one. The data area now sits empty long enough to read as a
+# cut: whatever was on screen is GONE before anything builds, so nothing ever counts down.
+RESET_BLANK_SECONDS = 0.3
+_BUILD_AT = MOTION_HOLD_SECONDS + _RESET_SECONDS + RESET_BLANK_SECONDS
 _DONE = 1e6  # a build time past every motion: the complete state
 _COUNT_SECONDS = 1.8
 _WIPE_AT, _WIPE_SECONDS = _BUILD_AT + 1.2, 1.0
@@ -778,11 +783,17 @@ def _scaled(image: Any, scale: float) -> Any:
 
 
 def _data_clock(t: float) -> tuple:
-    """``(build_time, alpha)`` of the data layer at ``t``: complete, fading out, then building."""
+    """``(build_time, alpha)`` of the data layer at ``t``: complete, fading out, blank, building.
+
+    Between the fade and the build the layer is fully transparent for ``RESET_BLANK_SECONDS``
+    (#2316) — the reset is a cut, so a count or a list is only ever seen going UP.
+    """
     if t < MOTION_HOLD_SECONDS:
         return _DONE, 1.0
-    if t < _BUILD_AT:
+    if t < MOTION_HOLD_SECONDS + _RESET_SECONDS:
         return _DONE, 1.0 - _progress(t, MOTION_HOLD_SECONDS, _RESET_SECONDS)
+    if t < _BUILD_AT:
+        return _DONE, 0.0
     return t - _BUILD_AT, 1.0
 
 

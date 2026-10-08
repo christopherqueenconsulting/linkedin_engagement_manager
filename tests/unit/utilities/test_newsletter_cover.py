@@ -866,21 +866,29 @@ class TestCoverByline:
 
 
 class TestCoverAvatarFitRule:
-    def test_auto_uses_the_concept_fit_rule_when_the_guardrails_offer_it(self, monkeypatch):
+    def test_auto_follows_the_owners_self_reference_rule_with_a_concept(self, monkeypatch):
+        """#2316 replaced round 8's fit rule on covers.
+
+        A people cover ABOUT the author takes the avatar through the guardrails; a people cover
+        about anyone else, or no people at all, never does — and the guardrails' post fit rule
+        is no longer consulted for a cover.
+        """
         from cqc_lem.utilities.avatar import guardrails
-        calls = []
-
-        def fit_rule(user_id, surface, concept, source_text):
-            calls.append((user_id, surface, concept, source_text))
-            return None
-
-        monkeypatch.setattr(guardrails, "resolve_avatar_for_concept", fit_rule, raising=False)
-        with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for") as legacy, \
+        fit_rule = []
+        monkeypatch.setattr(guardrails, "resolve_avatar_for_concept",
+                            lambda *a, **k: fit_rule.append(1), raising=False)
+        about_me = _concept(treatment="people_scene", thesis="I nearly lost a client")
+        about_them = _concept(treatment="people_scene", thesis="Buyers shortlist AI vendors")
+        with patch("cqc_lem.utilities.avatar.guardrails.resolve_avatar_for",
+                   return_value=_USABLE_AVATAR) as legacy, \
              patch.object(nc, "classify_avatar_relevance") as classify:
+            assert nc._resolve_cover_avatar(3, None, "T", "S", "B",
+                                            concept=about_me) == _USABLE_AVATAR
+            assert nc._resolve_cover_avatar(3, None, "T", "S", "B", concept=about_them) is None
             assert nc._resolve_cover_avatar(3, None, "T", "S", "B", concept="C") is None
-        assert calls and calls[0][1] == "newsletter" and calls[0][2] == "C"
-        legacy.assert_not_called()
+        assert legacy.call_count == 1 and legacy.call_args[1]["surface"] == "newsletter"
         classify.assert_not_called()
+        assert not fit_rule
 
     def test_an_explicit_without_never_consults_the_fit_rule(self, monkeypatch):
         from cqc_lem.utilities.avatar import guardrails

@@ -429,6 +429,7 @@ def _source_faithful(text: Optional[str], source: dict, voice: str, draft, user_
     text = rotate_curated_opener(text, recent, str(source.get("author") or source.get("publisher")
                                                    or ""))
     text = drop_repeated_pivot(text, recent)
+    text = drop_repeated_close(text, recent)
     return finish_post_text(text)
 
 
@@ -460,29 +461,48 @@ def thin_commentary_reason(text: Optional[str]) -> str:
 
 # Three of four round-8 drafts opened "<Source> reports that …". The opener rotates: a draft that
 # would repeat the last curated post's opening verb is re-set in the next form.
+# #2316: all four round-10 drafts still opened that way. "Google reports a new …" carried no "that",
+# curated_3 put a question first and the report second, and the window was the last TWO posts. The
+# report opener is now read with or without "that", in the opening paragraph or the one after an
+# opening question, and no form repeats inside CURATED_OPENER_WINDOW curated posts.
 _REPORTS_THAT_RE = re.compile(r"^(?P<who>[A-Z][^\n]{1,80}?)\s+(?P<verb>reports|says|argues|found|"
-                              r"finds|writes|notes|announced|announces)\s+that\s+(?P<rest>\S)")
+                              r"finds|writes|notes|announced|announces)(?:\s+that)?\s+(?P<rest>\S)")
 _OPENER_FORMS = ("According to {who}, {rest}", "{who} has a new claim: {rest}",
                  "New from {who}: {rest}")
+CURATED_OPENER_WINDOW = 4
+
+
+def _opening_paragraphs(text: Optional[str]) -> list:
+    """``(start, paragraph)`` of the opening paragraph, and of the next when the first is a question."""
+    body = text or ""
+    found = []
+    for match in re.finditer(r"[^\n](?:.|\n(?!\s*\n))*", body):
+        found.append((match.start(), match.group(0)))
+        if len(found) == 2:
+            break
+    if found and not found[0][1].rstrip().endswith("?"):
+        found = found[:1]
+    return found
 
 
 def opener_form(text: Optional[str]) -> str:
     """How a curated post opens: ``reports_that``, one of ``_OPENER_FORMS``' keys, or ''."""
-    first = (text or "").lstrip()
-    if _REPORTS_THAT_RE.match(first):
-        return "reports_that"
-    for n, form in enumerate(_OPENER_FORMS):
-        head = form.split("{who}")[0]
-        if head and first.startswith(head):
-            return f"form_{n}"
-        if form.startswith("{who}") and re.match(r"^[A-Z][^\n]{1,80}?" + re.escape(
-                form.split("{who}")[1].split("{rest}")[0]), first):
-            return f"form_{n}"
+    for _, paragraph in _opening_paragraphs(text):
+        first = paragraph.lstrip()
+        if _REPORTS_THAT_RE.match(first):
+            return "reports_that"
+        for n, form in enumerate(_OPENER_FORMS):
+            head = form.split("{who}")[0]
+            if head and first.startswith(head):
+                return f"form_{n}"
+            if form.startswith("{who}") and re.match(r"^[A-Z][^\n]{1,80}?" + re.escape(
+                    form.split("{who}")[1].split("{rest}")[0]), first):
+                return f"form_{n}"
     return ""
 
 
 def rotate_curated_opener(text: Optional[str], recent_curated: Optional[list], who: str) -> str:
-    """``text`` with its "<Source> reports that …" opener re-set when the last curated post used it.
+    """``text`` with its "<Source> reports (that) …" opener re-set when a recent curated post used it.
 
     Args:
         text: The commentary.
@@ -492,18 +512,73 @@ def rotate_curated_opener(text: Optional[str], recent_curated: Optional[list], w
     Returns:
         The commentary.
     """
-    match = _REPORTS_THAT_RE.match((text or "").lstrip())
-    if not match or not recent_curated:
-        return text or ""
-    used = {opener_form(t) for t in list(recent_curated)[:2]}
+    del who
+    body = text or ""
+    window = list(recent_curated or [])[:CURATED_OPENER_WINDOW - 1]
+    if not window:
+        return body
+    used = {opener_form(t) for t in window}
     if "reports_that" not in used:
-        return text or ""
-    body = (text or "").lstrip()
-    rest = body[match.start("rest"):]
-    for n, form in enumerate(_OPENER_FORMS):
-        if f"form_{n}" not in used:
-            return form.format(who=match.group("who"), rest=rest)
-    return text or ""
+        return body
+    for start, paragraph in _opening_paragraphs(body):
+        lead = len(paragraph) - len(paragraph.lstrip())
+        match = _REPORTS_THAT_RE.match(paragraph.lstrip())
+        if not match:
+            continue
+        rest = paragraph.lstrip()[match.start("rest"):]
+        for n, form in enumerate(_OPENER_FORMS):
+            if f"form_{n}" not in used:
+                at = start + lead
+                return body[:at] + form.format(who=match.group("who"), rest=rest) + \
+                    body[start + len(paragraph):]
+    return body
+
+
+# #2316: curated_1 and curated_3 both closed on "what trade-off feels most …?". A closing question
+# sharing a run of CLOSE_SHARED_WORDS words with one of the last CURATED_OPENER_WINDOW - 1 curated
+# closes is cut; the post ends on the statement before it.
+CLOSE_SHARED_WORDS = 4
+_QUESTION_RE = re.compile(r"[^.!?\n]*\?")
+
+
+def _closing_questions(text: Optional[str]) -> list:
+    """The question sentences of the last paragraph before any ``Source:`` credit line."""
+    body = re.split(r"(?m)^Source:", text or "")[0].strip()
+    paragraphs = [p for p in re.split(r"\n\s*\n", body) if p.strip()]
+    return [q.strip() for q in _QUESTION_RE.findall(paragraphs[-1])] if paragraphs else []
+
+
+def _word_runs(text: str, size: int) -> set:
+    words = re.findall(r"[a-z][a-z'’-]*", (text or "").lower())
+    return {tuple(words[i:i + size]) for i in range(len(words) - size + 1)}
+
+
+def drop_repeated_close(text: Optional[str], recent_curated: Optional[list]) -> str:
+    """``text`` without a closing question a recent curated post already asked (#2316).
+
+    Args:
+        text: The commentary.
+        recent_curated: The author's recent curated posts, most recent first.
+
+    Returns:
+        The commentary; unchanged when its close is fresh or cutting it would leave nothing.
+    """
+    body = text or ""
+    recent_runs = set()
+    for other in list(recent_curated or [])[:CURATED_OPENER_WINDOW - 1]:
+        for question in _closing_questions(other):
+            recent_runs |= _word_runs(question, CLOSE_SHARED_WORDS)
+    if not recent_runs:
+        return body
+    out = body
+    for question in _closing_questions(body):
+        if _word_runs(question, CLOSE_SHARED_WORDS) & recent_runs:
+            out = out.replace(question, "", 1)
+    out = re.sub(r"[ \t]+\n", "\n", out).rstrip()
+    out = re.sub(r"\n\s*\n\s*$", "", out)
+    if len(out.strip().split()) < 30:
+        return body
+    return re.sub(r"\n{3,}", "\n\n", out).strip()
 
 
 # "For a small business, …", "From a small-business perspective, …": the pivot three of four drafts

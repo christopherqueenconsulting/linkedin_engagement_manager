@@ -158,6 +158,67 @@ def avatar_fits_concept(concept: Any, source_text: Optional[str] = None) -> bool
     return hits >= _FIRST_PERSON_MIN_HITS and hits / max(len(words), 1) >= _FIRST_PERSON_MIN_DENSITY
 
 
+# #2316, the owner's rule for people on a cover: "if it references the user (or me, myself, or the
+# user's name) then it needs to use their avatar". First-person SINGULAR, and "we/our/us" as the
+# author's own firm — the piece is the author's story either way.
+_SELF_REFERENCE = re.compile(r"\b(?:I|I'm|I've|I'd|I'll|[Mm]e|[Mm]y|[Mm]yself|[Mm]ine|[Ww]e|"
+                             r"[Ww]e're|[Ww]e've|[Ww]e'd|[Oo]ur|[Oo]urs|[Oo]urselves|[Uu]s)\b")
+SELF_REFERENCE_CONCEPT = "concept"
+SELF_REFERENCE_FIRST_PERSON = "first_person"
+SELF_REFERENCE_NAMED = "named"
+# A first name shorter than this is too likely to be a common word ("Al", "Ed") to read as a name.
+_MIN_NAME_CHARS = 3
+
+
+def author_names(profile: Any) -> list:
+    """The author's full and first name off a profile (duck-typed), most specific first."""
+    full = " ".join(str(getattr(profile, "full_name", "") or "").split())
+    first = str(getattr(profile, "first_name", "") or "").strip() or (full.split()[0] if full
+                                                                       else "")
+    return [n for n in dict.fromkeys((full, first)) if len(n) >= _MIN_NAME_CHARS]
+
+
+def names_author(text: Optional[str], names: Optional[list]) -> bool:
+    """Does ``text`` name the author — any of ``names`` as a whole, capitalised word run?"""
+    return any(re.search(r"(?<![\w'])" + re.escape(name) + r"(?![\w])", text or "")
+               for name in (names or []) if name)
+
+
+def author_reference(concept: Any, source_text: Optional[str],
+                     names: Optional[list] = None) -> str:
+    """Does this piece's image subject reference the AUTHOR? Deterministic (#2316).
+
+    Three ways, in order — the reason names which:
+
+    - ``concept``: the concept's subject (thesis, chosen or people idea, audience, beat,
+      rationale) speaks of the author ("the author", "I", "my") or names them;
+    - ``named``: the text names the author (first or full name from the profile);
+    - ``first_person``: the text is first-person about the author — at least
+      ``_FIRST_PERSON_MIN_HITS`` self-references ("I", "me", "my", "myself", and "we/our/us" as the
+      author's firm) at a density of ``_FIRST_PERSON_MIN_DENSITY``.
+
+    Args:
+        concept: Stage 1's concept (duck-typed), or None.
+        source_text: The title, subtitle and body the concept was read from.
+        names: ``author_names(profile)``.
+
+    Returns:
+        The reason, or '' when the piece is not about the author.
+    """
+    fields = " ".join(str(getattr(concept, name, "") or "") for name in (
+        "thesis", "chosen_idea", "people_idea", "audience", "emotional_beat",
+        "treatment_rationale")) if concept is not None else ""
+    if _AUTHOR_SIGNAL.search(fields) or names_author(fields, names):
+        return SELF_REFERENCE_CONCEPT
+    if names_author(source_text, names):
+        return SELF_REFERENCE_NAMED
+    words = (source_text or "").split()
+    hits = len(_SELF_REFERENCE.findall(source_text or ""))
+    if hits >= _FIRST_PERSON_MIN_HITS and hits / max(len(words), 1) >= _FIRST_PERSON_MIN_DENSITY:
+        return SELF_REFERENCE_FIRST_PERSON
+    return ""
+
+
 def _post_explicitly_wants_avatar(post_id: int) -> bool:
     """Did the author tick "use my avatar" on THIS post at compose time? Fails closed (False)."""
     try:

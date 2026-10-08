@@ -98,6 +98,7 @@ from cqc_lem.utilities.ai.content_framework import (
     day_type_stage,
     deck_count_claims,
     deck_count_report,
+    deck_figure_gate_issues,
     deck_text,
     deck_topic_report,
     dedupe_repeated_lines,
@@ -1403,11 +1404,15 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
     _report_carousel_deck_consistency(user_id, post_id, carousel_dict, post_text)
     # The caption and slides against the calendar and the anchoring story (showcase round 6): the
     # deck has no editor pass, so an impossible date or timeline is recorded and HOLDS the post.
+    # #2316: a slide figure the caption never states, after `finalize_deck_claims` dropped what it
+    # could, HOLDS the post too; and so does an anecdote day a recent post already told (143/144).
     _record_consistency_finding(
         post_id, consistency_report(f"{post_text or ''}\n{deck_text(carousel_dict)}",
                                     (story or {}).get("happened_at"),
-                                    story_text=_story_bank.entry_text(story) if story else None
-                                    )["issues"], user_id=user_id)
+                                    story_text=_story_bank.entry_text(story) if story else None,
+                                    recent_texts=_record_texts(history)
+                                    )["issues"] + deck_figure_gate_issues(carousel_dict, post_text),
+        user_id=user_id)
 
     # The caption's authenticity judge (issue #1512, owner decision 2A on PR #1554): a carousel
     # caption is a post like any other, and until now it was the one generated post type that
@@ -3880,7 +3885,8 @@ def _review_generated_post(ctx: PostDraftContext, content: str, recent_texts: li
     story_text = _story_bank.entry_text(story) if story else None
     consistency = consistency_report(
         content, happened_at, hook_facts=hook_facts,
-        hook_flagged=(fact_report or {}).get("unverified_values"), story_text=story_text)["issues"]
+        hook_flagged=(fact_report or {}).get("unverified_values"), story_text=story_text,
+        recent_texts=recent_texts)["issues"]
 
     if (not too_similar and not proof_regen and not fabrication_regen and not unverified
             and not slopped and not forbidden and not consistency):
@@ -3945,7 +3951,7 @@ def _review_generated_post(ctx: PostDraftContext, content: str, recent_texts: li
     still_inconsistent = consistency_report(
         second, happened_at, hook_facts=hook_facts,
         hook_flagged=(second_fact_report or {}).get("unverified_values"),
-        story_text=story_text)["issues"]
+        story_text=story_text, recent_texts=recent_texts)["issues"]
     second_forbidden = _story_bank.forbidden_claims(second, forbidden_terms)
     second_slop = slop_lint_report(second, "post", exempt_keyword=cta_keyword,
                                    plain_fold=plain_fold)
