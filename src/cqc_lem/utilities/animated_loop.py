@@ -241,11 +241,75 @@ def _receipt_concept(receipt: Optional[dict]):
     return None
 
 
+# Showcase round 8: gif_125 (a quote card) and gif_130 (the last-resort typeset card) went to Runway
+# because neither archetype is in CODE_DRAWN_ARCHETYPES — a paid cinemagraph of a flat card that
+# moved nothing and weighed 4 MB. Every still drawn in code is animated in code.
+_CODE_DRAWN_VERDICTS = frozenset(("code_drawn", "last_resort"))
+_CODE_DRAWN_CARDS = frozenset(("quote_card", "typeset_card"))
+
+
 def _code_drawn(receipt: Optional[dict]) -> bool:
-    """Did the stored still ship as a code-drawn data graphic (its receipt says so)?"""
+    """Did the stored still ship as a code-drawn graphic or card (its receipt says so)?"""
     from cqc_lem.utilities.ai.image_concept import CODE_DRAWN_ARCHETYPES
 
-    return str((receipt or {}).get("archetype_rendered") or "") in CODE_DRAWN_ARCHETYPES
+    receipt = receipt or {}
+    archetype = str(receipt.get("archetype_rendered") or "")
+    return (archetype in CODE_DRAWN_ARCHETYPES or archetype in _CODE_DRAWN_CARDS
+            or str(receipt.get("gate_verdict") or "") in _CODE_DRAWN_VERDICTS
+            or str(receipt.get("render_path") or "").startswith("code_drawn"))
+
+
+# The measured motion floor (showcase round 8): the median absolute inter-frame change, in 0-255
+# grey levels, over a loop's MOVING frames. gif_125/gif_130 measured about 0.3 (a static card
+# with encoder noise); every loop a reader saw move measured 1.0 or more.
+MOTION_FLOOR = 0.6
+# Frames changing less than this are holds or encoder noise, not the build.
+_HOLD_DELTA = 0.2
+# The share of a loop's frames that must be moving at all.
+_MOVING_SHARE_MIN = 0.15
+
+
+def loop_motion_score(gif_path: Optional[str]) -> Optional[float]:
+    """How visibly a GIF moves: the median inter-frame delta over its moving frames. Never raises.
+
+    The frames are compared in greyscale at a reduced size, so a 6-second loop costs milliseconds.
+    A loop whose moving frames are under ``_MOVING_SHARE_MIN`` of the whole reads as 0 — a flash
+    is not motion.
+
+    Args:
+        gif_path: The GIF.
+
+    Returns:
+        The score, or None when the file cannot be read.
+    """
+    try:
+        from PIL import Image, ImageChops, ImageSequence, ImageStat
+
+        with Image.open(gif_path) as img:
+            frames = [frame.convert("L").resize((160, max(1, round(160 * img.size[1] / img.size[0]))))
+                      for frame in ImageSequence.Iterator(img)]
+    except Exception as e:
+        log_debug(f"Loop could not be read for its motion score ({type(e).__name__})",
+                  task_name=TASK_NAME)
+        return None
+    deltas = [ImageStat.Stat(ImageChops.difference(a, b)).mean[0]
+              for a, b in zip(frames, frames[1:])]
+    moving = sorted(d for d in deltas if d >= _HOLD_DELTA)
+    if not deltas or len(moving) < max(1, _MOVING_SHARE_MIN * len(deltas)):
+        return 0.0
+    return moving[len(moving) // 2]
+
+
+def moves_visibly(gif_path: Optional[str], *, user_id: Optional[int] = None,
+                  post_id: Optional[int] = None) -> bool:
+    """Does the loop clear ``MOTION_FLOOR``? A failing one is logged and the still ships instead."""
+    score = loop_motion_score(gif_path)
+    if score is None or score >= MOTION_FLOOR:
+        return True
+    log_info("Loop has no visible motion — the static image ships instead", user_id=user_id,
+             post_id=post_id, task_name=TASK_NAME, motion_score=round(score, 3),
+             motion_floor=MOTION_FLOOR)
+    return False
 
 
 def _download(url: str) -> Optional[str]:
@@ -305,6 +369,8 @@ def produce_post_loop(user_id: int, post_id: Optional[int], text: str,
                 log_debug("No code-drawn loop for this data graphic — the still ships",
                           user_id=user_id, post_id=post_id, task_name=TASK_NAME)
                 return None
+            if not moves_visibly(gif_path, user_id=user_id, post_id=post_id):
+                return None
             return store_post_loop(image_url, gif_path)
         image_prompt = str((receipt or {}).get("prompt") or "")
         motion = get_runway_ml_video_prompt_from_ai(text, image_prompt, model=STANDARD_VIDEO_MODEL,
@@ -320,7 +386,7 @@ def produce_post_loop(user_id: int, post_id: Optional[int], text: str,
         if not clip_path:
             return None
         gif_path = make_loop_from_video(clip_path)
-        if not gif_path:
+        if not gif_path or not moves_visibly(gif_path, user_id=user_id, post_id=post_id):
             return None
         stored = store_post_loop(image_url, gif_path)
         if stored:

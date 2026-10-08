@@ -68,7 +68,9 @@ STYLE_CODE_DRAWN = "code_drawn_card"
 STYLE_QUOTE_CARD = "quote_card"
 # Showcase round 7: three identical dark quote cards in one batch — at most one in four posts.
 QUOTE_CAP = 1
-QUOTE_CAP_WINDOW = 4
+# Round 8: 1 in 4 still let rhythm_1 and rhythm_6 ship five posts apart beside slot_125 — one quote
+# card in any six posts.
+QUOTE_CAP_WINDOW = 6
 # Showcase round 7: no identical (layout, panel) pair within the last `PAIR_WINDOW` visuals of the
 # same surface family — cards, title cards, decks and covers each answer to it.
 PAIR_WINDOW = 4
@@ -821,6 +823,10 @@ def rhythm_history(receipts: Sequence[Mapping[str, Any]]) -> dict[str, list]:
                 receipt.get("archetype_rendered") or concept.get("archetype"),
                 concept.get("art_style"), receipt.get("gate_verdict") == "last_resort"))
         rhythm = dict(rhythm, card_layout=card_layout_of(rhythm))
+        if rhythm.get("card_layout") == "quote_marks":
+            # Round 8: a typeset card set in quotation marks read as a quote card (rhythm_6), so
+            # it counts against the quote cap as one.
+            rhythm = dict(rhythm, style=STYLE_QUOTE_CARD)
         for dim in RHYTHM_DIMENSIONS:
             value = rhythm.get(dim)
             history[dim].append(str(value) if value else None)

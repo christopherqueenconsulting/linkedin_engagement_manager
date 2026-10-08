@@ -105,6 +105,7 @@ from cqc_lem.utilities.ai.content_framework import (
     drop_opening_question,
     dwell_report,
     dwell_score_min,
+    enforce_close_caps,
     fact_anchored_formats,
     fact_grounding_report,
     finalize_deck_claims,
@@ -3857,8 +3858,10 @@ def _review_generated_post(ctx: PostDraftContext, content: str, recent_texts: li
     # the offer, more elapsed time than has passed since the anchoring story happened.
     happened_at = (story or {}).get("happened_at")
     # Showcase round 7: a figure in the hook needs a story-bank fact or a named source in the body
-    # (slot_141 opened on an unsourced "5.6 hours per week"). Checked wherever numbers are graded.
-    hook_facts = (bank_facts + [s for s in (lead_magnet_cta,) if s]) if grading_facts else None
+    # (slot_141 opened on an unsourced "5.6 hours per week"). Round 8: on EVERY post — it was
+    # gated on the numbers being graded, so a tactical_list under WARN-severity grounding shipped
+    # "by over 90 %" in its hook unchecked.
+    hook_facts = bank_facts + [s for s in (lead_magnet_cta,) if s]
     consistency = consistency_report(
         content, happened_at, hook_facts=hook_facts,
         hook_flagged=(fact_report or {}).get("unverified_values"))["issues"]
@@ -4808,8 +4811,10 @@ def _enforce_cta_rotation(ctx: PostDraftContext, content: Optional[str],
         The draft, its repeated closing ask cut when that was safe.
     """
     cta_type = (ctx.blueprint or {}).get("cta_type")
-    if not content or not cta_type or cta_type == CTA_TYPE_ARTIFACT:
+    if not content or cta_type == CTA_TYPE_ARTIFACT:
         return content
+    if not cta_type:
+        return _apply_close_caps(ctx.user_id, ctx.post_id, content, recent_texts)
     window = [cta_type_of(t) for t in list(recent_texts or [])[:CTA_TYPE_WINDOW - 1]]
     shipped = cta_type_of(content)
     if shipped not in window or CTA_TYPE_NONE in window:
@@ -4818,6 +4823,23 @@ def _enforce_cta_rotation(ctx: PostDraftContext, content: Optional[str],
     if trimmed != content:
         log_info(f"Post closed on a '{shipped}' CTA its last posts already used — closing ask cut",
                  user_id=ctx.user_id, post_id=ctx.post_id, task_name="create_text_post")
+        return trimmed
+    return _apply_close_caps(ctx.user_id, ctx.post_id, content, recent_texts)
+
+
+def _apply_close_caps(user_id: int, post_id: Optional[int], content: Optional[str],
+                      recent_texts: Optional[list]) -> Optional[str]:
+    """One share ask in six posts, a question close in at most a third (showcase round 8).
+
+    Deterministic (`enforce_close_caps`): the share ask is cut whole, a question close loses its
+    question. The keyword close is never either, so the promo slot is never touched.
+    """
+    if not content or cta_type_of(content) == CTA_TYPE_ARTIFACT:
+        return content
+    trimmed, reason = enforce_close_caps(content, recent_texts)
+    if reason:
+        log_info(f"Post closed on {reason} — close cut", user_id=user_id, post_id=post_id,
+                 task_name="create_content")
     return trimmed
 
 
@@ -4834,12 +4856,13 @@ def _cut_repeated_cta_phrase(user_id: int, post_id: Optional[int], content: Opti
         return content
     phrase = repeated_cta_phrase(content, recent_texts)
     if not phrase:
-        return content
+        return _apply_close_caps(user_id, post_id, content, recent_texts)
     trimmed = strip_closing_ask(content)
     if trimmed != content:
         log_info(f"Post closed with wording a recent post used (\"{phrase}\") — closing ask cut",
                  user_id=user_id, post_id=post_id, task_name="create_content")
-    return trimmed
+        return trimmed
+    return _apply_close_caps(user_id, post_id, content, recent_texts)
 
 
 def _enforce_batch_variety(user_id: int, post_id: Optional[int], content: Optional[str],

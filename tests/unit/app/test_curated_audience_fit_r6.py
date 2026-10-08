@@ -127,10 +127,20 @@ class TestTheLinkPreview:
     def test_a_missing_image_is_discovered_and_recorded(self):
         source = dict(SMB)
         with patch(f"{_M}.discover_og_image", return_value="https://example.com/new.png"), \
+             patch(f"{_M}.image_fetchable", return_value=True), \
              patch(f"{_M}.update_curated_source_og_image") as record:
             assert rcs._link_preview(source, 1) == "https://example.com/new.png"
         record.assert_called_once_with(4, "https://example.com/new.png")
         assert source["og_image_url"] == "https://example.com/new.png"
+
+    def test_a_discovered_image_that_will_not_load_is_no_preview(self):
+        # Showcase round 8: a discovered og:image is verified like a collected one.
+        source = dict(SMB)
+        with patch(f"{_M}.discover_og_image", return_value="https://example.com/dead.png"), \
+             patch(f"{_M}.image_fetchable", return_value=False), \
+             patch(f"{_M}.update_curated_source_og_image") as record:
+            assert rcs._link_preview(source, 1) is None
+        record.assert_not_called()
 
     def test_none_found_is_none(self):
         with patch(f"{_M}.discover_og_image", return_value=None), \

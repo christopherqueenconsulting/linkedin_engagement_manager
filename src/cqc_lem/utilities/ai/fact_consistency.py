@@ -12,7 +12,11 @@ to — and each of them shipped in the round-6 showcase:
 - more elapsed time than has passed since the anchoring story happened ("within the first month we
   saw a 30% drop" about a story dated six days ago) — `timeline_violations`.
 
-`consistency_report` bundles the three for the review gate and the gate pass. Two text helpers sit
+Showcase round 8 adds two more: a dated first-person event reported with results it had no time
+to produce (`dated_outcome_violations`), and two totals of one thing that do not agree
+(`count_conflicts`).
+
+`consistency_report` bundles them for the review gate and the gate pass. Two text helpers sit
 beside them because they serve the same posture — what ships must be true of the author:
 `strip_signature_lines` cuts a leaked job-title sign-off ("Senior Applied AI & Full-Stack
 Engineer") and `named_source_material` keeps only the research sentences that name their source,
@@ -273,33 +277,145 @@ def timeline_violations(text: Optional[str], happened_at: Any, now: Any = None) 
     return issues
 
 
+# --- (c) a dated event with no time for its results (showcase round 8) ---------------------------
+
+# slot_125: "On Oct 1 2026 I helped three startups…" and, a week later, "those teams stayed stable,
+# delivered on schedule". A dated event reported with OUTCOMES must be at least this old.
+OUTCOME_MIN_DAYS = 14
+_OUTCOME_RE = re.compile(
+    r"\b(?:stayed|delivered|saved|cut|reduced|grew|increased|dropped|improved|avoided|achieved|"
+    r"doubled|tripled|halved|paid\s+off|went\s+from|turned\s+into|the\s+results?\s+(?:was|were)|"
+    r"resulted\s+in|ended\s+up)\b", re.IGNORECASE)
+
+
+def dated_outcome_violations(text: Optional[str], now: Any = None) -> list:
+    """A first-person event dated too recently for the results the post reports after it.
+
+    The date is the post's own ("On Oct 1 2026 I…"), so this needs no story-bank date. Only the
+    sentences AFTER the dated one are read for outcomes, and a plan or a conditional ("could",
+    "will", "your") is never one. Fails open on a date it cannot read or one in the future.
+
+    Args:
+        text: The draft.
+        now: Today (the generation date); the real today by default.
+
+    Returns:
+        One plain-English issue per dated event.
+    """
+    today = as_date(now) or date.today()
+    sentences = _sentences(text)
+    issues = []
+    for i, sentence in enumerate(sentences):
+        if not _FIRST_PERSON_RE.search(sentence):
+            continue
+        for when in _full_dates(sentence):
+            age = (today - when).days
+            if age < 0 or age >= OUTCOME_MIN_DAYS:
+                continue
+            outcome = next((m.group(0) for s in sentences[i + 1:]
+                            if not _FUTURE_RE.search(s) for m in [_OUTCOME_RE.search(s)] if m), "")
+            if outcome:
+                issues.append(f"the post dates its story {when.strftime('%B %d, %Y').replace(' 0', ' ')} "
+                              f"({age} day(s) ago) yet reports its results (\"{outcome}\"): "
+                              f"date it as a span that leaves time for them, or drop the result")
+                break
+    return issues
+
+
+# --- (d) counts that do not reconcile inside one post (showcase round 8) ---------------------------
+
+# slot_143: "I sent 51 cold emails" then "Out of 63 recipients". Two TOTALS of the same kind of thing
+# in one post must agree, or one sentence must state both (which explains the difference).
+_COUNT_CLASSES = {
+    "outreach": ("emails", "email", "e-mails", "messages", "message", "dms", "recipients",
+                 "recipient", "prospects", "prospect", "contacts", "contact", "leads", "invites",
+                 "invitations", "pitches"),
+}
+_COUNT_NOUN_TO_CLASS = {noun: cls for cls, nouns in _COUNT_CLASSES.items() for noun in nouns}
+_COUNT_NOUN_RE = "|".join(sorted((re.escape(n) for n in _COUNT_NOUN_TO_CLASS), key=len,
+                                 reverse=True))
+_COUNT_MODIFIERS = r"(?:[a-z][a-z'-]*\s+){0,2}?"
+_TOTAL_COUNT_RES = (
+    re.compile(r"\b(?:sent|emailed|messaged|contacted|pitched|reached\s+out\s+to|wrote)\s+"
+               r"(?:out\s+)?(?P<n>\d[\d,]*)\s+" + _COUNT_MODIFIERS + r"(?P<noun>" + _COUNT_NOUN_RE
+               + r")\b", re.IGNORECASE),
+    re.compile(r"\bout\s+of\s+(?:the\s+|those\s+|all\s+|my\s+)?(?P<n>\d[\d,]*)\s+"
+               + _COUNT_MODIFIERS + r"(?P<noun>" + _COUNT_NOUN_RE + r")\b", re.IGNORECASE),
+    re.compile(r"\ball\s+(?P<n>\d[\d,]*)\s+" + _COUNT_MODIFIERS + r"(?P<noun>" + _COUNT_NOUN_RE
+               + r")\b", re.IGNORECASE),
+)
+
+
+def count_conflicts(text: Optional[str]) -> list:
+    """Two different totals of the same kind of thing, stated in different sentences.
+
+    Only TOTALS are read ("sent 51 emails", "out of 63 recipients", "all 40 leads"), so a subset
+    ("3 emails bounced") never conflicts with its whole. A sentence that states both numbers
+    relates them itself ("51 emails to 63 recipients") and is never flagged.
+
+    Args:
+        text: The draft (a deck's caption plus its slides reads as one).
+
+    Returns:
+        One plain-English issue per conflicting pair.
+    """
+    totals: dict = {}
+    for index, sentence in enumerate(_sentences(text)):
+        for rx in _TOTAL_COUNT_RES:
+            for m in rx.finditer(sentence):
+                cls = _COUNT_NOUN_TO_CLASS.get(m.group("noun").lower())
+                value = m.group("n").replace(",", "")
+                totals.setdefault(cls, []).append((value, " ".join(m.group(0).split()), index,
+                                                   sentence))
+    issues = []
+    for cls, found in totals.items():
+        seen: dict = {}
+        for value, phrase, index, sentence in found:
+            other = next((f for v, f in seen.items() if v != value
+                          and f[1] != index and value not in _numbers_in(f[2])
+                          and v not in _numbers_in(sentence)), None)
+            if other:
+                issues.append(f"\"{other[0]}\" and \"{phrase}\" count the same {cls} differently: "
+                              f"reconcile the two totals, or say in one sentence how they relate")
+                break
+            seen.setdefault(value, (phrase, index, sentence))
+    return issues
+
+
+def _numbers_in(sentence: str) -> set:
+    return {n.replace(",", "") for n in re.findall(r"\d[\d,]*", sentence or "")}
+
+
 def consistency_report(text: Optional[str], happened_at: Any = None, now: Any = None,
                        hook_facts: Optional[list] = None,
                        hook_flagged: Optional[list] = None) -> dict:
-    """Every date/timeline consistency check on one draft. Deterministic.
+    """Every date/timeline/count consistency check on one draft. Deterministic.
 
     Args:
         text: The draft as it would ship.
         happened_at: The anchoring story's date, or None (the timeline check is then skipped).
-        now: Today, for the timeline check.
+        now: Today, for the timeline checks.
         hook_facts: The story-bank facts a figure in the hook may come from (showcase round 7,
             ``hook_provenance_issues``). None skips the hook check — only a caller holding the
             allow-list can run it.
         hook_flagged: Figures the fact-grounding gate already holds the post for.
 
     Returns:
-        ``{passes, issues, weekday, deadline, timeline, provenance}`` — ``issues`` is the
+        ``{passes, issues, weekday, deadline, timeline, provenance, counts}`` — ``issues`` is the
         plain-English list a finding and a repair brief carry.
     """
     weekday = [f"\"{w['phrase']}\": that date is a {w['actual']}, not a {w['stated']}"
                for w in weekday_mismatches(text)]
     deadline = deadline_contradictions(text)
     timeline = timeline_violations(text, happened_at, now) if happened_at else []
+    timeline += dated_outcome_violations(text, now)
     provenance = (hook_provenance_issues(text, hook_facts, hook_flagged)
                   if hook_facts is not None else [])
-    issues = weekday + deadline + timeline + provenance
+    counts = count_conflicts(text)
+    # A deck's caption and slides read as one text, so one claim can surface twice: one issue.
+    issues = list(dict.fromkeys(weekday + deadline + timeline + provenance + counts))
     return {"passes": not issues, "issues": issues, "weekday": weekday, "deadline": deadline,
-            "timeline": timeline, "provenance": provenance}
+            "timeline": timeline, "provenance": provenance, "counts": counts}
 
 
 # --- Leaked sign-offs ------------------------------------------------------------------------------
@@ -489,10 +605,42 @@ def unprovenanced_figures(surface_text: Optional[str], body: Optional[str],
     out: list = []
     seen: set = set()
     for claim in _claims(surface_text):
-        if claim["value"] not in seen and not figure_provenance(claim["value"], body, facts):
+        if claim["value"] not in seen and (
+                not figure_provenance(claim["value"], body, facts)
+                or upgrades_hedge(claim["value"], claim["context"], body)):
             out.append(claim["raw"])
         seen.add(claim["value"])
     return out
+
+
+# Showcase round 8: rhythm_3's body said "You could cut your AI spend by 60%" and its image said
+# "AI spend cut by 60%" — a hypothetical printed as a result. A figure the body only ever states
+# hedged may only be printed hedged. "may" is matched lower-case only, so the month never hedges.
+_HEDGE_RE = re.compile(
+    r"\b(?:could|can|might|(?-i:may)|would|potentially|possibly|up\s+to|as\s+much\s+as|aim(?:s|ing)?\s+"
+    r"(?:for|to)|target(?:s|ing)?|hope(?:s|d)?\s+to|expect(?:s|ed)?\s+to|estimated?|projected|"
+    r"if)\b", re.IGNORECASE)
+
+
+def is_hedged(sentence: Optional[str]) -> bool:
+    """Does ``sentence`` state its claim as a possibility ("could cut", "up to 60%")?"""
+    return bool(_HEDGE_RE.search(sentence or ""))
+
+
+def upgrades_hedge(value: str, surface_sentence: Optional[str], body: Optional[str]) -> bool:
+    """Does the surface ASSERT a figure the body only ever states hedged?
+
+    Args:
+        value: The figure, normalised.
+        surface_sentence: The sentence the surface prints it in.
+        body: The post body.
+
+    Returns:
+        True when every body sentence stating ``value`` is hedged and the surface's is not.
+    """
+    windows = _figure_windows(value, body)
+    return (bool(windows) and all(is_hedged(sentence) for sentence, _ in windows)
+            and not is_hedged(surface_sentence))
 
 
 def prints_any(text: Optional[str], figures) -> bool:

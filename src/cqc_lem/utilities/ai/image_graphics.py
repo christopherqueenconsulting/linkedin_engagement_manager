@@ -1203,21 +1203,22 @@ def typeset_layouts_for(hook: Optional[str], *, verbatim: bool = False) -> tuple
     """The typographic compositions ``hook`` can take, in tie order.
 
     ``number_led`` needs a figure that LEADS the hook (``image_compose.split_hero``), so lifting it
-    never leaves a hole in the sentence. ``quote_marks`` puts the line in quotation marks, so it
-    needs a line that is the post's own words verbatim.
+    never leaves a hole in the sentence. ``quote_marks`` is no longer offered (showcase round 8):
+    a typeset card in quotation marks with a dashed attribution IS a quote card to a reader
+    (rhythm_6), so it shipped a third quote card past the quote cap under a typeset receipt. A
+    quote card is ``post_treatment``'s quote treatment, capped there.
 
     Args:
         hook: The headline.
-        verbatim: The hook is an exact substring of the post.
+        verbatim: The hook is an exact substring of the post (kept so callers still bind).
 
     Returns:
         The available layouts; ``poster`` and ``grid_rule`` are always available.
     """
     from cqc_lem.utilities.ai.image_compose import split_hero
 
+    del verbatim
     out = [CARD_POSTER, CARD_GRID_RULE]
-    if verbatim:
-        out.append(CARD_QUOTE_MARKS)
     hero, rest = split_hero(hook or "")
     if hero and len(rest.split()) >= 2:
         out.append(CARD_NUMBER_LED)
@@ -1405,8 +1406,12 @@ def render_typeset_card(hook: str, *, surface: str = "post_image", kicker: str =
     pal = _card_colors(brand, panel)
     region = _Canvas(size, pal["ground"], min(size))
     drawer = _CARD_DRAWERS.get(card_layout or CARD_POSTER, _draw_card_poster)
+    from cqc_lem.utilities.ai.image_compose import kicker_repeats_headline
     from cqc_lem.utilities.ai.image_concept import tidy_figures
+    from cqc_lem.utilities.video_captions import strip_list_marker
 
+    hook = strip_list_marker(hook)
+    kicker = "" if kicker_repeats_headline(kicker, hook) else kicker
     drawer(region, " ".join(tidy_figures(hook).split()), kicker or "", signature or "", pal)
     if out_path is None:
         handle, out_path = tempfile.mkstemp(suffix=".png", prefix="lem_typeset_card_")
@@ -1418,6 +1423,25 @@ def render_typeset_card(hook: str, *, surface: str = "post_image", kicker: str =
 
 _HOOK_FIGURE = re.compile(r"[$€£]?\d[\d,]*(?:\.\d+)?\s?(?:[KkMmBb]n?(?![A-Za-z])|thousand\b|"
                           r"million\b|billion\b)?%?")
+
+
+# The fewest words a figure-less hook keeps to stand as the stat panel's context line.
+PANEL_CONTEXT_MIN_WORDS = 3
+
+
+def hook_without_figures(hook: Optional[str]) -> str:
+    """``hook`` with its figures removed, or '' when too little is left to read as a line.
+
+    Args:
+        hook: The headline ("Audit cut $30K AI spend").
+
+    Returns:
+        The context line ("Audit cut AI spend"), or ''.
+    """
+    rest = _HOOK_FIGURE.sub(" ", hook or "")
+    rest = re.sub(r"\b(?:by|of|to)\s+(?=[,.;:]|$)", " ", rest)
+    rest = " ".join(rest.split()).strip(" ,.;:-–—")
+    return rest if len(rest.split()) >= PANEL_CONTEXT_MIN_WORDS else ""
 
 
 def hook_repeats_figure(hook: Optional[str], fact: dict) -> bool:
@@ -1521,8 +1545,9 @@ def render_graphic(archetype: str, graphic: dict, *, surface: str, hook: str,
     facts = assert_traceable(archetype, graphic)
     if archetype == STAT_CARD and hook_repeats_figure(hook, facts[0]):
         # #2241 data_card: "Our routing change saved $12,000" in the panel, then "$12,000" as the
-        # hero beside it. The stat card IS the claim; its panel keeps the kicker and byline only.
-        hook = ""
+        # hero beside it. The stat card IS the claim. Round 8: the panel then sat ~70% empty
+        # (cover_16), so it keeps the hook's words WITHOUT the figure as its context line.
+        hook = hook_without_figures(hook)
     brand = brand or BrandStyle()
     size = GRAPHIC_CANVAS.get(surface, GRAPHIC_CANVAS["newsletter"])
     layout = layout if layout in SPLIT_LAYOUTS else DEFAULT_LAYOUT.get(surface, LAYOUTS[0])

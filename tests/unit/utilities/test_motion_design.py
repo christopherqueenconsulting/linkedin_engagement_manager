@@ -649,6 +649,7 @@ class TestWiring:
                 patch("cqc_lem.utilities.media_provenance.read_brief_receipt",
                       return_value=receipt), \
                 patch(f"{_MOD}.loop_from_receipt", return_value=str(gif)) as loop, \
+                patch.object(al, "moves_visibly", return_value=True), \
                 patch("cqc_lem.utilities.ai.video_models.create_runway_video") as runway:
             stored = al.produce_post_loop(7, 42, "text", url)
         assert stored == str(assets / "images" / "posts" / "42" / "img_abc.loop.gif")

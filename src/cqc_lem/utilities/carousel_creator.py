@@ -2653,6 +2653,8 @@ DECK_COVER_TREATMENTS = (DECK_COVER_POSTER, DECK_COVER_DRAWN, DECK_COVER_NUMBER,
 DECK_COVER_TEMPLATE = "template"      # the template's own cover: the last resort, never rotated to
 DECK_MOTIFS = ("arc", "bracket", "dots", "stripes")
 _DECK_HISTORY = 6
+# No (template, cover treatment) pair repeats within this many decks (showcase round 8).
+DECK_PAIR_WINDOW = _DECK_HISTORY
 # Showcase round 5: slot_142/143 ran the numbered-circle badge on two decks in a row. The badge is
 # recorded on the deck receipt and retired for the next deck whenever the previous one drew it.
 BADGE_NUMBERED_CIRCLE = "numbered_circle"
@@ -2788,8 +2790,8 @@ def deck_cover_chain(title: str, has_element: bool, ai_available: bool,
     ``number_led`` needs a title that LEADS with a figure; ``code_drawn`` a slide figure that
     validated; ``ai_concept`` an available render. The template's own cover always ends the chain.
     Showcase round 7: slot_142 and slot_143 were the same template on the same poster cover. A
-    treatment that would repeat a ``(template, cover)`` pair from the last ``PAIR_WINDOW`` decks
-    moves behind every one that would not.
+    treatment that would repeat a ``(template, cover)`` pair from the last
+    ``DECK_PAIR_WINDOW`` decks moves behind every one that would not.
 
     Args:
         title: The cover title.
@@ -2817,7 +2819,9 @@ def deck_cover_chain(title: str, has_element: bool, ai_available: bool,
 
     ordered = lru_order([t for t in DECK_COVER_TREATMENTS if t in available],
                         [r for r in recent if r], seed)
-    shown = recent_pairs(list(recent_templates or []), list(recent))
+    # Round 8: slot_144 repeated slot_128's (stat_reveal, poster) four decks later — one past the
+    # post-image window. A batch carries five or more decks, so the deck window is the history's.
+    shown = recent_pairs(list(recent_templates or []), list(recent), window=DECK_PAIR_WINDOW)
     fresh = [t for t in ordered if (template, t) not in shown]
     return fresh + [t for t in ordered if t not in fresh] + [DECK_COVER_TEMPLATE]
 
@@ -3893,12 +3897,17 @@ def create_carousel_slide_images(
     image_paths = []
     slide_receipts: list[dict] = []
 
+    # Round 8: slot_143 drew its "18" stat panel on the cover AND on slide 3 — the cover had
+    # borrowed slide 3's element. The slide index a drawn cover borrowed from (0 = its own).
+    cover_drawn_from = {"slide": None}
+
     def _cover_element():
         """The first code-drawn element the deck's own text earns: the cover's, then a body's."""
         candidates = [slides_data[0]] + slides_data[1:-1] if slides_data else []
         for n, (t, b) in enumerate(candidates):
             element = _slide_element(t, b, theme, post_id, n + 1, evidence)
             if element is not None:
+                cover_drawn_from["slide"] = n + 1
                 return element
         return None
 
@@ -3953,7 +3962,11 @@ def create_carousel_slide_images(
             role = SLIDE_ROLE_BODY
             bc = badge_colors[(idx - 2) % len(badge_colors)]
             # The slide's OWN figures/points, drawn in code (#2241) — before any picture source.
-            element = _slide_element(title, body, theme, post_id, idx, evidence)
+            # Never a second time when the cover already drew this slide's element (round 8).
+            borrowed = (deck_rhythm.get("cover_treatment") == DECK_COVER_DRAWN
+                        and cover_drawn_from["slide"] == idx)
+            element = None if borrowed else _slide_element(title, body, theme, post_id, idx,
+                                                           evidence)
             drawn_body = body
             if element is not None:
                 slide_band["h"] = element.band_h

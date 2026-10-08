@@ -18,6 +18,7 @@ from cqc_lem.utilities.ai.image_brief import (
     build_image_brief,
     check_prompt_against_concept,
     cliche_hit,
+    palette_backdrop_backstop,
 )
 from cqc_lem.utilities.ai.image_concept import ImageConcept
 
@@ -39,7 +40,8 @@ class TestBuildImageBrief:
             brief = build_image_brief("My post about growth", surface="newsletter", ratio="16:9")
 
         assert isinstance(brief, ImageBrief)
-        assert brief.prompt == _GOOD["prompt"]
+        # Round 8: a cover prompt that names no neutral backdrop gets one, in code.
+        assert brief.prompt == palette_backdrop_backstop(_GOOD["prompt"])
         assert brief.focal_concept == _GOOD["focal_concept"]
         assert brief.ratio == "16:9" and brief.surface == "newsletter"
         kwargs = llm.call_args[1]
@@ -75,7 +77,7 @@ class TestBuildImageBrief:
             brief = build_image_brief("My post about growth", surface="carousel")
         assert llm.call_count == 1, "a fenced-but-valid reply must not cost a retry"
         assert not brief.fallback
-        assert brief.prompt == _GOOD["prompt"]
+        assert brief.prompt == _GOOD["prompt"]  # a carousel brief gets no backdrop backstop
 
     def test_invalid_json_retries_then_falls_back_deterministically(self):
         with patch("cqc_lem.utilities.ai.ai_helper._call_llm",
@@ -383,7 +385,7 @@ class TestFiveEditions:
                                       concept=concept)
         assert llm.call_count == 1, "a grounded brief must not retry or fall back"
         assert not brief.fallback
-        assert brief.prompt == payload["prompt"]
+        assert brief.prompt == palette_backdrop_backstop(payload["prompt"])
         assert cliche_hit(brief.prompt) is None
         assert len(brief.required_entities) >= 1, "one anchor in frame is enough since round 3"
         assert brief.treatment == concept.treatment
@@ -468,7 +470,9 @@ class TestStage2Contract:
         with patch(_LLM, side_effect=[_resp(piped), _resp(base)]) as llm:
             brief = build_image_brief("c", surface=surface, concept=_concept())
         assert llm.call_count == 2
-        assert brief.prompt == base["prompt"]
+        backdrop = surface in ("newsletter", "post_image")
+        assert brief.prompt == (palette_backdrop_backstop(base["prompt"]) if backdrop
+                                else base["prompt"])
         retry = llm.call_args_list[1][1]["messages"][1]["content"]
         assert "REJECTED" in retry and "'pipes'" in retry
 
@@ -479,7 +483,8 @@ class TestStage2Contract:
         with patch(_LLM, side_effect=[_resp(bulb), _resp(_GROUNDED_COVER)]) as llm:
             brief = build_image_brief("c", surface="newsletter", avatar=avatar,
                                       concept=_concept())
-        assert llm.call_count == 2 and brief.prompt == _GROUNDED_COVER["prompt"]
+        assert llm.call_count == 2
+        assert brief.prompt == palette_backdrop_backstop(_GROUNDED_COVER["prompt"])
 
     def test_fewer_than_two_entities_is_rejected_with_the_entities_named(self):
         generic = {"focal_concept": "a founder thinking",
@@ -529,7 +534,8 @@ class TestStage2Contract:
         quoted = dict(_GRAPHIC, prompt=_GRAPHIC["prompt"] + f' Type reading "{_HOOK}" on the left.')
         with patch(_LLM, side_effect=[_resp(quoted), _resp(_GRAPHIC)]) as llm:
             brief = build_image_brief("c", surface="newsletter", concept=concept)
-        assert llm.call_count == 2 and brief.prompt == _GRAPHIC["prompt"]
+        assert llm.call_count == 2
+        assert brief.prompt == palette_backdrop_backstop(_GRAPHIC["prompt"])
         assert "carries no words at all" in llm.call_args_list[1][1]["messages"][1]["content"]
 
     def test_avoid_terms_are_a_soft_steer_never_a_gate(self):

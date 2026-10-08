@@ -488,8 +488,10 @@ def headline_parts(hook: str, kicker: Optional[str] = None,
         The parts.
     """
     from cqc_lem.utilities.ai.image_concept import tidy_figures
+    from cqc_lem.utilities.video_captions import strip_list_marker
 
-    hook = tidy_figures(hook)  # round 5: never "85 %" — a number sits tight to its unit
+    hook = tidy_figures(strip_list_marker(hook))  # round 5: "85%", never "85 %"; round 8: no "- "
+    kicker = "" if kicker_repeats_headline(kicker, hook) else kicker
     if not hero:
         return HeadlineParts(kicker=" ".join((kicker or "").upper().split()),
                              rest=sentence_case(hook),
@@ -497,6 +499,29 @@ def headline_parts(hook: str, kicker: Optional[str] = None,
     hero, rest = split_hero(sentence_case(hook))
     return HeadlineParts(kicker=" ".join((kicker or "").upper().split()), hero=hero, rest=rest,
                          signature=" ".join((signature or "").split()))
+
+
+_KICKER_WORD = re.compile(r"[a-z0-9]+")
+
+
+def kicker_repeats_headline(kicker: Optional[str], headline: Optional[str]) -> bool:
+    """Does the kicker only say words the headline already says (showcase round 8)?
+
+    cover_20 set "OBSERVE-LOOP" over "OBSERVE-Loop: A Practical Guide…", and rhythm_2 set
+    "FLEXIBLE INFRASTRUCTURE" over "Flexible infrastructure beats strict policy". A kicker tells
+    a scroller what the piece is ABOUT; one that repeats the headline is dropped (the accent rule
+    takes its place).
+
+    Args:
+        kicker: The topic tag.
+        headline: The headline.
+
+    Returns:
+        True when every kicker word is in the headline.
+    """
+    words = _KICKER_WORD.findall((kicker or "").lower())
+    head = set(_KICKER_WORD.findall((headline or "").lower()))
+    return bool(words) and all(w in head for w in words)
 
 
 @dataclass(frozen=True)
@@ -547,6 +572,49 @@ def tracked_width(draw, text: str, font, size: int) -> int:
         return 0
     track = round(size * _TRACKING)
     return sum(round(draw.textlength(ch, font=font)) for ch in text) + track * (len(text) - 1)
+
+
+# Showcase round 8: cover_19's byline "Christopher Queen · Source: Edelman-LinkedIn B2B Thought
+# Leadership…" ran off the panel ("…B2B Tho"). The byline shrinks to this share of its size, then
+# wraps — at the source separator first — and never draws past the panel.
+SIGNATURE_MIN_SHARE = 0.7
+SIGNATURE_MAX_LINES = 2
+
+
+def fit_signature(signature: str, width: int, height: int) -> tuple:
+    """``(font, size, lines)`` for a byline inside ``width`` — shrunk, then wrapped. Deterministic.
+
+    Args:
+        signature: The byline.
+        width: The panel's text width.
+        height: The canvas height (``signature_size`` reads it).
+
+    Returns:
+        The font, its size and the lines (at most ``SIGNATURE_MAX_LINES``; a part that still
+        overflows is cut at a word boundary with an ellipsis, never mid-word off the edge).
+    """
+    from PIL import Image, ImageDraw
+
+    draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    size = signature_size(height)
+    floor = max(10, round(size * SIGNATURE_MIN_SHARE))
+    for s_px in range(size, floor - 1, -1):
+        font = load_font(s_px)
+        if _ink_width(draw, signature, font) <= width:
+            return font, s_px, [signature]
+    font = load_font(floor)
+    pieces = signature.split(" · ", 1) if " · " in signature else [signature]
+    lines: list[str] = []
+    for piece in pieces:
+        lines += _wrap(draw, piece.split(), font, width) or [piece]
+    lines = lines[:SIGNATURE_MAX_LINES]
+    fitted = []
+    for line in lines:
+        words = line.split()
+        while len(words) > 1 and _ink_width(draw, " ".join(words) + "…", font) > width:
+            words.pop()
+        fitted.append(" ".join(words) + ("…" if len(words) < len(line.split()) else ""))
+    return font, floor, fitted
 
 
 def signature_size(height: int) -> int:
@@ -611,8 +679,11 @@ def fit_cover(size: tuple[int, int], layout: str, parts: HeadlineParts,
     for grow in range(GROW_STEPS):
         plan = plan_layout(size, layout, image, grow)
         box = plan.text_box
-        reserve = (_line_height(load_font(signature_size(h)), signature_size(h))
-                   + round(box.height * 0.04)) if parts.signature else 0
+        if parts.signature:
+            sig_font, sig_px, sig_lines = fit_signature(parts.signature, box.width, h)
+            reserve = _line_height(sig_font, sig_px) * len(sig_lines) + round(box.height * 0.04)
+        else:
+            reserve = 0
         if not parts.kicker:
             reserve += max(10, round(box.height * 0.08))  # the accent rule's strip
         text_box = Box(box.left, box.top, box.right, box.bottom - reserve)
@@ -890,14 +961,16 @@ def compose_headline(render_path: str, hook: str, layout: Optional[str] = None,
         draw.rectangle((x, rule_top, x + round(box.width * 0.18), rule_bottom),
                        fill=(*_hex(colors.kicker), 255))
     if parts.signature:
-        sig_size = signature_size(h)
-        sig_font = load_font(sig_size)
+        sig_font, sig_size, sig_lines = fit_signature(parts.signature, text_box.width, h)
         overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
         sig_draw = ImageDraw.Draw(overlay)
-        sig_y = box.bottom - _line_height(sig_font, sig_size)
-        ink_left = sig_draw.textbbox((0, 0), parts.signature, font=sig_font)[0]
-        sig_draw.text((x - ink_left, sig_y), parts.signature, font=sig_font,
-                      fill=(*_hex(colors.byline), colors.byline_alpha))
+        line_h = _line_height(sig_font, sig_size)
+        sig_y = box.bottom - line_h * len(sig_lines)
+        for line in sig_lines:
+            ink_left = sig_draw.textbbox((0, 0), line, font=sig_font)[0]
+            sig_draw.text((x - ink_left, sig_y), line, font=sig_font,
+                          fill=(*_hex(colors.byline), colors.byline_alpha))
+            sig_y += line_h
         image = Image.alpha_composite(image, overlay)
     out_path = out_path or f"{os.path.splitext(render_path)[0]}_headline.png"
     image.convert("RGB").save(out_path, "PNG")

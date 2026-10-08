@@ -302,8 +302,10 @@ class TestDataCardRedundancy:
         assert ig.hook_repeats_figure("Saved $12,000", {"display": "$12,000"}) is True
         assert ig.hook_repeats_figure("Saved $12,000", {}) is False
 
+    # Round 8: the panel keeps the hook's words WITHOUT the figure (cover_16 sat ~70% empty).
     @pytest.mark.parametrize("hook,set_hook", [
-        ("Our routing change saved $12,000", ""),
+        ("Our routing change saved $12,000", "Our routing change saved"),
+        ("Saved $12,000", ""),
         ("Routing pays for itself", "Routing pays for itself")])
     def test_the_stat_card_panel_drops_a_repeating_headline(self, tmp_path, hook, set_hook):
         graphic = ig.validate_graphic_facts({"thesis_stat": {

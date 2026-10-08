@@ -129,9 +129,12 @@ class TestFinalize:
         assert cf.deck_claims_report(out, CAPTION, FACTS)["passes"]
         assert out["contents"][0] == {"title": "Two candidates, one verification step",
                                       "content": "The gap was clear."}
-        assert out["contents"][2]["content"] == "We emailed 51 executives."
+        # Round 8: the re-headed slide's body only repeated its new heading, so it carries the
+        # caption's own line instead.
+        assert out["contents"][2] == {"title": "We emailed 51 executives",
+                                      "content": "I sent 51 cold emails and got 0 replies."}
         assert out["cover"]["title"] == out["contents"][0]["title"]
-        assert len(changes) == 5
+        assert len(changes) == 6
         assert _deck()["contents"][0]["title"] == "The Stakes: AI Reliability"  # input untouched
 
     def test_a_clean_deck_and_a_non_dict(self):

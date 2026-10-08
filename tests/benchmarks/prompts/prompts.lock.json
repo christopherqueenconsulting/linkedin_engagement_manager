@@ -122,16 +122,28 @@
   "curated.chart_facts": {
     "changed_in": null,
     "content_hash": null,
-    "history": [],
-    "source_hash": "sha256:d8a019edf69d8caaf3c0bd68c7e5143e4c3765e6c98ee930815eaa2c6dda8666",
-    "version": 1
+    "history": [
+      {
+        "hash": "sha256:d8a019edf69d8caaf3c0bd68c7e5143e4c3765e6c98ee930815eaa2c6dda8666",
+        "retired": "2026-10-08",
+        "version": 1
+      }
+    ],
+    "source_hash": "sha256:04e8f67b44726aeabb72a17d4f7c9056e5577c877497b80e7a21fc61fb80e651",
+    "version": 2
   },
   "curated.commentary": {
     "changed_in": null,
     "content_hash": null,
-    "history": [],
-    "source_hash": "sha256:a837a995244a459c13d45c193c577f5e30f319a931ba4ed4acba271e38bceec0",
-    "version": 1
+    "history": [
+      {
+        "hash": "sha256:a837a995244a459c13d45c193c577f5e30f319a931ba4ed4acba271e38bceec0",
+        "retired": "2026-10-08",
+        "version": 1
+      }
+    ],
+    "source_hash": "sha256:b9803a6b9af46539c89322c270d9e701ef6d9c37702309da9a60955d6b204deb",
+    "version": 2
   },
   "dm.lead_response": {
     "changed_in": null,

@@ -425,7 +425,102 @@ def _source_faithful(text: Optional[str], source: dict, voice: str, draft, user_
             text = attribute_first_hand(text, str(source.get("author") or source.get("publisher")
                                                   or "the source"))
     text = strip_which_close(strip_template_opener(text))
+    recent = _recent_curated_texts(user_id)
+    text = rotate_curated_opener(text, recent, str(source.get("author") or source.get("publisher")
+                                                   or ""))
+    text = drop_repeated_pivot(text, recent)
     return finish_post_text(text)
+
+
+# --- Showcase round 8: substance floor, opener and pivot rotation ---------------------------------
+
+# curated_2 shipped two sentences (282 characters, two over the floor) — a restated headline and
+# "opens a practical path for small businesses". A take needs a point, a reason and a consequence:
+# this many sentences of commentary, besides `COMMENTARY_MIN_CHARS`.
+COMMENTARY_MIN_SENTENCES = 3
+
+
+def thin_commentary_reason(text: Optional[str]) -> str:
+    """Why a curated draft is too thin to publish, or '' when it carries a take.
+
+    Args:
+        text: The commentary, before its credit line.
+
+    Returns:
+        The reason, or ''.
+    """
+    body = (text or "").strip()
+    sentences = [x for x in _SENTENCE_RE.split(body.replace("\n", " ")) if len(x.split()) >= 3]
+    if len(body) < COMMENTARY_MIN_CHARS:
+        return f"{len(body)} characters"
+    if len(sentences) < COMMENTARY_MIN_SENTENCES:
+        return f"{len(sentences)} sentence(s)"
+    return ""
+
+
+# Three of four round-8 drafts opened "<Source> reports that …". The opener rotates: a draft that
+# would repeat the last curated post's opening verb is re-set in the next form.
+_REPORTS_THAT_RE = re.compile(r"^(?P<who>[A-Z][^\n]{1,80}?)\s+(?P<verb>reports|says|argues|found|"
+                              r"finds|writes|notes|announced|announces)\s+that\s+(?P<rest>\S)")
+_OPENER_FORMS = ("According to {who}, {rest}", "{who} has a new claim: {rest}",
+                 "New from {who}: {rest}")
+
+
+def opener_form(text: Optional[str]) -> str:
+    """How a curated post opens: ``reports_that``, one of ``_OPENER_FORMS``' keys, or ''."""
+    first = (text or "").lstrip()
+    if _REPORTS_THAT_RE.match(first):
+        return "reports_that"
+    for n, form in enumerate(_OPENER_FORMS):
+        head = form.split("{who}")[0]
+        if head and first.startswith(head):
+            return f"form_{n}"
+        if form.startswith("{who}") and re.match(r"^[A-Z][^\n]{1,80}?" + re.escape(
+                form.split("{who}")[1].split("{rest}")[0]), first):
+            return f"form_{n}"
+    return ""
+
+
+def rotate_curated_opener(text: Optional[str], recent_curated: Optional[list], who: str) -> str:
+    """``text`` with its "<Source> reports that …" opener re-set when the last curated post used it.
+
+    Args:
+        text: The commentary.
+        recent_curated: The author's recent curated posts, most recent first.
+        who: The source's author or publisher.
+
+    Returns:
+        The commentary.
+    """
+    match = _REPORTS_THAT_RE.match((text or "").lstrip())
+    if not match or not recent_curated:
+        return text or ""
+    used = {opener_form(t) for t in list(recent_curated)[:2]}
+    if "reports_that" not in used:
+        return text or ""
+    body = (text or "").lstrip()
+    rest = body[match.start("rest"):]
+    for n, form in enumerate(_OPENER_FORMS):
+        if f"form_{n}" not in used:
+            return form.format(who=match.group("who"), rest=rest)
+    return text or ""
+
+
+# "For a small business, …", "From a small-business perspective, …": the pivot three of four drafts
+# made. A pivot the last curated post also made is cut to the sentence it introduced.
+_SMB_PIVOT_RE = re.compile(
+    r"(?m)^(?:for|from)\s+(?:a\s+|the\s+)?small[- ]business(?:es)?(?:\s+owners?)?"
+    r"(?:\s+(?:perspective|point\s+of\s+view|lens))?\s*,\s*", re.IGNORECASE)
+
+
+def drop_repeated_pivot(text: Optional[str], recent_curated: Optional[list]) -> str:
+    """``text`` without its small-business pivot label when the last curated post used one."""
+    if not text or not _SMB_PIVOT_RE.search(text):
+        return text or ""
+    if not any(_SMB_PIVOT_RE.search(t or "") for t in list(recent_curated or [])[:2]):
+        return text
+    out = _SMB_PIVOT_RE.sub("", text)
+    return re.sub(r"(?m)^([a-z])", lambda m: m.group(1).upper(), out)
 
 
 def finish_post_text(text: Optional[str]) -> str:
@@ -517,9 +612,10 @@ def generate_curated_commentary(user_id: int, source: dict, treatment: str, prof
         log_info("Curated commentary left placeholders — refused, the source is the only fact base",
                  user_id=user_id, task_name="curated_commentary")
         return None
-    if len(text) < COMMENTARY_MIN_CHARS:
+    thin = thin_commentary_reason(text)
+    if thin:
         log_info("Curated commentary too thin to carry a take — not drafted", user_id=user_id,
-                 chars=len(text), task_name="curated_commentary")
+                 chars=len(text), reason=thin, task_name="curated_commentary")
         return None
     out = with_credit(text, source, treatment)
     return out if has_credit(out, source) else None
@@ -607,12 +703,21 @@ def extract_chart_facts(source: dict) -> dict:
         raw = _complete([{"role": "system", "content": _CHART_PROMPT},
                          {"role": "user", "content": f"<source_text>{text}</source_text>"}],
                         model="lem-simple", json_mode=True)
-        data = json.loads(raw or "{}")
     except Exception as e:
         log_warning("Could not read chart figures from a curated source", exc=e,
                     task_name="curated_commentary")
         return {}
-    return data if isinstance(data, dict) else {}
+    from cqc_lem.utilities.ai.ai_helper import _loads_json_object
+
+    # Showcase round 8: a lem-simple json_mode reply that was not bare JSON raised JSONDecodeError
+    # here. The repo's tolerant parse takes a fenced or prose-wrapped object; nothing parseable is
+    # "no chart" (the post falls back to a link), which is expected, not a fault.
+    data = _loads_json_object(raw)
+    if data is None:
+        log_debug("Chart figures reply carried no JSON object — no re-chart",
+                  task_name="curated_commentary")
+        return {}
+    return data
 
 
 def validated_chart(source: dict, raw: Any) -> Optional[dict]:

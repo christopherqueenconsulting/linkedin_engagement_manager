@@ -157,10 +157,20 @@ class TestFabricationGate:
         assert [f["gate"] for f in findings] == ["fact_grounding"]
 
     def test_both_repairs_off_leaves_the_draft_alone(self):
+        # The hook's own figures are checked on every post since showcase round 8, so the
+        # invented figures sit below a figure-free opening here.
+        draft = "Onboarding was the bottleneck.\n\n" + self._INVENTED
+        out, repair = _review(draft, POST_FABRICATION_REGEN_ENABLED="off",
+                              FACT_GROUNDING_SEVERITY_POST="warn")
+        assert out == draft
+        repair.assert_not_called()
+
+    def test_an_unbacked_hook_figure_is_repaired_with_both_repairs_off(self):
         out, repair = _review(self._INVENTED, POST_FABRICATION_REGEN_ENABLED="off",
                               FACT_GROUNDING_SEVERITY_POST="warn")
-        assert out == self._INVENTED
-        repair.assert_not_called()
+        assert out == "second draft"
+        findings = repair.call_args.kwargs["repair_findings"]
+        assert [f["gate"] for f in findings] == ["fact_consistency"]
 
     def test_no_story_means_no_story_exact_check_but_the_numbers_are_still_graded(self):
         # Without an entry the story-EXACT check has no allow-list and must not run — but since

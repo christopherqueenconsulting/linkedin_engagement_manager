@@ -104,12 +104,22 @@ _DANGLING_END = frozenset({"a", "an", "the", "and", "or", "but", "to", "of", "fo
                            "is", "are", "was", "were", "my", "our", "your", "their", "its"})
 
 
+# A list marker opening a line ("- Automate ticket routing…", "• ", "2) "): showcase round 8's
+# slot_141 card printed the literal "- " above its caption. Never part of the words a frame sets.
+_LIST_MARKER = re.compile(r"^(?:[-–—•▪●◦‣]|\d{1,2}[.)](?=\s+[A-Za-z]))\s+")
+
+
+def strip_list_marker(text: Optional[str]) -> str:
+    """``text`` without a leading list marker ("- ", "• ", "2) ") — what a headline never prints."""
+    return _LIST_MARKER.sub("", (text or "").lstrip(), count=1)
+
+
 def _hook_sentences(content: Optional[str]) -> list:
     """The opening's sentences in order — each source line ends one, punctuated or not."""
     text = strip_non_bmp(content or "").replace("*", "").replace("_", " ")
     sentences: list = []
     for raw in text.splitlines():
-        line = " ".join(raw.split())
+        line = strip_list_marker(" ".join(raw.split()))
         if not line or line.startswith(_SKIP_PREFIXES) or not any(c.isalnum() for c in line):
             continue
         sentences += [part.strip() for part in _SENTENCE_END.split(line) if part.strip()]
@@ -137,7 +147,7 @@ def _post_sentences(content: Optional[str]) -> list:
     text = strip_non_bmp(content or "").replace("*", "").replace("_", " ")
     out: list = []
     for raw in text.splitlines():
-        line = " ".join(raw.split())
+        line = strip_list_marker(" ".join(raw.split()))
         if not line or line.startswith(_SKIP_PREFIXES) or not any(c.isalnum() for c in line):
             continue
         out += [part.strip() for part in _SENTENCE_END.split(line) if part.strip()]
