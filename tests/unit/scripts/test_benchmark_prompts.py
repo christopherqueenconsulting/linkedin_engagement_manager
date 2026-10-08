@@ -361,7 +361,7 @@ class TestCalibrationAndJudging:
 
     def test_a_failing_judge_is_counted_and_named_not_called_unparseable(self, rubric_dir):
         result = bp.calibrate(FakeProvider(lambda m, msgs: None), "judge", "r", dry_run=False)
-        assert result["scored"] == 0 and result["errors"] == 4 and result["error"] == "boom"
+        assert result["scored"] == 0 and result["errors"] == 4 and result["first_error"] == "boom"
 
         item = bp.judge_item(FakeProvider(lambda m, msgs: None), "judge", "r", _suite(2),
                              {"c0": ["o"], "c1": ["o"]}, 2, "s", dry_run=False)
@@ -458,7 +458,7 @@ class TestFailureCounts:
 
         assert metrics["contract_failures"] == {"slop_lint": 2}
         assert metrics["draft_failures"] == {"max_chars": 1, "slop_lint": 2}
-        _, reasons = bp.item_verdict("comment", metrics, "champion")
+        _, reasons = bp.item_verdict(metrics, "champion")
         assert reasons == ["contract 0.3333 < 0.95 (slop_lint 2)"]
 
 
@@ -468,28 +468,28 @@ class TestVerdict:
         assert bp.wilson_lower(40, 40) == pytest.approx(0.9124, abs=1e-4)
         assert bp.wilson_lower(39, 40) < 0.9  # why the floor is the raw rate, not this bound
 
-    @pytest.mark.parametrize("family, metrics, role, verdict", [
-        ("comment", {"cases_scored": 0}, "champion", "no-reading"),
-        ("comment", {"cases_scored": 40, "contract_rate": 0.95}, "champion", "pass"),
-        ("comment", {"cases_scored": 40, "contract_rate": 0.925}, "champion", "fail"),
-        ("classifier", {"cases_scored": 40, "contract_rate": 0.94, "contract_wilson": 0.99}, "champion", "fail"),
-        ("comment", {"cases_scored": 39, "contract_rate": 39 / 40, "contract_wilson": 0.87},
+    @pytest.mark.parametrize("metrics, role, verdict", [
+        ({"cases_scored": 0}, "champion", "no-reading"),
+        ({"cases_scored": 40, "contract_rate": 0.95}, "champion", "pass"),
+        ({"cases_scored": 40, "contract_rate": 0.925}, "champion", "fail"),
+        ({"cases_scored": 40, "contract_rate": 0.94, "contract_wilson": 0.99}, "champion", "fail"),
+        ({"cases_scored": 39, "contract_rate": 39 / 40, "contract_wilson": 0.87},
          "fallback", "pass"),  # one miss in 40 passes; the Wilson bound is information only
-        ("classifier", {"cases_scored": 7, "errors": 33, "contract_rate": 1.0, "accuracy": 1.0},
+        ({"cases_scored": 7, "errors": 33, "contract_rate": 1.0, "accuracy": 1.0},
          "champion", "fail"),  # 33/40 empty must not read as a perfect contract
-        ("classifier", {"cases_scored": 39, "errors": 1, "contract_rate": 1.0}, "champion", "pass"),
-        ("classifier", {"cases_scored": 40, "contract_rate": 1.0, "accuracy": 0.85}, "champion", "fail"),
-        ("comment", {"cases_scored": 40, "contract_rate": 0.95, "judge_rate": 0.5,
-                     "judge_calibrated": True}, "champion", "fail"),
-        ("comment", {"cases_scored": 40, "contract_rate": 0.95, "judge_rate": 0.5,
-                     "judge_calibrated": False}, "champion", "pass"),  # an uncalibrated judge never decides
-        ("comment", {"cases_scored": 40, "contract_rate": 0.95, "pairwise_win_or_tie": 0.4},
+        ({"cases_scored": 39, "errors": 1, "contract_rate": 1.0}, "champion", "pass"),
+        ({"cases_scored": 40, "contract_rate": 1.0, "accuracy": 0.85}, "champion", "fail"),
+        ({"cases_scored": 40, "contract_rate": 0.95, "judge_rate": 0.5,
+         "judge_calibrated": True}, "champion", "fail"),
+        ({"cases_scored": 40, "contract_rate": 0.95, "judge_rate": 0.5,
+         "judge_calibrated": False}, "champion", "pass"),  # an uncalibrated judge never decides
+        ({"cases_scored": 40, "contract_rate": 0.95, "pairwise_win_or_tie": 0.4},
          "candidate", "fail"),
-        ("comment", {"cases_scored": 40, "contract_rate": 0.95, "pairwise_win_or_tie": 0.4},
+        ({"cases_scored": 40, "contract_rate": 0.95, "pairwise_win_or_tie": 0.4},
          "champion", "pass"),
     ])
-    def test_item_verdict(self, family, metrics, role, verdict):
-        assert bp.item_verdict(family, metrics, role)[0] == verdict
+    def test_item_verdict(self, metrics, role, verdict):
+        assert bp.item_verdict(metrics, role)[0] == verdict
 
     def test_code_metrics_counts_errors_and_labels(self):
         suite = _suite(4)
@@ -668,7 +668,7 @@ class TestRecording:
         run = {"run_id": "pe-2", "date": "2026-10-08", "mode": "live", "judge": "j",
                "judge_error": "Error code: 404 | no `route`", "results": [self._result("pass")],
                "calibration": {"r": {"rows": 20, "scored": 0, "agreement": None, "calibrated": False,
-                                     "errors": 20, "error": "Error code: 404"}}}
+                                     "errors": 20, "first_error": "Error code: 404"}}}
 
         report = bp.render_report(run)
 

@@ -474,7 +474,7 @@ def wilson_lower(passed: int, total: int, z: float = 1.96) -> Optional[float]:
     return round((centre - spread) / denom, 4)
 
 
-def item_verdict(family: str, metrics: dict[str, Any], role: str) -> tuple[str, list[str]]:
+def item_verdict(metrics: dict[str, Any], role: str) -> tuple[str, list[str]]:
     """Return ``(verdict, reasons)`` for one prompt × model from its measured metrics.
 
     ``pass`` needs every applicable floor met; ``fail`` names each missed one; ``no-reading`` when no
@@ -695,7 +695,7 @@ def calibrate(provider: Any, judge_wire: str, rubric: str, dry_run: bool) -> dic
     agreement = round(agree / scored, 4) if scored else None
     return {"rubric": rubric, "rows": len(rows), "scored": scored, "agreement": agreement,
             "calibrated": agreement is not None and agreement >= CALIBRATION_FLOOR,
-            "errors": errored, "error": first_error}
+            "errors": errored, "first_error": first_error}
 
 
 def judge_item(provider: Any, judge_wire: str, rubric: str, suite: dict[str, Any],
@@ -832,7 +832,7 @@ def run_items(items: list[dict[str, Any]], suites: dict[str, dict[str, Any]],
                                              champion_outputs, contract_by_key[key],
                                              contract_by_key[champ_key], judge_sample,
                                              f"{run_id}:pw:{key}", dry_run))
-        verdict, reasons = item_verdict(family_name, metrics, item["role"])
+        verdict, reasons = item_verdict(metrics, item["role"])
         results.append({**item, "wire": wire, "graders": graders.get(pid), "metrics": metrics,
                         "verdict": verdict, "reasons": reasons})
     return {"results": results, "calibration": calibration, "outputs": outputs_by_key,
@@ -895,7 +895,7 @@ def render_report(run: dict[str, Any]) -> str:
         lines += ["## Judge calibration", "", "| Rubric | Rows | Scored | Errors | Agreement | Counts |",
                   "|---|---|---|---|---|---|"]
         for name, cal in sorted(run["calibration"].items()):
-            errors = f"{cal.get('errors', 0)}" + (f" — `{_cell(cal['error'])}`" if cal.get("error") else "")
+            errors = f"{cal.get('errors', 0)}" + (f" — `{_cell(cal['first_error'])}`" if cal.get("first_error") else "")
             lines.append(f"| `{name}` | {cal['rows']} | {cal['scored']} | {errors} | "
                          f"{_fmt(cal['agreement'])} | "
                          f"{'yes' if cal['calibrated'] else 'no — code graders only'} |")
