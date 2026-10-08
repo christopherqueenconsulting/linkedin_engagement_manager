@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.184.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.183.0...v0.184.0) (2026-10-08)
+
+
+### Features
+
+* **prompt-evals:** track, version and grade every LLM prompt (phases 1–2) ([#2285](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2285)) ([6067601](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6067601ddef04fd6008ab359a61d732540e171ee))
+
+
+### Bug Fixes
+
+* **content:** showcase round 8: provenance and timeline gate, batch layout variety, moving GIFs, deck copy, cover framing ([#2288](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2288)) ([527238a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/527238af95d49357eef756f76afb90103bd5c91a))
+* **research:** call Perplexity directly while LiteLLM rejects the Agent API's truncation field (refs [#2255](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2255)) ([#2286](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2286)) ([0baea57](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0baea57430a5869abd4fece7f5041f4b68936978))
+
 ## [0.183.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.182.4...v0.183.0) (2026-10-08)
 
 
