@@ -315,6 +315,7 @@ once:
 | `dataset_version` moved | generate |
 | New candidate, or a deployment change in `config.yaml` | generate, for that model only |
 | A grader's version moved (`grader_versions`: a hash of each code grader's source and each rubric file) | **regrade**: the outputs stored by a prior run (`--outputs-in`) are re-graded, with no generation spend. Without them it regenerates |
+| A model's role moved (the config reordered its tier: a fallback promoted to champion) | regrade: same outputs, but the verdict now carries the new role and a candidate's pairwise baseline is the new champion |
 | Nothing | "No work", exit 0 |
 
 **What a run does,** in this order:

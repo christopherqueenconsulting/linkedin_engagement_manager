@@ -239,6 +239,11 @@ def build_work_list(evaluated: dict[str, dict[str, Any]], lock: dict[str, Any],
                 kind, reason = KIND_GENERATE, "changed dataset"
             elif row.get("graders") != graders.get(pid):
                 kind, reason = KIND_REGRADE, "changed graders"
+            elif row.get("role") != role:
+                # Same model, same prompt: the outputs still stand, but the verdict's meaning moves
+                # (a fallback promoted to champion now fails the PROMPT), and a candidate's pairwise
+                # baseline is the new champion. Re-grade from stored outputs; nothing is generated.
+                kind, reason = KIND_REGRADE, "changed role"
             else:
                 continue
             items.append({"prompt_id": pid, "version": version, "dataset_version": dataset_version,

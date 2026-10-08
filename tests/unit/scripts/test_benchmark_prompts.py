@@ -61,8 +61,13 @@ class FakeProvider:
         return {"text": text, "error": None if text is not None else "boom", "latency_ms": 1, "usage": {}}
 
 
-def _state_row(dataset_version=3, graders=None):
-    return {"dataset_version": dataset_version, "graders": graders or GRADERS["p.cls"], "verdict": "pass"}
+ROLES = {"openai/gpt-oss:20b": "champion", "openai/gpt-4o-mini": "fallback",
+         "openai/gpt-5.4-mini": "candidate", "ollama-only": "candidate"}
+
+
+def _state_row(dataset_version=3, graders=None, model="openai/gpt-oss:20b", role=None):
+    return {"dataset_version": dataset_version, "graders": graders or GRADERS["p.cls"],
+            "verdict": "pass", "role": role or ROLES.get(model)}
 
 
 # ───────────────────────────── inputs ─────────────────────────────
@@ -157,7 +162,7 @@ class TestWorkList:
         assert all(i["kind"] == "generate" and i["version"] == 2 for i in items)
 
     def test_nothing_changed_is_no_work(self):
-        state = {"p.cls@2": {m: _state_row() for m in ("openai/gpt-oss:20b", "openai/gpt-4o-mini",
+        state = {"p.cls@2": {m: _state_row(model=m) for m in ("openai/gpt-oss:20b", "openai/gpt-4o-mini",
                                                        "openai/gpt-5.4-mini", "ollama-only")}}
         assert self._build(state) == []
 
@@ -166,15 +171,17 @@ class TestWorkList:
         assert {i["reason"] for i in self._build(state)} == {"changed prompt"}
 
     def test_a_new_model_only_runs_that_model(self):
-        state = {"p.cls@2": {m: _state_row() for m in ("openai/gpt-oss:20b", "openai/gpt-4o-mini",
+        state = {"p.cls@2": {m: _state_row(model=m) for m in ("openai/gpt-oss:20b", "openai/gpt-4o-mini",
                                                        "ollama-only")}}
         items = self._build(state)
         assert [(i["model"], i["reason"]) for i in items] == [("openai/gpt-5.4-mini", "new model")]
 
     def test_a_dataset_bump_regenerates_and_a_grader_change_only_regrades(self):
         state = {"p.cls@2": {"openai/gpt-oss:20b": _state_row(dataset_version=2),
-                             "openai/gpt-4o-mini": _state_row(graders={"code:label_match": "old"}),
-                             "openai/gpt-5.4-mini": _state_row(), "ollama-only": _state_row()}}
+                             "openai/gpt-4o-mini": _state_row(graders={"code:label_match": "old"},
+                                                              model="openai/gpt-4o-mini"),
+                             "openai/gpt-5.4-mini": _state_row(model="openai/gpt-5.4-mini"),
+                             "ollama-only": _state_row(model="ollama-only")}}
         items = {i["model"]: (i["kind"], i["reason"]) for i in self._build(state)}
         assert items == {"openai/gpt-oss:20b": ("generate", "changed dataset"),
                          "openai/gpt-4o-mini": ("regrade", "changed graders")}
@@ -183,8 +190,17 @@ class TestWorkList:
         with pytest.raises(ValueError, match="no version in prompts.lock.json"):
             bp.build_work_list(EVALUATED, {}, {}, DEPLOYMENTS, MODELS_CFG, GRADERS)
 
+    def test_a_role_change_regrades_without_generating(self):
+        state = {"p.cls@2": {m: _state_row(model=m) for m in ROLES}}
+        state["p.cls@2"]["openai/gpt-4o-mini"]["role"] = "champion"  # config order was swapped
+
+        items = self._build(state)
+
+        assert [(i["model"], i["kind"], i["reason"]) for i in items] == [
+            ("openai/gpt-4o-mini", "regrade", "changed role")]
+
     def test_filters_force_and_extra_models(self):
-        state = {"p.cls@2": {m: _state_row() for m in ("openai/gpt-oss:20b", "openai/gpt-4o-mini",
+        state = {"p.cls@2": {m: _state_row(model=m) for m in ("openai/gpt-oss:20b", "openai/gpt-4o-mini",
                                                        "openai/gpt-5.4-mini", "ollama-only")}}
         assert self._build(state, prompt_ids={"other"}) == []
         assert {i["reason"] for i in self._build(state, force=True)} == {"forced"}
