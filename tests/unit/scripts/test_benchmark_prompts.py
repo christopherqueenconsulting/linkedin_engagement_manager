@@ -160,6 +160,10 @@ class TestWorkList:
         assert items == {"openai/gpt-oss:20b": ("generate", "changed dataset"),
                          "openai/gpt-4o-mini": ("regrade", "changed graders")}
 
+    def test_an_evaluated_prompt_missing_from_the_lock_fails_fast(self):
+        with pytest.raises(ValueError, match="no version in prompts.lock.json"):
+            bp.build_work_list(EVALUATED, {}, {}, DEPLOYMENTS, MODELS_CFG, GRADERS)
+
     def test_filters_force_and_extra_models(self):
         state = {"p.cls@2": {m: _state_row() for m in ("openai/gpt-oss:20b", "openai/gpt-4o-mini",
                                                        "openai/gpt-5.4-mini", "ollama-only")}}
@@ -251,6 +255,15 @@ class TestRubricJudge:
     def test_parse_criteria_verdict(self, text, passes, status):
         verdict = bp.parse_criteria_verdict(text, ["engages", "no_pitch"])
         assert verdict["passes"] is passes and verdict["status"] == status
+
+    def test_braces_after_the_verdict_do_not_lose_it(self):
+        text = ('Verdict: {"engages": {"verdict": "pass"}, "no_pitch": {"verdict": "pass"}} '
+                "— note the post used {curly} braces too.")
+        assert bp.parse_criteria_verdict(text, ["engages", "no_pitch"])["passes"] is True
+
+    def test_a_non_object_json_value_is_skipped(self):
+        assert bp._first_json_object('[1] then {"a": 1}') == {"a": 1}
+        assert bp._first_json_object("[1, 2]") is None
 
     @pytest.mark.parametrize("text, winner", [('{"winner": "A"}', "A"), ('{"winner":"b"}', "B"),
                                               ('{"winner": "TIE"}', "tie"), ("dunno", None)])

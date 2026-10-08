@@ -85,6 +85,9 @@ CALIBRATION_FLOOR = 0.85
 DEFAULT_SAMPLES = 2            # every new/changed prompt@version is generated twice
 DEFAULT_JUDGE_SAMPLE = 5       # judged cases per prompt × model
 JUDGE_MAX_TOKENS = 700
+#: Worst-case judge prompt: the rubric plus `case_inputs`' 6000-char cap plus one output. Priced at
+#: `benchmark_routed`'s deliberately generous chars-per-token ratio, so the plan is a CEILING.
+JUDGE_INPUT_CHARS = 6000
 
 
 # ───────────────────────────────── inputs (pure) ─────────────────────────────────
@@ -196,6 +199,11 @@ def build_work_list(evaluated: dict[str, dict[str, Any]], lock: dict[str, Any],
             continue
         locked = lock.get(pid) or {}
         version, dataset_version = locked.get("version"), locked.get("dataset_version")
+        if version is None:
+            # The unit lane already fails a stale lock; this keeps a bypassed one from writing
+            # `prompt@None` rows into the state.
+            raise ValueError(f"{pid} is evaluated but has no version in prompts.lock.json — "
+                             "run `python scripts/prompt_capture.py --write`")
         tier = str(entry.get("tier") or "")
         measured = state.get(f"{pid}@{version}") or {}
         matrix = models_for_tier(tier, deployments, models_cfg)
@@ -273,7 +281,8 @@ def plan_spend(items: list[dict[str, Any]], suites: dict[str, dict[str, Any]],
         if judge_spec is None:
             unpriced.append(judge_model)
         else:
-            per_call = (6000 / 3) * judge_spec["in"] + JUDGE_MAX_TOKENS * judge_spec["out"]
+            input_tokens = JUDGE_INPUT_CHARS / routed._CHARS_PER_TOKEN
+            per_call = input_tokens * judge_spec["in"] + JUDGE_MAX_TOKENS * judge_spec["out"]
             judge_usd = round(judge_calls * per_call, 4)
             total += judge_usd
     return {"items": lines, "judge": {"model": judge_model, "calls": judge_calls, "est_usd": judge_usd},
@@ -343,19 +352,27 @@ def rubric_messages(rubric_text: str, inputs: str, output: str) -> list[dict[str
     ]
 
 
+def _first_json_object(text: Optional[str]) -> Optional[dict[str, Any]]:
+    """Return the first JSON object in a reply, ignoring fences and any prose or braces after it."""
+    raw = str(text or "")
+    decoder = json.JSONDecoder()
+    for start in [i for i, ch in enumerate(raw) if ch == "{"]:
+        try:
+            doc, _end = decoder.raw_decode(raw, start)
+        except ValueError:
+            continue
+        if isinstance(doc, dict):
+            return doc
+    return None
+
+
 def parse_criteria_verdict(text: Optional[str], criteria: list[str]) -> dict[str, Any]:
     """Read a rubric verdict. A case passes only when every criterion passes.
 
     An answer that is not JSON, or misses a criterion, is ``judge:unparseable`` — recorded, never
     turned into a score.
     """
-    raw = str(text or "").strip()
-    raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw)
-    match = re.search(r"\{.*\}", raw, flags=re.S)
-    try:
-        doc = json.loads(match.group(0)) if match else None
-    except ValueError:
-        doc = None
+    doc = _first_json_object(text)
     verdicts: dict[str, str] = {}
     for name in criteria:
         value = (doc or {}).get(name) if isinstance(doc, dict) else None
