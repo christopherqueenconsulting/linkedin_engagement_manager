@@ -3646,6 +3646,63 @@ def deck_figure_issues(carousel: Optional[dict], post_text: Optional[str],
     return out
 
 
+_DECK_PAGE_COUNT_RE = re.compile(r"\b(\d{1,2})[\s-]+(?:slides?|pages?)\b", re.IGNORECASE)
+
+
+def _self_evident_deck_counts(text: str, carousel: Optional[dict],
+                              post_text: Optional[str]) -> set:
+    """Counts a deck proves on its own pages: "N slides", and an "N steps" its slides ARE.
+
+    A count promise is self-evident only when the deck holds that many items AND the promise is
+    backed the way round 8 requires (``_count_promise_backed``): "3 steps that saved it" over
+    three narrative slides (slot_144) is not.
+    """
+    graded = [s for s in deck_slides(carousel) if s["graded"]]
+    listed = sum(len(_DECK_LIST_ITEM_RE.findall(s["content"])) for s in graded)
+    readings = {len(graded)} | ({listed} if listed else set())
+    out = {m.group(1) for m in _DECK_PAGE_COUNT_RE.finditer(text or "")}
+    for claim in deck_count_claims(text):
+        if claim["count"] in readings and _count_promise_backed(text, claim["count"],
+                                                                carousel or {}, post_text):
+            out.add(str(claim["count"]))
+    return out
+
+
+def deck_absent_figures(carousel: Optional[dict], post_text: Optional[str]) -> list:
+    """The ONE figure gate on a deck: every slide's figures the CAPTION never states (#2316).
+
+    Round 7's slide check read a figure's provenance against the caption AND the deck, so a slide
+    vouched for itself — slot_143's "5,878 target firms" and slot_144's "82 issues, 13 blocking"
+    both shipped. The body is the caption alone now (``fact_consistency.figures_absent_from_body``),
+    on every slide, the cover and the CTA included; only a count the deck itself proves
+    (``_self_evident_deck_counts``) is exempt.
+
+    Args:
+        carousel: The deck.
+        post_text: The caption.
+
+    Returns:
+        ``{slide, figures}`` entries in slide order.
+    """
+    from cqc_lem.utilities.ai.fact_consistency import figures_absent_from_body
+
+    out = []
+    for slide in deck_slides(carousel):
+        text = f"{slide['title']}\n{slide['content']}"
+        evident = _self_evident_deck_counts(text, carousel, post_text)
+        figures = [f for f in figures_absent_from_body(text, post_text)
+                   if re.sub(r"[^\d.]", "", f.replace(",", "")).rstrip(".") not in evident]
+        if figures:
+            out.append({"slide": _slide_label(slide), "figures": figures})
+    return out
+
+
+def deck_figure_gate_issues(carousel: Optional[dict], post_text: Optional[str]) -> list:
+    """What the figure gate still finds after ``finalize_deck_claims`` — each one HOLDS the post."""
+    return [f"slide “{f['slide']}” prints {', '.join(f['figures'])}, which the post never states"
+            for f in deck_absent_figures(carousel, post_text)]
+
+
 def deck_claims_report(carousel: Optional[dict], post_text: Optional[str] = None,
                        sources: Optional[list] = None) -> dict:
     """Template headings, an undelivered cover promise and unvouched slide figures. Deterministic.
@@ -3663,6 +3720,8 @@ def deck_claims_report(carousel: Optional[dict], post_text: Optional[str] = None
                 if s["graded"] and template_heading(s["title"])]
     promise = cover_promise_gap(carousel) or unbacked_count_promise(carousel, post_text)
     figures = deck_figure_issues(carousel, post_text, sources)
+    flagged = {f["slide"] for f in figures}
+    figures += [f for f in deck_absent_figures(carousel, post_text) if f["slide"] not in flagged]
     reasons = [f"slide “{name}” is headed with a template label, not a claim" for name in headings]
     if promise:
         reasons.append(f"the cover promises “{promise}” but no slide shows it")
@@ -4061,6 +4120,9 @@ def finalize_deck_claims(carousel: Optional[dict], post_text: Optional[str] = No
       what the deck delivers.
     - A body slide's count of a thing the caption counts differently is set to the caption's
       count, or dropped when the caption counts it more than one way (round 9).
+    - #2316, the ONE figure gate: a figure on ANY slide (cover and CTA too) that the caption never
+      states is dropped the same way (``deck_absent_figures``). A slide that would be emptied
+      keeps its text, and whatever survives HOLDS the post (``deck_figure_gate_issues``).
 
     Args:
         carousel: The deck.
@@ -4081,6 +4143,10 @@ def finalize_deck_claims(carousel: Optional[dict], post_text: Optional[str] = No
     changes += _reconcile_slide_counts(out, post_text)
     figures_by_slide = {f["slide"]: f["figures"] for f in deck_figure_issues(out, post_text,
                                                                               sources)}
+    # #2316: THE figure gate — a figure the caption never states goes too, on every slide.
+    for found in deck_absent_figures(out, post_text):
+        merged = figures_by_slide.get(found["slide"], []) + found["figures"]
+        figures_by_slide[found["slide"]] = list(dict.fromkeys(merged))
     for slide in deck_slides(out):
         title, content = slide["title"], slide["content"]
         figures = figures_by_slide.get(_slide_label(slide))

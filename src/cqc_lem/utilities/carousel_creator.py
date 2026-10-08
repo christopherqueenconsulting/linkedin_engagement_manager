@@ -2861,14 +2861,72 @@ def deck_cover_chain(title: str, has_element: bool, ai_available: bool,
     # post-image window. A batch carries five or more decks, so the deck window is the history's.
     shown = recent_pairs(list(recent_templates or []), list(recent), window=DECK_PAIR_WINDOW)
     fresh = [t for t in ordered if (template, t) not in shown]
-    return fresh + [t for t in ordered if t not in fresh] + [DECK_COVER_TEMPLATE]
+    chain = fresh + [t for t in ordered if t not in fresh]
+    # #2316: five decks opened on the poster four times — the AI concept cover the rotation picked
+    # was refused by its judge, and the chain's next pick was the poster again. A treatment two
+    # of the last four decks used goes behind the template's own cover, so any five decks in a row
+    # open on at least three covers.
+    capped = [t for t in chain if deck_cover_capped(t, recent)]
+    head = [t for t in chain if t not in capped]
+    if deck_cover_capped(DECK_COVER_TEMPLATE, recent):
+        return head + capped + [DECK_COVER_TEMPLATE]
+    return head + [DECK_COVER_TEMPLATE] + capped
 
 
-def deck_motif(recent: list, seed: str = "") -> str:
-    """The inside-slide accent motif for one deck: least-recently-used, never the last deck's."""
+# #2316: any DECK_COVER_WINDOW decks in a row open on at least three cover treatments.
+DECK_COVER_WINDOW = 5
+DECK_COVER_MAX_IN_WINDOW = 2
+
+
+def deck_cover_capped(treatment: str, recent: list) -> bool:
+    """Did ``DECK_COVER_MAX_IN_WINDOW`` of the last ``DECK_COVER_WINDOW`` - 1 decks open on it?"""
+    window = [r for r in (recent or [])][:DECK_COVER_WINDOW - 1]
+    return sum(1 for r in window if r == treatment) >= DECK_COVER_MAX_IN_WINDOW
+
+
+def deck_motif(recent: list, seed: str = "", template: Optional[str] = None,
+               recent_templates: Optional[list] = None, badge: Optional[str] = None,
+               recent_badges: Optional[list] = None) -> str:
+    """The inside-slide accent motif for one deck: least-recently-used, never the last deck's.
+
+    #2316: decks 128 and 144 drew IDENTICAL inside slides — the same template, motif and badge,
+    four decks apart (the motif's four-deck cycle met the template's). With ``template`` given, a
+    motif that would repeat a recent deck's ``(template, motif, badge)`` inside set
+    (``_DECK_HISTORY`` decks) is refused while any other is free.
+
+    Args:
+        recent: Recent decks' motifs, most recent first.
+        seed: Stable per-deck text for the no-history case.
+        template: This deck's template key.
+        recent_templates: Recent decks' templates, aligned with ``recent``.
+        badge: This deck's badge.
+        recent_badges: Recent decks' badges, aligned with ``recent``.
+
+    Returns:
+        A ``DECK_MOTIFS`` value.
+    """
     from cqc_lem.utilities.ai.post_treatment import lru_order
 
-    return lru_order(DECK_MOTIFS, [r for r in recent if r], seed)[0]
+    ordered = lru_order(DECK_MOTIFS, [r for r in recent if r], seed)
+    if template is None:
+        return ordered[0]
+    templates, badges = list(recent_templates or []), list(recent_badges or [])
+    used = {(templates[n] if n < len(templates) else None, motif,
+             badges[n] if n < len(badges) else None)
+            for n, motif in enumerate(list(recent or [])[:_DECK_HISTORY])}
+    fresh = [m for m in ordered if (template, m, badge) not in used]
+    return (fresh or ordered)[0]
+
+
+def internal_set_repeats(template: str, motif: str, badge: Optional[str], history: dict) -> bool:
+    """Would this deck's inside slides repeat a recent deck's ``(template, motif, badge)``?"""
+    templates = list(history.get("template") or [])
+    badges = list(history.get("badge") or [])
+    for n, used in enumerate(list(history.get("motif") or [])[:_DECK_HISTORY]):
+        if ((templates[n] if n < len(templates) else None) == template and used == motif
+                and (badges[n] if n < len(badges) else None) == badge):
+            return True
+    return False
 
 
 def render_deck_cover_concept(scope: "_CarouselImageScope", user_id: Optional[int],
@@ -3128,9 +3186,19 @@ def create_carousel_slide_images(
     slide_ctx: dict = {"draw": None}
     # The deck's rotated rhythm (showcase round 4), decided once below.
     history = recent_deck_choices(os.path.dirname(output_dir), user_id)
+    badge = deck_badge(template_key, history["badge"])
     deck_rhythm = {"motif": motif if motif in DECK_MOTIFS
-                   else deck_motif(history["motif"], f"{post_id}:{template}"),
-                   "badge": deck_badge(template_key, history["badge"])}
+                   else deck_motif(history["motif"], f"{post_id}:{template}", template_key,
+                                   history["template"], badge, history["badge"]),
+                   "badge": badge}
+    if motif not in DECK_MOTIFS and internal_set_repeats(template_key, deck_rhythm["motif"],
+                                                         badge, history):
+        # Every motif is taken for this template and badge — the receipt says so (#2316).
+        from cqc_lem.utilities.logger import log_info
+
+        log_info("Deck inside slides repeat a recent deck — no free motif", post_id=post_id,
+                 user_id=user_id, template=template_key, motif=deck_rhythm["motif"],
+                 action_type="carousel_image")
 
     def _new_draw(img):
         draw = make_ink_draw(img)

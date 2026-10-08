@@ -179,9 +179,15 @@
   "image.analyze_content": {
     "changed_in": null,
     "content_hash": null,
-    "history": [],
-    "source_hash": "sha256:3fff03137d9af08dd8439f184d8dd2acc29a2d32fe03502f27f5939ec1fe6973",
-    "version": 1
+    "history": [
+      {
+        "hash": "sha256:3fff03137d9af08dd8439f184d8dd2acc29a2d32fe03502f27f5939ec1fe6973",
+        "retired": "2026-10-08",
+        "version": 1
+      }
+    ],
+    "source_hash": "sha256:8b1a791b4c552247d705a3ff6f21ae5691da7862d7ebc64dd9f107d50a17219a",
+    "version": 2
   },
   "image.brief": {
     "changed_in": null,

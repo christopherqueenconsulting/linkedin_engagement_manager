@@ -236,7 +236,9 @@ _HAIKU = ("Claude Haiku 5.5 costs around 75% less than Claude Haiku 4.5 for most
 
 class TestCuratedVisualClaims:
     def test_a_one_word_label_gives_way_to_the_words_after_the_figure(self):
-        assert ig.complete_context("costs", _HAIKU, "75").startswith("less than Claude Haiku 4.5")
+        # #2316: the words after the figure now carry the noun the comparative measures.
+        assert ig.complete_context("costs", _HAIKU, "75").startswith(
+            "less cost than Claude Haiku 4.5")
 
     def test_a_chart_claim_goes_when_no_chart_drew(self):
         text = ("Aamna reports 75% less.\n\nI redrew the cost comparison chart to show the gap. "

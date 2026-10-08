@@ -347,6 +347,11 @@ _TOTAL_COUNT_RES = (
                + _COUNT_MODIFIERS + r"(?P<noun>" + _COUNT_NOUN_RE + r")\b", re.IGNORECASE),
     re.compile(r"\ball\s+(?P<n>\d[\d,]*)\s+" + _COUNT_MODIFIERS + r"(?P<noun>" + _COUNT_NOUN_RE
                + r")\b", re.IGNORECASE),
+    # #2316: slot_128 still shipped "sent 51 cold emails" beside "Every one of the 63 recipients"
+    # — "every one of" / "each of" counts the whole set as surely as "all 63" does.
+    re.compile(r"\b(?:every\s+(?:single\s+)?one|each(?:\s+one)?)\s+of\s+(?:the\s+|those\s+|these\s+|"
+               r"my\s+|our\s+)?(?P<n>\d[\d,]*)\s+" + _COUNT_MODIFIERS + r"(?P<noun>"
+               + _COUNT_NOUN_RE + r")\b", re.IGNORECASE),
 )
 
 
@@ -432,10 +437,192 @@ def second_story_issues(text: Optional[str], story_text: Optional[str]) -> list:
     return []
 
 
+# --- (f) two stories stitched into one post, with or without an anchor (#2316) ---------------------
+
+# slot_123 opened on "Last Tuesday I stared at a ticking clock" and then told Retail Dive's October 8
+# update; slot_130 told an April 2026 phishing email and then "I recently worked with a client
+# whose AI chatbot…". Neither second story was a story-bank entry, so round 9's anchor rule could
+# not see it. These read the post ALONE: each paragraph that opens a dated event is one event.
+_EVENT_DAY_DATE = re.compile(
+    r"\b(?P<month>" + _MONTH_RE + r")\.?\s+(?P<day>\d{1,2})(?:st|nd|rd|th)?\b(?:,?\s+"
+    r"(?P<year>(?:19|20)\d{2})\b)?", re.IGNORECASE)
+_EVENT_MONTH_YEAR = re.compile(r"\b(?:in\s+|on\s+|since\s+)?(?P<month>" + _MONTH_RE
+                               + r")\.?,?\s+(?P<year>(?:19|20)\d{2})\b", re.IGNORECASE)
+_EVENT_RELATIVE = re.compile(
+    r"\b(?:last\s+(?:" + _WEEKDAY_RE + r"|week|month|year|quarter|night|summer|winter|spring|fall)|"
+    r"yesterday|this\s+(?:morning|afternoon)|(?:earlier|late)\s+this\s+(?:week|month))\b",
+    re.IGNORECASE)
+_PAST_NARRATIVE = re.compile(
+    r"\b(?:I|we|my|our)\b[^.!?\n]{0,60}?\b(?:\w+ed|was|were|had|did|got|built|sent|found|saw|"
+    r"stared|wrote|made|ran|took|lost|spent|went|came|began|told|gave|paid|launched|shipped|"
+    r"dove|learned|offered|reviewed|compared|rebuilt|sold|bought|met|led|hired|fired|quit|left|"
+    r"kept|felt|thought|caught|brought|taught|held|chose|drove|flew|fell|broke|won|set|cut|put|"
+    r"spoke|sat|stood|heard|knew|understood|forgot|hit|let|read)\b|\b(?:my|our)\s+own\b",
+    re.IGNORECASE)
+# A dated event someone else reported: "Retail Dive's October 8 update", "Gartner's May 2026 survey".
+_NEWS_EVENT = re.compile(
+    r"\b[A-Z][\w&.'’-]*(?:\s+[A-Z][\w&.'’-]*){0,3}['’]s\s+(?:[\w.,\s]{0,24}?\s)?"
+    r"(?:update|report|announcement|release|survey|study|post|launch|blog|filing|statement|"
+    r"keynote|press\s+release|earnings)\b")
+# A NEW case introduced in so many words: "I recently worked with a client whose…", "Another client".
+_NEW_CASE = re.compile(
+    r"\b(?:I|We)\s+(?:recently\s+|once\s+|also\s+)?(?:worked\s+with|helped|advised|consulted\s+for)\s+"
+    r"(?:a|an|one|another)\s+(?:[a-z-]+\s+){0,2}?(?:clients?|customers?|compan(?:y|ies)|startups?|"
+    r"retailers?|agenc(?:y|ies)|founders?|teams?|brands?|firms?|business(?:es)?)\b|"
+    r"^\W*(?:Another|One\s+of\s+my)\s+(?:[a-z-]+\s+){0,2}?(?:clients?|customers?|compan(?:y|ies)|"
+    r"startups?|teams?|firms?)\b", re.IGNORECASE | re.MULTILINE)
+# Two first-person anecdotes whose absolute dates are this close are one story told in beats
+# ("On September 15 I launched … On September 16 I pulled the links").
+STITCHED_SAME_STORY_DAYS = 14
+
+EVENT_ANECDOTE, EVENT_NEWS, EVENT_CASE = "anecdote", "news", "case"
+
+
+def _event_date(paragraph: str) -> Optional[tuple]:
+    """``(year or None, month, day or None)`` of the first absolute date in ``paragraph``."""
+    match = _EVENT_DAY_DATE.search(paragraph)
+    if match and _month(match.group("month")):
+        year = int(match.group("year")) if match.group("year") else None
+        return year, _month(match.group("month")), int(match.group("day"))
+    match = _EVENT_MONTH_YEAR.search(paragraph)
+    if match and _month(match.group("month")):
+        return int(match.group("year")), _month(match.group("month")), None
+    return None
+
+
+def story_events(text: Optional[str]) -> list:
+    """The dated events and new cases a post tells, one per paragraph at most. Deterministic.
+
+    Three kinds: a first-person ``anecdote`` (a date — absolute, month and year, or relative such
+    as "Last Tuesday" — beside first-person past narration), a ``news`` event (a dated item someone
+    else published: "Retail Dive's October 8 update"), and a new ``case`` ("I recently worked with
+    a client whose…").
+
+    Args:
+        text: The post.
+
+    Returns:
+        ``{kind, paragraph, date, phrase}`` dicts in paragraph order; ``date`` is ``(year, month,
+        day)`` with None for an unknown part, or None for a relative or undated event.
+    """
+    out = []
+    for index, paragraph in enumerate(re.split(r"\n\s*\n", text or "")):
+        line = " ".join(paragraph.split())
+        if not line:
+            continue
+        absolute = _event_date(line)
+        relative = _EVENT_RELATIVE.search(line)
+        dated = absolute is not None or relative is not None
+        news = _NEWS_EVENT.search(line)
+        news_dated = news is not None and bool(_EVENT_DAY_DATE.search(news.group(0))
+                                               or _EVENT_MONTH_YEAR.search(news.group(0)))
+        if news and (news_dated or (dated and not _PAST_NARRATIVE.search(line))):
+            out.append({"kind": EVENT_NEWS, "paragraph": index, "date": absolute,
+                        "phrase": " ".join(news.group(0).split())})
+            continue
+        if dated and _PAST_NARRATIVE.search(line):
+            out.append({"kind": EVENT_ANECDOTE, "paragraph": index, "date": absolute,
+                        "phrase": _date_phrase(line)})
+            continue
+        case = _NEW_CASE.search(line)
+        if case:
+            out.append({"kind": EVENT_CASE, "paragraph": index, "date": None,
+                        "phrase": " ".join(case.group(0).split())})
+    return out
+
+
+def _date_phrase(line: str) -> str:
+    for rx in (_EVENT_DAY_DATE, _EVENT_MONTH_YEAR, _EVENT_RELATIVE):
+        match = rx.search(line)
+        if match:
+            return " ".join(match.group(0).split())
+    return ""
+
+
+def _days_apart(a: Optional[tuple], b: Optional[tuple]) -> Optional[int]:
+    """Days between two absolute ``(year, month, day)`` dates; None when either is incomplete."""
+    if not a or not b or None in (a[1], b[1]):
+        return None
+    year_a, year_b = a[0] or b[0], b[0] or a[0]
+    first = _date_or_none(year_a or 2000, a[1], a[2] or 1)
+    second = _date_or_none(year_b or 2000, b[1], b[2] or 1)
+    return abs((first - second).days) if first and second else None
+
+
+def stitched_story_issues(text: Optional[str]) -> list:
+    """Two distinct dated events (or a dated event and a new case) told in one post. Deterministic.
+
+    Events of different kinds in different paragraphs are two stories (an anecdote and a news item,
+    an anecdote and a client case). Two first-person anecdotes are two stories only when both carry
+    absolute dates more than ``STITCHED_SAME_STORY_DAYS`` apart — a story told in beats keeps its
+    dates close, and a relative date beside an absolute one cannot be told apart, so it is read as
+    one story.
+
+    Args:
+        text: The draft.
+
+    Returns:
+        One plain-English issue naming the two events, or ``[]``.
+    """
+    events = story_events(text)
+    for i, first in enumerate(events):
+        for second in events[i + 1:]:
+            if second["paragraph"] == first["paragraph"]:
+                continue
+            if first["kind"] != second["kind"]:
+                distinct = True
+            elif first["kind"] == EVENT_ANECDOTE:
+                apart = _days_apart(first["date"], second["date"])
+                distinct = apart is not None and apart > STITCHED_SAME_STORY_DAYS
+            else:
+                distinct = first["phrase"].lower() != second["phrase"].lower()
+            if distinct:
+                return [f"the post stitches two stories together (\"{first['phrase']}\" and "
+                        f"\"{second['phrase']}\"): tell ONE of them, and cut the other's paragraph"]
+    return []
+
+
+def _anecdote_days(text: Optional[str]) -> list:
+    """The absolute day-level dates of a post's first-person anecdotes."""
+    return [e["date"] for e in story_events(text)
+            if e["kind"] == EVENT_ANECDOTE and e["date"] and e["date"][2] is not None]
+
+
+def repeated_story_date_issues(text: Optional[str], recent_texts: Optional[list]) -> list:
+    """A first-person anecdote on the same day a recent post already told one (#2316).
+
+    143 and 144 were two decks in one batch, both "On September 15, 2026, I…" — the same story
+    from two angles, which the story cooldown misses when neither post recorded a bank entry. The
+    caller's ``recent_texts`` is the cooldown window; the year must match when both posts state it.
+
+    Args:
+        text: The draft.
+        recent_texts: The author's recent posts (the story-cooldown window), newest first.
+
+    Returns:
+        One plain-English issue, or ``[]``.
+    """
+    mine = _anecdote_days(text)
+    if not mine:
+        return []
+    for other in recent_texts or []:
+        if not other or other == text:
+            continue
+        for year, month, day in _anecdote_days(other):
+            for my_year, my_month, my_day in mine:
+                if (month, day) == (my_month, my_day) and (not year or not my_year
+                                                           or year == my_year):
+                    stamp = f"{calendar.month_name[month]} {day}"
+                    return [f"a recent post already tells the {stamp} story: tell a different "
+                            f"story, the way a cooling story-bank entry is skipped"]
+    return []
+
+
 def consistency_report(text: Optional[str], happened_at: Any = None, now: Any = None,
                        hook_facts: Optional[list] = None,
                        hook_flagged: Optional[list] = None,
-                       story_text: Optional[str] = None) -> dict:
+                       story_text: Optional[str] = None,
+                       recent_texts: Optional[list] = None) -> dict:
     """Every date/timeline/count consistency check on one draft. Deterministic.
 
     Args:
@@ -448,6 +635,9 @@ def consistency_report(text: Optional[str], happened_at: Any = None, now: Any = 
         hook_flagged: Figures the fact-grounding gate already holds the post for.
         story_text: The anchoring story-bank entry's text; a second story beside it is a finding
             (``second_story_issues``, round 9). None skips that check.
+        recent_texts: The author's recent posts (the story-cooldown window); an anecdote on a
+            day one of them already told is a finding (``repeated_story_date_issues``, #2316).
+            None skips that check.
 
     Returns:
         ``{passes, issues, weekday, deadline, timeline, provenance, counts}`` — ``issues`` is the
@@ -459,9 +649,13 @@ def consistency_report(text: Optional[str], happened_at: Any = None, now: Any = 
     timeline = timeline_violations(text, happened_at, now) if happened_at else []
     timeline += dated_outcome_violations(text, now)
     provenance = (hook_provenance_issues(text, hook_facts, hook_flagged)
+                  + statistic_provenance_issues(text, hook_facts, hook_flagged)
                   if hook_facts is not None else [])
     counts = count_conflicts(text)
-    stories = second_story_issues(text, story_text)
+    # #2316: two stories stitched together are a finding with or without a story-bank anchor, and
+    # so is a dated anecdote a recent post already told.
+    stories = ((second_story_issues(text, story_text) or stitched_story_issues(text))
+               + repeated_story_date_issues(text, recent_texts))
     # A deck's caption and slides read as one text, so one claim can surface twice: one issue.
     issues = list(dict.fromkeys(weekday + deadline + timeline + provenance + counts + stories))
     return {"passes": not issues, "issues": issues, "weekday": weekday, "deadline": deadline,
@@ -608,6 +802,59 @@ def _fact_values(facts: Optional[list]) -> set:
     return _anchor_numbers([str(f) for f in (facts or []) if f])
 
 
+# #2316: slot_141 opened "6% of owners skip this simple step" and slot_130 claimed "Error rates
+# dropped 30%" — and both passed, because the allow-list match compared bare digits: ANY story-bank
+# fact holding a 6 ("6 tools") or a 30 vouched for a percentage. A figure WRITTEN with a kind is now
+# vouched for by a fact only when the fact states it in that kind: a percentage by a percentage,
+# money by money, a multiplier by a multiplier. A bare number still matches by digits.
+FIGURE_KIND_PERCENT, FIGURE_KIND_MONEY, FIGURE_KIND_TIMES, FIGURE_KIND_PLAIN = "%", "$", "x", ""
+_KINDED_NUMBER = re.compile(
+    r"(?P<cur>[$€£])?\s?(?P<n>\d[\d,]*(?:\.\d+)?)\s?(?P<mag>[kKmMbB]n?(?![A-Za-z]))?\s?"
+    r"(?P<unit>%|percent\b|per\s+cent\b|[xX×](?![A-Za-z]))?")
+
+
+def figure_kind(raw: Optional[str]) -> str:
+    """The kind of figure ``raw`` writes: percent, money, multiplier, or plain."""
+    text = str(raw or "")
+    if re.search(r"%|\bper\s?cent\b", text, re.IGNORECASE):
+        return FIGURE_KIND_PERCENT
+    if re.search(r"[$€£]", text):
+        return FIGURE_KIND_MONEY
+    if re.search(r"\d\s?[xX×](?![A-Za-z])", text):
+        return FIGURE_KIND_TIMES
+    return FIGURE_KIND_PLAIN
+
+
+def _kinded_fact_values(facts: Optional[list]) -> set:
+    """``(value, kind)`` for every figure the facts state (``figure_kind``)."""
+    found = set()
+    for fact in facts or []:
+        for match in _KINDED_NUMBER.finditer(str(fact or "")):
+            value = re.sub(r"[^\d.]", "", match.group("n").replace(",", "")).rstrip(".")
+            if value:
+                found.add((value, figure_kind(match.group(0))))
+    return found
+
+
+def fact_vouches(value: str, facts: Optional[list], raw: Optional[str] = None) -> bool:
+    """Does a supplied fact state ``value`` in the same kind ``raw`` writes it?
+
+    Args:
+        value: The figure, normalised (``numeric_claims``).
+        facts: The allow-list.
+        raw: The figure as the surface writes it; None compares the bare value (legacy callers).
+
+    Returns:
+        Whether a fact vouches for it.
+    """
+    kind = figure_kind(raw) if raw is not None else FIGURE_KIND_PLAIN
+    if kind == FIGURE_KIND_PLAIN:
+        # A bare number carries no kind to check (a graphic's value field is "1,800" beside its
+        # "$" unit field), so it matches by digits, as before.
+        return value in _fact_values(facts)
+    return (value, kind) in _kinded_fact_values(facts)
+
+
 # Showcase round 9: cover_18's body opens "53.7% of long-form LinkedIn posts in 2025 were probably
 # AI-generated" and names its source two paragraphs on: "a striking result from Originality.ai:
 # they scanned more than 3,000 posts … found that over half were likely AI-generated". The figure
@@ -647,7 +894,8 @@ def restated_by_source(figure_sentences: list, body: Optional[str]) -> bool:
     return False
 
 
-def figure_provenance(value: str, body: Optional[str], facts: Optional[list] = None) -> str:
+def figure_provenance(value: str, body: Optional[str], facts: Optional[list] = None,
+                      raw: Optional[str] = None) -> str:
     """How the post vouches for ONE figure, or '' when it does not. Deterministic.
 
     A figure printed on an image, or used in a hook, is only as true as the post body makes it.
@@ -665,6 +913,8 @@ def figure_provenance(value: str, body: Optional[str], facts: Optional[list] = N
         value: The figure, normalised the way ``content_framework.numeric_claims`` writes it.
         body: The post body the figure must appear in.
         facts: The allow-list, or None when the caller has none.
+        raw: The figure as the surface writes it ("6%"); a fact then vouches only when it states
+            the figure in the same kind (``fact_vouches``, #2316).
 
     Returns:
         ``PROVENANCE_FACT``, ``PROVENANCE_SOURCE``, ``PROVENANCE_FIRST_HAND``, or ''.
@@ -672,7 +922,7 @@ def figure_provenance(value: str, body: Optional[str], facts: Optional[list] = N
     windows = _figure_windows(value, body)
     if not windows:
         return ""
-    if facts is not None and value in _fact_values(facts):
+    if facts is not None and fact_vouches(value, facts, raw):
         return PROVENANCE_FACT
     if any(_names_source(w) for _, window in windows for w in window):
         return PROVENANCE_SOURCE
@@ -699,8 +949,95 @@ def unprovenanced_figures(surface_text: Optional[str], body: Optional[str],
     seen: set = set()
     for claim in _claims(surface_text):
         if claim["value"] not in seen and (
-                not figure_provenance(claim["value"], body, facts)
+                not figure_provenance(claim["value"], body, facts, claim["raw"])
                 or upgrades_hedge(claim["value"], claim["context"], body)):
+            out.append(claim["raw"])
+        seen.add(claim["value"])
+    return out
+
+
+# The words one to twenty, so "three or more foundation clients" in a body states the 3 a slide prints.
+_BODY_NUMBER_WORDS = {w: str(n) for w, n in _NUMBER_WORDS.items() if w not in ("a", "an")}
+_BODY_NUMBER_WORDS.update({"thirteen": "13", "fourteen": "14", "fifteen": "15", "sixteen": "16",
+                           "seventeen": "17", "eighteen": "18", "nineteen": "19", "twenty": "20",
+                           "dozen": "12", "hundred": "100", "half": "50"})
+
+
+def body_figure_values(body: Optional[str]) -> set:
+    """Every figure value the body states, digits and number words alike (normalised)."""
+    values = {c["value"] for c in _claims(body)}
+    values |= {re.sub(r"[^\d.]", "", n.replace(",", "")).rstrip(".")
+               for n in re.findall(r"\d[\d,]*(?:\.\d+)?", body or "")}
+    values |= {_BODY_NUMBER_WORDS[w] for w in re.findall(r"[a-z]+", (body or "").lower())
+               if w in _BODY_NUMBER_WORDS}
+    return {v for v in values if v}
+
+
+# Every figure a SURFACE prints. Not ``numeric_claims``: that reads "Found 82 issues" as a product
+# version ("Postgres 16") because a capitalised word precedes the number — and every slide heading
+# is Title Case, which is how slot_144's "82" and slot_143's "5,878" escaped. Years, list markers
+# and numbers welded to a name ("GPT-4o", "990-PF") are still not figures.
+_SURFACE_FIGURE = re.compile(
+    r"(?<![\w.\-/])(?P<raw>[$€£]?\d[\d,]*(?:\.\d+)?(?:\s?%|\s?percent\b|[kKmMbB](?![A-Za-z])|"
+    r"[xX×](?![A-Za-z]))?)(?![\w-]*[A-Za-z])", re.IGNORECASE)
+_LIST_MARKER_LINE = re.compile(r"(?m)^\s*(?:step\s+)?\d{1,2}[.):]\s", re.IGNORECASE)
+# A small plain count names a THING ("3 steps"); the body states it only when it counts the same
+# thing — "all three payment links" does not state slot_144's "3 steps that saved it".
+COUNT_MATCH_MAX = 20
+_COUNT_NOUN_WINDOW = 3
+
+
+def surface_figures(text: Optional[str]) -> list:
+    """``{value, raw}`` for every figure ``text`` prints, in order (``_SURFACE_FIGURE``)."""
+    body = _LIST_MARKER_LINE.sub(" ", text or "")
+    out = []
+    for match in _SURFACE_FIGURE.finditer(body):
+        raw = match.group("raw").strip().rstrip(",")
+        value = re.sub(r"[^\d.]", "", raw.replace(",", "")).rstrip(".")
+        if not value or (re.fullmatch(r"(?:19|20)\d\d", value) and not re.search(r"[$€£%]", raw)):
+            continue
+        noun = re.match(r"\+?\s+([A-Za-z][A-Za-z'’-]{2,})", body[match.end():])
+        out.append({"value": value, "raw": raw,
+                    "noun": noun.group(1).lower() if noun and figure_kind(raw) == ""
+                    and float(value) <= COUNT_MATCH_MAX else ""})
+    return out
+
+
+def _body_counts(body: Optional[str], value: str, noun: str) -> bool:
+    """Does ``body`` count ``value`` of the same thing as ``noun`` (4-letter stem, 3-word window)?"""
+    words = re.findall(r"[a-z0-9][a-z0-9'’,.-]*", (body or "").lower())
+    stem = noun[:4]
+    for index, word in enumerate(words):
+        token = word.strip(".,")
+        if token.replace(",", "") == value or _BODY_NUMBER_WORDS.get(token) == value:
+            if any(w.startswith(stem) for w in words[index + 1:index + 1 + _COUNT_NOUN_WINDOW]):
+                return True
+    return False
+
+
+def figures_absent_from_body(surface_text: Optional[str], body: Optional[str]) -> list:
+    """THE ONE figure gate (#2316): each figure an image prints that its body never states.
+
+    Every figure rendered on an image must appear in the post or edition BODY — not in the deck it
+    sits on, not in a story-bank fact the reader never sees. slot_143's slide printed "5,878" over
+    a caption of 22,878 and 5,123; slot_144's printed "82 issues, 13 blocking" and "3 steps" the
+    caption never states. Years, list numbering and product versions are not figures
+    (``content_framework.numeric_claims``).
+
+    Args:
+        surface_text: What the image prints.
+        body: The post or edition body.
+
+    Returns:
+        The absent figures as the surface writes them, in order, de-duplicated.
+    """
+    present = body_figure_values(body)
+    out: list = []
+    seen: set = set()
+    for claim in surface_figures(surface_text):
+        stated = (_body_counts(body, claim["value"], claim["noun"]) if claim["noun"]
+                  else claim["value"] in present)
+        if not stated and claim["value"] not in seen:
             out.append(claim["raw"])
         seen.add(claim["value"])
     return out
@@ -795,6 +1132,47 @@ def hook_provenance_issues(text: Optional[str], facts: Optional[list],
             f"named source: cut it from the hook, or name where it comes from"
             for raw in unprovenanced_figures(hook_line(text), text, list(facts or []))
             if not ({c["value"] for c in _claims(raw)} & skip)]
+
+
+# The figure kinds a reader takes as a STATISTIC wherever they sit: a percentage or a multiplier.
+STATISTIC_KINDS = frozenset({FIGURE_KIND_PERCENT, FIGURE_KIND_TIMES})
+
+
+def statistic_provenance_issues(text: Optional[str], facts: Optional[list],
+                                already_flagged: Optional[list] = None) -> list:
+    """Percentages and multipliers a story-bank fact vouched for only by its DIGITS (#2316).
+
+    The hook check (``hook_provenance_issues``) reads the first line only; slot_130 put "Error rates
+    dropped 30% within three months" in its fourth paragraph. Both escaped the same way: the
+    allow-list matched bare digits, so a fact holding a 30 ("a 30-day backlog") vouched for a 30%.
+    A body statistic that a fact matches only by digits, in another kind, and no named source
+    backs, is a finding. A statistic no fact mentions at all is the fact-grounding gate's, at its
+    archetype's severity — this check closes the laundering, it does not re-grade every number.
+    The hook line is left to ``hook_provenance_issues`` so one figure is one issue.
+
+    Args:
+        text: The post.
+        facts: The story-bank facts (plus any curated source text); None reads as no facts.
+        already_flagged: Figures another finding already names.
+
+    Returns:
+        One issue per figure.
+    """
+    hook = hook_line(text)
+    skip = {c["value"] for raw in (already_flagged or []) for c in _claims(str(raw))}
+    skip |= {c["value"] for c in _claims(hook)}
+    rest = (text or "").replace(hook, " ", 1) if hook else (text or "")
+    out = []
+    bare = _fact_values(facts)
+    for claim in _claims(rest):
+        if (claim["value"] in skip or figure_kind(claim["raw"]) not in STATISTIC_KINDS
+                or claim["value"] not in bare
+                or figure_provenance(claim["value"], text, list(facts or []), claim["raw"])):
+            continue
+        skip.add(claim["value"])
+        out.append(f"the post states \"{claim['raw']}\" but never backs it with a story-bank fact "
+                   f"or a named source: cut the figure, or name where it comes from")
+    return out
 
 
 # A result claimed with no figure: "Error rates dropped sharply", "Satisfaction rose noticeably".

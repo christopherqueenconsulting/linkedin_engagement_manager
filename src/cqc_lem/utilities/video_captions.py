@@ -274,6 +274,25 @@ def build_caption_srt(lines: list, out_path: str,
     return out_path
 
 
+def caption_hold_seconds(video_path: str, title_card_headline: Optional[str]) -> float:
+    """How long the caption cue holds: the muted-autoplay window, or the WHOLE title card.
+
+    #2316: a title card keeps its lower band clear for the caption (``video_title_card``), so a cue
+    that ended at ``VIDEO_CAPTION_HOLD_SECONDS`` left that band empty for the last 40% of the card.
+    On a title card the cue runs to the end of the video.
+
+    Args:
+        video_path: The MP4.
+        title_card_headline: ``video_title_card.card_headline`` — None for any other video.
+
+    Returns:
+        The cue's length in seconds.
+    """
+    if not title_card_headline:
+        return VIDEO_CAPTION_HOLD_SECONDS
+    return max(VIDEO_CAPTION_HOLD_SECONDS, video_duration_seconds(video_path))
+
+
 def _ffmpeg_bin(name: str = "ffmpeg") -> Optional[str]:
     return shutil.which(name)
 
@@ -643,7 +662,8 @@ def apply_captions_to_video(video_path: str, content: Optional[str], *,
         # A title card already shows a headline; the caption must not say it again.
         from cqc_lem.utilities.video_title_card import card_headline
 
-        lines = caption_lines(content, avoid=card_headline(video_path, content))
+        headline = card_headline(video_path, content)
+        lines = caption_lines(content, avoid=headline)
         if not lines:
             log_debug("No usable caption text on this post — nothing to burn", post_id=post_id,
                       user_id=user_id, task_name=TASK_NAME)
@@ -653,7 +673,8 @@ def apply_captions_to_video(video_path: str, content: Optional[str], *,
         srt_dir = caption_srt_dir()
         create_folder_if_not_exists(srt_dir)
         stem = os.path.splitext(os.path.basename(video_path))[0]
-        srt_path = build_caption_srt(lines, os.path.join(srt_dir, f"{stem}.srt"))
+        srt_path = build_caption_srt(lines, os.path.join(srt_dir, f"{stem}.srt"),
+                                     hold_seconds=caption_hold_seconds(video_path, headline))
         caption_text = "\n".join(lines)
 
         if avatar_led and not captions_allowed_on_avatar_video(user_id):

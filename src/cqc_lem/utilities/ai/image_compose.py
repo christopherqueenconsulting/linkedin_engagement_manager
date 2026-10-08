@@ -988,7 +988,7 @@ def compose_headline(render_path: str, hook: str, layout: Optional[str] = None,
                      out_path: Optional[str] = None, kicker: Optional[str] = None,
                      signature: Optional[str] = None,
                      canvas: Optional[tuple[int, int]] = None, hero: bool = True,
-                     panel: Optional[str] = None) -> str:
+                     panel: Optional[str] = None, report: Optional[dict] = None) -> str:
     """Typeset the cover — kicker, hero numeral, headline, byline — onto the render.
 
     Args:
@@ -1008,6 +1008,9 @@ def compose_headline(render_path: str, hook: str, layout: Optional[str] = None,
         hero: Whether a number in the hook becomes a hero numeral (``headline_parts``).
         panel: The panel variant (``PANEL_VARIANTS``) — post ``typeset_card`` rotation only.
             None is the charcoal card. An overlay layout's scrim stays charcoal whatever is asked.
+        report: When given, ``report["layout"]`` is set to the layout the headline was actually
+            set on — an overlay below the contrast bar moves to a split (#2316: the cover layout
+            rotation counts what SHIPPED).
 
     Returns:
         The composite's path.
@@ -1045,7 +1048,10 @@ def compose_headline(render_path: str, hook: str, layout: Optional[str] = None,
                  action_type="image_compose", layout=layout)
         return compose_headline(render_path, hook, layout=OVERLAY_FALLBACK_LAYOUT, brand=brand,
                                 surface=surface, out_path=out_path, kicker=kicker,
-                                signature=signature, canvas=(w, h), hero=hero, panel=panel)
+                                signature=signature, canvas=(w, h), hero=hero, panel=panel,
+                                report=report)
+    if report is not None:
+        report["layout"] = layout
     draw = ImageDraw.Draw(image)
     if plan.backing is not None:
         draw.rectangle((plan.backing.left, plan.backing.top, plan.backing.right - 1,

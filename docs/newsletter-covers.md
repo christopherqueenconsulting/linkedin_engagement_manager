@@ -306,6 +306,57 @@ All four covers passed; the hook defects were deterministic: a mid-phrase cut, "
 numbers carry the source spelling; and no label survives any path (`docs/image-stack.md`,
 "Never truncate a hook").
 
+### People on a cover — the owner's rule (issue #2316)
+
+Binding owner decision: "I'm ok with stock people when it makes sense, but if it references the
+user (or me, myself, or the user's name) then it needs to use their avatar."
+`newsletter_cover.resolve_people_cover` decides it, after Stage 1 and BEFORE the brief:
+
+| The cover's people_scene is about… | Avatar usable | Result (`people_policy` on the receipt) |
+|---|---|---|
+| the author | yes | the avatar renders through the LoRA path (`avatar`) |
+| the author | no avatar, not approved, `avatar_use_newsletter` off | NO person: `image_concept.without_people` re-ranks the chain to a code-drawn graphic or an object `editorial_concept` (`non_people:no_avatar`) |
+| the author | this edition's "Without me", or `avatar_disabled` | NO person, same re-rank (`non_people:opted_out`) |
+| someone else (a customer, a buyer, a team) | — | stock people, still bound by round 9's article-entity rule (`third_party`) |
+
+**Self-reference** is `avatar.guardrails.author_reference`, deterministic, three ways in order:
+the concept's subject fields (thesis, chosen/people idea, audience, beat, rationale) speak of the
+author ("the author", "I", "my") or name them → `concept`; the edition names the author by full or
+first name off the profile (`author_names`) → `named`; or the edition is first-person about the
+author — at least 3 of "I/me/my/myself" and "we/our/us" (the author's firm) at a 2% density →
+`first_person`. The newsletter opt-in being OFF reads as not consented, so a self-referencing
+cover without it is a non-people cover, never a stand-in. `_resolve_cover_avatar` applies the
+same rule on Auto (it replaced round 8's post fit rule on covers); with no Stage 1 concept the old
+guardrails + classifier conjunction still decides.
+
+**A stock render the judge called generic never ships as people.** After the render's repair,
+`people_render_unrelated` reads the gate: a people_scene rendered WITHOUT the avatar whose verdict
+failed `specificity`/`no_cliche`, or whose judge issues call it generic, stock or unrelated
+(cover_17's "scene is generic, not AI-specific" passed the rubric), is re-set as a typeset card
+(`typeset_cover`, `cover_composed: people_generic`). With no Stage 1 concept at all, a brief
+whose prompt puts a person in frame is never rendered: the fallback brief's "candid hallway
+conversation" shipped as cover_19's gala couple (`people_without_concept`).
+
+### Layouts — no more than 2 splits in any 5 covers (issue #2316)
+
+All five round-10 covers were left/right splits, because a full-bleed cover never reached the
+cover: it rendered SQUARE (`image_gen._scene_ratio` squared every composed render), came back
+square, and `ensure_cover_ratio` re-set it on a split to reach 16:9. Now:
+
+- a full-bleed (any overlay) cover renders at the cover's own ratio, and a landscape raw render
+  is fitted to 16:9 and set full-bleed again (`ratio_fit_full_bleed`); a square one (the avatar
+  LoRA) is still recomposed on a split so no face is cropped;
+- `image_compose.compose_headline(report=)` says which layout the headline was ACTUALLY set on (an
+  overlay under the contrast bar moves to a split), and the gate loop records it as
+  `cover_layout`, so `recent_cover_layouts` reads what shipped — a typeset card counts as
+  `typeset_card`, never a split;
+- `fresh_cover_layout(..., recent_layouts)` weighs every split past any repeat once
+  `split_budget_spent` (2 splits in the last 4), so the cover goes full-bleed;
+- the backstop: a cover that still SHIPS as a split past the budget (a code-drawn graphic is
+  always one, `shipped_cover_layout`) is re-set as a full-canvas typeset card — the number-led
+  card (the stat hero) when the headline leads with a figure, else the poster
+  (`cover_composed: split_budget`).
+
 ### Rejections land for review, with their reason
 
 A definite judge failure on `no_cliche` or `specificity` after the attempt budget returns verdict
