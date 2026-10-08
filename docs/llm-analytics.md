@@ -213,6 +213,14 @@ Rule of thumb: **money questions use `llm_call`** (it is the ledger's source and
 **everything else uses `$ai_generation`** (it is the truth about what ran). An insight must pick one
 — a "total LLM spend" chart that unions both double-counts every call.
 
+**One call has only an `llm_call` record: research.** LiteLLM cannot parse Perplexity's Agent API
+answer, so `content_research` calls Perplexity directly unless `RESEARCH_VIA_PROXY` is set (see the
+research tier in `.litellm/config.yaml`). There is no proxy on that route, so there is no
+`$ai_generation`. `_record_direct_spend` books the `llm_call` (tier `lem-research`) at
+Perplexity's own `usage.cost.total_cost`. Research therefore appears in money questions and does
+not appear in PostHog's LLM-analytics product. Its latency and error rate are on that `llm_call`
+(`latency_ms`, `success`).
+
 ### The third stream: `shadow_cost_usd`
 
 For subscription-priced models (Ollama Cloud), the real marginal cost is $0, so both `cost_usd`

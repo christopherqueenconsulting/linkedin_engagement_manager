@@ -106,7 +106,7 @@ pushes to GHCR instead — see `docs/DEPLOYMENT.md`.
 
 ### AI Proxy (LiteLLM)
 
-App LLM calls go through the LiteLLM proxy at `http://litellm:4000`; the exceptions are the direct Perplexity helper in `src/cqc_lem/utilities/ai/tools.py` (the `lem-research` fallback), Replicate for avatar images, and RunwayML for video. Model tier
+App LLM calls go through the LiteLLM proxy at `http://litellm:4000`; the exceptions are the direct Perplexity helper in `src/cqc_lem/utilities/ai/tools.py` (the primary research route; the `lem-research` alias is opt-in via `RESEARCH_VIA_PROXY`), Replicate for avatar images, and RunwayML for video. Model tier
 aliases are defined in `.litellm/config.yaml`:
 
 | Alias | Use case |
@@ -118,7 +118,7 @@ aliases are defined in `.litellm/config.yaml`:
 | `lem-vision` | Render quality gate — looks at a generated image (gpt-4o-mini) |
 | `lem-router` | Auto-routes to a tier by prompt shape (`LEMComplexityRouter` in `.litellm/complexity_router.py`) |
 
-The same file also defines `lem-research` (Perplexity Sonar), `lem-tts`, `lem-embedding`, and the
+The same file also defines `lem-research` (Perplexity Agent API), `lem-tts`, `lem-embedding`, and the
 `lem-agent-*` tiers used by the agent pipeline. Deployments inside a group compete under
 `latency-based-routing`; order is not a priority list.
 

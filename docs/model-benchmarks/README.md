@@ -711,9 +711,21 @@ The Sonar sunset was acted on in #2255. `lem-research` now runs on Perplexity's 
   `preset/<name>` model as `{"preset": "<name>"}` to `/v1/responses`.
 - **Caller.** That is a Responses-API route, so `content_research._research_via_litellm` calls
   `client.responses.create`. A chat-completions call to the alias would not reach it.
+- **The app does not use the alias by default.** On prod v0.183.0 (2026-10-08, image
+  `main-latest`) the proxy failed 4 of 5 probe runs with `1 validation error for
+  ResponsesAPIResponse / truncation / Input should be 'auto' or 'disabled'`. Perplexity answers
+  `"truncation": ""` and LiteLLM's response type only allows those two literals, so the proxy 500s
+  parsing an answer Perplexity already served and billed. No LiteLLM release or `main` commit
+  normalises the field as of that date, so pinning an image tag would fix nothing. Pinning the tag
+  would also move every tier at once. Research therefore calls Perplexity **directly**
+  (`tools.search_with_perplexity`) and books its own `llm_call` at Perplexity's
+  `usage.cost.total_cost`. The proxy is tried first only under `RESEARCH_VIA_PROXY=true`, and while
+  the flag is on, this one known parse failure logs at DEBUG and falls through, never as a repeated
+  warning. **Flip it back** once a LiteLLM release accepts the field: on the new image, run
+  `probe_research.py --route proxy` several times and require every run to pass.
 - **Response shape.** `content_research.parse_agent_response` is the one reader of the typed
   `output` list: `output_text` parts, `url_citation` annotations and the `search_results` item.
-  The direct fallback (`tools.search_with_perplexity`, `POST /v1/agent`) uses the same parser.
+  The direct route (`tools.search_with_perplexity`, `POST /v1/agent`) uses the same parser.
 - **What the scan does with a preset.** A preset is a configuration Perplexity re-points, not a
   model id. `/v1/models` never lists one, so `provider_model_scan.is_preset` keeps it out of the
   unlisted check. Its price is pinned by hand in the snapshot: the preset model's token rate plus

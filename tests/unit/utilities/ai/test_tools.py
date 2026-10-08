@@ -118,6 +118,32 @@ class TestSearchWithPerplexity:
 
         assert result["sources"] == []
 
+    def test_perplexitys_own_usage_block_is_returned_for_spend_recording(self):
+        """The direct route has no proxy to price it, so the caller needs Perplexity's own cost."""
+        mock_resp = self._make_mock_response()
+        usage = {"input_tokens": 412, "output_tokens": 188, "cost": {"total_cost": 0.00281}}
+        mock_resp.json.return_value["usage"] = usage
+        with patch.dict("os.environ", {"PERPLEXITY_API_KEY": "test-key"}):
+            with patch("cqc_lem.utilities.ai.tools.requests.post", return_value=mock_resp):
+                from cqc_lem.utilities.ai.tools import search_with_perplexity
+
+                result = search_with_perplexity("query")
+
+        assert result["usage"] == usage
+
+    @pytest.mark.parametrize("usage", [None, "garbage", 7])
+    def test_a_missing_or_malformed_usage_block_is_none(self, usage):
+        mock_resp = self._make_mock_response()
+        if usage is not None:
+            mock_resp.json.return_value["usage"] = usage
+        with patch.dict("os.environ", {"PERPLEXITY_API_KEY": "test-key"}):
+            with patch("cqc_lem.utilities.ai.tools.requests.post", return_value=mock_resp):
+                from cqc_lem.utilities.ai.tools import search_with_perplexity
+
+                result = search_with_perplexity("query")
+
+        assert result["usage"] is None
+
     def test_raise_for_status_is_called(self):
         mock_resp = self._make_mock_response()
         with patch.dict("os.environ", {"PERPLEXITY_API_KEY": "test-key"}):
