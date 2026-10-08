@@ -496,8 +496,8 @@ class TestMeteredChampions:
     def test_the_live_config_names_the_openai_deployment_of_every_text_tier(self):
         text = (_ROOT / ".litellm" / "config.yaml").read_text()
         assert bm.metered_champions_from_config(text, list(bm.TIERS)) == {
-            "lem-simple": "openai/gpt-4o-mini", "lem-medium": "openai/gpt-4o-mini",
-            "lem-complex": "openai/gpt-4o", "lem-router": "openai/gpt-4o-mini"}
+            "lem-simple": "openai/gpt-4o-mini", "lem-medium": "openai/gpt-5.4-mini",
+            "lem-complex": "openai/gpt-6.1-sol", "lem-router": "openai/gpt-4o-mini"}
 
     def test_plan_targets_skips_a_candidate_that_is_its_own_champion(self):
         logged = []
