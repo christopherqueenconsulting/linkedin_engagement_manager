@@ -81,6 +81,13 @@ class TestIssues:
         comment = gh.ran("gh issue comment 41")[0]
         assert "Still failing in run `pe-1`" in comment[comment.index("--body") + 1]
 
+    def test_existing_issues_are_found_by_title_not_by_a_label_triage_may_strip(self):
+        gh = Recorder({"gh issue list": "[]"})
+        pub.open_failure_issues(gh, REPO)
+        listing = gh.ran("gh issue list")[0]
+        assert "--label" not in listing
+        assert listing[listing.index("--search") + 1] == 'in:title "Prompt eval:"'
+
     def test_nothing_failing_files_nothing(self):
         gh = Recorder()
         assert pub.publish_issues(gh, REPO, {**RUN, "failing": []}, "") == []

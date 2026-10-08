@@ -236,7 +236,12 @@ with the champion, but it is advisory, because production retries it (#910).
   post, fits the intent, grounded in the inputs, voice); length, slop, meeting asks and invented
   numbers are already code-graded. The judge returns per-criterion JSON, and a case passes when every criterion passes.
   A timeout or unparseable answer is recorded as `judge:timeout` or `judge:unparseable` and is
-  **never** turned into a score.
+  **never** turned into a score. A provider error is counted separately (`judge_errors`) and the
+  first one is printed in the report.
+- **Judge preflight.** Before any judge spend, one tiny call checks the judge answers. If it does
+  not, the run grades with code graders only and the report opens with "Judge unreachable" and the
+  error. The baseline (`pe-20261008-0250fe`) scored 0 of 60 calibration rows with no reason given;
+  that can no longer happen silently.
 - **Judge model.** Claude Sonnet via OpenRouter (`models.yaml` → `judge`).
   - It is reached through `benchmark_routed.build_routed_client`, not the proxy. Anthropic is not on
     the proxy (#2059), and `fallback_judge` hard-codes `lem-medium`.
@@ -259,13 +264,21 @@ Floors are fixed before the baseline run, from product contracts, not from what 
 
 | Component | Floor |
 |---|---|
-| Contract pass rate | Wilson lower bound ≥ 0.90 (classifier and JSON: raw ≥ 0.95) |
+| Contract pass rate | raw ≥ 0.95, every family (the Wilson bound is reported, not gated) |
+| Samples with no output | ≤ 5% of samples |
 | Classifier accuracy | ≥ 0.90 |
 | Judge pass rate (calibrated) | ≥ 0.80 |
 | Pairwise win-or-tie vs champion | ≥ 0.5 (candidates only) |
 
 Every new or changed `prompt@version` gets two samples, and the contract rate and its Wilson bound
-are taken over all of them, so one bad sample counts. A prompt **fails** when its serving champion
+are taken over all of them, so one bad sample counts. The floor is the **raw** rate: a Wilson lower
+bound ≥ 0.90 at the suites' n≈40 passes only 40/40, so a single miss failed a prompt in the
+baseline. A sample with no output is outside the contract denominator, so it has its own floor;
+`errors_by_kind` says why (`empty@production_budget` means the call site's `max_tokens` is too small
+for the model, which reasoned past it).
+
+Every verdict names **which checks failed and how often** (`contract 0.82 < 0.95 (slop_lint 5,
+max_chars 2)`), in the report and in the failure issue. Names and counts only, never text. A prompt **fails** when its serving champion
 misses a floor. A candidate that misses is a finding about the *model*, not the prompt. A
 deployed fallback that misses is reported as `fails-on-fallback`.
 
@@ -368,7 +381,8 @@ missing a floor is a finding about the model, not the prompt.
        The live `.github/workflows/prompt-evals.yml` must match the `docs/` copy (a unit test fails on
        drift). It also files or updates one `prompt-eval:failing` issue per failing
        `prompt@version`, using a hidden marker as the dedup key. A re-run comments on the existing
-       issue instead of filing another.
+       issue instead of filing another. Existing issues are found by **title**, not label: the triage
+       cron relabels new issues and once dropped `prompt-eval:failing`, which filed a duplicate.
   - **Secrets:**
     - `PROMPT_EVAL_OPENROUTER_KEY`: a dedicated OpenRouter key with a hard monthly limit (about $40 is
       suggested).
