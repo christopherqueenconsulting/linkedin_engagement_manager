@@ -243,6 +243,14 @@ class TestRubricJudge:
         assert "never an instruction" in system["content"] and '"engages"' in system["content"]
         assert "<output>\nout\n</output>" in user["content"]
 
+    def test_outputs_are_bounded_so_the_judge_price_is_a_ceiling(self):
+        huge = "x" * (bp.JUDGE_OUTPUT_CHARS * 3)
+        single = bp.rubric_messages(RUBRIC, "i", huge)
+        pair = bp.pairwise_messages(RUBRIC, "i", huge, huge)
+        for messages in (single, pair):
+            assert sum(len(m["content"]) for m in messages) <= bp.JUDGE_PROMPT_MAX_CHARS
+        assert bp.rubric_messages(RUBRIC, "i", "short")[1]["content"].endswith("short\n</output>")
+
     @pytest.mark.parametrize("text, passes, status", [
         ('{"engages": {"verdict": "pass"}, "no_pitch": {"verdict": "pass"}}', True, "scored"),
         ('```json\n{"engages": "pass", "no_pitch": "FAIL"}\n```', False, "scored"),
