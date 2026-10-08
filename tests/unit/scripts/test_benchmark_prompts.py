@@ -478,6 +478,7 @@ class TestVerdict:
         ({"cases_scored": 7, "errors": 33, "contract_rate": 1.0, "accuracy": 1.0},
          "champion", "fail"),  # 33/40 empty must not read as a perfect contract
         ({"cases_scored": 39, "errors": 1, "contract_rate": 1.0}, "champion", "pass"),
+        ({"cases_scored": 0, "errors": 40}, "champion", "fail"),  # all empty is the worst case
         ({"cases_scored": 40, "contract_rate": 1.0, "accuracy": 0.85}, "champion", "fail"),
         ({"cases_scored": 40, "contract_rate": 0.95, "judge_rate": 0.5,
          "judge_calibrated": True}, "champion", "fail"),
@@ -490,6 +491,13 @@ class TestVerdict:
     ])
     def test_item_verdict(self, metrics, role, verdict):
         assert bp.item_verdict(metrics, role)[0] == verdict
+
+    def test_an_all_empty_item_names_only_the_no_output_floor(self):
+        verdict, reasons = bp.item_verdict({"cases_scored": 0, "errors": 40,
+                                            "errors_by_kind": {"empty@production_budget": 40}},
+                                           "champion")
+        assert verdict == "fail"
+        assert reasons == ["40/40 sample(s) with no output (empty@production_budget 40)"]
 
     def test_code_metrics_counts_errors_and_labels(self):
         suite = _suite(4)

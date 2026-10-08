@@ -477,13 +477,14 @@ def wilson_lower(passed: int, total: int, z: float = 1.96) -> Optional[float]:
 def item_verdict(metrics: dict[str, Any], role: str) -> tuple[str, list[str]]:
     """Return ``(verdict, reasons)`` for one prompt × model from its measured metrics.
 
-    ``pass`` needs every applicable floor met; ``fail`` names each missed one; ``no-reading`` when no
-    contract measurement exists (every case errored).
+    ``pass`` needs every applicable floor met; ``fail`` names each missed one; ``no-reading`` only
+    when nothing was attempted. Every sample empty is a ``fail`` on the no-output floor, never a
+    no-reading: a call site that answers nothing is the worst case, not an unmeasured one.
     """
-    if not metrics.get("cases_scored"):
+    if not metrics.get("cases_scored") and not metrics.get("errors"):
         return "no-reading", ["no case was scored"]
     misses: list[str] = []
-    if (metrics.get("contract_rate") or 0) < CONTRACT_FLOOR:
+    if metrics.get("cases_scored") and (metrics.get("contract_rate") or 0) < CONTRACT_FLOOR:
         misses.append(f"contract {metrics.get('contract_rate')} < {CONTRACT_FLOOR}"
                       + _counts_note(metrics.get("contract_failures")))
     if metrics.get("accuracy") is not None and metrics["accuracy"] < ACCURACY_FLOOR:
