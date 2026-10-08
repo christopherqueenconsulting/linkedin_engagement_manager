@@ -695,8 +695,8 @@ box-local edit is never silently overwritten.
 |---|---|---|
 | `lem-agentd.service` | `lem` | the scheduler. `KillMode=process` so 45-minute agent children survive a restart |
 | `lem-agent-webhook.service` | `lem` | the receiver, hardened, `MemoryMax=256M`, secret from a root-owned file |
-| `lem-agentd-watchdog.timer` | root (see note) | liveness + heartbeat freshness every 15 min |
-| `lem-gh-token.timer` | root | mints the App installation token every 45 min; root holds the key |
+| `lem-agentd-watchdog.timer` | root | liveness + heartbeat freshness every 15 min; runs `/usr/local/lib/lem/watchdog.sh` |
+| `lem-gh-token.timer` | root | mints the App installation token every 45 min; sources `/usr/local/lib/lem/gh_app_token.sh` |
 | `lem-agent.slice` | — | the CPU/memory envelope (`CPUQuota=300%`, `MemoryMax=3G`). **Box-only — not in the repo** |
 
 ```bash
@@ -709,10 +709,16 @@ touch PAUSED                           # stop everything (shared with v1)
 v2/rollback.sh                         # hand dispatch back to v1
 ```
 
-⚠️ The watchdog unit sets `User=root`, but `watchdog.sh` documents itself as running as `lem` and
-uses `sudo -n systemctl restart` on that basis. One of the two is stale: if the unit is right the
-`sudo -n` path and its failure branch are dead code; if the script is right the unit drifted. Resolve
-before touching either half.
+**Root-run units execute root-owned copies.** The two root units never execute a file from the
+pipeline tree: they run copies in `/usr/local/lib/lem/` (root:root, 0755) that only
+`scripts/agent-pipeline/install-root-scripts.sh` writes, and only when run as root. Each copy is the
+repo file with its source paths rewritten to other root-owned files (the watchdog's telemetry helper
+becomes `/usr/local/lib/lem/posthog.sh`, which reads its key from a root-owned file if one
+exists). `install.sh` and `sync.sh` never write there; after each sync, `sync.sh` runs
+`install-root-scripts.sh --check` and logs a `WARNING` when the copies are behind the repo. Re-run the
+installer as root from a root-owned clone of `main` — it refuses a checkout another user can write —
+and compare the sha256 lines it prints. The pipeline user's own copies (`lib/gh_app_token.sh`, sourced
+by `tick.sh` and `v2/actions/common.sh`) are unchanged.
 
 **Pause vs retire.** `PAUSED` stops both runners. `V1_RETIRED` demotes v1 to the failsafe cron and is
 what `cutover.sh` writes — deliberately not `PAUSED`, because `tick.sh` exits unconditionally on

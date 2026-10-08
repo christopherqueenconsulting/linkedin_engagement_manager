@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Is the v2 daemon actually working? Run by lem-agentd-watchdog.timer every 15 minutes.
+# Is the v2 daemon actually working? Run by lem-agentd-watchdog.timer every 15 minutes, from the
+# root-owned copy install-root-scripts.sh places in /usr/local/lib/lem/.
 #
 # Deliberately lives OUTSIDE the daemon: an alert inside the process it watches cannot fire when
 # that process is what died. And it checks TWO things, because they fail independently —
@@ -17,6 +18,9 @@ BASE="${BASE:-/home/lem/agent-pipeline}"
 HEARTBEAT="$BASE/state/lemd.heartbeat"
 STALE_AFTER="${LEMD_HEARTBEAT_STALE:-600}"   # 10 min; the daemon stamps it every pass
 LOG="$BASE/logs/watchdog.log"
+# Telemetry helper. Kept on its own line so install-root-scripts.sh can point the root-owned copy
+# (the one lem-agentd-watchdog.service runs) at its root-owned twin instead of this tree's file.
+POSTHOG_LIB="$BASE/lib/posthog.sh"
 UNIT="lem-agentd.service"
 
 log() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
@@ -40,19 +44,19 @@ else
   log "daemon active but heartbeat is ${age}s old (stale > ${STALE_AFTER}s) — restarting $UNIT."
 fi
 
-# `sudo -n`, not a bare `systemctl restart`. This script runs as `lem` (see the .service unit), and
-# a non-root caller with no login session gets polkit's "Interactive authentication required" on
-# `manage-units` — measured on this box, so the bare form would log a failure every 15 minutes and
-# never once recover the daemon. `is-active` above needs no privilege; only the restart does.
+# Non-interactive restart. lem-agentd-watchdog.service runs a root-owned copy of this file as root
+# (install-root-scripts.sh), where the wrapper below simply runs the command; a caller with no login
+# session would be refused by polkit on a bare `systemctl restart`. `is-active` above needs no
+# privilege; only the restart does.
 if ! sudo -n systemctl restart "$UNIT" 2>>"$LOG"; then
   log "restart FAILED (check: lem needs NOPASSWD systemctl restart $UNIT) — v1's failsafe cron is now the pipeline."
 fi
 
 # One PostHog breadcrumb so a restart loop is visible in the same place every other pipeline
 # signal lands. Best-effort: never let telemetry failure change the outcome.
-if [ -r "$BASE/lib/posthog.sh" ]; then
-  # shellcheck disable=SC1091
-  . "$BASE/lib/posthog.sh" 2>/dev/null || true
+if [ -r "$POSTHOG_LIB" ]; then
+  # shellcheck disable=SC1090
+  . "$POSTHOG_LIB" 2>/dev/null || true
   posthog_capture "lemd_watchdog_restart" "agent-pipeline" \
     "{\"active\":$active,\"heartbeat_age_s\":$age,\"unit\":\"$UNIT\"}" 2>/dev/null || true
 fi

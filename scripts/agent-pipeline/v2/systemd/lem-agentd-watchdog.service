@@ -12,4 +12,6 @@ Environment=BASE=/home/lem/agent-pipeline
 # Deliberately OUTSIDE the daemon: an alert that lives inside the process it watches cannot fire
 # when that process is the thing that died. Checks liveness AND heartbeat freshness, because a
 # daemon can be "active" while wedged — systemd only knows the pid still exists.
-ExecStart=/home/lem/agent-pipeline/v2/watchdog.sh
+# The root-owned copy from install-root-scripts.sh, never the pipeline tree's v2/watchdog.sh.
+# BASE above is only where it reads the heartbeat.
+ExecStart=/usr/local/lib/lem/watchdog.sh

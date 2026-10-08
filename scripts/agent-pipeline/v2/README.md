@@ -76,6 +76,6 @@ A file the box has edited is refused, not overwritten; read the printed `diff` b
 
 ## Prerequisite the watchdog needs
 
-The watchdog runs `sudo -n systemctl restart lem-agentd.service`. The non-login `lem` user cannot
-restart a unit through polkit, so that exact command needs a sudoers rule — without it the watchdog
-detects a dead daemon and cannot do anything about it.
+`lem-agentd-watchdog.service` runs as root, from the root-owned copy
+`/usr/local/lib/lem/watchdog.sh`. Install or refresh it by running `../install-root-scripts.sh` as
+root from a root-owned clone (`docs/agent-pipeline-v2.md`, "Root-run units execute root-owned copies").

@@ -20,6 +20,9 @@
 #     is how you lose an investigation. A refusal stops the run loudly and restarts nothing.
 #   * The install is snapshotted first and restored if the daemon does not come back.
 #   * Only `main` is ever deployed, and only a commit that is an ancestor of it.
+#   * Nothing a root-run unit executes is written here. Those units run root-owned copies in
+#     /usr/local/lib/lem/ that only a root-run install-root-scripts.sh places; this compares them
+#     with the repo (`--check`, read-only) and logs a WARNING asking for a re-run when they differ.
 set -uo pipefail
 
 BASE="${BASE:-/home/lem/agent-pipeline}"
@@ -102,6 +105,17 @@ fi
 
 V2_AFTER="$(find "$BASE/v2" -name '*.py' -o -name '*.sh' 2>/dev/null | sort | xargs sha256sum 2>/dev/null | sha256sum)"
 printf '%s\n' "$NOW_HASH" > "$BASE/state/synced.sha"
+
+# Root-owned copies: compare only. `--check` reads /usr/local/lib/lem (world-readable) and writes
+# nothing; installing is root's job, so the most this does is ask for it.
+ROOT_INSTALLER="$SRC/scripts/agent-pipeline/install-root-scripts.sh"
+if [ -f "$ROOT_INSTALLER" ]; then
+  if ! root_check="$(bash "$ROOT_INSTALLER" --check 2>&1)"; then
+    log "WARNING: root-owned script copies differ from the repo at ${MAIN_SHA:0:8}. As root, from a"
+    log "  root-owned clone of main, re-run: scripts/agent-pipeline/install-root-scripts.sh"
+    while IFS= read -r line; do log "  $line"; done <<<"$root_check"
+  fi
+fi
 
 if [ "$V2_BEFORE" = "$V2_AFTER" ]; then
   log "synced; no v2 code changed, so nothing needs restarting."
