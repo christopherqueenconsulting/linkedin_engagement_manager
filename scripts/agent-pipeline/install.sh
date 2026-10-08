@@ -66,6 +66,9 @@ files() {
   # just reported that they could not capture a page, and gauntlet-loop audits concluded they had no
   # visual evidence. A capability this file can silently remove belongs under version control.
   for f in "$SRC"/mcp/*.json; do [ -e "$f" ] && echo "mcp/$(basename "$f")"; done
+  # config/ holds the OPT-IN agent permission profile (claude-headless.json). It is inert until
+  # LEM_PERMISSION_PROFILE points at it, but it has to be installed before anyone can point at it.
+  for f in "$SRC"/config/*.json; do [ -e "$f" ] && echo "config/$(basename "$f")"; done
   # v2 daemon, shipped by the SAME installer as v1 on purpose: during migration both runners live
   # on this box, and two sync mechanisms is how one of them silently goes stale — the exact drift
   # (an unversioned run_lane.sh, a 900-line status.sh git had never seen) this file was rewritten
@@ -136,7 +139,8 @@ if [ "$SYNC" = 1 ] && [ "$FIRST_INSTALL" = 1 ]; then
 fi
 
 mkdir -p "$DEST/logs" "$DEST/work" "$DEST/lib" "$DEST/docs" "$DEST/state" "$DEST/locks" \
-         "$DEST/v2/actions" "$DEST/v2/lemd" "$DEST/v2/systemd" "$DEST/v2/state" "$DEST/mcp"
+         "$DEST/v2/actions" "$DEST/v2/lemd" "$DEST/v2/systemd" "$DEST/v2/state" "$DEST/mcp" \
+         "$DEST/config"
 
 if [ "$SYNC" = 1 ]; then
   updated=0; skipped=(); same=0

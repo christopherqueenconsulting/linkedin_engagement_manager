@@ -723,3 +723,21 @@ by `tick.sh` and `v2/actions/common.sh`) are unchanged.
 **Pause vs retire.** `PAUSED` stops both runners. `V1_RETIRED` demotes v1 to the failsafe cron and is
 what `cutover.sh` writes — deliberately not `PAUSED`, because `tick.sh` exits unconditionally on
 PAUSED and that would disable the failsafe too.
+
+### Opt-in permission profile
+
+`scripts/agent-pipeline/config/claude-headless.json` is a `dontAsk` settings profile that lanes can
+opt into in place of the default permission flag. It is **off by default**: with
+`LEM_PERMISSION_PROFILE` unset, `run_lane.sh` launches the agent with exactly the historical argv.
+
+| Variable | Effect |
+|---|---|
+| `LEM_PERMISSION_PROFILE=<path>` | launch with `--permission-mode dontAsk --settings <path> --output-format json`; a path that is not a file REFUSES the dispatch, never falls back to the default argv |
+| `LEM_PERMISSION_PROFILE_MODES=review` | optional; limit the profile to these MODEs (comma-separated). Empty = every lane |
+
+A profile run appends one line to `logs/denials.jsonl` (`ts`, `lane`, `mode`, `issue`, `pr`, `rc`,
+`parsed`, `denial_count`, `denials`), and the JSON `.result` text is written back into the run's
+output so `$LOG` and the usage-limit detector see text as before. Tune the profile from that file.
+
+Settings merge across sources: a deny anywhere wins, and allows add up. Keep any `hooks` key at the
+TOP level of a settings file, never inside `permissions`.

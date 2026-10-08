@@ -4,9 +4,12 @@
 # delegates here so every MODE (depfix/revise/rebase/fix/review/selfreview/start) gets identical
 # routing + observability without per-call-site edits. Runs headless with --dangerously-skip-permissions
 # (the same flag tick.sh's original run_claude uses) so the unattended cron pipeline can execute.
+# LEM_PERMISSION_PROFILE (opt-in, unset by default) swaps that flag for a dontAsk settings profile;
+# see _permission_args below.
 #
 # Env read (set by tick.sh before each call): MODE, ISSUE, PR, BRANCH, WORKTREE, RISK, SLOT,
-#   WORKER_ID, EXECUTION_ID, _TICK_LOG, LOG, LOGDIR, CLAUDE_TIMEOUT, DRY_RUN.
+#   WORKER_ID, EXECUTION_ID, _TICK_LOG, LOG, LOGDIR, CLAUDE_TIMEOUT, DRY_RUN,
+#   LEM_PERMISSION_PROFILE, LEM_PERMISSION_PROFILE_MODES.
 # Args: $1=worktree  $2=prompt  $3=claude_model_hint (sonnet|haiku|opus|"" — used only on the claude lane)
 #
 # Telemetry contract:
@@ -63,8 +66,113 @@ print(json.dumps({**base,**extra}))
 ' 2>/dev/null)" || true
 }
 
+# Opt-in permission profile. Setting LEM_PERMISSION_PROFILE to a settings file
+# (scripts/agent-pipeline/config/claude-headless.json) runs the agent in `dontAsk` mode instead of
+# with the default flag: anything the profile does not allow is DENIED, and the denials are logged
+# so the profile can be tuned on one lane before it is widened.
+#
+# LEM_PERMISSION_PROFILE_MODES (optional, comma-separated MODE names, e.g. `review`) limits the
+# profile to those lanes, so it can shadow ONE low-risk lane first; empty = every lane.
+#
+# UNSET is the default and must stay byte-for-byte the historical argv — every lane runs that way
+# until the owner opts it in. A profile path that is not a file REFUSES the dispatch rather than
+# falling back to the default argv: an opt-in that silently degrades would read as applied in
+# every log while not being applied at all.
+_permission_args() {  # -> sets the caller's perm_args array + perm_profile; returns 1 on a bad profile
+  local modes="${LEM_PERMISSION_PROFILE_MODES:-}"
+  modes="${modes// /}"
+  perm_profile=""
+  perm_args=(--dangerously-skip-permissions)
+  [ -z "${LEM_PERMISSION_PROFILE:-}" ] && return 0
+  if [ -n "$modes" ]; then
+    case ",${modes}," in *",${MODE:-},"*) ;; *) return 0 ;; esac
+  fi
+  if [ ! -f "$LEM_PERMISSION_PROFILE" ]; then
+    log "run_lane: REFUSING to dispatch — LEM_PERMISSION_PROFILE='${LEM_PERMISSION_PROFILE}' is not a file. Unset it to restore the default, or fix the path. MODE=${MODE:-?}"
+    return 1
+  fi
+  perm_profile="$LEM_PERMISSION_PROFILE"
+  perm_args=(--permission-mode dontAsk --settings "$perm_profile" --output-format json)
+}
+
+# Profile runs print ONE JSON result object on stdout instead of the agent's text. Everything
+# downstream of the run (the $LOG append, the usage-limit grep) reads text, so put the `.result` text
+# back into the same output file, keep any non-JSON lines (stderr) around it, and append one line per
+# run to denials.jsonl. Unparseable output is left exactly as it was: a crash dump is more useful in
+# $LOG than nothing, and the denials line records `parsed: false` so the gap is visible.
+_record_permission_run() {  # $1=output file (rewritten in place)  $2=agent rc
+  local denials_log="${LOGDIR:-$BASE/logs}/denials.jsonl"
+  python3 - "$1" "$denials_log" "$2" "${LANE:-}" "${MODE:-}" "${ISSUE:-}" "${PR:-}" \
+    "${EXECUTION_ID:-}" "${LEM_PERMISSION_PROFILE:-}" <<'PY' 2>/dev/null || true
+import json, os, sys, time
+
+out_path, log_path, rc, lane, mode, issue, pr, execution_id, profile = sys.argv[1:10]
+try:
+    with open(out_path, encoding="utf-8", errors="replace") as fh:
+        raw = fh.read()
+except OSError:
+    raw = ""
+
+result, kept = None, []
+decoder = json.JSONDecoder()
+for line in raw.splitlines():
+    s = line.strip()
+    if result is None and s.startswith("{"):
+        # raw_decode, not loads: stdout and stderr share the file, so a stderr line can land on the
+        # same line as the JSON object when stdout ends without a newline.
+        try:
+            obj, end = decoder.raw_decode(s)
+        except ValueError:
+            obj, end = None, 0
+        if isinstance(obj, dict) and obj.get("type") == "result":
+            result = obj
+            # No text to hand back (an error subtype) -> keep the raw object, so a usage-limit or
+            # max-turns message still reaches $LOG and the usage-limit grep.
+            kept.append(obj["result"] if isinstance(obj.get("result"), str) else s[:end])
+            if s[end:].strip():
+                kept.append(s[end:].strip())
+            continue
+    kept.append(line)
+
+
+def _clip(value):
+    """Bound one denial's input so a pasted file cannot blow up a log line."""
+    text = json.dumps(value, default=str)
+    return value if len(text) <= 2000 else text[:2000] + "...[truncated]"
+
+
+denials = (result or {}).get("permission_denials") or []
+entry = {
+    "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    "lane": lane,
+    "mode": mode,
+    "issue": issue,
+    "pr": pr,
+    "execution_id": execution_id,
+    "profile": profile,
+    "rc": int(rc) if rc.lstrip("-").isdigit() else rc,
+    "parsed": result is not None,
+    "denial_count": len(denials) if result is not None else None,
+    "denials": [
+        {"tool_name": d.get("tool_name"), "tool_input": _clip(d.get("tool_input"))}
+        for d in denials if isinstance(d, dict)
+    ],
+}
+os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
+with open(log_path, "a", encoding="utf-8") as fh:
+    fh.write(json.dumps(entry) + "\n")
+
+if result is not None:
+    tmp = out_path + ".text"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(kept) + "\n")
+    os.replace(tmp, out_path)
+PY
+}
+
 run_lane() {  # $1=worktree  $2=prompt  $3=claude_model_hint
   local wt="$1" prompt="$2" hint="${3:-}" out rc t0 ms
+  local perm_args=() perm_profile=""
 
   # EVERY lane runs its agent inside its OWN git worktree, and this is the one place that is
   # enforced. Below, the agent is launched as `( cd "$wt" && claude ... )` — and `cd ""` in bash
@@ -89,6 +197,7 @@ never run in the shared checkout. MODE=${MODE:-?} BRANCH=${BRANCH:-?} ISSUE=${IS
     log "run_lane: REFUSING to dispatch — '$wt' is not a git worktree (no .git). MODE=${MODE:-?}"
     return 1
   fi
+  _permission_args || return 1
 
   dispatch_lane "$hint"
 
@@ -146,14 +255,17 @@ never run in the shared checkout. MODE=${MODE:-?} BRANCH=${BRANCH:-?} ISSUE=${IS
       ANTHROPIC_AUTH_TOKEN="$LITELLM_MASTER_KEY" \
       ANTHROPIC_API_KEY="$LITELLM_MASTER_KEY" \
       timeout "${CLAUDE_TIMEOUT:-45m}" claude -p "$prompt" \
-        --dangerously-skip-permissions --add-dir "$runbook_dir" "${model_arg[@]}" "${mcp_arg[@]}" ) >"$out" 2>&1
+        "${perm_args[@]}" --add-dir "$runbook_dir" "${model_arg[@]}" "${mcp_arg[@]}" ) >"$out" 2>&1
     rc=$?
   else
     ( cd "$wt" && \
       unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY 2>/dev/null || true
       timeout "${CLAUDE_TIMEOUT:-45m}" claude -p "$prompt" \
-        --dangerously-skip-permissions --add-dir "$runbook_dir" "${model_arg[@]}" "${mcp_arg[@]}" ) >"$out" 2>&1
+        "${perm_args[@]}" --add-dir "$runbook_dir" "${model_arg[@]}" "${mcp_arg[@]}" ) >"$out" 2>&1
     rc=$?
+  fi
+  if [ -n "$perm_profile" ]; then
+    _record_permission_run "$out" "$rc"
   fi
   ms=$(( ($(date +%s) - t0) * 1000 ))
   cat "$out" >> "${LOG:-/dev/null}"

@@ -46,7 +46,7 @@ def test_agent_is_not_granted_the_pipeline_base_directory():
 
 def test_every_agent_dispatch_uses_the_scoped_directory():
     """Both lanes must be scoped — fixing one and leaving the other is the whole bug."""
-    dispatches = re.findall(r"--dangerously-skip-permissions --add-dir \"([^\"]+)\"",
+    dispatches = re.findall(r"\"\$\{perm_args\[@\]\}\" --add-dir \"([^\"]+)\"",
                             RUN_LANE.read_text())
     assert len(dispatches) >= 2, "expected both lane dispatches to be found"
     assert set(dispatches) == {"$runbook_dir"}
