@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.186.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.185.0...v0.186.0) (2026-10-08)
+
+
+### Features
+
+* **prompt-evals:** publish results + weekly workflow (phase 4) ([#2292](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2292)) ([b280be2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b280be2246440bac5bb08d02993ac2e0f7d6f1ef))
+
+
+### Bug Fixes
+
+* **carousel:** save the PPTX deck under assets_dir, not the read-only source tree ([dca804c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/dca804cfd0fb0ff96790eaa225faab457d1eb6f8))
+* **carousel:** save the PPTX deck under assets_dir, not the read-only source tree (closes [#2305](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2305)) ([#2312](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2312)) ([dca804c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/dca804cfd0fb0ff96790eaa225faab457d1eb6f8))
+* **content:** log an off-niche post at INFO, not WARNING (closes [#2308](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2308)) ([#2309](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2309)) ([895a053](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/895a05335853c96480fdc630ffcc64e4060b4c19))
+* **content:** showcase round 9: article-anchored covers, count and slide-claim reconciliation, single-story posts ([#2293](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2293)) ([d4bcd55](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d4bcd55f4ba9d9304e1d5546b679fc5af6269b17))
+* **db:** stop owned profile upsert colliding on profiles.email (closes [#2306](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2306)) ([#2311](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2311)) ([c921ead](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c921ead84f7bcd4cf92523c04f630eb72b229a89))
+* **db:** stop owned profile upsert colliding with a stray scrape row on profiles.email ([c921ead](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c921ead84f7bcd4cf92523c04f630eb72b229a89)), closes [#2306](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2306)
+* **errors:** drop operator KeyboardInterrupt from PostHog error tracking ([a62cf4f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a62cf4f75e3e715e60ed4c7256ed387e578dfe81))
+* **errors:** drop operator KeyboardInterrupt from PostHog error tracking (closes [#2307](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2307)) ([#2310](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2310)) ([a62cf4f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a62cf4f75e3e715e60ed4c7256ed387e578dfe81))
+
 ## [0.185.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.184.0...v0.185.0) (2026-10-08)
 
 
