@@ -15,8 +15,8 @@ Live inventory, generated: [`docs/prompt-evals/inventory.md`](prompt-evals/inven
 |---|---|---|
 | 1 | Inventory, drift guard, versioning lock, capture, hermetic guards, this doc | **shipped** |
 | 2 | Datasets (≥20 rows) + code graders + rubrics + calibration sets for 8 wave-1 prompts | **shipped** |
-| 3 | `scripts/benchmark_prompts.py`: change-driven runner, model graders, spend plan | next |
-| 4 | `.github/workflows/prompt-evals.yml` (owner-landed) + the first baseline run | |
+| 3 | `scripts/benchmark_prompts.py`: change-driven runner, model graders, spend plan | **shipped** |
+| 4 | `.github/workflows/prompt-evals.yml` (owner-landed) + the first baseline run | next |
 | 5 | Remediation PR for every wave-1 prompt that fails its floor | |
 | 6 | Waves 2–3: datasets for the remaining planned prompts, about 10 per PR | |
 
@@ -264,39 +264,83 @@ Floors are fixed before the baseline run, from product contracts, not from what 
 | Judge pass rate (calibrated) | ≥ 0.80 |
 | Pairwise win-or-tie vs champion | ≥ 0.5 (candidates only) |
 
-Every new or changed `prompt@version` gets two samples. A prompt **fails** when its serving champion
-misses a floor on both. A candidate that misses is a finding about the *model*, not the prompt. A
+Every new or changed `prompt@version` gets two samples, and the contract rate and its Wilson bound
+are taken over all of them, so one bad sample counts. A prompt **fails** when its serving champion
+misses a floor. A candidate that misses is a finding about the *model*, not the prompt. A
 deployed fallback that misses is reported as `fails-on-fallback`.
 
 ## 5. Models: `tests/benchmarks/prompts/models.yaml`
 
-- **Champions and fallbacks** are read from `.litellm/config.yaml`, not repeated here.
-- **Candidates** carry `status: considering | adopted | rejected`. To evaluate a new model, add it as
-  `considering`. The next run grades every tracked prompt in its tiers against it. A candidate that
-  passes every prompt in its tier triggers a promotion-proposal issue; one that fails more than 20% of
-  them is proposed `rejected`.
-- **`proxy_host`.** CI runs the free Ollama champions as their OpenRouter-hosted equivalents
-  (labelled `proxy-host`). The production Ollama key never goes into GitHub, because eval traffic would
-  spend the quota that live traffic needs.
+- **Champions and fallbacks** come from `.litellm/config.yaml`, never repeated here.
+  `benchmark_prompts.tier_deployments` reads each tier's deployments in config order. The first one
+  is the **champion**; the rest are deployed **fallbacks**, because a prompt is really served by them
+  during an outage.
+- **Candidates** carry `status: considering | adopted | rejected`, and only `considering` ones are
+  graded.
+  - To evaluate a new model, add it as `considering`. The next run grades every evaluated prompt in
+    its tiers against that model only.
+  - For a one-off trial, use `--models a,b`.
+- **The CI route (`wire_id`).**
+  - A `proxy_host` mapping wins. The free Ollama champions run as their OpenRouter-hosted
+    equivalents, because the production Ollama key never goes into GitHub: eval traffic would spend
+    the quota live traffic needs.
+  - Otherwise a provider-qualified id is used as-is.
+  - A bare Ollama tag with no mapping is **skipped and named** in the run output. It never blocks
+    the reachable models.
+- **Prices.**
+  - The pinned `.litellm/model_prices_snapshot.json` comes first. It deliberately prices the Ollama
+    tags at $0, but their OpenRouter twins are **not** free, so they are priced by id and never by
+    the tag.
+  - Ids the snapshot lacks are priced from OpenRouter's public model list. `--plan` and `--run` read
+    it; `--offline` skips it.
+  - The judge's `price_id` names its pinned entry, for the case where the OpenRouter id differs in
+    punctuation.
+  - An id that still has no price **refuses the run**.
 
-## 6. The change-driven runner *(phase 3–4)*
+## 6. The change-driven runner: `scripts/benchmark_prompts.py`
 
-`scripts/benchmark_prompts.py --plan` compares the tree with `eval_state.json` and builds a work list.
-When nothing changed, it does nothing.
+```bash
+python scripts/benchmark_prompts.py --plan                     # work list + priced plan, no calls
+python scripts/benchmark_prompts.py --dry-run --out-dir /tmp/x # grade canned outputs, no network, no state
+PROMPT_EVALS_ENABLED=1 OPENROUTER_API_KEY=… python scripts/benchmark_prompts.py --run \
+    --max-spend-usd 15 --outputs-out outputs.json --artifact-ref <run-id> [--prompt-ids a,b] [--force-full]
+```
+
+`build_work_list` compares the tree with `eval_state.json`, so each prompt@version × model is measured
+once:
 
 | Trigger | Work |
 |---|---|
-| New prompt, or new `id@version` | Generate and grade on its tier's champion, fallbacks and considering candidates |
-| `dataset_version` changed | Same |
-| New candidate, or a champion changed in `config.yaml` | Every evaluated prompt in that tier, for that model only |
-| A grader's hash changed | **Re-grade only**, from the outputs stored in the prior run's artifact (no generation spend). If the artifact has expired, regeneration is a priced line |
-| Nothing | Exit 0, no PR |
+| New prompt, or new `id@version` | **generate**: 2 samples per row (`--samples`) on the champion, fallbacks and considering candidates |
+| `dataset_version` moved | generate |
+| New candidate, or a deployment change in `config.yaml` | generate, for that model only |
+| A grader's version moved (`grader_versions`: a hash of each code grader's source and each rubric file) | **regrade**: the outputs stored by a prior run (`--outputs-in`) are re-graded, with no generation spend. Without them it regenerates |
+| A model's role moved (the config reordered its tier: a fallback promoted to champion) | regrade: same outputs, but the verdict now carries the new role and a candidate's pairwise baseline is the new champion |
+| Nothing | "No work", exit 0 |
 
-The work list is priced (`plan_text_spend`, judge included) before any call, and it is refused over
-`max_spend`. A mass bump from a shared directive builder needs `force_full` or a raised cap. An
-all-errored run is refused (#923), never written up as zeros. Reports
-(`docs/prompt-evals/<date>-<run>.md`) carry scores, versions, hashes and grader counts, but
-**no generated text**.
+**What a run does,** in this order:
+
+1. **Prices** every call as a worst-case ceiling (`plan_spend`). This covers generation at the wire
+   model's price, and judge, pairwise and calibration calls at the judge's own price. A plan over
+   `--max-spend-usd` (default `PROMPT_EVAL_MAX_SPEND_USD` or $15) or with an unpriced id is refused.
+   `routed.SpendMeter` caps the real spend again, call by call.
+2. **Renders** each suite through the real builders (`prompt_capture.render_suite`).
+3. **Generates** with the champion first, so candidates can be compared against it. It uses
+   `benchmark_routed.build_routed_client` on OpenRouter.
+4. **Grades** every sample with the code graders.
+5. **Calibrates** each rubric once per run against its hand-labelled set. Below 0.85 agreement, the
+   judge is reported but never decides the verdict.
+6. **Judges** a tag-stratified sample (`--judge-sample`, default 5) per prompt × model.
+7. **Pairwise-compares** each candidate with the champion.
+8. **Refuses** an all-errored run (#923). Otherwise it writes the report, the leaderboard
+   (`docs/prompt-evals/README.md`), the eval state and the inventory.
+
+`--outputs-out` writes the generated text for the workflow's artifact. It is **never committed**, and
+the report carries scores only.
+
+**Exit codes:** `0` means ok or no work. `1` means refused or an error. `2` means a **champion** or
+fallback missed a floor (`failing_prompts`), which is what the workflow files issues from. A candidate
+missing a floor is a finding about the model, not the prompt.
 
 ## 7. Automation
 
@@ -338,3 +382,5 @@ Wording that changes voice or tone is `risk:product-decision`, and nothing here 
 | `tests/benchmarks/prompts/eval_state.json` | the eval workflow's results PR only |
 | `docs/prompt-evals/inventory.md` | `prompt_registry.py --inventory` (also run by `--write`) |
 | `tests/hermetic.py` | shared guards: unit lane + capture |
+| `scripts/benchmark_prompts.py` | the runner (phase 3): plan, generate, grade, judge, record |
+| `docs/prompt-evals/<date>-<run>.md`, `docs/prompt-evals/README.md` (leaderboard) | `benchmark_prompts.py` (dry runs write wherever `--out-dir` says) |

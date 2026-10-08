@@ -139,6 +139,8 @@ class TestRubrics:
         rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
         assert 3 <= len(criteria) <= 5
+        # The judge's priced ceiling assumes a bounded rubric (benchmark_prompts.RUBRIC_MAX_CHARS).
+        assert len((RUBRIC_DIR / f"{name}.md").read_text(encoding="utf-8")) <= 4000
         assert len(rows) >= MIN_ROWS
         assert len({r["id"] for r in rows}) == len(rows)
         for row in rows:

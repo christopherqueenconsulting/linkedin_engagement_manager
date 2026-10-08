@@ -15,6 +15,7 @@
 
 judge:
   model: anthropic/claude-sonnet-4.6   # OpenRouter id; verified at preflight, never a candidate
+  price_id: anthropic/claude-sonnet-4-6  # its pinned entry in .litellm/model_prices_snapshot.json
   family: anthropic
 
 proxy_host:
