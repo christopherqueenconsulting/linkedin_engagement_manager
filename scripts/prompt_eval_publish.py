@@ -37,7 +37,7 @@ RESULT_PATHS = ("docs/prompt-evals", "tests/benchmarks/prompts/eval_state.json")
 BOT_NAME = "lem-prompt-evals[bot]"
 BOT_EMAIL = "prompt-evals@users.noreply.github.com"
 
-FIX_HINT = ("- Fix: edit the prompt, run `python scripts/prompt_capture.py --write --changed-in \"PR #N\"`, "
+FIX_HINT = ("- Fix: edit the prompt, run `python scripts/prompt_capture.py --write --changed-in \"PR #<fix>\"`, "
             "and the next weekly run re-grades the new version automatically (docs/prompt-evals.md §8).")
 KIND_HINT = ("- `prompt-fails` = the tier's champion missed a floor; `fails-on-fallback` = a deployed "
              "fallback did. A prompt-wording change that alters voice or tone is `risk:product-decision`.")
@@ -174,6 +174,11 @@ def main(argv: list[str] | None = None, *, git: Runner = run_command,
         sys.stdout.write("no results file — nothing ran, nothing to publish\n")
         return 0
     run = json.loads(args.results.read_text(encoding="utf-8"))
+    missing = [k for k in ("run_id", "date") if k not in run]
+    if missing:
+        sys.stderr.write(f"{args.results} is not a benchmark_prompts.py results file "
+                         f"(missing {', '.join(missing)})\n")
+        return 1
     if not args.no_pr:
         sys.stdout.write(publish_results_pr(git, gh, args.repo, run, args.run_url) + "\n")
     for line in publish_issues(gh, args.repo, run, args.run_url):

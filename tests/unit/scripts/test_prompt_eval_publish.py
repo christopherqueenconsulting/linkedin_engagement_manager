@@ -157,6 +157,15 @@ class TestCli:
         out = capsys.readouterr().out
         assert "no result changes" in out and "filed comment.feed@2" in out
 
+    def test_a_malformed_results_file_fails_loudly(self, tmp_path, capsys):
+        results = tmp_path / "results.json"
+        results.write_text(json.dumps({"failing": []}))
+        gh = Recorder()
+
+        assert pub.main(["--results", str(results)], git=Recorder(), gh=gh) == 1
+        assert "missing run_id, date" in capsys.readouterr().err
+        assert gh.calls == []
+
     def test_no_pr_skips_git(self, tmp_path):
         results = tmp_path / "results.json"
         results.write_text(json.dumps({**RUN, "failing": []}))
