@@ -34,7 +34,7 @@ _VARIETY_WINDOW = 5
 # The staged judge's findings, copied from the render gate onto the cover's brief receipt.
 _GATE_RECEIPT_KEYS = ("gate_rubric", "gate_failing", "gate_issues", "gate_blind_description",
                       "gate_pop", "archetype_rendered", "archetype_fallback_reason",
-                      "graphic_facts", "cover_composed")
+                      "graphic_facts", "cover_composed", "cover_layout")
 
 COVER_SOURCE_UPLOAD = "upload"
 COVER_SOURCE_AI = "ai"
@@ -288,19 +288,59 @@ def recent_cover_pairs(user_id: int, limit: int) -> list:
     pairs = []
     for receipt in _recent_cover_receipts(user_id, limit):
         concept = receipt.get("concept") if isinstance(receipt.get("concept"), dict) else {}
-        layout = concept.get("layout")
+        # The layout that SHIPPED: a recompose (round 9) may have moved it off the concept's.
+        layout = receipt.get("cover_layout") or concept.get("layout")
         archetype = receipt.get("archetype_rendered") or concept.get("archetype")
         if layout and archetype:
             pairs.append((layout, _cover_family(archetype)))
     return pairs
 
 
+def _families_for(concept: Any) -> set:
+    """Every family the cover can SHIP as: its planned archetype's, plus its chain's render fallback.
+
+    Round 9: cover_19 planned a code-drawn checklist (``drawn``), the judge refused it, and the
+    chain fell to its people_scene (``render``) on the layout cover_17 had just used as a render.
+    """
+    families = {_cover_family(getattr(concept, "archetype", None))}
+    chain = tuple(getattr(concept, "archetype_ranking", ()) or ())
+    if chain:
+        families.add(_cover_family(chain[-1]))
+    return families
+
+
+def _layout_penalty(layout: str, families: set, recent_pairs: list) -> int:
+    """How badly ``layout`` repeats the recent covers: 0 is fresh.
+
+    The previous cover's layout (any family) weighs 2 — two consecutive covers never share one;
+    each (layout, family) the cover could ship as that one of the last ``COVER_LAYOUT_WINDOW``
+    covers used weighs 1; a third split in a row weighs 1 (``split_run_exceeded``).
+    """
+    from cqc_lem.utilities.ai.image_concept import split_run_exceeded
+
+    window = list(recent_pairs or [])[:COVER_LAYOUT_WINDOW]
+    penalty = 2 if window and window[0][0] == layout else 0
+    penalty += sum(1 for family in families if (layout, family) in window)
+    if split_run_exceeded(layout, [p[0] for p in window]):
+        penalty += 1
+    return penalty
+
+
+# Round 9: covers 17 and 19 shared a split three covers apart. The (layout, family) window is the
+# last three covers, and the previous cover's layout never repeats whatever its family.
+COVER_LAYOUT_WINDOW = 3
+
+
 def fresh_cover_layout(concept: Any, recent_pairs: list) -> Any:
-    """The concept on a split layout no recent cover of its family used (showcase round 8).
+    """The concept on the layout that repeats the recent covers least (showcase rounds 8 and 9).
 
     cover_17 and cover_20 were both AI renders on ``split_left`` — the same charcoal-left
-    composition three covers apart. The split side moves first; with both sides shown the cover
-    breaks to full-bleed. A concept off the split layouts is returned as is.
+    composition three covers apart; in round 9 cover_19 matched cover_17 because it was checked as
+    the code-drawn cover it PLANNED, then shipped as the render its chain fell back to. Every family
+    the cover can ship as is checked now (``_families_for``), against the last
+    ``COVER_LAYOUT_WINDOW`` covers, and the previous cover's layout is never reused. Ties go to the
+    layout used longest ago, then to the concept's own. A concept off the cover layouts is returned
+    as is.
 
     Args:
         concept: Stage 1's concept (frozen), or None.
@@ -312,16 +352,21 @@ def fresh_cover_layout(concept: Any, recent_pairs: list) -> Any:
     import dataclasses
 
     from cqc_lem.utilities.ai.image_concept import COVER_BREAK_LAYOUT, COVER_LAYOUTS
-    from cqc_lem.utilities.ai.post_treatment import PAIR_WINDOW
 
     layout = getattr(concept, "layout", None)
-    if concept is None or layout not in COVER_LAYOUTS:
+    options = (*COVER_LAYOUTS, COVER_BREAK_LAYOUT)
+    if concept is None or layout not in options:
         return concept
-    family = _cover_family(getattr(concept, "archetype", None))
-    shown = set(list(recent_pairs or [])[:PAIR_WINDOW - 1])
-    if (layout, family) not in shown:
+    families = _families_for(concept)
+    recent = [p[0] for p in list(recent_pairs or [])]
+
+    def rank(option: str) -> tuple:
+        last_seen = recent.index(option) if option in recent else len(recent) + 1
+        return (_layout_penalty(option, families, recent_pairs), -last_seen, option != layout)
+
+    pick = min(options, key=rank)
+    if pick == layout:
         return concept
-    pick = next((alt for alt in COVER_LAYOUTS if (alt, family) not in shown), COVER_BREAK_LAYOUT)
     try:
         return dataclasses.replace(concept, layout=pick)
     except (TypeError, ValueError):
@@ -619,14 +664,29 @@ def _to_cover_canvas(path: str) -> Optional[str]:
         return None
 
 
+def solid_cover_layout(layout: Optional[str]) -> str:
+    """``layout`` when it sets the headline on a solid split panel, else the default split.
+
+    Args:
+        layout: The concept's cover layout.
+
+    Returns:
+        A split layout (``image_compose.SPLIT_LAYOUTS``).
+    """
+    from cqc_lem.utilities.ai.image_compose import OVERLAY_FALLBACK_LAYOUT, SPLIT_LAYOUTS
+
+    return layout if layout in SPLIT_LAYOUTS else OVERLAY_FALLBACK_LAYOUT
+
+
 def ensure_cover_ratio(path: str, hook: Optional[str], render_info: dict, *, concept: Any,
                        brand: str, byline: Optional[str],
                        user_id: Optional[int] = None) -> Optional[str]:
     """``path`` when it is 16:9; else the cover re-composed on a 16:9 canvas. Never raises.
 
-    The RAW render (``render_info["raw_render_path"]``) is fitted to 1920x1080 and its headline
-    composed again, so no headline is cropped; with no raw render the composed cover itself is
-    fitted. None only when neither could be made.
+    The RAW render (``render_info["raw_render_path"]``) is composed again on a 1920x1080 canvas,
+    on a SOLID split panel (``solid_cover_layout``, round 9), so no headline is cropped and none
+    sits on a photograph; with no raw render the composed cover itself is fitted. None only when
+    neither could be made.
 
     Args:
         path: The composed cover.
@@ -649,18 +709,20 @@ def ensure_cover_ratio(path: str, hook: Optional[str], render_info: dict, *, con
             from cqc_lem.utilities.ai.image_concept import derive_kicker
             from cqc_lem.utilities.ai.image_gen import _kicker_for
 
-            canvas = _to_cover_canvas(raw)
-            if canvas:
-                kicker = (_kicker_for(concept) if concept is not None else "") or derive_kicker(hook)
-                composed = compose_headline(canvas, hook, layout=getattr(concept, "layout", None),
-                                            brand=brand_style(brand), surface="newsletter",
-                                            kicker=kicker or None, signature=byline,
-                                            canvas=COVER_SIZE)
-                if is_cover_ratio(composed):
-                    log_info("Cover re-composed at 16:9 from a non-16:9 render", user_id=user_id,
-                             action_type="newsletter_cover")
-                    render_info["cover_composed"] = "ratio_recompose"
-                    return composed
+            # Round 9: cover_18's recompose kept its full-bleed layout and set gold type on a
+            # translucent strip over a light render, the byline lost in the photo. A recomposed
+            # cover is always set on a SOLID split panel, the raw render cropped into its scene.
+            layout = solid_cover_layout(getattr(concept, "layout", None))
+            kicker = (_kicker_for(concept) if concept is not None else "") or derive_kicker(hook)
+            composed = compose_headline(raw, hook, layout=layout, brand=brand_style(brand),
+                                        surface="newsletter", kicker=kicker or None,
+                                        signature=byline, canvas=COVER_SIZE)
+            if composed and is_cover_ratio(composed):
+                log_info("Cover re-composed at 16:9 from a non-16:9 render", user_id=user_id,
+                         action_type="newsletter_cover")
+                render_info["cover_composed"] = "ratio_recompose"
+                render_info["cover_layout"] = layout
+                return composed
         except Exception as e:
             log_debug("Cover could not be re-composed at 16:9 — fitting the composite",
                       error=str(e), user_id=user_id, action_type="newsletter_cover")

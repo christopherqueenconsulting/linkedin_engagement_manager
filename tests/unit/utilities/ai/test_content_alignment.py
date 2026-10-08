@@ -293,9 +293,9 @@ class TestEnsureLeadMagnetCta:
 
     @pytest.mark.parametrize("message", [
         "https://example.com/get-it #freebie",  # link/hashtag-only message must not leak in
-        "I made a checklist that helps founders audit their ops end to end and more words",  # sentence-shaped
-        "This is a checklist for auditing your LinkedIn profile",  # multi-word sentence start
-        "We built an audit template you can copy",  # sentence start, plural
+        "I made something that helps founders tune their ops end to end and more words",  # sentence-shaped
+        "This is for founders tuning their LinkedIn profile",  # multi-word sentence start
+        "We built it so you can copy",  # sentence start, nothing named
     ])
     def test_resource_label_falls_back_to_generic(self, message):
         lm = dict(self._LM, message=message)

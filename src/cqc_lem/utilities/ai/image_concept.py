@@ -684,6 +684,32 @@ def hook_shape_of(hook: str) -> str:
     return "plain_claim"
 
 
+# Showcase round 9: cover_16's panel read "Audit cut waste" under the title "The $30K We Nearly
+# Squandered" — the title is a near miss (the money was caught before it was spent), the hook a
+# completed cut. A title that frames its event as a near miss takes no hook that reports it done.
+_NEAR_MISS_RE = re.compile(r"\b(?:nearly|almost|narrowly|close\s+to|came\s+close|could\s+have|"
+                           r"would\s+have|before\s+(?:we|it|they|you|i)\b)", re.IGNORECASE)
+_DONE_OUTCOME_RE = re.compile(
+    r"\b(?:cut|cuts|slashed|saved|saves|eliminated|wasted|lost|squandered|burned|blew|reduced|"
+    r"killed|stopped|recovered|recouped|trimmed)\b", re.IGNORECASE)
+
+
+def contradicts_title(text: Optional[str], title: Optional[str]) -> bool:
+    """Does ``text`` report as DONE what ``title`` frames as a near miss? Deterministic.
+
+    Args:
+        text: A hook, kicker or panel line.
+        title: The piece's title.
+
+    Returns:
+        True when the title carries a near-miss marker ("nearly", "almost", "could have") and the
+        text, carrying none, asserts a completed outcome ("cut", "saved", "wasted").
+    """
+    if not text or not title or not _NEAR_MISS_RE.search(title):
+        return False
+    return bool(_DONE_OUTCOME_RE.search(text)) and not _NEAR_MISS_RE.search(text)
+
+
 def hook_rejection(hook: str, title: Optional[str], topic_text: str = "",
                    source: Optional[str] = None) -> str:
     """Why ``hook`` is not a usable curiosity gap, or '' when it is.
@@ -719,6 +745,8 @@ def hook_rejection(hook: str, title: Optional[str], topic_text: str = "",
     if hook_tokens and title_tokens and (
             len(hook_tokens & title_tokens) / len(hook_tokens) >= _HOOK_TITLE_OVERLAP):
         return "it restates the title"
+    if contradicts_title(hook, title):
+        return "it reports as done what the title says nearly happened — keep the title's frame"
     if any(ch.isdigit() for ch in hook) and not names_its_subject(
             hook, f"{title or ''} {topic_text}"):
         return "a number must name its subject (45% less reach for AI posts)"

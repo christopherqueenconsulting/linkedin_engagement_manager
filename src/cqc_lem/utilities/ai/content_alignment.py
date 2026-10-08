@@ -892,10 +892,54 @@ _LABEL_SENTENCE_STARTS = {"i", "i'll", "i'd", "i've", "we", "we'll", "we've", "y
 _LABEL_DETERMINERS = {"a", "an", "the", "my", "our", "your", "this"}
 
 
+# The label for a resource the configured message never names. It names nothing, so it never
+# counts as naming the asset (showcase round 9).
+GENERIC_RESOURCE_LABEL = "the resource"
+# Showcase round 9: slot_130 still closed "Comment AUDIT and I'll DM you the resource." — the
+# configured message was a SENTENCE ("Thanks for commenting! Here's my AI vendor-risk scorecard:
+# …"), so the label fell back to "the resource", and round 8's naming check read that generic
+# label as the asset already named. The object of the offer is read out of the sentence instead.
+_OFFER_OBJECT_RE = re.compile(
+    r"\b(?:here(?:'s|’s| is)|get|grab|download|enjoy|attached(?: is)?|sending(?: you)?|"
+    r"send(?: you)?|your copy of|a copy of|access to)\s+(?P<np>(?:my|the|your|our|a|an|this)\s+"
+    r"[^.,:;!?\n()]{2,60}?)(?=\s*(?:[.,:;!?\n(]|https?://|$|\s+(?:for|to|that|which|so|and)\b))",
+    re.IGNORECASE)
+_RESOURCE_NOUN_RE = re.compile(
+    r"\b(checklist|guide|template|scorecard|playbook|worksheet|framework|toolkit|cheat ?sheet|"
+    r"report|ebook|e-book|workbook|swipe file|calculator|spreadsheet|pdf)s?\b",
+    re.IGNORECASE)
+
+
+# "Here's the link" names no asset.
+_UNNAMING_NOUNS = frozenset({"link", "links", "details", "resource", "info", "information", "file",
+                             "thing", "doc", "it", "this", "that"})
+
+
+def _offered_object(message: str) -> str:
+    """The object of an offer verb in ``message`` ("Here's my AI vendor-risk scorecard"), or ''."""
+    match = _OFFER_OBJECT_RE.search(message or "")
+    if not match:
+        return ""
+    np = " ".join(match.group("np").split())
+    if len(np.split()) > 8 or np.split()[-1].lower() in _UNNAMING_NOUNS:
+        return ""
+    head, _, rest = np.partition(" ")
+    return f"{head.lower()} {rest}" if rest else np
+
+
+def _resource_noun(message: str) -> str:
+    """"my <noun>" for the first resource noun ``message`` names ("the checklist is attached")."""
+    noun = _RESOURCE_NOUN_RE.search(message or "")
+    return f"my {noun.group(1).lower()}" if noun else ""
+
+
 def _resource_label(lead_magnet: Optional[dict]) -> str:
     """A few plain words describing the offered resource, derived from the configured lead-magnet
     message; generic 'the resource' when the message is missing, sentence-shaped, or too long. Links,
     hashtags, and emoji are stripped so the repair line's own constraints can't be violated.
+
+    Round 9: a sentence-shaped message that OFFERS its resource ("Here's my scorecard") names it
+    (``_offered_object``), and one that only mentions a resource noun gives "my <noun>".
     """
     msg = str((lead_magnet or {}).get("message") or "").strip()
     msg = re.sub(r"https?://\S+|www\.\S+", "", msg)
@@ -904,11 +948,17 @@ def _resource_label(lead_magnet: Optional[dict]) -> str:
     # Drop emoji/symbols so the appended line keeps its own one-emoji budget.
     first = "".join(c for c in first if ord(c) <= 0xFFFF and not (0x2190 <= ord(c) <= 0x2BFF))
     words = first.split()
+    # Round 9: a sentence that OFFERS something names it ("Thanks! Here's my scorecard: <link>").
+    offered = _offered_object(msg)
+    if offered:
+        return offered
     # Check both one- and two-word sentence starts ("this is ...") — a single-word check can never
-    # match the multi-word entries in _LABEL_SENTENCE_STARTS.
+    # match the multi-word entries in _LABEL_SENTENCE_STARTS. Sentence punctuation inside the
+    # first line ("Thanks for commenting! …") is a sentence too, never a label.
     leading = {words[0].lower(), " ".join(w.lower() for w in words[:2])} if words else set()
-    if not words or (leading & _LABEL_SENTENCE_STARTS) or len(words) > 10:
-        return "the resource"
+    if (not words or (leading & _LABEL_SENTENCE_STARTS) or len(words) > 10
+            or re.search(r"[!?:;]", first)):
+        return _resource_noun(msg) or GENERIC_RESOURCE_LABEL
     label = " ".join(words)
     if words[0].lower() in _LABEL_DETERMINERS:
         return label[0].lower() + label[1:]
@@ -981,6 +1031,9 @@ _UNNAMED_ASSET_RES = (
     (re.compile(r"\b(send)\s+it\s+your\s+way\b", re.IGNORECASE), "{verb} {resource} your way"),
     (re.compile(r"\b(DM|send)\s+you\s+(?:the\s+)?(?:link|details|it|this)\b", re.IGNORECASE),
      "{verb} you {resource}"),
+    # Round 9: the repair menu's own generic fallback ("I'll DM you the resource").
+    (re.compile(r"\b(DM|send)\s+(?:you\s+)?the\s+resource\b", re.IGNORECASE),
+     "{verb} you {resource}"),
 )
 
 
@@ -1006,7 +1059,8 @@ def name_cta_asset(content: Optional[str], lead_magnet: Optional[dict]) -> Optio
     for n, line in enumerate(lines):
         # A line that already names the resource ("If you'd like my checklist, … send it") is
         # named; its "it" points back at it.
-        if not mechanic.search(line) or resource.lower() in line.lower():
+        if not mechanic.search(line) or (resource != GENERIC_RESOURCE_LABEL
+                                         and resource.lower() in line.lower()):
             continue
         for rx, form in _UNNAMED_ASSET_RES:
             fixed = rx.sub(lambda m, f=form: f.format(verb=m.group(1), resource=resource), line,

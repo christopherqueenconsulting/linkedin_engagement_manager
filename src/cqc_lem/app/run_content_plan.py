@@ -100,6 +100,7 @@ from cqc_lem.utilities.ai.content_framework import (
     deck_count_report,
     deck_text,
     deck_topic_report,
+    dedupe_repeated_lines,
     document_deck_wording,
     document_wording,
     drop_opening_question,
@@ -128,6 +129,7 @@ from cqc_lem.utilities.ai.content_framework import (
     shape_for_dwell,
     smb_audience,
     strip_closing_ask,
+    strip_verbal_tics,
     topic_avoidance_directive,
     topic_cluster,
     weekly_post_slots,
@@ -1403,7 +1405,9 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
     # deck has no editor pass, so an impossible date or timeline is recorded and HOLDS the post.
     _record_consistency_finding(
         post_id, consistency_report(f"{post_text or ''}\n{deck_text(carousel_dict)}",
-                                    (story or {}).get("happened_at"))["issues"], user_id=user_id)
+                                    (story or {}).get("happened_at"),
+                                    story_text=_story_bank.entry_text(story) if story else None
+                                    )["issues"], user_id=user_id)
 
     # The caption's authenticity judge (issue #1512, owner decision 2A on PR #1554): a carousel
     # caption is a post like any other, and until now it was the one generated post type that
@@ -1476,6 +1480,7 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
             # Render slide images using Pillow; explicit override wins over auto-pick
             image_paths = create_carousel_slide_images(
                 carousel_obj, post_id, template=template or carousel_template, user_id=user_id,
+                rotate_template=not template,  # round 9: the stage default rotates, a choice never
                 evidence=post_text,  # round 5: a slide's drawn figure must be the post's own
             )
             slide_urls = [
@@ -2303,19 +2308,25 @@ def _deterministic_fact_cleanup(content: Optional[str], *, user_id: Optional[int
     """The fixes a draft never needs an LLM for (showcase round 6). Never raises.
 
     A weekday that is not its date's is DROPPED (`fix_weekday_mismatches`), and a leaked job-title
-    sign-off is cut (`strip_signature_lines`). Run before the review gate and again on the final
-    text, because every LLM pass in between can put either back.
+    sign-off is cut (`strip_signature_lines`). Round 9: a list line that repeats an earlier one
+    (`dedupe_repeated_lines`, slot_130) and a standalone "It works." tic (`strip_verbal_tics`) go
+    too. Run before the review gate and again on the final text, because every LLM pass in between
+    can put any of them back.
     """
     if not content:
         return content
     fixed, weekdays = fix_weekday_mismatches(content)
     signed = strip_signature_lines(fixed)
-    if weekdays or signed != fixed:
+    deduped, repeated = dedupe_repeated_lines(signed)
+    untic, tics = strip_verbal_tics(deduped)
+    if weekdays or signed != fixed or repeated or tics:
         log_info("Draft repaired without an LLM: "
                  + "; ".join([f"dropped the wrong weekday from {w}" for w in weekdays]
-                             + (["cut a job-title sign-off"] if signed != fixed else [])),
+                             + (["cut a job-title sign-off"] if signed != fixed else [])
+                             + [f"dropped a repeated line ({r[:60]})" for r in repeated]
+                             + ([f"cut {tics} verbal tic(s)"] if tics else [])),
                  user_id=user_id, post_id=post_id, task_name="create_text_post")
-    return signed
+    return untic
 
 
 def _fact_cleanup_deck(value):
@@ -3862,9 +3873,11 @@ def _review_generated_post(ctx: PostDraftContext, content: str, recent_texts: li
     # gated on the numbers being graded, so a tactical_list under WARN-severity grounding shipped
     # "by over 90 %" in its hook unchecked.
     hook_facts = bank_facts + [s for s in (lead_magnet_cta,) if s]
+    # Round 9: ONE story per post — a second case told beside the anchor (slot_130) is a finding.
+    story_text = _story_bank.entry_text(story) if story else None
     consistency = consistency_report(
         content, happened_at, hook_facts=hook_facts,
-        hook_flagged=(fact_report or {}).get("unverified_values"))["issues"]
+        hook_flagged=(fact_report or {}).get("unverified_values"), story_text=story_text)["issues"]
 
     if (not too_similar and not proof_regen and not fabrication_regen and not unverified
             and not slopped and not forbidden and not consistency):
@@ -3928,7 +3941,8 @@ def _review_generated_post(ctx: PostDraftContext, content: str, recent_texts: li
     second_fact_report = fact_grounding_report(second, anchors) if fact_report is not None else None
     still_inconsistent = consistency_report(
         second, happened_at, hook_facts=hook_facts,
-        hook_flagged=(second_fact_report or {}).get("unverified_values"))["issues"]
+        hook_flagged=(second_fact_report or {}).get("unverified_values"),
+        story_text=story_text)["issues"]
     second_forbidden = _story_bank.forbidden_claims(second, forbidden_terms)
     second_slop = slop_lint_report(second, "post", exempt_keyword=cta_keyword,
                                    plain_fold=plain_fold)

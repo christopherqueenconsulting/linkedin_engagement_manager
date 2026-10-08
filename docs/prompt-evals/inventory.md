@@ -51,8 +51,8 @@
 | `curated.commentary` | `cqc_lem.utilities.ai.curated_commentary` | `generate_curated_commentary.draft` | post_longform | planned | 2 | source | not yet measured |
 | `curated.audience_fit` | `cqc_lem.utilities.ai.curated_commentary` | `score_audience_fit` | classifier | planned | 1 | source | not yet measured |
 | `classify.dm_reply_intent` | `cqc_lem.utilities.ai.dm_nurture` | `_llm_intent` | classifier | evaluated | 1 | rendered text | not yet measured |
-| `image.brief` | `cqc_lem.utilities.ai.image_brief` | `_author_image_brief` | media_prompt | planned | 1 | source | not yet measured |
-| `image.prompt_concept_check` | `cqc_lem.utilities.ai.image_brief` | `check_prompt_against_concept` | judge | planned | 1 | source | not yet measured |
+| `image.brief` | `cqc_lem.utilities.ai.image_brief` | `_author_image_brief` | media_prompt | planned | 2 | source | not yet measured |
+| `image.prompt_concept_check` | `cqc_lem.utilities.ai.image_brief` | `check_prompt_against_concept` | judge | planned | 2 | source | not yet measured |
 | `image.ensure_hook` | `cqc_lem.utilities.ai.image_concept` | `_ensure_hook` | json_planner | planned | 1 | source | not yet measured |
 | `image.analyze_content` | `cqc_lem.utilities.ai.image_concept` | `analyze_content_for_image` | json_planner | planned | 1 | source | not yet measured |
 | `image.hook_thesis_check` | `cqc_lem.utilities.ai.image_concept` | `check_hook_against_thesis` | judge | planned | 1 | source | not yet measured |

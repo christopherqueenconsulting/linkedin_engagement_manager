@@ -2782,6 +2782,37 @@ def recent_deck_choices(root_dir: Optional[str], user_id: Optional[int],
     return out
 
 
+# Showcase round 9: decks 128, 133 and 144 were all decision-stage, so all three drew
+# ``stat_reveal`` — one template family three times in a six-deck window. A stage default one of
+# the author's last DECK_TEMPLATE_GAP decks used is rotated to the least-recently-used template,
+# so any three decks in a row are three templates.
+DECK_TEMPLATE_GAP = 2
+
+
+def rotate_deck_template(preferred: str, recent_templates: list) -> str:
+    """``preferred``, unless one of the last ``DECK_TEMPLATE_GAP`` decks used it. Deterministic.
+
+    Args:
+        preferred: The stage's default template.
+        recent_templates: Recent decks' templates, most recent first (None where unrecorded).
+
+    Returns:
+        A ``CAROUSEL_TEMPLATES`` key: the preferred one, or the least-recently-used other.
+    """
+    recent = [t for t in (recent_templates or []) if t]
+    blocked = set(recent[:DECK_TEMPLATE_GAP])
+    if preferred not in blocked:
+        return preferred
+    options = [t for t in CAROUSEL_TEMPLATES if t not in blocked]
+    if not options:
+        return preferred
+
+    def last_used(name: str) -> int:
+        return recent.index(name) if name in recent else len(recent) + 1
+
+    return max(options, key=last_used)
+
+
 def deck_cover_chain(title: str, has_element: bool, ai_available: bool,
                      recent: list, seed: str = "", template: Optional[str] = None,
                      recent_templates: Optional[list] = None) -> list:
@@ -2919,6 +2950,7 @@ def create_carousel_slide_images(
     motif: Optional[str] = None,
     cover_image_path: Optional[str] = None,
     evidence: Optional[str] = None,
+    rotate_template: bool = False,
 ) -> list[str]:
     """Render carousel slides as 1080x1080 PNG images using Pillow.
 
@@ -2959,6 +2991,8 @@ def create_carousel_slide_images(
             rendered on demand when None and the rotation picks it.
         evidence: The post the deck accompanies. When given, a slide's code-drawn figure must be
             stated, with its label, in one sentence of it (showcase round 5).
+        rotate_template: ``template`` is the STAGE's default, not a caller's choice — rotate off
+            it when one of the author's last ``DECK_TEMPLATE_GAP`` decks used it (round 9).
 
     Returns:
         The slide PNG paths, in order.
@@ -2970,6 +3004,13 @@ def create_carousel_slide_images(
 
     W, H = 1080, 1080
 
+    if output_dir is None:
+        current_dir = os.path.dirname(__file__)
+        assets_root = os.path.join(current_dir, "..", "assets", "images", "carousel", str(post_id))
+        output_dir = os.path.realpath(assets_root)
+    if rotate_template:
+        template = rotate_deck_template(
+            template, recent_deck_choices(os.path.dirname(output_dir), user_id)["template"])
     # The template that will actually be DRAWN, not the one that was asked for: an unknown name
     # falls back below, and the receipt has to name the layout whose caps produced the clipping.
     template_key = template if template in CAROUSEL_TEMPLATES else DEFAULT_TEMPLATE
@@ -2990,10 +3031,6 @@ def create_carousel_slide_images(
     badge_colors = tmpl["badge_colors"]
     layout       = tmpl.get("layout", "listicle")
 
-    if output_dir is None:
-        current_dir = os.path.dirname(__file__)
-        assets_root = os.path.join(current_dir, "..", "assets", "images", "carousel", str(post_id))
-        output_dir = os.path.realpath(assets_root)
     os.makedirs(output_dir, exist_ok=True)
 
     # ── Font loader ───────────────────────────────────────────────────────────
@@ -3913,6 +3950,10 @@ def create_carousel_slide_images(
 
     def _render_rotated_cover(idx, total, title, body):
         """The deck cover through its rotated chain; the template's own cover ends it."""
+        from cqc_lem.utilities.video_captions import strip_list_marker
+
+        # Round 9: slot_133's cover "1. Free Work…" — a cover is no list item; its marker goes.
+        title = strip_list_marker(title) or title
         element = _cover_element()
         ai_available = bool(cover_image_path) or (
             user_id is not None and isTrue(os.environ.get("DECK_AI_COVER_ENABLED", "True")))

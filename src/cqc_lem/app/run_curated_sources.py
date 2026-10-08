@@ -24,6 +24,7 @@ from typing import Callable, Optional
 
 from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.utilities.ai.curated_commentary import (
+    drop_unrendered_chart_claims,
     extract_chart_facts,
     generate_curated_commentary,
     score_audience_fit,
@@ -126,22 +127,23 @@ def _chart_hook(source: dict) -> str:
     return " ".join(words) or "The numbers"
 
 
+def rechart_archetype(graphic: Optional[dict]) -> str:
+    """The archetype a re-chart draws: a highlight chart when its figures allow one, else a stat card."""
+    from cqc_lem.utilities.ai.image_graphics import HIGHLIGHT_CHART, STAT_CARD, available_archetypes
+
+    return HIGHLIGHT_CHART if HIGHLIGHT_CHART in available_archetypes(graphic or {}) else STAT_CARD
+
+
 def _render_rechart(user_id: int, post_id: int, source: dict, graphic: dict) -> Optional[str]:
     """Draw the re-chart and store it as the post's image. None when it cannot be drawn.
 
     ``render_graphic`` re-checks every drawn figure against its source sentence immediately before
     drawing (``assert_traceable``) and raises rather than draw an untraceable one.
     """
-    from cqc_lem.utilities.ai.image_graphics import (
-        HIGHLIGHT_CHART,
-        STAT_CARD,
-        GraphicError,
-        available_archetypes,
-        render_graphic,
-    )
+    from cqc_lem.utilities.ai.image_graphics import GraphicError, render_graphic
     from cqc_lem.utilities.post_image import store_rendered_post_image
 
-    archetype = HIGHLIGHT_CHART if HIGHLIGHT_CHART in available_archetypes(graphic) else STAT_CARD
+    archetype = rechart_archetype(graphic)
     kicker = " ".join((source.get("publisher") or "").split()[:3])
     try:
         render = render_graphic(archetype, graphic, surface="post_image", hook=_chart_hook(source),
@@ -239,6 +241,12 @@ def draft_curated_post(user_id: int, post_id: int, source: dict, content_mix: Op
     if not commentary:
         _block(source, "commentary_refused", user_id)
         return None
+    # Round 9: the copy may describe a chart only when one drew (curated_4 claimed a redrawn chart
+    # over a stat card).
+    from cqc_lem.utilities.ai.image_graphics import HIGHLIGHT_CHART
+
+    chart_drawn = bool(image_url) and rechart_archetype(graphic) == HIGHLIGHT_CHART
+    commentary = drop_unrendered_chart_claims(commentary, chart_drawn) or commentary
     political = political_reason(commentary)
     if political:
         _block(source, f"commentary_{political}", user_id)

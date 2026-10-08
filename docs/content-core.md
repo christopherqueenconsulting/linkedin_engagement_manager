@@ -429,6 +429,56 @@ binding. Why each one slipped, and the fix:
 Tests: `test_showcase_round_8_copy.py`, `test_save_targeted_wiring.py`,
 `test_story_bank_post_anchor.py`.
 
+### One story, counts that agree, assets that are named (showcase round 9)
+
+The round-9 critic (`gauntlet/critic9/critic_scores.json`) found three round-8 copy rules in place
+and still escaped. Why each slipped, and the fix:
+
+- **51 emails vs 63 recipients** (moved from slot_143 to slot_135). `count_conflicts` read only
+  past-tense verbs; slot_135 wrote "after sending 51 cold emails". Present and progressive forms
+  (send, sends, sending, emailing, messaging, contacting, pitching, reaching out to, writing) are
+  totals now.
+- **"Comment AUDIT and I'll DM you the resource"** (slot_130). The configured lead-magnet message
+  was a sentence, so `_resource_label` fell back to "the resource" — and round 8's
+  `name_cta_asset` read that generic label, found in the line, as the asset already named. A
+  sentence that OFFERS its resource names it ("Here's my AI vendor-risk scorecard" -> "my AI
+  vendor-risk scorecard"); one that only mentions a resource noun gives "my <noun>";
+  `GENERIC_RESOURCE_LABEL` never counts as named, and "DM you the resource" is renamed. A message
+  that names nothing at all still reads "the resource" — the owner's setting has to name it.
+- **"6 tools" on a slide, three in the caption** (slot_128). "tools" is a deck-item noun, so the
+  figure check stripped "6 tools" as a count promise, and the count rules reconciled only the
+  cover. `finalize_deck_claims` now runs `_reconcile_slide_counts`: a body slide's "N <plural
+  noun>" the caption counts differently is set to the caption's count (digit stays digit, word
+  stays word) or, when the caption counts it more than one way, its sentence is dropped. Units and
+  spans (minutes, years, slides…) are never counts of a thing.
+- **Two stories in one post** (slot_130: a Lincoln Nautilus purchase, then "A client needed
+  trustworthy AI…" with an invented 30%). `fact_consistency.second_story_issues`: on a post
+  anchored to a story-bank entry, a paragraph that opens a different protagonist's case ("A/One/
+  Another client|customer|company|startup|team…", "I worked with a…") the anchor never mentions is
+  a `fact_consistency` finding — one editor repair, then PENDING. `consistency_report(story_text=)`
+  carries the anchor from `_review_generated_post` and the deck path.
+- **Repeated bullets and tics.** `_deterministic_fact_cleanup` (before the review gate and on the
+  final text) now drops a LIST line that repeats an earlier one (`dedupe_repeated_lines`: a shared
+  run of 4 words or 75% of its words) and cuts standalone "It works." / "It worked." / "It
+  matters." / "That works." sentences (`strip_verbal_tics`, also in curated `finish_post_text`).
+- **Save asks** (141, 142, 144). `close_cap_reason`: one save ask in `SAVE_CTA_WINDOW` (6) posts,
+  cut whole like a share ask.
+- **The 53.7% the body DID source** (cover_18). Provenance read only a figure's sentence and the one
+  before it; cover_18's body named Originality.ai two paragraphs on, restating the finding ("over half
+  … AI-generated"). `fact_consistency.restated_by_source`: a source-naming sentence sharing
+  `RESTATED_MIN_SHARED` (3) distinctive words (4+ letters, or a year) with the figure's sentence
+  vouches for it; "result(s) from <Name>" names a source.
+- **curated_4's phantom chart.** The re-chart drew a stat card, the commentary said "I redrew the
+  chart… the visual shows a steep drop". `curated_commentary.drop_unrendered_chart_claims` cuts
+  every sentence claiming a chart, graph, plot or redrawn visual unless a `highlight_chart` drew
+  (`run_curated_sources.rechart_archetype`).
+- **Why 123 and 125 told the same Aug 9 story.** Not an engine escape: the showcase's redo process
+  (125 regenerated in a second process) could not see 123's story use — the harness keeps story
+  history in memory and its DB writes are shielded. Production reads `posts.story_id` through
+  `cooling_ids`, and that path is unchanged.
+
+Tests: `test_showcase_round_9_copy.py`.
+
 ### Save-targeted archetypes (issue #619)
 
 Two save-targeted post archetypes live in the same `POST_FORMATS` menu: `build_receipt` and

@@ -507,6 +507,64 @@ size (`carousel_creator.line_pitch`), and the fit measure (`_lines_height`) uses
 
 Tests: `test_provenance_r7.py`, `test_visual_variety_r7.py`.
 
+## Showcase round 9 — covers about their article, legible recomposes, one line once
+
+The round-9 critic (`gauntlet/critic9/critic_scores.json`) found three of five covers unshippable.
+Cause, then fix:
+
+- **Stock people on a cover** (covers 17 and 19, the owner's original complaint in a new form).
+  Stage 3 flagged both ("a stranger could not guess the thesis") but a judged brief still ships after
+  its one repair, and the vision judge's gist answer was advisory. Now a people_scene COVER must put
+  something from the edition's own `specific_entities` in frame: `image_brief.article_scene_terms`
+  (the entities' common nouns; names, numbers and scene furniture such as office, hallway,
+  colleague never count) and `article_scene_failure`, a DETERMINISTIC rejection in the brief loop
+  and in `check_prompt_against_concept(surface=…)` — the author retries, it is not waved through.
+  Stage 4 asks the targeted judge about the same terms, and `image_gen.generic_people_scene` caps a
+  cover that shows none of them (or whose gist does not read) at `no_cliche` 2 / `specificity` 3.
+  No depictable term at all means the rule stands down (a cover about "Stanford HAI" and
+  "$12,000" is judged on its descriptors as before).
+- **Two covers on one layout** (17 and 19, 18 between). Round 8's window already covered three
+  covers; cover_19 was checked as the code-drawn checklist it PLANNED, the judge refused that, and
+  its chain fell back to a people_scene render on cover_17's `split_right`. `fresh_cover_layout`
+  now scores every layout (`_layout_penalty`) against EVERY family the cover can ship as
+  (`_families_for`: the planned archetype's and its chain's render fallback) over the last
+  `COVER_LAYOUT_WINDOW` (3) covers, never reuses the previous cover's layout, and weighs a third
+  split in a row. Ties go to the layout used longest ago. The receipt's `cover_layout` records
+  the layout that SHIPPED, read before the concept's.
+- **A recomposed cover on a translucent strip** (cover_18: gold type over a light photograph, the
+  byline lost). `ensure_cover_ratio` recomposes the raw render on a SOLID split panel
+  (`solid_cover_layout`), and any overlay composite whose headline fails `MIN_HEADLINE_CONTRAST`
+  against the mean of its text box (`image_compose.overlay_contrast`) is re-set on
+  `OVERLAY_FALLBACK_LAYOUT`. The 53.7% returned once the body's restated source counted
+  (`docs/content-core.md`, round 9).
+- **A long title set small** (cover_20). A split panel the full image height may take
+  `RELAXED_MAX_LINES` (5) lines before the type shrinks (cap height 38px -> 60px on the 1080p
+  cover). Under the hard floor `HEADLINE_MIN_CAP_FRACTION` (5% of the height) the headline is cut to
+  its strongest clause (`shorter_headline`: the claim after a colon or dash, never a 1-2 word
+  fragment).
+- **The kicker still repeated the title** (rhythm_2 "FLEXIBLE INFRASTRUCTURE" over "Flexible infra
+  beats policy"): round 8 compared whole words. `kicker_repeats_headline` now treats two words
+  sharing a prefix of `KICKER_STEM_MIN` (4) letters as one.
+- **A stat panel that contradicts its title** (cover_16 "Audit cut waste" under "The $30K We Nearly
+  Squandered"): `image_concept.contradicts_title` refuses a hook that reports as done what a
+  near-miss title ("nearly", "almost", "could have") says nearly happened, and
+  `hook_without_figures` drops the determiner a figure leaves behind ("The $30K We…" -> "We…").
+- **A numeral split from its line** (slot_133's deck cover "1" over ". Free Work…"). `split_hero`
+  never lifts a leading list marker ("1.", "2)") as a hero; `bind_leading_marker` keeps a leading
+  numeral on the line of the word after it; a deck cover title drops its marker.
+- **One line printed twice on a card** (slot_123: "…90 GB file line by line." over a counting "90 /
+  GB file line by line"). `motion_design.stat_repeats_hook` refuses the stat counter when the hook
+  states its figure, or every word of a 2+ word label; the card falls to its next style.
+- **Decks on one template** (128/133/144 all decision-stage, all `stat_reveal`).
+  `carousel_creator.rotate_deck_template` moves a STAGE default off any template one of the last
+  `DECK_TEMPLATE_GAP` (2) decks used, least-recently-used first, so any three decks in a row are
+  three templates; an explicit template choice is never rotated (`rotate_template=not template`).
+- **curated_4's "75% costs"**: `complete_context` keeps a model label only when it is a phrase of 2+
+  words; otherwise the label is the words after the figure in its own sentence ("less than Claude
+  Haiku 4.5 for most tasks" — a "." inside a number is no clause break).
+
+Tests: `test_showcase_round_9_media.py`.
+
 ## Showcase round 8 — the variety rules bind, covers stay 16:9
 
 The round-8 critic found the round-7 rotation in place but not binding. Cause, then fix:

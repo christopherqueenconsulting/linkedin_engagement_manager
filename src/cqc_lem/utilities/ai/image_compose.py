@@ -15,6 +15,7 @@ carries no text at all, and this module typesets the hook onto it deterministica
 Layouts are compositing templates (``LAYOUTS``); Stage 1's rotation picks one per render.
 """
 
+import dataclasses
 import os
 import re
 from dataclasses import dataclass
@@ -37,6 +38,9 @@ _FALLBACK_FONTS = (
 # Every side keeps at least this fraction of the frame clear of text.
 SAFE_MARGIN = 0.06
 MAX_LINES = 3
+# Round 9: a split cover's panel is the full image height — a long title may take this many lines
+# before it is set below the thumbnail floor (cover_20).
+RELAXED_MAX_LINES = 5
 # A covers line's cap height must stay legible at 400px wide: ~7% of the image height.
 MIN_LINE_FRACTION = {"newsletter": 0.07, "post_image": 0.055}
 # Round 7: the headline must read as a thumbnail — a CAP HEIGHT of at least 9% of the image
@@ -432,6 +436,8 @@ HERO_RATIO = 2.0
 _GAP_RATIO = 0.22
 _TRACKING = 0.12
 _NUMBER_TOKEN = re.compile(r"[$€£]?\d+(?:[.,]\d+)?(?:\s?%|[KkMmBb](?![A-Za-z])|x(?![A-Za-z]))?")
+# A list marker opening a line: "1. ", "2) " — a numbering, never a figure (round 9).
+_LEADING_LIST_MARKER = re.compile(r"^\s*\d{1,2}[.)]\s+(?=\S)")
 
 
 @dataclass(frozen=True)
@@ -464,6 +470,11 @@ def split_hero(hook: str) -> tuple[str, str]:
         mid-sentence leaves a hole. Only a leading number lifts cleanly ("45% less engagement…"
         → "Less engagement…"); any other hook keeps its whole sentence in the headline.
     """
+    marker = _LEADING_LIST_MARKER.match(hook or "")
+    if marker:
+        # Round 9: slot_133's deck cover "1. Free Work Can Prolong…" set a giant "1" over ". Free
+        # Work…". A leading "1." / "2)" is a list marker, never a hero numeral: it is dropped.
+        return "", sentence_case(hook[marker.end():])
     match = _NUMBER_TOKEN.search(hook or "")
     if not match or (hook or "")[:match.start()].strip(" \"'“‘([—–-:"):
         return "", sentence_case(hook)
@@ -512,6 +523,11 @@ def kicker_repeats_headline(kicker: Optional[str], headline: Optional[str]) -> b
     a scroller what the piece is ABOUT; one that repeats the headline is dropped (the accent rule
     takes its place).
 
+    Round 9: rhythm_2 still set "FLEXIBLE INFRASTRUCTURE" over "Flexible infra beats policy" —
+    the round-8 match was exact-word, and "infra" is "infrastructure" cut short. A kicker word
+    now repeats a headline word when either is the other's prefix of at least
+    ``KICKER_STEM_MIN`` letters (infra/infrastructure, cost/costs, audit/auditing).
+
     Args:
         kicker: The topic tag.
         headline: The headline.
@@ -521,7 +537,18 @@ def kicker_repeats_headline(kicker: Optional[str], headline: Optional[str]) -> b
     """
     words = _KICKER_WORD.findall((kicker or "").lower())
     head = set(_KICKER_WORD.findall((headline or "").lower()))
-    return bool(words) and all(w in head for w in words)
+    return bool(words) and all(_kicker_word_in(w, head) for w in words)
+
+
+# The shortest shared prefix that makes two words one word to a reader ("infra"/"infrastructure").
+KICKER_STEM_MIN = 4
+
+
+def _kicker_word_in(word: str, head: set) -> bool:
+    if word in head:
+        return True
+    return any(min(len(word), len(h)) >= KICKER_STEM_MIN and (word.startswith(h) or h.startswith(word))
+               for h in head)
 
 
 @dataclass(frozen=True)
@@ -622,7 +649,7 @@ def signature_size(height: int) -> int:
     return max(12, round(height * 0.026))
 
 
-def _block(draw, parts: HeadlineParts, size: int, width: int):
+def _block(draw, parts: HeadlineParts, size: int, width: int, max_lines: int = MAX_LINES):
     """Lay the block out at headline ``size``: ``(font, lines, line_height, block_height)`` or None."""
     font = load_font(size)
     line_height = _line_height(font, size)
@@ -642,7 +669,7 @@ def _block(draw, parts: HeadlineParts, size: int, width: int):
     lines: list[str] = []
     if parts.rest:
         wrapped = _wrap(draw, parts.rest.split(), font, width)
-        if not wrapped or len(wrapped) > MAX_LINES:
+        if not wrapped or len(wrapped) > max_lines:
             return None
         lines = wrapped
         height += line_height * len(lines)
@@ -687,27 +714,74 @@ def fit_cover(size: tuple[int, int], layout: str, parts: HeadlineParts,
         if not parts.kicker:
             reserve += max(10, round(box.height * 0.08))  # the accent rule's strip
         text_box = Box(box.left, box.top, box.right, box.bottom - reserve)
-        low, high, found = 8, max(8, text_box.height // 2), None
-        while low <= high:
-            mid = (low + high) // 2
-            laid = _block(draw, parts, mid, text_box.width)
-            if laid and laid[3] <= text_box.height:
-                found, low = (mid, laid), mid + 1
-            else:
-                high = mid - 1
-        if found is None:
-            found = (8, _block(draw, parts, 8, 10 ** 6))
-        font_size, (font, lines, line_height, block_height) = found
-        fit = HeadlineFit(plan, text_box, font_size, font, tuple(lines), line_height,
-                          cap_height(font), floor, block_height)
-        if best is None or fit.cap > best.cap:
-            best = fit
-        if fit.cap >= floor or layout == FULL_BLEED:
+        # Round 9: cover_20's long title sat small in a mostly empty panel — three lines, not the
+        # panel's height, capped it. A tall split panel may take up to RELAXED_MAX_LINES.
+        line_caps = ((MAX_LINES, RELAXED_MAX_LINES) if layout in SPLIT_LAYOUTS and h >= w * 0.5
+                     else (MAX_LINES,))
+        for max_lines in line_caps:
+            fit = _fit_block_in(draw, parts, plan, text_box, floor, max_lines)
+            if best is None or fit.cap > best.cap:
+                best = fit
+            if fit.cap >= floor:
+                break
+        if best.cap >= floor or layout == FULL_BLEED:
             break
+    hard_floor = round(h * HEADLINE_MIN_CAP_FRACTION)
+    shorter = shorter_headline(parts.rest) if best.cap < hard_floor else ""
+    if shorter:
+        # Round 9: below the hard floor the headline is cut to its strongest clause rather than
+        # set too small to read (cover_20).
+        log_info("Headline below the hard size floor — set as its shorter clause",
+                 action_type="image_compose", cap=best.cap, floor=hard_floor, layout=layout)
+        return fit_cover(size, layout, dataclasses.replace(parts, rest=shorter), image)
     if best.cap < floor:
         log_info("Headline cap height below the thumbnail floor at the widest backing",
                  action_type="image_compose", cap=best.cap, floor=floor, layout=layout)
     return best
+
+
+# Round 9: the HARD floor — a headline whose cap height is under this share of the image height
+# is too small to read in a feed, and is cut to a shorter clause (``shorter_headline``).
+HEADLINE_MIN_CAP_FRACTION = 0.05
+_CLAUSE_SPLIT = re.compile(r"\s*(?::|\s-\s|\s—\s|\s–\s)\s*")
+
+
+def shorter_headline(text: Optional[str]) -> str:
+    """The headline's strongest clause when it has two ("Name: what it is"), or ''.
+
+    The clause after a colon or dash is the claim when it has at least three words; else the one
+    before it. Never a fragment of one or two words.
+
+    Args:
+        text: The headline.
+
+    Returns:
+        The shorter clause, or '' when there is no clause break to cut at.
+    """
+    parts = [p.strip() for p in _CLAUSE_SPLIT.split(text or "", maxsplit=1) if p.strip()]
+    if len(parts) < 2:
+        return ""
+    head, tail = parts
+    pick = tail if len(tail.split()) >= 3 else head
+    return sentence_case(pick) if len(pick.split()) >= 3 else ""
+
+
+def _fit_block_in(draw, parts: HeadlineParts, plan: "LayoutPlan", text_box: Box, floor: int,
+                  max_lines: int) -> HeadlineFit:
+    """The largest headline size whose block fits ``text_box`` in at most ``max_lines`` lines."""
+    low, high, found = 8, max(8, text_box.height // 2), None
+    while low <= high:
+        mid = (low + high) // 2
+        laid = _block(draw, parts, mid, text_box.width, max_lines)
+        if laid and laid[3] <= text_box.height:
+            found, low = (mid, laid), mid + 1
+        else:
+            high = mid - 1
+    if found is None:
+        found = (8, _block(draw, parts, 8, 10 ** 6, max_lines))
+    font_size, (font, lines, line_height, block_height) = found
+    return HeadlineFit(plan, text_box, font_size, font, tuple(lines), line_height,
+                       cap_height(font), floor, block_height)
 
 
 def fit_headline(size: tuple[int, int], layout: str, hook: str, image=None) -> HeadlineFit:
@@ -731,8 +805,30 @@ def _ink_width(draw, text: str, font) -> int:
     return right - left
 
 
+_MARKER_WORD = re.compile(r"^(?:\d{1,3}[.):]?|#\d{1,3}|[-–—•])$")
+
+
+def bind_leading_marker(words: list[str]) -> list[str]:
+    """``words`` with a leading numeral or list marker joined to the next word (one wrap unit).
+
+    Args:
+        words: The headline's words.
+
+    Returns:
+        The words, the first two joined when the first is a bare numeral or marker.
+    """
+    if len(words) >= 2 and _MARKER_WORD.match(words[0]):
+        return [f"{words[0]} {words[1]}", *words[2:]]
+    return list(words)
+
+
 def _wrap(draw, words: list[str], font, max_width: int) -> Optional[list[str]]:
-    """Greedy wrap into lines no wider than ``max_width``; None when a single word overflows."""
+    """Greedy wrap into lines no wider than ``max_width``; None when a single word overflows.
+
+    A leading numeral or list marker ("1.", "#3", "2)") is bound to the word after it (round 9),
+    so a line never ends on the number that opens the headline.
+    """
+    words = bind_leading_marker(words)
     lines: list[str] = []
     current = ""
     for word in words:
@@ -855,6 +951,30 @@ def _scrim(image, region: Box, color: tuple[int, int, int], portrait: bool):
     return Image.alpha_composite(image.convert("RGBA"), overlay)
 
 
+# The split a failed overlay is re-set on (round 9): the panel left, as the default cover reads.
+OVERLAY_FALLBACK_LAYOUT = SPLIT_LEFT
+
+
+def overlay_contrast(image, box: Box, color: str) -> float:
+    """The contrast of ``color`` against the MEAN of ``image`` inside ``box`` — what an overlay sits on.
+
+    Args:
+        image: The frame after any scrim.
+        box: The headline's safe area.
+        color: The headline color, ``#RRGGBB``.
+
+    Returns:
+        The WCAG contrast ratio; 21.0 when the box is empty (nothing to measure).
+    """
+    from PIL import ImageStat
+
+    if box.width <= 0 or box.height <= 0:
+        return 21.0
+    region = image.convert("RGB").crop((box.left, box.top, box.right, box.bottom))
+    r, g, b = (round(v) for v in ImageStat.Stat(region).mean[:3])
+    return contrast_ratio(color, f"#{r:02x}{g:02x}{b:02x}")
+
+
 def _draw_tracked(draw, xy: tuple[int, int], text: str, font, size: int, fill) -> None:
     x, y = xy
     track = round(size * _TRACKING)
@@ -916,6 +1036,16 @@ def compose_headline(render_path: str, hook: str, layout: Optional[str] = None,
         plan = fit.plan
     if plan.scrim is not None:
         image = _scrim(image, plan.scrim, dark, portrait=h > w)
+    if plan.backing is None and overlay_contrast(image, fit.text_box, colors.headline) \
+            < MIN_HEADLINE_CONTRAST:
+        # Round 9: cover_18 set gold type on a translucent strip over a light photograph — the
+        # scrim cannot darken a white render enough. An overlay that fails the panel's contrast
+        # bar is re-set on a SOLID split panel, the render as its scene.
+        log_info("Overlay headline below the contrast bar — re-set on a solid panel",
+                 action_type="image_compose", layout=layout)
+        return compose_headline(render_path, hook, layout=OVERLAY_FALLBACK_LAYOUT, brand=brand,
+                                surface=surface, out_path=out_path, kicker=kicker,
+                                signature=signature, canvas=(w, h), hero=hero, panel=panel)
     draw = ImageDraw.Draw(image)
     if plan.backing is not None:
         draw.rectangle((plan.backing.left, plan.backing.top, plan.backing.right - 1,

@@ -3961,6 +3961,94 @@ def _fill_thin_slides(out: dict, post_text: Optional[str]) -> list:
     return changes
 
 
+# --- Showcase round 9: every slide's counts reconcile with the caption -----------------------------
+
+# slot_128's slide 2 said "Result: 6 tools that worked." over a caption whose candidate "delivered
+# three task-focused tools". Round 8 reconciled the COVER's count with the slides; a body slide's
+# count of a thing the caption also counts was never read ("tools" is a deck-item noun, so the
+# figure check skipped it as a promise). A slide count of a noun the caption counts must be one of
+# the caption's counts: rewritten when the caption counts it once, else the sentence is dropped.
+_COUNT_NUMBER = r"(?P<n>\d{1,3}|" + "|".join(_DECK_COUNT_WORDS) + r")"
+_SLIDE_COUNT_RE = re.compile(
+    r"\b" + _COUNT_NUMBER + r"\s+(?P<mods>(?:(?!(?:of|in|on|at|for|to|from|with|by|and|or|per|"
+    r"than|percent)\b)[a-z][a-z'-]*\s+){0,2}?)(?P<noun>[a-z][a-z'-]{2,}s)\b", re.IGNORECASE)
+# Units and spans: "10 minutes" on a slide and "55 minutes" in the caption are different spans,
+# never two totals of one thing.
+_COUNT_UNIT_NOUNS = frozenset((
+    "seconds", "minutes", "hours", "days", "weeks", "months", "years", "times", "percents",
+    "points", "dollars", "pounds", "euros", "cents", "slides", "pages", "parts",
+))
+
+
+def _counted_nouns(text: Optional[str]) -> dict:
+    """``{noun: {count, …}}`` for every "N <plural noun>" count in ``text`` (units excluded)."""
+    out: dict = {}
+    for match in _SLIDE_COUNT_RE.finditer(text or ""):
+        noun = match.group("noun").lower()
+        if noun in _COUNT_UNIT_NOUNS:
+            continue
+        out.setdefault(noun, set()).add(_count_value(match.group("n")))
+    return out
+
+
+def slide_count_conflicts(carousel: Optional[dict], post_text: Optional[str]) -> list:
+    """Body-slide counts of a thing the caption counts differently, as ``{slide, phrase, counts}``.
+
+    Args:
+        carousel: The deck.
+        post_text: The caption.
+
+    Returns:
+        One entry per conflicting count, in slide order.
+    """
+    caption = _counted_nouns(post_text)
+    out = []
+    for slide in deck_slides(carousel):
+        if not slide["graded"]:
+            continue
+        for field in ("title", "content"):
+            for match in _SLIDE_COUNT_RE.finditer(slide[field]):
+                noun = match.group("noun").lower()
+                counts = caption.get(noun)
+                if counts and _count_value(match.group("n")) not in counts:
+                    out.append({"slide": _slide_label(slide), "field": field,
+                                "phrase": match.group(0), "counts": sorted(counts)})
+    return out
+
+
+def _reconcile_slide_counts(out: dict, post_text: Optional[str]) -> list:
+    """Round 9: rewrite (or drop) every body-slide count the caption contradicts. In place."""
+    changes: list = []
+    caption = _counted_nouns(post_text)
+    for slide in deck_slides(out):
+        if not slide["graded"]:
+            continue
+        for field in ("title", "content"):
+            text = slide[field]
+            for match in reversed(list(_SLIDE_COUNT_RE.finditer(text))):
+                counts = caption.get(match.group("noun").lower())
+                if not counts or _count_value(match.group("n")) in counts:
+                    continue
+                if len(counts) == 1:
+                    count = next(iter(counts))
+                    head = match.group("n")
+                    word = _COUNT_WORD_FOR.get(count, str(count))
+                    fixed_n = str(count) if head.isdigit() else (
+                        word.capitalize() if head[:1].isupper() else word)
+                    text = text[:match.start("n")] + fixed_n + text[match.end("n"):]
+                    changes.append(f"“{match.group(0)}” -> the caption's {count} "
+                                   f"on “{_slide_label(slide)}”")
+                else:
+                    kept = [x for x in _PROOF_SENTENCE_SPLIT.split(text)
+                            if x.strip() and match.group(0) not in x]
+                    text = " ".join(kept)
+                    changes.append(f"dropped “{match.group(0)}” from “{_slide_label(slide)}”: "
+                                   f"the caption counts it {', '.join(map(str, sorted(counts)))}")
+            if text != slide[field] and (text.strip() or field == "content"):
+                _set_slide(out, slide, field, text.strip())
+    return changes
+
+
 def finalize_deck_claims(carousel: Optional[dict], post_text: Optional[str] = None,
                          sources: Optional[list] = None) -> tuple:
     """Fix what the deck's ONE regeneration left, in code, before anything renders.
@@ -3971,6 +4059,8 @@ def finalize_deck_claims(carousel: Optional[dict], post_text: Optional[str] = No
       sentence.
     - A cover promise no slide delivers is replaced by the first body slide's heading, which IS
       what the deck delivers.
+    - A body slide's count of a thing the caption counts differently is set to the caption's
+      count, or dropped when the caption counts it more than one way (round 9).
 
     Args:
         carousel: The deck.
@@ -3988,6 +4078,7 @@ def finalize_deck_claims(carousel: Optional[dict], post_text: Optional[str] = No
     counted = unbacked_count_promise(carousel, post_text)
     out = _deck_copy(carousel)
     changes: list = _clean_slide_copy(out, post_text)
+    changes += _reconcile_slide_counts(out, post_text)
     figures_by_slide = {f["slide"]: f["figures"] for f in deck_figure_issues(out, post_text,
                                                                               sources)}
     for slide in deck_slides(out):
@@ -4163,6 +4254,9 @@ CTA_TYPE_WINDOW = 3
 SHARE_CTA_WINDOW = 6
 CLOSING_QUESTION_CAP = 2
 CLOSING_QUESTION_WINDOW = 6
+# Showcase round 9: "Worth saving…" closed three of the batch's decks (141, 142, 144). One save ask
+# in this many posts.
+SAVE_CTA_WINDOW = 6
 # The keyword artifact ask ("Comment AUDIT") at most once in any window of this many days, and only
 # on the promo slot (showcase round 5: four of ten posts closed on it).
 ARTIFACT_CTA_COOLDOWN_DAYS = 7
@@ -4374,8 +4468,9 @@ def strip_closing_ask(text: Optional[str]) -> Optional[str]:
 def close_cap_reason(text: Optional[str], recent_texts: Optional[list]) -> str:
     """Why this post's close breaks a batch cap (showcase round 8), or '' when it does not.
 
-    A share ask when one of the last ``SHARE_CTA_WINDOW - 1`` posts already closed on one; a
-    question close when ``CLOSING_QUESTION_CAP`` of the last ``CLOSING_QUESTION_WINDOW - 1`` did.
+    A share ask when one of the last ``SHARE_CTA_WINDOW - 1`` posts already closed on one (a save
+    ask likewise, ``SAVE_CTA_WINDOW``, round 9); a question close when ``CLOSING_QUESTION_CAP`` of
+    the last ``CLOSING_QUESTION_WINDOW - 1`` did.
 
     Args:
         text: The post.
@@ -4388,6 +4483,8 @@ def close_cap_reason(text: Optional[str], recent_texts: Optional[list]) -> str:
     recent = [cta_type_of(t) for t in list(recent_texts or [])]
     if shipped == CTA_TYPE_SHARE and CTA_TYPE_SHARE in recent[:SHARE_CTA_WINDOW - 1]:
         return f"a share ask inside {SHARE_CTA_WINDOW} posts of the last one"
+    if shipped == CTA_TYPE_SAVE and CTA_TYPE_SAVE in recent[:SAVE_CTA_WINDOW - 1]:
+        return f"a save ask inside {SAVE_CTA_WINDOW} posts of the last one"
     if (shipped == CTA_TYPE_QUESTION and recent[:CLOSING_QUESTION_WINDOW - 1].count(
             CTA_TYPE_QUESTION) >= CLOSING_QUESTION_CAP):
         return (f"a question close over the cap of {CLOSING_QUESTION_CAP} in "
@@ -4428,7 +4525,7 @@ def drop_closing_question(text: Optional[str]) -> Optional[str]:
 def enforce_close_caps(text: Optional[str], recent_texts: Optional[list]) -> tuple:
     """``(text, reason)``: the close cut when it breaks a batch cap (``close_cap_reason``).
 
-    A share ask is cut whole (``strip_closing_ask``); a question close loses its question
+    A share or save ask is cut whole (``strip_closing_ask``); a question close loses its question
     (``drop_closing_question``). The promo slot's keyword close is never a share or a question,
     so it is never touched. ``reason`` is '' when nothing was cut.
     """
@@ -4973,3 +5070,86 @@ def document_deck_wording(carousel):
     if isinstance(carousel, str):
         return document_wording(carousel)
     return carousel
+
+
+# --- Showcase round 9: repeated lines and verbal tics ----------------------------------------------
+
+# slot_130 listed "added safety guardrails so models stay compliant at every deployment stage" and,
+# one bullet later, "Added safeguards that keep models compliant at every deployment step." A line
+# that repeats an earlier one goes: a shared run of REPEAT_RUN_WORDS words, or most of its words.
+REPEAT_RUN_WORDS = 4
+REPEAT_SHARE = 0.75
+_LINE_WORD = re.compile(r"[a-z0-9][a-z0-9'%$.-]*")
+_REPEAT_ITEM_RE = re.compile(r"^\s*(?:[-•*▪✓✔]|\d{1,2}[.)])\s+")
+
+
+def _line_words(line: str) -> list:
+    return [w.strip(".'") for w in _LINE_WORD.findall(_REPEAT_ITEM_RE.sub("", line).lower())]
+
+
+def _repeats(line: str, earlier: str) -> bool:
+    a, b = _line_words(line), _line_words(earlier)
+    if len(a) < REPEAT_RUN_WORDS or len(b) < REPEAT_RUN_WORDS:
+        return False
+    runs = {tuple(b[i:i + REPEAT_RUN_WORDS]) for i in range(len(b) - REPEAT_RUN_WORDS + 1)}
+    if any(tuple(a[i:i + REPEAT_RUN_WORDS]) in runs for i in range(len(a) - REPEAT_RUN_WORDS + 1)):
+        return True
+    content = [w for w in a if len(w) > 3]
+    return bool(content) and sum(1 for w in content if w in set(b)) / len(content) >= REPEAT_SHARE
+
+
+def dedupe_repeated_lines(text: Optional[str]) -> tuple:
+    """``(text, dropped)``: every LIST line that repeats an earlier list line removed.
+
+    Only bullet/numbered lines are compared — prose may echo a phrase on purpose; a list never
+    needs the same item twice.
+
+    Args:
+        text: The post or a card's text.
+
+    Returns:
+        The text and the dropped lines.
+    """
+    if not text:
+        return text, []
+    kept: list = []
+    items: list = []
+    dropped: list = []
+    for line in text.split("\n"):
+        if _REPEAT_ITEM_RE.match(line) and any(_repeats(line, earlier) for earlier in items):
+            dropped.append(line.strip())
+            continue
+        if _REPEAT_ITEM_RE.match(line):
+            items.append(line)
+        kept.append(line)
+    return ("\n".join(kept), dropped) if dropped else (text, [])
+
+
+# slot_125 "It works.", slot_130 "It worked.", slot_141 "It matters." — a two-word sentence that
+# asserts nothing the sentence before it did not. Cut when it stands alone as a sentence.
+_TIC_RE = re.compile(r"(?:(?<=[.!?])[ \t]+|^)(?:It|That|This)\s+(?:works|worked|matters|mattered)"
+                     r"\.(?=\s|$)", re.MULTILINE)
+
+
+def strip_verbal_tics(text: Optional[str]) -> tuple:
+    """``(text, count)``: standalone "It works." / "It worked." / "It matters." sentences cut.
+
+    Args:
+        text: The post.
+
+    Returns:
+        The text with each tic and its leading space removed, and how many went.
+    """
+    if not text:
+        return text, 0
+    count = 0
+    lines = []
+    for line in text.split("\n"):
+        fixed, n = _TIC_RE.subn("", line)
+        count += n
+        if n and not fixed.strip():
+            continue  # the tic WAS the line
+        lines.append(fixed.rstrip() if n else line)
+    if not count:
+        return text, 0
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip(), count
