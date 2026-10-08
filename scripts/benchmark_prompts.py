@@ -48,7 +48,7 @@ import re
 import sys
 import urllib.request
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any, Optional
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -75,9 +75,11 @@ KIND_GENERATE, KIND_REGRADE = "generate", "regrade"
 JUDGE_UNPARSEABLE = "judge:unparseable"
 
 #: Floors fixed BEFORE any baseline, from product contracts (docs/prompt-evals.md §4).
-CONTRACT_FLOOR = 0.90          # Wilson lower bound of the contract pass rate
-STRICT_CONTRACT_FLOOR = 0.95   # raw rate, for families production consumes with no repair
-STRICT_FAMILIES = frozenset({"classifier", "judge", "json_planner"})
+#: The contract floor is the RAW rate. A Wilson lower bound of 0.90 at the suites' n≈40 passes only
+#: 40/40, so one miss failed a prompt (baseline pe-20261008-0250fe); the bound is still reported.
+CONTRACT_FLOOR = 0.95
+#: Samples with no output sit outside the contract denominator, so they get their own ceiling.
+MAX_NO_OUTPUT_RATE = 0.05
 ACCURACY_FLOOR = 0.90
 JUDGE_FLOOR = 0.80
 PAIRWISE_FLOOR = 0.50
@@ -472,22 +474,28 @@ def wilson_lower(passed: int, total: int, z: float = 1.96) -> Optional[float]:
     return round((centre - spread) / denom, 4)
 
 
-def item_verdict(family: str, metrics: dict[str, Any], role: str) -> tuple[str, list[str]]:
+def item_verdict(metrics: dict[str, Any], role: str) -> tuple[str, list[str]]:
     """Return ``(verdict, reasons)`` for one prompt × model from its measured metrics.
 
-    ``pass`` needs every applicable floor met; ``fail`` names each missed one; ``no-reading`` when no
-    contract measurement exists (every case errored).
+    ``pass`` needs every applicable floor met; ``fail`` names each missed one; ``no-reading`` only
+    when nothing was attempted. Every sample empty is a ``fail`` on the no-output floor, never a
+    no-reading: a call site that answers nothing is the worst case, not an unmeasured one.
     """
-    if not metrics.get("cases_scored"):
+    if not metrics.get("cases_scored") and not metrics.get("errors"):
         return "no-reading", ["no case was scored"]
     misses: list[str] = []
-    if family in STRICT_FAMILIES:
-        if (metrics.get("contract_rate") or 0) < STRICT_CONTRACT_FLOOR:
-            misses.append(f"contract {metrics.get('contract_rate')} < {STRICT_CONTRACT_FLOOR}")
-    elif (metrics.get("contract_wilson") or 0) < CONTRACT_FLOOR:
-        misses.append(f"contract (Wilson LB) {metrics.get('contract_wilson')} < {CONTRACT_FLOOR}")
+    if metrics.get("cases_scored") and (metrics.get("contract_rate") or 0) < CONTRACT_FLOOR:
+        misses.append(f"contract {metrics.get('contract_rate')} < {CONTRACT_FLOOR}"
+                      + _counts_note(metrics.get("contract_failures")))
     if metrics.get("accuracy") is not None and metrics["accuracy"] < ACCURACY_FLOOR:
         misses.append(f"accuracy {metrics['accuracy']} < {ACCURACY_FLOOR}")
+    # A sample with no output is outside the contract denominator, so the rate above cannot see it:
+    # 33/40 empty with 7/7 valid read as a perfect contract in the baseline. More than the contract's
+    # own tolerance of empties is a miss in itself.
+    total = (metrics.get("errors") or 0) + (metrics.get("cases_scored") or 0)
+    if total and metrics.get("errors", 0) / total > MAX_NO_OUTPUT_RATE:
+        misses.append(f"{metrics['errors']}/{total} sample(s) with no output"
+                      + _counts_note(metrics.get("errors_by_kind")))
     if metrics.get("judge_calibrated") and metrics.get("judge_rate") is not None \
             and metrics["judge_rate"] < JUDGE_FLOOR:
         misses.append(f"judge {metrics['judge_rate']} < {JUDGE_FLOOR}")
@@ -497,17 +505,64 @@ def item_verdict(family: str, metrics: dict[str, Any], role: str) -> tuple[str, 
     return ("fail" if misses else "pass"), misses
 
 
+def _counts_note(counts: Optional[dict[str, int]]) -> str:
+    """`` (slop_lint 5, max_chars 2)`` from a ``{name: count}`` map, largest first; ``""`` if empty."""
+    if not counts:
+        return ""
+    ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return " (" + ", ".join(f"{name} {n}" for name, n in ordered) + ")"
+
+
+def _tally(names: Iterable[str]) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for name in names:
+        out[name] = out.get(name, 0) + 1
+    return dict(sorted(out.items()))
+
+
+#: Why a sample has no output. A production-budget empty is the CALL SITE's `max_tokens` being too
+#: small for the model (it reasoned past it), not a provider fault — the two need different fixes.
+ERROR_EMPTY_AT_BUDGET = "empty@production_budget"
+ERROR_EMPTY = "empty"
+ERROR_PROVIDER = "provider_error"
+ERROR_UNKNOWN = "no output"
+
+
+def error_kind(error: Optional[str]) -> str:
+    """Classify one sample's generation error (``bm.ProviderClient.complete``'s ``error``).
+
+    Keys on that message's wording, which lives in this repo; a unit test drives the real
+    ``ProviderClient`` so a reworded message fails the build instead of misclassifying silently.
+    """
+    text = str(error or "")
+    if not text:
+        return ERROR_UNKNOWN
+    if text.startswith("empty completion"):
+        return ERROR_EMPTY_AT_BUDGET if "mirrors a production call site" in text else ERROR_EMPTY
+    return ERROR_PROVIDER
+
+
 def code_metrics(cases: list[dict[str, Any]], evaluations: list[dict[str, Any]]) -> dict[str, Any]:
-    """Summarise code-grader results across every sample of every case."""
+    """Summarise code-grader results across every sample of every case.
+
+    ``contract_failures`` / ``draft_failures`` count failed checks by NAME, and ``errors_by_kind``
+    counts why a sample had no output — names and counts only, never text (public repo).
+    """
     scored = [e for e in evaluations if not e.get("error")]
     contract = sum(1 for e in scored if e.get("contract_passes"))
     first = sum(1 for e in scored if e.get("passes"))
     labels = bm.aggregate_labels(cases, evaluations)
+    failed = [a for e in scored for a in e.get("assertions") or [] if a.get("passes") is False]
     return {"cases_scored": len(scored), "errors": len(evaluations) - len(scored),
             "contract_rate": round(contract / len(scored), 4) if scored else None,
             "contract_wilson": wilson_lower(contract, len(scored)),
             "first_draft_rate": round(first / len(scored), 4) if scored else None,
-            "accuracy": labels["accuracy"], "macro_f1": labels["macro_f1"]}
+            "accuracy": labels["accuracy"], "macro_f1": labels["macro_f1"],
+            "contract_failures": _tally(str(a.get("type")) for a in failed
+                                        if a.get("production") == bm.PRODUCTION_CONTRACT),
+            "draft_failures": _tally(str(a.get("type")) for a in failed),
+            "errors_by_kind": _tally(error_kind(e.get("generation_error")) for e in evaluations
+                                     if e.get("error"))}
 
 
 # ─────────────────────────────── execution (I/O seams) ───────────────────────────────
@@ -542,9 +597,13 @@ def merge_live_prices(prices: dict[str, Any], live: dict[str, dict[str, float]])
     return merged
 
 
-def generate(provider: Any, suite: dict[str, Any], wire: str, samples: int,
-             dry_run: bool) -> dict[str, list[Optional[str]]]:
-    """Return ``{case id: [output per sample]}`` (``None`` for an errored sample)."""
+def generate(provider: Any, suite: dict[str, Any], wire: str, samples: int, dry_run: bool,
+             errors: Optional[dict[str, list[Optional[str]]]] = None) -> dict[str, list[Optional[str]]]:
+    """Return ``{case id: [output per sample]}`` (``None`` for an errored sample).
+
+    When ``errors`` is given it is filled ``{case id: [provider error per sample]}`` alongside, so a
+    missing output can say WHY (see `error_kind`).
+    """
     outputs: dict[str, list[Optional[str]]] = {}
     for case in suite["cases"]:
         cid = str(case["id"])
@@ -556,11 +615,14 @@ def generate(provider: Any, suite: dict[str, Any], wire: str, samples: int,
             result = provider.complete(wire, case["messages"], case.get("params") or {},
                                        allow_budget_escalation=False)
             outputs[cid].append(result.get("text"))
+            if errors is not None:
+                errors.setdefault(cid, []).append(result.get("error"))
     return outputs
 
 
-def grade_code(suite: dict[str, Any],
-               outputs: dict[str, list[Optional[str]]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def grade_code(suite: dict[str, Any], outputs: dict[str, list[Optional[str]]],
+               errors: Optional[dict[str, list[Optional[str]]]] = None,
+               ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Run the code graders over every sample; returns ``(cases, evaluations)`` aligned 1:1."""
     cases, evaluations = [], []
     by_id = {str(c["id"]): c for c in suite["cases"]}
@@ -571,6 +633,9 @@ def grade_code(suite: dict[str, Any],
             evaluation = bm.evaluate_case(case, text, peers)
             if text is None:
                 evaluation["error"] = "no output"
+                sample_errors = (errors or {}).get(cid) or []
+                evaluation["generation_error"] = sample_errors[index] if index < len(sample_errors) \
+                    else None
             evaluation["sample"] = index
             cases.append(case)
             evaluations.append(evaluation)
@@ -578,13 +643,34 @@ def grade_code(suite: dict[str, Any],
 
 
 def judge_call(provider: Any, judge_wire: str, messages: list[dict[str, str]],
-               dry_run: bool) -> Optional[str]:
-    """One judge request; ``None`` on any provider error (recorded as unparseable)."""
+               dry_run: bool) -> tuple[Optional[str], Optional[str]]:
+    """One judge request; returns ``(text, error)`` — the provider's error is kept, never swallowed."""
     if dry_run:
-        return None
+        return None, None
     result = provider.complete(judge_wire, messages, {"temperature": 0, "max_tokens": JUDGE_MAX_TOKENS},
                                allow_budget_escalation=False)
-    return result.get("text")
+    return result.get("text"), result.get("error")
+
+
+#: The one-call reachability check run before any judge spend (`judge_preflight`).
+PREFLIGHT_MESSAGES = [{"role": "system", "content": 'Reply with ONLY this JSON: {"ok": true}'},
+                      {"role": "user", "content": "ping"}]
+
+
+def judge_preflight(provider: Any, judge_wire: str, dry_run: bool) -> Optional[str]:
+    """Return why the judge cannot be used, or ``None`` when it answers.
+
+    Run once before any judge spend, so an unreachable judge is ONE named error on the report rather
+    than every rubric silently reading "not calibrated" (baseline pe-20261008-0250fe scored 0/60).
+    """
+    if dry_run:
+        return None
+    if not judge_wire:
+        return "no judge model configured in models.yaml"
+    text, error = judge_call(provider, judge_wire, PREFLIGHT_MESSAGES, dry_run)
+    if text:
+        return None
+    return str(error or "empty reply")[:200]
 
 
 def calibrate(provider: Any, judge_wire: str, rubric: str, dry_run: bool) -> dict[str, Any]:
@@ -593,11 +679,15 @@ def calibrate(provider: Any, judge_wire: str, rubric: str, dry_run: bool) -> dic
     criteria = rubric_criteria(text)
     path = RUBRIC_DIR / f"{rubric}.calibration.jsonl"
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    agree = scored = 0
+    agree = scored = errored = 0
+    first_error: Optional[str] = None
     for row in rows:
-        reply = judge_call(provider, judge_wire,
-                           rubric_messages(text, json.dumps(row["input_summary"]), row["output"]),
-                           dry_run)
+        reply, error = judge_call(provider, judge_wire,
+                                  rubric_messages(text, json.dumps(row["input_summary"]), row["output"]),
+                                  dry_run)
+        if error:
+            errored += 1
+            first_error = first_error or str(error)[:200]
         verdict = parse_criteria_verdict(reply, criteria)
         if verdict["status"] != "scored":
             continue
@@ -605,7 +695,8 @@ def calibrate(provider: Any, judge_wire: str, rubric: str, dry_run: bool) -> dic
         agree += int(("pass" if verdict["passes"] else "fail") == row["overall"])
     agreement = round(agree / scored, 4) if scored else None
     return {"rubric": rubric, "rows": len(rows), "scored": scored, "agreement": agreement,
-            "calibrated": agreement is not None and agreement >= CALIBRATION_FLOOR}
+            "calibrated": agreement is not None and agreement >= CALIBRATION_FLOOR,
+            "errors": errored, "first_error": first_error}
 
 
 def judge_item(provider: Any, judge_wire: str, rubric: str, suite: dict[str, Any],
@@ -615,11 +706,14 @@ def judge_item(provider: Any, judge_wire: str, rubric: str, suite: dict[str, Any
     text = (RUBRIC_DIR / f"{rubric}.md").read_text(encoding="utf-8")
     criteria = rubric_criteria(text)
     candidates = [c for c in suite["cases"] if (outputs.get(str(c["id"])) or [None])[0]]
-    passed = judged = unparseable = 0
+    passed = judged = unparseable = errored = 0
     for case in stratified_sample(candidates, sample_n, seed):
-        reply = judge_call(provider, judge_wire,
-                           rubric_messages(text, case_inputs(case), outputs[str(case["id"])][0]),
-                           dry_run)
+        reply, error = judge_call(provider, judge_wire,
+                                  rubric_messages(text, case_inputs(case), outputs[str(case["id"])][0]),
+                                  dry_run)
+        if error:
+            errored += 1
+            continue
         verdict = parse_criteria_verdict(reply, criteria)
         if verdict["status"] != "scored":
             unparseable += 1
@@ -627,7 +721,7 @@ def judge_item(provider: Any, judge_wire: str, rubric: str, suite: dict[str, Any
         judged += 1
         passed += int(bool(verdict["passes"]))
     return {"judged": judged, "judge_passed": passed, "judge_unparseable": unparseable,
-            "judge_rate": round(passed / judged, 4) if judged else None}
+            "judge_errors": errored, "judge_rate": round(passed / judged, 4) if judged else None}
 
 
 def pairwise_item(provider: Any, judge_wire: str, rubric: str, suite: dict[str, Any],
@@ -656,9 +750,11 @@ def pairwise_item(provider: Any, judge_wire: str, rubric: str, suite: dict[str, 
             continue
         cand_first = rng.random() < 0.5
         a, b = (candidate[cid][0], champion[cid][0]) if cand_first else (champion[cid][0], candidate[cid][0])
-        winner = parse_pairwise(judge_call(provider, judge_wire,
-                                           pairwise_messages(text, case_inputs(case), a or "", b or ""),
-                                           dry_run))
+        # A provider error leaves no reply, which counts as unreadable below: pairwise only decides
+        # candidates, and the run's judge errors are already counted and named by calibration.
+        reply, _error = judge_call(provider, judge_wire,
+                                   pairwise_messages(text, case_inputs(case), a or "", b or ""), dry_run)
+        winner = parse_pairwise(reply)
         if winner is None:
             unreadable += 1
         elif winner == "tie":
@@ -695,6 +791,9 @@ def run_items(items: list[dict[str, Any]], suites: dict[str, dict[str, Any]],
     contract_by_key: dict[str, dict[str, bool]] = {}
     calibration: dict[str, dict[str, Any]] = {}
     results = []
+    uses_judge = any(families.get(str(suites[i["prompt_id"]].get("family")), {}).get("rubric")
+                     for i in items)
+    judge_error = judge_preflight(provider, judge_wire, dry_run) if uses_judge else None
     for item in sorted(items, key=lambda i: (i["prompt_id"], order.get(i["role"], 3), i["model"])):
         pid, model = item["prompt_id"], item["model"]
         suite = suites[pid]
@@ -702,17 +801,20 @@ def run_items(items: list[dict[str, Any]], suites: dict[str, dict[str, Any]],
         family = families.get(family_name, {})
         key = f"{pid}@{item['version']}::{model}"
         wire = wire_id(model, models_cfg) or model
+        errors: dict[str, list[Optional[str]]] = {}
         if item["kind"] == KIND_REGRADE and key in stored:
             outputs = stored[key]
         else:
-            outputs = generate(provider, suite, wire, samples, dry_run)
+            outputs = generate(provider, suite, wire, samples, dry_run, errors)
         outputs_by_key[key] = outputs
-        cases, evaluations = grade_code(suite, outputs)
+        cases, evaluations = grade_code(suite, outputs, errors)
         metrics = code_metrics(cases, evaluations)
         contract_by_key[key] = {str(c["id"]): bool(e.get("contract_passes"))
                                 for c, e in zip(cases, evaluations) if e.get("sample") == 0}
         rubric = family.get("rubric")
-        if rubric:
+        if rubric and judge_error:
+            metrics["judge_skipped"] = judge_error
+        elif rubric:
             if rubric not in calibration:
                 calibration[rubric] = calibrate(provider, judge_wire, rubric, dry_run)
             metrics.update(judge_item(provider, judge_wire, rubric, suite, outputs, judge_sample,
@@ -731,10 +833,11 @@ def run_items(items: list[dict[str, Any]], suites: dict[str, dict[str, Any]],
                                              champion_outputs, contract_by_key[key],
                                              contract_by_key[champ_key], judge_sample,
                                              f"{run_id}:pw:{key}", dry_run))
-        verdict, reasons = item_verdict(family_name, metrics, item["role"])
+        verdict, reasons = item_verdict(metrics, item["role"])
         results.append({**item, "wire": wire, "graders": graders.get(pid), "metrics": metrics,
                         "verdict": verdict, "reasons": reasons})
-    return {"results": results, "calibration": calibration, "outputs": outputs_by_key}
+    return {"results": results, "calibration": calibration, "outputs": outputs_by_key,
+            "judge_error": judge_error}
 
 
 def assert_measured(results: list[dict[str, Any]]) -> None:
@@ -776,16 +879,26 @@ RESULTS_HEADER = ("| Prompt | Model | Role | Work | Cases | Contract | Wilson LB
                   "Judge | Pairwise | Verdict |")
 
 
+def _cell(text: Any) -> str:
+    """Make provider text safe inside a markdown table cell or inline code span."""
+    return str(text).replace("|", "\\|").replace("`", "'").replace("\n", " ")
+
+
 def render_report(run: dict[str, Any]) -> str:
     """Render one run as markdown: scores, versions and verdicts — never generated text."""
     lines = [f"# Prompt eval run `{run['run_id']}`", "",
              f"{run['date']} · mode **{run['mode']}** · judge `{run['judge']}` · "
              f"posture: [`docs/prompt-evals.md`](../prompt-evals.md)", ""]
+    if run.get("judge_error"):
+        lines += [f"> ⚠️ **Judge unreachable — code graders only this run.** Preflight error: "
+                  f"`{_cell(run['judge_error'])}`", ""]
     if run.get("calibration"):
-        lines += ["## Judge calibration", "", "| Rubric | Rows | Scored | Agreement | Counts |",
-                  "|---|---|---|---|---|"]
+        lines += ["## Judge calibration", "", "| Rubric | Rows | Scored | Errors | Agreement | Counts |",
+                  "|---|---|---|---|---|---|"]
         for name, cal in sorted(run["calibration"].items()):
-            lines.append(f"| `{name}` | {cal['rows']} | {cal['scored']} | {_fmt(cal['agreement'])} | "
+            errors = f"{cal.get('errors', 0)}" + (f" — `{_cell(cal['first_error'])}`" if cal.get("first_error") else "")
+            lines.append(f"| `{name}` | {cal['rows']} | {cal['scored']} | {errors} | "
+                         f"{_fmt(cal['agreement'])} | "
                          f"{'yes' if cal['calibrated'] else 'no — code graders only'} |")
         lines.append("")
     lines += ["## Results", "", RESULTS_HEADER, "|---" * RESULTS_HEADER.count(" | ") + "|---|"]
@@ -980,7 +1093,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     run = {"run_id": run_id, "date": args.today or datetime.date.today().isoformat(),
            "mode": "dry-run (canned outputs)" if args.dry_run else "live",
            "judge": (models_cfg.get("judge") or {}).get("model"), "results": outcome["results"],
-           "calibration": outcome["calibration"], "failing": failing_prompts(outcome["results"])}
+           "calibration": outcome["calibration"], "judge_error": outcome.get("judge_error"),
+           "failing": failing_prompts(outcome["results"])}
     report = write_outputs(run, args.out_dir)
     if not args.dry_run:
         args.state.write_text(json.dumps(update_state(state, outcome["results"], run_id,

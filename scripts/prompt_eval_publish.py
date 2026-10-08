@@ -93,9 +93,15 @@ def render_issue(prompt_id: str, version: Any, failures: list[dict[str, Any]],
     return title, "\n".join(lines) + "\n"
 
 
+#: Finds our issues by TITLE, never by label: the triage cron relabels new issues (priority,
+#: needs-human) and dropped `prompt-eval:failing`, so a label search missed the smoke run's issue and
+#: the baseline filed a duplicate (#2298 / #2300). The hidden marker is still the dedup key.
+ISSUE_SEARCH = 'in:title "Prompt eval:"'
+
+
 def open_failure_issues(gh: Runner, repo: str) -> dict[str, int]:
-    """Return ``{marker: issue number}`` for every open `prompt-eval:failing` issue."""
-    raw = gh(["gh", "issue", "list", "--repo", repo, "--label", LABEL, "--state", "open",
+    """Return ``{marker: issue number}`` for every open prompt-eval failure issue."""
+    raw = gh(["gh", "issue", "list", "--repo", repo, "--search", ISSUE_SEARCH, "--state", "open",
               "--limit", "200", "--json", "number,body"])
     out: dict[str, int] = {}
     for issue in json.loads(raw or "[]"):

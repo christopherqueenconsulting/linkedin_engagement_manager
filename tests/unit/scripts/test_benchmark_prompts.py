@@ -357,7 +357,21 @@ class TestCalibrationAndJudging:
         assert result["scored"] == 0 and result["agreement"] is None and not result["calibrated"]
 
     def test_dry_run_never_calls_the_judge(self, rubric_dir):
-        assert bp.judge_call(None, "judge", [], dry_run=True) is None
+        assert bp.judge_call(None, "judge", [], dry_run=True) == (None, None)
+
+    def test_a_failing_judge_is_counted_and_named_not_called_unparseable(self, rubric_dir):
+        result = bp.calibrate(FakeProvider(lambda m, msgs: None), "judge", "r", dry_run=False)
+        assert result["scored"] == 0 and result["errors"] == 4 and result["first_error"] == "boom"
+
+        item = bp.judge_item(FakeProvider(lambda m, msgs: None), "judge", "r", _suite(2),
+                             {"c0": ["o"], "c1": ["o"]}, 2, "s", dry_run=False)
+        assert item["judge_errors"] == 2 and item["judge_unparseable"] == 0
+
+    def test_preflight_names_why_the_judge_is_unusable(self):
+        assert bp.judge_preflight(FakeProvider(lambda m, msgs: '{"ok": true}'), "j", False) is None
+        assert bp.judge_preflight(FakeProvider(lambda m, msgs: None), "j", False) == "boom"
+        assert bp.judge_preflight(None, "", False) == "no judge model configured in models.yaml"
+        assert bp.judge_preflight(None, "j", True) is None
 
     def test_judge_item_counts_passes_and_unparseable(self, rubric_dir):
         suite = _suite(4)
@@ -368,7 +382,7 @@ class TestCalibrationAndJudging:
                                outputs, 4, "s", dry_run=False)
 
         assert result == {"judged": 3, "judge_passed": 2, "judge_unparseable": 1,
-                          "judge_rate": 0.6667}
+                          "judge_errors": 0, "judge_rate": 0.6667}
 
     def test_pairwise_scores_contract_failures_without_a_judge_call(self, rubric_dir):
         suite = _suite(4)
@@ -396,29 +410,94 @@ class TestCalibrationAndJudging:
 
 # ───────────────────────────── verdict maths ─────────────────────────────
 
+class TestFailureCounts:
+    def test_error_kind_separates_a_too_small_budget_from_a_provider_fault(self):
+        assert bp.error_kind("empty completion after 0 budget escalation(s) and 1 re-measurement(s) "
+                             "(this case's max_tokens mirrors a production call site, so the budget "
+                             "was never grown)") == bp.ERROR_EMPTY_AT_BUDGET
+        assert bp.error_kind("empty completion after 2 budget escalation(s)") == bp.ERROR_EMPTY
+        assert bp.error_kind("Error code: 404") == bp.ERROR_PROVIDER
+        assert bp.error_kind(None) == bp.ERROR_UNKNOWN
+
+    def test_error_kind_matches_the_real_provider_messages(self, monkeypatch):
+        monkeypatch.setenv("BENCHMARK_EMPTY_REPEATS", "0")
+
+        class Empty(bm.ProviderClient):
+            def _create(self, model, messages, call_params):
+                choice = type("C", (), {"message": type("M", (), {"content": ""})(),
+                                        "finish_reason": "length"})()
+                return type("R", (), {"choices": [choice], "usage": None})()
+
+        client = Empty("http://unused", "k")
+        locked = client.complete("m", [], {"max_tokens": 3}, allow_budget_escalation=False)
+        unbounded = client.complete("m", [], {}, allow_budget_escalation=False)
+
+        assert bp.error_kind(locked["error"]) == bp.ERROR_EMPTY_AT_BUDGET
+        assert bp.error_kind(unbounded["error"]) == bp.ERROR_EMPTY
+
+    def test_generation_errors_reach_the_metrics(self):
+        suite = _suite(2)
+        provider = FakeProvider(lambda m, msgs: None)
+        provider.complete = lambda *a, **k: {"text": None, "error": "empty completion after 0 "
+                                             "budget escalation(s) (mirrors a production call site)"}
+        errors = {}
+        outputs = bp.generate(provider, suite, "w", 1, False, errors)
+        metrics = bp.code_metrics(*bp.grade_code(suite, outputs, errors))
+        assert metrics["errors_by_kind"] == {bp.ERROR_EMPTY_AT_BUDGET: 2}
+
+    def test_failed_checks_are_counted_by_name_and_named_in_the_reason(self):
+        evaluations = [
+            {"contract_passes": False, "passes": False, "assertions": [
+                {"type": "slop_lint", "passes": False, "production": bm.PRODUCTION_CONTRACT},
+                {"type": "max_chars", "passes": False, "production": bm.PRODUCTION_REPAIRABLE}]},
+            {"contract_passes": False, "passes": False, "assertions": [
+                {"type": "slop_lint", "passes": False, "production": bm.PRODUCTION_CONTRACT}]},
+            {"contract_passes": True, "passes": True, "assertions": []},
+        ]
+        metrics = bp.code_metrics([{} for _ in evaluations], evaluations)
+
+        assert metrics["contract_failures"] == {"slop_lint": 2}
+        assert metrics["draft_failures"] == {"max_chars": 1, "slop_lint": 2}
+        _, reasons = bp.item_verdict(metrics, "champion")
+        assert reasons == ["contract 0.3333 < 0.95 (slop_lint 2)"]
+
+
 class TestVerdict:
     def test_wilson_lower(self):
         assert bp.wilson_lower(0, 0) is None
         assert bp.wilson_lower(40, 40) == pytest.approx(0.9124, abs=1e-4)
-        assert bp.wilson_lower(39, 40) < 0.9  # one miss in 40 is below the floor's lower bound
+        assert bp.wilson_lower(39, 40) < 0.9  # why the floor is the raw rate, not this bound
 
-    @pytest.mark.parametrize("family, metrics, role, verdict", [
-        ("comment", {"cases_scored": 0}, "champion", "no-reading"),
-        ("comment", {"cases_scored": 40, "contract_wilson": 0.95}, "champion", "pass"),
-        ("comment", {"cases_scored": 40, "contract_wilson": 0.80}, "champion", "fail"),
-        ("classifier", {"cases_scored": 40, "contract_rate": 0.94, "contract_wilson": 0.99}, "champion", "fail"),
-        ("classifier", {"cases_scored": 40, "contract_rate": 1.0, "accuracy": 0.85}, "champion", "fail"),
-        ("comment", {"cases_scored": 40, "contract_wilson": 0.95, "judge_rate": 0.5,
-                     "judge_calibrated": True}, "champion", "fail"),
-        ("comment", {"cases_scored": 40, "contract_wilson": 0.95, "judge_rate": 0.5,
-                     "judge_calibrated": False}, "champion", "pass"),  # an uncalibrated judge never decides
-        ("comment", {"cases_scored": 40, "contract_wilson": 0.95, "pairwise_win_or_tie": 0.4},
+    @pytest.mark.parametrize("metrics, role, verdict", [
+        ({"cases_scored": 0}, "champion", "no-reading"),
+        ({"cases_scored": 40, "contract_rate": 0.95}, "champion", "pass"),
+        ({"cases_scored": 40, "contract_rate": 0.925}, "champion", "fail"),
+        ({"cases_scored": 40, "contract_rate": 0.94, "contract_wilson": 0.99}, "champion", "fail"),
+        ({"cases_scored": 39, "contract_rate": 39 / 40, "contract_wilson": 0.87},
+         "fallback", "pass"),  # one miss in 40 passes; the Wilson bound is information only
+        ({"cases_scored": 7, "errors": 33, "contract_rate": 1.0, "accuracy": 1.0},
+         "champion", "fail"),  # 33/40 empty must not read as a perfect contract
+        ({"cases_scored": 39, "errors": 1, "contract_rate": 1.0}, "champion", "pass"),
+        ({"cases_scored": 0, "errors": 40}, "champion", "fail"),  # all empty is the worst case
+        ({"cases_scored": 40, "contract_rate": 1.0, "accuracy": 0.85}, "champion", "fail"),
+        ({"cases_scored": 40, "contract_rate": 0.95, "judge_rate": 0.5,
+         "judge_calibrated": True}, "champion", "fail"),
+        ({"cases_scored": 40, "contract_rate": 0.95, "judge_rate": 0.5,
+         "judge_calibrated": False}, "champion", "pass"),  # an uncalibrated judge never decides
+        ({"cases_scored": 40, "contract_rate": 0.95, "pairwise_win_or_tie": 0.4},
          "candidate", "fail"),
-        ("comment", {"cases_scored": 40, "contract_wilson": 0.95, "pairwise_win_or_tie": 0.4},
+        ({"cases_scored": 40, "contract_rate": 0.95, "pairwise_win_or_tie": 0.4},
          "champion", "pass"),
     ])
-    def test_item_verdict(self, family, metrics, role, verdict):
-        assert bp.item_verdict(family, metrics, role)[0] == verdict
+    def test_item_verdict(self, metrics, role, verdict):
+        assert bp.item_verdict(metrics, role)[0] == verdict
+
+    def test_an_all_empty_item_names_only_the_no_output_floor(self):
+        verdict, reasons = bp.item_verdict({"cases_scored": 0, "errors": 40,
+                                            "errors_by_kind": {"empty@production_budget": 40}},
+                                           "champion")
+        assert verdict == "fail"
+        assert reasons == ["40/40 sample(s) with no output (empty@production_budget 40)"]
 
     def test_code_metrics_counts_errors_and_labels(self):
         suite = _suite(4)
@@ -427,6 +506,7 @@ class TestVerdict:
 
         metrics = bp.code_metrics(cases, evaluations)
 
+        assert metrics["errors_by_kind"] == {"no output": 1}
         assert metrics["cases_scored"] == 7 and metrics["errors"] == 1
         assert metrics["contract_rate"] == pytest.approx(6 / 7, abs=1e-4)
         assert metrics["accuracy"] == pytest.approx(6 / 8, abs=1e-4)
@@ -494,6 +574,19 @@ class TestRunItems:
         assert out["calibration"]["r"]["rows"] == 4
         assert set(out["outputs"]) == {"p.cls@2::openai/gpt-oss:20b", "p.cls@2::openai/gpt-5.4-mini"}
         assert len(out["outputs"]["p.cls@2::openai/gpt-oss:20b"]["c0"]) == 2
+
+    def test_an_unreachable_judge_is_one_named_error_and_no_judge_spend(self, rubric_dir):
+        provider = FakeProvider(lambda model, messages: None if model == "judge" else "yes")
+        cfg = {**MODELS_CFG, "judge": {"model": "judge"}}
+
+        out = bp.run_items(_items(("openai/gpt-oss:20b", "champion", "generate")), {"p.cls": _suite(2)},
+                           {"classifier": {"rubric": "r"}}, cfg, GRADERS, provider=provider,
+                           run_id="r", samples=1, judge_sample=2, dry_run=False)
+
+        assert out["judge_error"] == "boom"
+        assert sum(1 for call in provider.calls if call[0] == "judge") == 1  # the preflight only
+        assert out["calibration"] == {}
+        assert out["results"][0]["metrics"]["judge_skipped"] == "boom"
 
     def test_a_regrade_reuses_stored_outputs_and_calls_nothing(self):
         suite = _suite(2)
@@ -578,6 +671,18 @@ class TestRecording:
         assert "Floors missed" in report and "canned" not in report
         readme = (tmp_path / "README.md").read_text()
         assert bm.LEADERBOARD_BEGIN in readme and readme.count("`pe-1`") == 1
+
+    def test_report_names_an_unreachable_judge_and_calibration_errors(self, tmp_path):
+        run = {"run_id": "pe-2", "date": "2026-10-08", "mode": "live", "judge": "j",
+               "judge_error": "Error code: 404 | no `route`", "results": [self._result("pass")],
+               "calibration": {"r": {"rows": 20, "scored": 0, "agreement": None, "calibrated": False,
+                                     "errors": 20, "first_error": "Error code: 404"}}}
+
+        report = bp.render_report(run)
+
+        assert "Judge unreachable — code graders only this run" in report
+        assert "Error code: 404 \\| no 'route'" in report
+        assert "| `r` | 20 | 0 | 20 — `Error code: 404` | — | no — code graders only |" in report
 
 
 # ───────────────────────────── the CLI ─────────────────────────────
