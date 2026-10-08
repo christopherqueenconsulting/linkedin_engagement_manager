@@ -182,30 +182,30 @@ class TestCli:
     def test_prints_a_diff_and_writes_nothing_without_write(self, repo, capsys):
         before = (repo / ".litellm/config.yaml").read_text()
         results = self._results(repo, [
-            _rec("lem-complex", "openai/gpt-6.1-sol", "openai/gpt-4o"),
-            _rec("lem-medium", "openai/gpt-5.4-mini", "openai/gpt-4o-mini", "hold")])
+            _rec("lem-complex", "openai/gpt-5.4-mini", "openai/gpt-6.1-sol"),
+            _rec("lem-simple", "openai/gpt-5.4-mini", "openai/gpt-4o-mini", "hold")])
         rc = apply.main(self._args(repo, results))
         out = capsys.readouterr().out
         assert rc == 2
-        assert "+      model: openai/gpt-6.1-sol" in out
-        assert "+| lem-complex | 1 | openai | `gpt-6.1-sol` |" in out  # regenerated registry
-        assert "SKIP [lem-medium]" in out and "`hold`" in out
+        assert "+      model: openai/gpt-5.4-mini" in out
+        assert "+| lem-complex | 1 | openai | `gpt-5.4-mini` |" in out  # regenerated registry
+        assert "SKIP [lem-simple]" in out and "`hold`" in out
         assert (repo / ".litellm/config.yaml").read_text() == before
 
     def test_write_updates_the_config_and_registry(self, repo, capsys):
         results = self._results(repo, [
-            _rec("lem-medium", "openai/gpt-5.4-mini", "openai/gpt-4o-mini", "hold")])
+            _rec("lem-simple", "openai/gpt-5.4-mini", "openai/gpt-4o-mini", "hold")])
         rc = apply.main(self._args(repo, results, "--write", "--include-held"))
         assert rc == 2
         config = (repo / ".litellm/config.yaml").read_text()
-        assert ("lem-medium", "openai/gpt-5.4-mini") in _groups(config)
+        assert ("lem-simple", "openai/gpt-5.4-mini") in _groups(config)
         readme = (repo / "docs/model-benchmarks/README.md").read_text()
-        assert "| lem-medium | 3 | openai | `gpt-5.4-mini` |" in readme
+        assert "| lem-simple | 2 | openai | `gpt-5.4-mini` |" in readme
 
     def test_nothing_to_apply(self, repo, capsys):
         empty = self._results(repo, [])
         assert apply.main(self._args(repo, empty)) == 0
-        held = self._results(repo, [_rec("lem-medium", "openai/gpt-5.4-mini",
+        held = self._results(repo, [_rec("lem-simple", "openai/gpt-5.4-mini",
                                          "openai/gpt-4o-mini", "hold")])
         assert apply.main(self._args(repo, held)) == 0
         assert "nothing to apply" in capsys.readouterr().out
