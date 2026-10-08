@@ -105,6 +105,31 @@ def _exception_autocapture_enabled() -> bool:
 EXCEPTION_AUTOCAPTURE_ENABLED = _exception_autocapture_enabled()
 posthog.enable_exception_autocapture = EXCEPTION_AUTOCAPTURE_ENABLED
 
+# An operator stopping a process is not a defect. Ctrl-C on a prod-image sidecar script or a manual
+# shell run surfaces as an UNCAUGHT KeyboardInterrupt, and the SDK excepthook above captures it as a
+# grouped $exception with no message, which the daily cron then files as a bug (issue #2307). It is
+# dropped at `before_send` rather than at the hook, so every capture path (the excepthook, the
+# Celery signals, capture_exception) applies the same rule.
+_OPERATOR_INTERRUPT_TYPES = frozenset({"KeyboardInterrupt"})
+
+
+def _drop_operator_interrupts(msg: dict) -> Optional[dict]:
+    """PostHog `before_send` hook: drop an `$exception` whose outermost exception is an interrupt.
+
+    Only the first `$exception_list` entry is read: that is the caught/outermost exception, the one
+    PostHog names the issue after. A real error raised while handling an interrupt still ships.
+    """
+    if msg.get("event") != "$exception":
+        return msg
+    exceptions = (msg.get("properties") or {}).get("$exception_list") or []
+    if exceptions and isinstance(exceptions[0], dict) \
+            and exceptions[0].get("type") in _OPERATOR_INTERRUPT_TYPES:
+        return None
+    return msg
+
+
+posthog.before_send = _drop_operator_interrupts
+
 # What posthog-js hands out as a session id (uuid v7-ish). Anything else is not linked (#649).
 _SESSION_ID_RE = re.compile(r"[A-Za-z0-9._-]{8,64}")
 
