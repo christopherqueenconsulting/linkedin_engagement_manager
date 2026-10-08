@@ -21,10 +21,26 @@ _RESEARCH_ENVS = ("CONTENT_RESEARCH_ENABLED", "NEWSLETTER_RESEARCH_ENABLED",
                   "POST_RESEARCH_ENABLED", "COMMENT_RESEARCH_ENABLED")
 
 
+_TRACK = "cqc_lem.utilities.observability.track_llm_call"
+
+
 @pytest.fixture(autouse=True)
 def _clean_toggles(monkeypatch):
-    for name in _RESEARCH_ENVS:
+    for name in _RESEARCH_ENVS + ("RESEARCH_VIA_PROXY",):
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def spend():
+    """Every direct research call books an llm_call; capture it instead of emitting it."""
+    with patch(_TRACK) as track:
+        yield track
+
+
+@pytest.fixture
+def proxy_on(monkeypatch):
+    """The proxy route, which is opt-in while LiteLLM cannot parse the Agent API's answer."""
+    monkeypatch.setenv("RESEARCH_VIA_PROXY", "true")
 
 
 _FIXTURE = pathlib.Path(__file__).resolve().parents[3] / "fixtures" / "perplexity_agent_response.json"
@@ -47,7 +63,8 @@ def _sdk_response(doc):
     return sdk.responses.create(model="lem-research", input="q")
 
 
-class TestLiteLLMRoutePreferred:
+@pytest.mark.usefixtures("proxy_on")
+class TestLiteLLMRouteUnderTheFlag:
     def test_uses_lem_research_alias(self):
         with patch(_CLIENT) as client, patch(_DIRECT) as direct:
             client.responses.create.return_value = _resp(
@@ -107,6 +124,7 @@ class TestLiteLLMRoutePreferred:
         assert client.responses.create.call_count == 1
 
 
+@pytest.mark.usefixtures("proxy_on")
 class TestAgentApiResponseShape:
     """#2255: `lem-research` answers in Perplexity's Agent API shape, not a chat choice."""
 
@@ -171,6 +189,7 @@ class TestAgentApiResponseShape:
         assert out == {"findings": "", "sources": []}
 
 
+@pytest.mark.usefixtures("proxy_on")
 class TestFallbacks:
     def test_falls_back_to_direct_helper_when_litellm_fails(self):
         with patch(_CLIENT) as client, patch(_DIRECT) as direct:
@@ -207,9 +226,10 @@ class TestPerTypeToggles:
     @pytest.mark.parametrize("value", ["false", "0", "no", "off", "FALSE"])
     def test_newsletter_disabled_values_skip_research(self, monkeypatch, value):
         monkeypatch.setenv("NEWSLETTER_RESEARCH_ENABLED", value)
-        with patch(_CLIENT) as client:
+        with patch(_CLIENT) as client, patch(_DIRECT) as direct:
             out = cr.research_topic("a subject", content_type="newsletter")
         client.responses.create.assert_not_called()
+        direct.assert_not_called()
         assert out == {"findings": "", "sources": []}
 
     def test_newsletter_and_post_enabled_by_default(self):
@@ -227,10 +247,10 @@ class TestPerTypeToggles:
 
     def test_comment_research_opt_in_via_env(self, monkeypatch):
         monkeypatch.setenv("COMMENT_RESEARCH_ENABLED", "true")
-        with patch(_CLIENT) as client:
-            client.responses.create.return_value = _resp("comment findings")
+        with patch(_DIRECT) as direct:
+            direct.return_value = {"answer": "comment findings", "sources": []}
             out = cr.research_topic("a post about supply chains", content_type="comment")
-        client.responses.create.assert_called_once()
+        direct.assert_called_once()
         assert out["findings"] == "comment findings"
 
     def test_master_switch_kills_all_types(self, monkeypatch):
@@ -238,9 +258,10 @@ class TestPerTypeToggles:
         monkeypatch.setenv("COMMENT_RESEARCH_ENABLED", "true")
         for content_type in ("newsletter", "post", "comment"):
             assert cr.research_enabled(content_type) is False
-        with patch(_CLIENT) as client:
+        with patch(_CLIENT) as client, patch(_DIRECT) as direct:
             out = cr.research_topic("a subject", content_type="newsletter")
         client.responses.create.assert_not_called()
+        direct.assert_not_called()
         assert out == {"findings": "", "sources": []}
 
     def test_post_toggle_independent_of_newsletter(self, monkeypatch):
@@ -250,9 +271,111 @@ class TestPerTypeToggles:
 
     def test_explicit_true_enables(self, monkeypatch):
         monkeypatch.setenv("NEWSLETTER_RESEARCH_ENABLED", "true")
-        with patch(_CLIENT) as client:
-            client.responses.create.return_value = _resp("findings")
+        with patch(_DIRECT) as direct:
+            direct.return_value = {"answer": "findings", "sources": []}
             assert cr.research_topic("a subject", content_type="newsletter")["findings"] == "findings"
 
     def test_unknown_type_defaults_conservative(self):
         assert cr.research_enabled("carrier_pigeon") is False
+
+
+# The exact text the live proxy returned on prod v0.183.0 (2026-10-08), 4 of 5 probe runs.
+_TRUNCATION_DEFECT = (
+    "Error code: 500 - {'error': {'message': \"litellm.InternalServerError: 1 validation error for "
+    "ResponsesAPIResponse\\ntruncation\\n  Input should be 'auto' or 'disabled' "
+    "[type=literal_error, input_value='', input_type=str]\"}}")
+
+_USAGE = {"input_tokens": 412, "output_tokens": 188, "total_tokens": 600,
+          "cost": {"currency": "USD", "request_cost": 0.0025, "total_cost": 0.00281}}
+
+
+class TestDirectRouteIsPrimary:
+    """LiteLLM cannot parse the Agent API's answer, so research goes straight to Perplexity."""
+
+    def test_default_reaches_perplexity_without_touching_the_proxy(self):
+        with patch(_CLIENT) as client, patch(_DIRECT) as direct:
+            direct.return_value = {"answer": " direct findings ", "sources": [{"url": "https://s"}],
+                                   "usage": _USAGE}
+            out = cr.research_topic("delegation for founders", content_type="newsletter")
+        client.responses.create.assert_not_called()
+        direct.assert_called_once()
+        assert out == {"findings": "direct findings", "sources": [{"url": "https://s"}]}
+
+    @pytest.mark.parametrize("value, expected", [
+        (None, False), ("", False), ("false", False), ("0", False), ("true", True), ("1", True)])
+    def test_the_proxy_flag_defaults_off(self, monkeypatch, value, expected):
+        if value is not None:
+            monkeypatch.setenv("RESEARCH_VIA_PROXY", value)
+        assert cr.research_via_proxy_enabled() is expected
+
+    def test_spend_is_booked_at_perplexitys_own_price(self, spend):
+        from cqc_lem.utilities.observability import llm_attribution
+        with patch(_DIRECT) as direct, llm_attribution(user_id=7, feature="newsletter"):
+            direct.return_value = {"answer": "findings", "sources": [], "usage": _USAGE}
+            cr.research_topic("a subject", content_type="newsletter")
+        spend.assert_called_once()
+        kwargs = spend.call_args.kwargs
+        assert kwargs["model"] == "lem-research"
+        assert (kwargs["prompt_tokens"], kwargs["completion_tokens"]) == (412, 188)
+        assert kwargs["response_cost"] == pytest.approx(0.00281)
+        assert kwargs["success"] is True
+        assert (kwargs["user_id"], kwargs["feature"]) == (7, "newsletter")
+
+    @pytest.mark.parametrize("usage", [
+        None, {}, {"cost": "n/a"}, {"input_tokens": "x", "cost": {"total_cost": -1}},
+        {"cost": {"total_cost": float("nan")}}])
+    def test_an_unpriced_answer_falls_back_to_the_estimate_never_to_free(self, spend, usage):
+        with patch(_DIRECT) as direct:
+            direct.return_value = {"answer": "findings", "sources": [], "usage": usage}
+            cr.research_topic("a subject", content_type="post")
+        kwargs = spend.call_args.kwargs
+        assert kwargs["response_cost"] is None  # None, not 0.0: track_llm_call then estimates
+        assert kwargs["model"] == "lem-research"
+
+    def test_a_failed_direct_call_is_recorded_and_degrades_to_empty(self, spend):
+        with patch(_DIRECT) as direct, patch.object(cr, "log_warning") as warn:
+            direct.side_effect = RuntimeError("PERPLEXITY_API_KEY is not set")
+            out = cr.research_topic("a subject", content_type="newsletter")
+        assert out == {"findings": "", "sources": []}
+        assert spend.call_args.kwargs["success"] is False
+        warn.assert_called_once()  # no research at all is a real fault, so it stays a warning
+
+    def test_telemetry_failure_never_breaks_research(self, spend):
+        spend.side_effect = RuntimeError("posthog down")
+        with patch(_DIRECT) as direct:
+            direct.return_value = {"answer": "findings", "sources": [], "usage": _USAGE}
+            out = cr.research_topic("a subject", content_type="newsletter")
+        assert out["findings"] == "findings"
+
+
+@pytest.mark.usefixtures("proxy_on")
+class TestProxyFailureLogLevel:
+    """Once is a warning, repeatedly is a defect: the KNOWN parse failure must not warn per call."""
+
+    def test_the_known_truncation_defect_is_debug_not_a_warning(self):
+        with patch(_CLIENT) as client, patch(_DIRECT) as direct, \
+                patch.object(cr, "log_warning") as warn, patch.object(cr, "log_debug") as debug:
+            client.responses.create.side_effect = Exception(_TRUNCATION_DEFECT)
+            direct.return_value = {"answer": "direct findings", "sources": []}
+            out = cr.research_topic("a subject", content_type="newsletter")
+        warn.assert_not_called()
+        assert any("known Agent API parse defect" in c.args[0] for c in debug.call_args_list)
+        assert out["findings"] == "direct findings"
+
+    def test_an_unknown_proxy_failure_still_warns(self):
+        with patch(_CLIENT) as client, patch(_DIRECT) as direct, \
+                patch.object(cr, "log_warning") as warn:
+            client.responses.create.side_effect = Exception("proxy down")
+            direct.return_value = {"answer": "direct findings", "sources": []}
+            cr.research_topic("a subject", content_type="newsletter")
+        warn.assert_called_once()
+        assert "trying direct Perplexity" in warn.call_args.args[0]
+
+    @pytest.mark.parametrize("text, known", [
+        (_TRUNCATION_DEFECT, True),
+        ("1 validation error for ResponsesAPIResponse\nstatus\n  Input should be ...", False),
+        ("Connection error.", False),
+        ("Empty research response from lem-research", False),
+    ])
+    def test_only_the_truncation_literal_counts_as_known(self, text, known):
+        assert cr.is_known_proxy_parse_defect(Exception(text)) is known

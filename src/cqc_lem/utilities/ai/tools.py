@@ -1,8 +1,9 @@
 """The two outside-world research fetchers the content pipeline grounds itself on.
 
-`search_with_perplexity` is `content_research`'s DIRECT fallback for when the proxy's
-`lem-research` route is unavailable; `search_recent_news` is the free GoogleNews path
-`get_industry_trend_analysis_based_on_user_profile` drops to when research is disabled or came back
+`search_with_perplexity` is `content_research`'s PRIMARY research route: the proxy's `lem-research`
+alias sits behind `RESEARCH_VIA_PROXY` until LiteLLM can parse Perplexity's Agent API answer.
+`search_recent_news` is the free GoogleNews path `get_industry_trend_analysis_based_on_user_profile`
+drops to when research is disabled or came back
 empty. Both are SOURCES, never gates — every caller already treats "nothing found" as "write from
 the profile and topic alone", so raising here costs freshness, never the post.
 
@@ -33,8 +34,9 @@ def search_with_perplexity(query: str, max_sources: int = 5) -> dict:
         max_sources: Upper bound on the source URLs returned.
 
     Returns:
-        `{query, answer, sources}` where sources is a list of `{url}` dicts, read by the same
-        `parse_agent_response` the proxy path uses.
+        `{query, answer, sources, usage}` where sources is a list of `{url}` dicts, read by the
+        same `parse_agent_response` the proxy path uses, and usage is Perplexity's own `usage`
+        block (tokens plus its priced `cost`), or None when the answer carried none.
 
     Raises:
         RuntimeError: `PERPLEXITY_API_KEY` is not set.
@@ -62,8 +64,11 @@ def search_with_perplexity(query: str, max_sources: int = 5) -> dict:
         timeout=60,
     )
     response.raise_for_status()
-    answer, sources = parse_agent_response(response.json(), max_sources)
-    return {"query": query, "answer": answer, "sources": sources}
+    doc = response.json()
+    answer, sources = parse_agent_response(doc, max_sources)
+    usage = doc.get("usage") if isinstance(doc, dict) else None
+    return {"query": query, "answer": answer, "sources": sources,
+            "usage": usage if isinstance(usage, dict) else None}
 
 
 # Define the tool for GoogleNews search

@@ -2,12 +2,14 @@
 current, factual findings (recent stats with rough dates, real examples, trends, credible contrarian
 data) for a subject + blueprint, so writers weave specifics instead of vague claims.
 
-Routing: prefer the LiteLLM proxy alias `lem-research` via the shared client's RESPONSES endpoint
-(`client.responses.create`). Since #2255 that alias is Perplexity's Agent API (`/v1/responses`, the
-`fast` preset; Sonar Chat Completions was sunset 2026-09-27), so the answer arrives as a typed
-`output` list rather than a chat choice — `parse_agent_response` is the ONE reader of that shape.
-Fall back to the direct `search_with_perplexity` helper when the proxy route is unavailable. Every
-failure path degrades to empty findings — generation NEVER breaks because research did.
+Routing: the direct `search_with_perplexity` helper (Perplexity's Agent API, the `fast` preset;
+Sonar Chat Completions was sunset 2026-09-27, #2255) is the PRIMARY route. The proxy alias
+`lem-research` (`client.responses.create`) is tried first only under `RESEARCH_VIA_PROXY`, default
+OFF: LiteLLM rejects the Agent API's `"truncation": ""` and 500s (see `research_via_proxy_enabled`).
+Both routes answer as a typed `output` list rather than a chat choice — `parse_agent_response` is
+the ONE reader of that shape. The direct route books its own `llm_call` spend, since no proxy is
+there to emit `$ai_generation`. Every failure path degrades to empty findings — generation NEVER
+breaks because research did.
 
 COST POLICY (per-type toggles, all under the CONTENT_RESEARCH_ENABLED master switch):
 - newsletter — NEWSLETTER_RESEARCH_ENABLED, default ON. Weekly cadence; one call per edition is cheap
@@ -22,8 +24,10 @@ COST POLICY (per-type toggles, all under the CONTENT_RESEARCH_ENABLED master swi
   its fallback — see utilities/flags.py.
 """
 
+import math
 import os
-from typing import Any
+import time
+from typing import Any, Optional
 
 from cqc_lem.utilities.flags import COMMENT_RESEARCH, flag_enabled
 from cqc_lem.utilities.logger import log_debug, log_warning
@@ -197,6 +201,90 @@ def _research_via_litellm(query: str, max_sources: int) -> dict:
     return {"findings": findings, "sources": sources}
 
 
+def research_via_proxy_enabled() -> bool:
+    """Whether research tries the proxy's `lem-research` alias before direct Perplexity.
+
+    OFF by default: LiteLLM's `ResponsesAPIResponse` declares `truncation` as
+    `Literal["auto", "disabled"]`, Perplexity's Agent API answers `"truncation": ""`, and the proxy
+    500s on its own parse of a response Perplexity already served (and billed). Flip
+    `RESEARCH_VIA_PROXY` on once a LiteLLM release accepts that answer and
+    `scripts/probe_research.py --route proxy` passes repeatedly.
+    """
+    return _bool_env("RESEARCH_VIA_PROXY", False)
+
+
+def is_known_proxy_parse_defect(exc: BaseException) -> bool:
+    """True for the one proxy failure we already know about.
+
+    That failure is LiteLLM's pydantic rejection of the Agent API's empty `truncation` field.
+    Anything else through the proxy is still news.
+    """
+    text = str(exc)
+    return "ResponsesAPIResponse" in text and "truncation" in text
+
+
+def _usage_number(usage: Any, *path: str) -> Optional[float]:
+    value: Any = usage
+    for key in path:
+        value = value.get(key) if isinstance(value, dict) else None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number >= 0 else None
+
+
+def _record_direct_spend(usage: Any, latency_ms: int, success: bool) -> None:
+    """Book one direct research call as an `llm_call` on the `lem-research` tier.
+
+    The direct route never touches the proxy, so no `$ai_generation` is emitted for it — this event
+    and the cost-ledger accrual it feeds are its only spend record. Perplexity prices its own answer
+    (`usage.cost.total_cost`, search fee included); that is booked as-is, and the per-1K estimate is
+    only the fallback when it is missing. Telemetry never breaks research.
+    """
+    try:
+        from cqc_lem.utilities.observability import (
+            FEATURE_SYSTEM,
+            current_llm_attribution,
+            track_llm_call,
+        )
+        user_id, feature = current_llm_attribution()
+        track_llm_call(
+            model="lem-research",
+            prompt_tokens=int(_usage_number(usage, "input_tokens") or 0),
+            completion_tokens=int(_usage_number(usage, "output_tokens") or 0),
+            latency_ms=latency_ms, success=success, user_id=user_id,
+            feature=feature or FEATURE_SYSTEM,
+            response_cost=_usage_number(usage, "cost", "total_cost"),
+        )
+    except Exception as exc:
+        log_debug(f"Could not record direct research spend: {exc}", api_provider="perplexity")
+
+
+def _research_direct(query: str, max_sources: int) -> dict:
+    """One research call straight to Perplexity's Agent API, with its spend recorded.
+
+    Args:
+        query: The research query `_build_research_query` produced.
+        max_sources: Upper bound on the source URLs kept.
+
+    Returns:
+        `{"findings", "sources"}`.
+
+    Raises:
+        Exception: Whatever `search_with_perplexity` raised; the failure is recorded first.
+    """
+    from cqc_lem.utilities.ai.tools import search_with_perplexity
+    start = time.monotonic()
+    try:
+        raw = search_with_perplexity(query, max_sources=max_sources)
+    except Exception:
+        _record_direct_spend(None, int((time.monotonic() - start) * 1000), success=False)
+        raise
+    _record_direct_spend(raw.get("usage"), int((time.monotonic() - start) * 1000), success=True)
+    return {"findings": (raw.get("answer") or "").strip(), "sources": raw.get("sources") or []}
+
+
 @llm_step("research")
 def research_topic(subject: str, content_type: str = "newsletter", blueprint: dict = None,
                    context_description: str = None, prefs: dict = None,
@@ -210,18 +298,22 @@ def research_topic(subject: str, content_type: str = "newsletter", blueprint: di
     if not subject or not research_enabled(content_type, user_id=user_id):
         return dict(_EMPTY)
     query = _build_research_query(subject, content_type, blueprint, context_description, prefs)
+    if research_via_proxy_enabled():
+        try:
+            result = _research_via_litellm(query, max_sources)
+            log_debug(f"Content research via lem-research succeeded ({content_type})",
+                      ai_model="lem-research")
+            return result
+        except Exception as exc:
+            if is_known_proxy_parse_defect(exc):
+                # Expected while LiteLLM rejects Perplexity's `truncation: ""` — not news per call.
+                log_debug("Content research via LiteLLM hit the known Agent API parse defect; "
+                          "using direct Perplexity", api_provider="litellm")
+            else:
+                log_warning("Content research via LiteLLM failed; trying direct Perplexity",
+                            exc=exc, api_provider="litellm")
     try:
-        result = _research_via_litellm(query, max_sources)
-        log_debug(f"Content research via lem-research succeeded ({content_type})",
-                  ai_model="lem-research")
-        return result
-    except Exception as exc:
-        log_warning("Content research via LiteLLM failed; trying direct Perplexity", exc=exc,
-                    api_provider="litellm")
-    try:
-        from cqc_lem.utilities.ai.tools import search_with_perplexity
-        raw = search_with_perplexity(query, max_sources=max_sources)
-        return {"findings": (raw.get("answer") or "").strip(), "sources": raw.get("sources") or []}
+        return _research_direct(query, max_sources)
     except Exception as exc:
         log_warning("Content research unavailable; generating without research", exc=exc,
                     api_provider="perplexity")
