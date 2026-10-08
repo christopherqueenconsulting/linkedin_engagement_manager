@@ -18,29 +18,39 @@ render: PIL frames piped into ffmpeg, exactly as the card already was. No model 
 
 | Style | Needs | Hero motion | Secondary |
 |---|---|---|---|
-| `stat_counter` | a verified `stat` | the figure counts up from 0 (ease-out) | a gold bar fills in sync; the label fades in after |
-| `chart_draw` | a verified `comparison` (`highlight_chart`) | bars grow from the baseline, the gold bar LAST | the annotation fades in |
-| `checklist_tick` | 3-5 verified `steps` | items appear one by one | ticks draw; the last item stays UNTICKED (the curiosity gap, `checklist_states`) |
-| `before_after_wipe` | a verified `before_after` pair | a gold divider wipes BEFORE into AFTER | — |
-| `kinetic_mask` | nothing | the hook's lines mask-reveal in sequence; a hero number scales in | a gold underline sweeps under the key word |
+| `stat_counter` | a verified `stat` | the figure, at poster scale, springs in (ease-out-back) and ticks up from 0 | a gold bar fills in sync; the label fades in after |
+| `chart_draw` | a verified `comparison` (`highlight_chart`) | bars grow across the frame — the longest spans the full width with its value inside — the thicker gold bar LAST | the annotation fades in |
+| `checklist_tick` | 3-5 verified `steps` | items appear one by one at headline-adjacent size | ticks STROKE-draw as paths (`_stroke`, never a glyph); the in-progress item gets a drawn dash; the last stays UNTICKED (`checklist_states`) |
+| `before_after_wipe` | a verified `before_after` pair | a gold divider wipes a frame-width BEFORE figure into the AFTER one | — |
+| `kinetic_mask` | nothing | the hook's lines exit and mask-reveal in sequence; a hero number springs in | a gold underline retracts and sweeps back under the key word |
 | `kinetic_slide` | nothing | the same, lines sliding in | the same |
 
 Kinetic typography is two styles so the "never twice in a row" rule always has a second option.
 
 ## Rules
 
-- **Frame 0 is the full hook** (LinkedIn's thumbnail, `docs/content-quality-audits/video.md`
-  § F3c) and holds for `MOTION_HOLD_SECONDS` = 0.8 s before anything moves. Kinetic typography's
-  frame 0 IS the static card; a data style's frame 0 is the hook with an empty data region.
-- **Ease-out cubic** (`ease_out_cubic`) on every motion. MP4: 24 fps, 6-8 s
-  (`VIDEO_TITLE_CARD_SECONDS`). GIF: ≤12 fps (`MOTION_GIF_MAX_FPS`), 6 s, 720 px wide.
-- **A GIF is seamless.** It ends in its start state: the data fades out, or the underline retracts,
-  and the last frame is sampled at `t = T`, so it equals frame 0 pixel for pixel.
+- **Frame 0 is the COMPLETE piece** — the headline AND the final figure, chart or list — because
+  LinkedIn may show frame 0 as the static thumbnail (`docs/content-quality-audits/video.md` § F3c).
+  The timeline is hold → reset → build → hold: the complete state holds `MOTION_HOLD_SECONDS`
+  (0.8 s), the data fades out (`_RESET_SECONDS`), builds back from `_BUILD_AT`, and holds its
+  complete state again for at least `MOTION_FINAL_HOLD_SECONDS` (1.2 s) to the end.
+- **Ease-out cubic** (`ease_out_cubic`) on every motion; **ease-out-back** (`ease_out_back`, ~10%
+  overshoot) on a hero's scale-in. MP4: 24 fps, 6-8 s (`VIDEO_TITLE_CARD_SECONDS`). GIF: ≤12 fps
+  (`MOTION_GIF_MAX_FPS`), 6 s, 720 px wide.
+- **No frame is static.** A soft brand-gold glow drifts on a closed orbit behind the type
+  (`_background` / `_ground`), exactly one orbit per piece.
+- **A GIF is seamless.** The complete state and the orbit both return to their start, and the last
+  frame is sampled at `t = T`, so it equals frame 0 pixel for pixel.
+- **The canvas is used.** No slab: nothing is drawn that carries no meaning. A GIF has no caption
+  band, so its data region runs to the bottom margin; the headline is set up to 13% of the width
+  and gives room back to the data (`_HEADLINE_SHARES`) only when the data would not fit.
 - **GIF limits are `animated_loop`'s**: ≤250 frames, ≤5 MB, checked on the FILE
   (`gif_within_limits`), stepping width and fps down (`_attempt_plan`) for at most three encodes.
+  The drifting glow changes every pixel, so a 720×900 GIF is ~2.7-4.0 MB; a taller 9:16 one
+  steps down a width.
 - **Brand colours and Montserrat only**, from `video_title_card.title_card_palette`.
-- **Round 6 holds.** Nothing is drawn below the caption band's worst-case top
-  (`caption_band_top`); a data style puts the byline in the top row, and a kicker that would
+- **Round 6 holds for a video.** In an MP4 nothing is drawn below the caption band's worst-case
+  top (`caption_band_top`); a data style puts the byline in the top row, and a kicker that would
   collide with it is dropped (the byline is attribution, the kicker decoration).
 - **Fact rules.** A data style is offered only when `image_graphics.assert_traceable` passes for its
   archetype, and `plan_data` re-runs it immediately before planning. A counter's last value is the

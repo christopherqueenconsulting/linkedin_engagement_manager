@@ -1,9 +1,10 @@
 """Kinetic motion design for the $0 title card and GIF loops (docs/motion-design.md).
 
 ffmpeg is mocked everywhere (the unit lane's ``_no_real_title_card_encode`` guard hides it) except
-the one ``slow`` test. What these pin: frame 0 carries the whole hook and holds; a GIF ends in its
-start state; the frame, fps and size caps hold on the file; the style rotates per author and never
-repeats; and a counter only ever counts to a TRACEABLE figure, otherwise the piece is kinetic type.
+the one ``slow`` test. What these pin: frame 0 is the COMPLETE piece (headline and final figure),
+held, then reset, built and held again; a GIF ends in its start state and no frame is static; the
+canvas is used; the frame, fps and size caps hold on the file; the style rotates per author and
+never repeats; and a counter only ever counts to a TRACEABLE figure, otherwise kinetic type.
 """
 import os
 import shutil
@@ -78,7 +79,14 @@ def _plan(style, mode=md.MODE_GIF, size=SIZE, ground=tc.GROUND_CHARCOAL, hook=HO
 
 
 def _same(a, b) -> bool:
-    return ImageChops.difference(a, b).getbbox() is None
+    # RGB, not RGBA: an RGBA image's getbbox reads its alpha channel alone.
+    return ImageChops.difference(a.convert("RGB"), b.convert("RGB")).getbbox() is None
+
+
+def _still(plan):
+    """The plan over a still ground, so frame-to-frame comparisons see only the piece itself."""
+    plan.background, plan.drift = None, 0
+    return plan
 
 
 class TestFacts:
@@ -139,7 +147,7 @@ class TestCounter:
         with pytest.raises(ValueError):
             md.counter_text("n/a", 0.5)
 
-    def test_the_counter_frame_ends_on_the_traced_figure(self):
+    def test_the_counter_opens_and_ends_on_the_traced_figure_and_ticks_between(self):
         plan = _plan(md.STYLE_STAT_COUNTER, mode=md.MODE_MP4)
         assert plan.data["fact"]["display"] == "38%"
         drawn = []
@@ -148,47 +156,59 @@ class TestCounter:
                    or real(d, p)):
             for t in md.frame_times(plan, 24):
                 md.render_motion_frame(plan, t)
-        assert int(drawn[0][:-1]) <= 3 and drawn[-1] == "38%"
-        assert all(int(v[:-1]) <= 38 for v in drawn)
+        values = [int(v[:-1]) for v in drawn]
+        assert drawn[0] == "38%" and drawn[-1] == "38%"  # the complete piece, both ends
+        assert min(values) <= 3 and max(values) == 38
+        assert len(set(values)) >= 15  # it visibly ticks, it does not jump
 
-    def test_ease_out_cubic_is_clamped_and_monotonic(self):
+    def test_the_easings_are_clamped_and_the_hero_overshoots(self):
         assert md.ease_out_cubic(-1) == 0 and md.ease_out_cubic(2) == 1
         samples = [md.ease_out_cubic(p / 20) for p in range(21)]
         assert samples == sorted(samples) and samples[5] > 0.25  # fast start, soft landing
+        back = [md.ease_out_back(p / 20) for p in range(21)]
+        assert back[0] == pytest.approx(0) and back[-1] == pytest.approx(1) and max(back) > 1.05
 
 
 class TestFrameZero:
     @pytest.mark.parametrize("style", md.MOTION_STYLES)
-    def test_frame_zero_holds_before_anything_moves(self, style):
-        plan = _plan(style, mode=md.MODE_MP4)
+    def test_frame_zero_is_the_complete_piece_held_then_rebuilt(self, style):
+        plan = _still(_plan(style, mode=md.MODE_MP4))
         first = md.render_motion_frame(plan, 0.0)
         assert _same(first, md.render_motion_frame(plan, md.MOTION_HOLD_SECONDS - 0.01))
-        assert not _same(first, md.render_motion_frame(plan, 2.5))  # and then it moves
+        # The complete state is where the build lands and holds for the last 1.2 s or more.
+        for t in (plan.seconds - md.MOTION_FINAL_HOLD_SECONDS, plan.seconds - 0.05):
+            assert _same(first, md.render_motion_frame(plan, t))
+        assert any(not _same(first, md.render_motion_frame(plan, t))
+                   for t in (1.0, 1.5, 2.0, 2.5))
+
+    @pytest.mark.parametrize("style", md.DATA_STYLES)
+    def test_data_frame_zero_carries_the_figure_not_an_empty_canvas(self, style):
+        plan = _still(_plan(style, mode=md.MODE_MP4))
+        region = md.render_motion_frame(plan, 0.0).crop(plan.region)
+        assert len(region.getcolors(1 << 16)) > 2
+        reset = md.render_motion_frame(plan, md._BUILD_AT - 0.01).crop(plan.region)
+        assert reset.getcolors() == [(reset.size[0] * reset.size[1], plan.palette.ground)]
 
     @pytest.mark.parametrize("style", md.KINETIC_STYLES)
     @pytest.mark.parametrize("variant", [tc.VARIANT_POSTER, tc.VARIANT_NUMBER])
-    def test_kinetic_frame_zero_is_the_complete_static_card(self, style, variant):
+    def test_kinetic_frame_zero_sets_every_row_and_the_underline(self, style, variant):
         hook = "38% of AI spend buys nothing you can see"
         layout = tc.plan_title_card(hook, size=SIZE, palette=_palette(), seconds=7.0,
                                     variant=variant)
-        plan = md.plan_kinetic(layout, style)
+        plan = _still(md.plan_kinetic(layout, style))
         first = md.render_motion_frame(plan, 0.0)
-        card = tc.render_title_card_frame(layout, 0.0)
-        diff = ImageChops.difference(first, card).convert("L")
-        # Text composited from a sprite vs drawn in place: identical but for anti-aliasing.
-        assert sum(diff.histogram()[49:]) < SIZE[0] * SIZE[1] * 0.002
-        if variant == tc.VARIANT_NUMBER:
-            assert any(s.hero for s in plan.sprites)
+        for sprite in plan.sprites:
+            band = first.crop((0, sprite.top, SIZE[0], sprite.top + sprite.image.size[1]))
+            assert any(c == layout.palette.hook for _n, c in band.getcolors(1 << 16))
+        x0, y0, x1, _y1 = plan.underline
+        assert first.getpixel(((x0 + x1) // 2, y0 + 1)) == layout.palette.rule
+        assert any(s.hero for s in plan.sprites) == (variant == tc.VARIANT_NUMBER)
 
-    @pytest.mark.parametrize("style", md.DATA_STYLES)
-    def test_data_frame_zero_sets_the_hook_and_nothing_of_the_data(self, style):
-        plan = _plan(style, mode=md.MODE_MP4)
-        first = md.render_motion_frame(plan, 0.0)
-        x0, y0, x1, y1 = plan.region
-        region = first.crop((x0, y0, x1, y1))
-        assert region.getcolors() == [(region.size[0] * region.size[1], plan.palette.ground)]
-        hook_band = first.crop((0, round(SIZE[1] * 0.1), SIZE[0], y0))
-        assert any(c == plan.palette.hook for _n, c in hook_band.getcolors(1 << 16))
+    def test_no_slab_is_drawn_behind_a_motion_piece(self):
+        for style in (md.STYLE_KINETIC_MASK, md.STYLE_STAT_COUNTER):
+            plan = _still(_plan(style, mode=md.MODE_MP4, size=(540, 540)))
+            corner = md.render_motion_frame(plan, 0.0).crop((380, 470, 540, 540))
+            assert corner.getcolors() == [(160 * 70, plan.palette.ground)]
 
     def test_a_hook_that_cannot_be_set_is_refused(self):
         with pytest.raises(ValueError):
@@ -199,16 +219,42 @@ class TestFrameZero:
             _plan(md.STYLE_STAT_COUNTER, hook="Supercalifragilisticexpialidocious" * 3)
 
 
+class TestComposition:
+    @pytest.mark.parametrize("style", md.DATA_STYLES)
+    def test_a_gif_uses_the_whole_frame(self, style):
+        plan = _plan(style, size=(720, 900))
+        assert plan.region[3] >= 900 * 0.9 and plan.region[3] - plan.region[1] >= 900 * 0.35
+
+    def test_the_hero_number_reads_at_thumbnail_size(self):
+        plan = _plan(md.STYLE_STAT_COUNTER, size=(720, 900))
+        x0, y0, x1, y1 = plan.data["number_box"]
+        assert y1 - y0 >= 900 * 0.18 or x1 - x0 >= (plan.region[2] - plan.region[0]) * 0.95
+
+    def test_the_gold_bar_spans_the_width_and_dominates(self):
+        plan = _plan(md.STYLE_CHART_DRAW, size=(720, 900))
+        rows = plan.data["rows"]
+        longest = max(rows, key=lambda r: r["length"])
+        gold = next(r for r in rows if r["gold"])
+        grey = next(r for r in rows if not r["gold"])
+        assert longest["length"] == plan.region[2] - plan.region[0] and longest["inside"]
+        assert gold["thick"] > grey["thick"]
+
+    def test_before_after_figures_are_huge(self):
+        plan = _still(_plan(md.STYLE_BEFORE_AFTER_WIPE, size=(720, 900)))
+        layer = plan.data["layers"]["after"]
+        assert layer.getbbox()[2] - layer.getbbox()[0] >= (plan.region[2] - plan.region[0]) * 0.6
+
+
 class TestCaptionBand:
     @pytest.mark.parametrize("size", [(1080, 1080), (1080, 1350), (1080, 1920)])
     @pytest.mark.parametrize("style", md.DATA_STYLES)
-    def test_nothing_sits_under_the_caption_band(self, style, size):
-        plan = _plan(style, mode=md.MODE_MP4, size=size)
+    def test_nothing_sits_under_the_caption_band_in_a_video(self, style, size):
+        plan = _still(_plan(style, mode=md.MODE_MP4, size=size))
         band = caption_band_top(size)
         assert plan.region[3] <= band
-        last = md.render_motion_frame(plan, plan.seconds - 0.05)
-        below = last.crop((0, band, round(size[0] * 0.46) - 1, size[1]))
-        assert below.getcolors() == [(below.size[0] * below.size[1], plan.palette.ground)]
+        for t in (0.0, 2.6):
+            below = md.render_motion_frame(plan, t).crop((0, band, size[0], size[1]))
+            assert below.getcolors() == [(below.size[0] * below.size[1], plan.palette.ground)]
 
     def test_a_byline_too_wide_for_the_top_row_is_refused(self):
         with pytest.raises(ValueError):
@@ -225,75 +271,111 @@ class TestCaptionBand:
 class TestLoop:
     @pytest.mark.parametrize("ground", tc.GROUNDS)
     @pytest.mark.parametrize("style", md.MOTION_STYLES)
-    def test_a_gif_ends_in_its_start_state(self, style, ground):
+    def test_a_gif_ends_in_its_start_state_and_no_frame_is_static(self, style, ground):
         plan = _plan(style, ground=ground)
         times = md.frame_times(plan, md.MOTION_GIF_MAX_FPS)
         assert times[0] == 0.0 and times[-1] == plan.seconds
         assert len(times) <= 250
         frames = [md.render_motion_frame(plan, t) for t in times]
         assert _same(frames[0], frames[-1])
-        assert not _same(frames[0], frames[len(frames) // 2])
+        assert all(not _same(a, b) for a, b in zip(frames, frames[1:]))
 
-    def test_an_mp4_is_six_to_eight_seconds_at_24_fps_and_holds_its_end(self):
+    def test_the_ground_drifts_one_full_orbit(self):
+        plan = _plan(md.STYLE_KINETIC_MASK)
+        assert plan.drift > 0
+        assert _same(md._ground(plan, 0.0), md._ground(plan, plan.seconds))
+        assert not _same(md._ground(plan, 0.0), md._ground(plan, plan.seconds / 2))
+
+    def test_an_mp4_is_six_to_eight_seconds_at_24_fps(self):
         plan = _plan(md.STYLE_CHART_DRAW, mode=md.MODE_MP4)
         times = md.frame_times(plan, tc.TITLE_CARD_FPS)
         assert len(times) == 7 * 24 and times[-1] < plan.seconds
-        assert _same(md.render_motion_frame(plan, 6.0), md.render_motion_frame(plan, 6.9))
 
 
 class TestStyles:
     def test_the_gold_bar_lands_last_then_the_annotation(self):
-        plan = _plan(md.STYLE_CHART_DRAW, mode=md.MODE_MP4)
+        plan = _still(_plan(md.STYLE_CHART_DRAW, mode=md.MODE_MP4))
         gold = next(n for n, r in enumerate(plan.data["rows"]) if r["gold"])
         assert plan.data["order"][-1] == gold
-        frame = md.render_motion_frame(plan, md.MOTION_HOLD_SECONDS + 0.7)
         row = plan.data["rows"][gold]
         x = plan.region[0] + row["length"] - 2
-        y = row["bar_y"] + plan.data["bar_h"] // 2
-        assert frame.getpixel((x, y)) != plan.palette.rule  # still growing
-        done = md.render_motion_frame(plan, 5.0)
-        assert done.getpixel((x, y)) == plan.palette.rule
+        y = row["bar_y"] + row["thick"] // 2
+        growing = md.render_motion_frame(plan, md._BUILD_AT + 0.5)
+        assert growing.getpixel((x, y)) != plan.palette.rule
+        assert md.render_motion_frame(plan, 5.5).getpixel((x, y)) == plan.palette.rule
 
-    def test_the_last_checklist_item_stays_unticked(self):
-        plan = _plan(md.STYLE_CHECKLIST_TICK, mode=md.MODE_MP4)
-        assert plan.data["states"][-1] == "open" and plan.data["states"][0] == "check"
+    def test_a_short_bar_carries_its_value_beside_it(self):
+        plan = _plan(md.STYLE_CHART_DRAW, mode=md.MODE_MP4)
+        short = min(plan.data["rows"], key=lambda r: r["length"])
+        assert not short["inside"] and short["value_x"] > plan.region[0] + short["length"]
+
+    def test_the_last_checklist_item_stays_unticked_and_no_glyph_is_drawn(self):
+        plan = _still(_plan(md.STYLE_CHECKLIST_TICK, mode=md.MODE_MP4))
+        assert plan.data["states"] == ("check", "check", "gap", "open")
         end = md.render_motion_frame(plan, 6.5)
         box = plan.data["box"]
-        inside = lambda row: (plan.region[0] + box // 2 - 2, row["y"] + box // 4)  # noqa: E731
-        assert end.getpixel(inside(plan.data["rows"][-1])) == plan.palette.ground
-        assert end.getpixel(inside(plan.data["rows"][0])) == plan.palette.rule
+        x = plan.region[0] + box // 2
+        quarter = lambda row: (x, row["y"] + box // 4)  # noqa: E731
+        rows = plan.data["rows"]
+        assert end.getpixel(quarter(rows[-1])) == plan.palette.ground   # open
+        assert end.getpixel(quarter(rows[0])) == plan.palette.rule      # ticked: filled
+        assert end.getpixel(quarter(rows[2])) == plan.palette.ground    # in progress: a dash
+        assert end.getpixel((x, rows[2]["y"] + box // 2)) == plan.palette.rule
+
+    def test_the_tick_strokes_on_rather_than_appearing(self):
+        plan = _still(_plan(md.STYLE_CHECKLIST_TICK, mode=md.MODE_MP4))
+        _appear, ticks_from = md._checklist_timing(len(plan.data["rows"]))
+        at = md._BUILD_AT + ticks_from
+        partial = md.render_motion_frame(plan, at + 0.08).crop(plan.region)
+        done = md.render_motion_frame(plan, at + 0.6).crop(plan.region)
+        assert not _same(partial, done)
+
+    def test_a_stroke_draws_only_its_share_of_the_path(self):
+        from PIL import Image, ImageDraw
+
+        image = Image.new("RGB", (100, 20), (0, 0, 0))
+        md._stroke(ImageDraw.Draw(image), [(5, 10), (95, 10)], 0.5, (255, 255, 255), 4)
+        assert image.getpixel((40, 10)) == (255, 255, 255)
+        assert image.getpixel((80, 10)) == (0, 0, 0)
+        md._stroke(ImageDraw.Draw(image), [(5, 5), (5, 5)], 0.0, (255, 255, 255), 4)
 
     def test_items_appear_one_by_one(self):
-        plan = _plan(md.STYLE_CHECKLIST_TICK, mode=md.MODE_MP4)
-        frame = md.render_motion_frame(plan, md.MOTION_HOLD_SECONDS + 0.45)
+        plan = _still(_plan(md.STYLE_CHECKLIST_TICK, mode=md.MODE_MP4))
+        frame = md.render_motion_frame(plan, md._BUILD_AT + 0.45)
         rows = plan.data["rows"]
         box = plan.data["box"]
-        edge = lambda row: (plan.region[0] + 1, row["y"] + box // 2)  # noqa: E731
+        edge = lambda row: (plan.region[0] + 2, row["y"] + box // 2)  # noqa: E731
         assert frame.getpixel(edge(rows[0])) == plan.palette.rule
         assert frame.getpixel(edge(rows[-1])) == plan.palette.ground
 
     def test_the_gold_divider_wipes_before_into_after(self):
-        plan = _plan(md.STYLE_BEFORE_AFTER_WIPE, mode=md.MODE_MP4)
+        from PIL import Image
+
+        plan = _still(_plan(md.STYLE_BEFORE_AFTER_WIPE, mode=md.MODE_MP4))
         x0, y0, x1, y1 = plan.region
+
+        def on_ground(layer):
+            ground = Image.new("RGBA", layer.size, (*plan.palette.ground, 255))
+            ground.alpha_composite(layer)
+            return ground.convert("RGB")
+
         before = md.render_motion_frame(plan, md._WIPE_AT - 0.1).crop(plan.region)
         mid = md.render_motion_frame(plan, md._WIPE_AT + md._WIPE_SECONDS / 3)
         after = md.render_motion_frame(plan, 6.5).crop(plan.region)
-        assert _same(after, plan.data["layers"]["after"].convert("RGB"))
-        assert _same(before, plan.data["layers"]["before"].convert("RGB"))
+        assert _same(after, on_ground(plan.data["layers"]["after"]))
+        assert _same(before, on_ground(plan.data["layers"]["before"]))
         golds = [x for x in range(x0, x1) if mid.getpixel((x, (y0 + y1) // 2))
                  == plan.palette.rule]
         assert golds and x0 < golds[0] < x1
 
-    def test_kinetic_lines_reveal_and_the_key_word_is_underlined(self):
-        plan = _plan(md.STYLE_KINETIC_MASK, mode=md.MODE_MP4)
-        assert plan.underline
-        x0, y0, x1, y1 = plan.underline
-        start = md.render_motion_frame(plan, 0.0)
-        end = md.render_motion_frame(plan, 6.5)
-        assert start.getpixel(((x0 + x1) // 2, y0 + 1)) != plan.palette.rule
-        assert end.getpixel(((x0 + x1) // 2, y0 + 1)) == plan.palette.rule
-        mid = md.render_motion_frame(plan, md.MOTION_HOLD_SECONDS + 0.1)
-        assert not _same(start, mid)
+    def test_kinetic_underline_retracts_then_sweeps_back(self):
+        # Off-white: the hook is charcoal there, so only the underline is gold.
+        plan = _still(_plan(md.STYLE_KINETIC_MASK, mode=md.MODE_MP4, ground=tc.GROUND_OFF_WHITE))
+        x0, y0, x1, _y1 = plan.underline
+        probe = ((x0 + x1) // 2, y0 + 1)
+        gone = md.render_motion_frame(plan, md.MOTION_HOLD_SECONDS + md._UNDERLINE_RETRACT + 0.05)
+        assert gone.getpixel(probe) != plan.palette.rule
+        assert md.render_motion_frame(plan, 6.5).getpixel(probe) == plan.palette.rule
 
     def test_the_key_word_prefers_a_figure_else_the_longest_content_word(self):
         word = lambda t: SimpleNamespace(text=t)  # noqa: E731
@@ -302,9 +384,9 @@ class TestStyles:
         assert md._key_word([word("is"), word("it")]) is None
 
     def test_slide_and_mask_differ_while_moving(self):
-        slide = _plan(md.STYLE_KINETIC_SLIDE, mode=md.MODE_MP4)
-        mask = _plan(md.STYLE_KINETIC_MASK, mode=md.MODE_MP4)
-        t = md.MOTION_HOLD_SECONDS + 0.1
+        slide = _still(_plan(md.STYLE_KINETIC_SLIDE, mode=md.MODE_MP4))
+        mask = _still(_plan(md.STYLE_KINETIC_MASK, mode=md.MODE_MP4))
+        t = md.MOTION_HOLD_SECONDS + 0.4
         assert not _same(md.render_motion_frame(slide, t), md.render_motion_frame(mask, t))
 
     def test_too_many_bars_or_steps_for_the_region_are_refused(self):

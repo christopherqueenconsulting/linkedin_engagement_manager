@@ -5,35 +5,39 @@ dynamic" — mostly static type with a drifting slab and a rule. This module tur
 into a kinetic piece. Every style here is PIL frames piped into ffmpeg (no new paid call), in the
 brand colours and Montserrat only (``docs/motion-design.md``):
 
-- ``kinetic_mask`` / ``kinetic_slide`` — kinetic typography: after the frame-0 hold the hook's
-  lines mask-reveal (or slide) back in, in sequence, a hero number scales in, and ONE key word gets
-  a gold underline sweep. Always available, so the rotation always has two options;
-- ``stat_counter`` — a VERIFIED figure counts up from 0 with easing while a gold bar fills in sync,
-  then its label fades in;
-- ``chart_draw`` — ``highlight_chart`` bars grow from the baseline, the gold bar lands last, then
+- ``kinetic_mask`` / ``kinetic_slide`` — kinetic typography: the hook's lines exit and mask-reveal
+  (or slide) back in, in sequence, a hero number springs in, and ONE key word gets a gold
+  underline sweep. Always available, so the rotation always has two options;
+- ``stat_counter`` — a VERIFIED figure, at poster scale, springs in and counts up from 0 while a
+  gold bar fills in sync, then its label fades in;
+- ``chart_draw`` — ``highlight_chart`` bars grow across the frame, the dominant gold bar LAST, then
   the annotation fades in;
-- ``checklist_tick`` — the post's own steps appear one by one and their ticks draw; the last item
-  stays unticked (the curiosity gap, ``image_graphics.checklist_states``);
-- ``before_after_wipe`` — a gold divider wipes the BEFORE state into the AFTER state.
+- ``checklist_tick`` — the post's own steps appear one by one and their ticks STROKE-draw; the
+  last item stays unticked (the curiosity gap, ``image_graphics.checklist_states``);
+- ``before_after_wipe`` — a gold divider wipes a huge BEFORE figure into the AFTER figure.
 
 Rules every style obeys:
 
-- **Frame 0 is the full hook** (LinkedIn's thumbnail, showcase round 5) and is held for
-  ``MOTION_HOLD_SECONDS`` before anything moves.
-- **Ease-out cubic on every motion**, 24 fps MP4 of 6-8 s; a GIF is ≤12 fps, ≤250 frames, ≤5 MB
-  (``animated_loop`` limits and step-down) and **seamless**: it ends in its start state, so its
-  last frame IS its first.
-- **One hero motion, at most one secondary.** Nothing else moves.
+- **Frame 0 is the COMPLETE piece** — the hook AND the final figure, chart or list — because
+  LinkedIn may show frame 0 as the thumbnail. It holds ``MOTION_HOLD_SECONDS``, then the piece
+  resets, builds, and holds its complete state again (≥``MOTION_FINAL_HOLD_SECONDS``) to the end.
+  A GIF's last frame is sampled at ``t = T``, so it IS frame 0 and the loop has no seam.
+- **Ease-out cubic on every motion**, ease-out-back (a small overshoot) on a hero's scale-in.
+- **Nothing is ever static:** a soft brand-gold glow drifts round a closed path behind the type,
+  one full cycle per piece, so it too ends where it began.
+- 24 fps MP4 of 6-8 s; a GIF is ≤12 fps, ≤250 frames, ≤5 MB (``animated_loop`` limits and
+  step-down).
 - **Every animated number is traceable.** A data style is offered only when
   ``image_graphics.assert_traceable`` passes for its facts, and a counter's last value is the
   fact's own ``display`` string; anything else falls back to kinetic typography.
-- **Round 6's caption-band rule holds.** Nothing is drawn below the band's worst-case top, and the
-  byline sits in the top row, never under the caption.
+- **Round 6's caption-band rule holds for a video.** In an MP4 nothing is drawn below the band's
+  worst-case top; a GIF has no caption and uses the whole frame. The byline sits in the top row.
 
 The style rotates per author from the title card's history file (``video_title_card``), never the
 same style twice in a row.
 """
 
+import math
 import os
 import re
 import tempfile
@@ -58,12 +62,10 @@ MOTION_STYLES = DATA_STYLES + KINETIC_STYLES
 
 MODE_MP4, MODE_GIF = "mp4", "gif"
 MOTION_HOLD_SECONDS = 0.8
+MOTION_FINAL_HOLD_SECONDS = 1.2
 MOTION_GIF_SECONDS = 6.0
 MOTION_GIF_MAX_FPS = 12
 MOTION_GIF_WIDTH = 720
-# The GIF's way back to its start state: the data fades (or the underline retracts) over
-# [T - _OUTRO_START, T - _OUTRO_END], then the start state holds to the last frame.
-_OUTRO_START, _OUTRO_END = 1.0, 0.4
 MOTION_SIZES = {"1:1": (1080, 1080), "4:5": (1080, 1350), "9:16": (1080, 1920)}
 
 # The code-drawn archetype each data style animates (``image_graphics``).
@@ -71,17 +73,34 @@ STYLE_ARCHETYPE = {STYLE_STAT_COUNTER: "stat_card", STYLE_CHART_DRAW: "highlight
                    STYLE_CHECKLIST_TICK: "checklist", STYLE_BEFORE_AFTER_WIPE: "before_after"}
 ARCHETYPE_STYLE = {v: k for k, v in STYLE_ARCHETYPE.items()}
 
+# Data timeline (seconds): the complete piece holds, fades out (reset), then builds back.
+_RESET_SECONDS = 0.35
+_BUILD_AT = MOTION_HOLD_SECONDS + _RESET_SECONDS + 0.05
+_DONE = 1e6  # a build time past every motion: the complete state
+_COUNT_SECONDS = 1.8
+_WIPE_AT, _WIPE_SECONDS = _BUILD_AT + 1.2, 1.0
 # Kinetic typography timing (seconds).
 _LINE_STAGGER, _LINE_EXIT, _LINE_ENTER = 0.14, 0.22, 0.5
+_UNDERLINE_RETRACT, _UNDERLINE_DELAY, _UNDERLINE_SWEEP = 0.3, 0.15, 0.55
 # No label, step or tick is set smaller than this, whatever the frame size.
 _MIN_TEXT_PX = 14
-_UNDERLINE_DELAY, _UNDERLINE_SWEEP = 0.15, 0.55
+# How much of the room under the top row the headline may take, tried in order per style.
+# A list or chart needs rows more than the headline needs its third line.
+_HEADLINE_SHARES = {STYLE_STAT_COUNTER: (0.4, 0.3, 0.22), STYLE_BEFORE_AFTER_WIPE: (0.4, 0.3, 0.22),
+                    STYLE_CHART_DRAW: (0.3, 0.22, 0.4), STYLE_CHECKLIST_TICK: (0.28, 0.22, 0.4)}
 
 
 def ease_out_cubic(p: float) -> float:
-    """``1 - (1 - p)^3`` on ``p`` clamped to [0, 1] — the ONE easing every motion here uses."""
+    """``1 - (1 - p)^3`` on ``p`` clamped to [0, 1] — the easing every motion here uses."""
     p = min(1.0, max(0.0, p))
     return 1 - (1 - p) ** 3
+
+
+def ease_out_back(p: float) -> float:
+    """Ease-out with a ~10% overshoot before settling at 1 — a hero's scale-in only."""
+    p = min(1.0, max(0.0, p))
+    c1 = 1.70158
+    return 1 + (c1 + 1) * (p - 1) ** 3 + c1 * (p - 1) ** 2
 
 
 def _progress(t: float, start: float, duration: float) -> float:
@@ -189,10 +208,9 @@ def pick_style(options: Sequence[str], recent: Sequence[str], seed: str = "",
     if prefer in options and prefer != last:
         return prefer
     fresh = [o for o in options if o != last] or options
-    data = [o for o in fresh if o in DATA_STYLES]
     # A data style that has not run lately goes first; kinetic is the fallback, not the default.
     ordered = lru_order(fresh, recent, seed)
-    unused_data = [o for o in ordered if o in data and o not in recent]
+    unused_data = [o for o in ordered if o in DATA_STYLES and o not in recent]
     return (unused_data or ordered)[0]
 
 
@@ -232,12 +250,13 @@ class MotionPlan:
     seconds: float
     palette: Any
     hook: str
-    base: Any                       # RGBA: every static element, the hook included for data
+    base: Any                       # RGBA layer: every static element over a transparent ground
+    background: Any = None          # RGB canvas larger than the frame; its crop drifts
+    drift: int = 0                  # the glow's orbit radius in pixels (0 = a still ground)
     sprites: tuple = ()             # kinetic rows (the hook), at rest
     underline: tuple = ()           # (x0, y0, x1, y1) of the key word's underline
     region: tuple = ()              # the data region
     data: dict = field(default_factory=dict)
-    layers: dict = field(default_factory=dict)
 
 
 def _is_dark(color: tuple) -> bool:
@@ -246,10 +265,11 @@ def _is_dark(color: tuple) -> bool:
 
 def _inks(pal: Any) -> dict:
     """The data colours from the card palette: brand gold, ground and the two text inks."""
-    return {"gold": pal.rule, "strong": pal.hook,
-            "text": pal.byline, "bar": _mix(pal.ground, pal.byline, 0.38),
+    return {"gold": pal.rule, "strong": pal.hook, "text": pal.byline,
+            "bar": _mix(pal.ground, pal.byline, 0.42),
             "track": _mix(pal.ground, pal.byline, 0.16),
             "on_gold": min(pal.ground, pal.hook, key=sum),
+            "light": max(pal.ground, pal.hook, pal.byline, key=sum),
             "accent_text": pal.rule if _is_dark(pal.ground) else pal.hook}
 
 
@@ -270,13 +290,53 @@ def _text_box(font: Any, text: str) -> tuple:
     return _draw().textbbox((0, 0), text, font=font)
 
 
-def _floor(size: tuple) -> int:
-    """The lowest y anything may reach: above the caption band's worst case (round 6)."""
-    from cqc_lem.utilities.video_captions import caption_band_top
-    from cqc_lem.utilities.video_title_card import CAPTION_CLEARANCE
+def _layer(size: tuple, pal: Any) -> Any:
+    """A transparent RGBA layer whose hidden colour is the ground, so text edges never fringe."""
+    from PIL import Image
 
+    return Image.new("RGBA", size, (*pal.ground, 0))
+
+
+def _floor(size: tuple, mode: str) -> int:
+    """The lowest y anything may reach: above the caption band in a video, the margin in a GIF."""
     height = size[1]
-    return min(round(height * (1 - CAPTION_CLEARANCE)), caption_band_top(size)) - round(height * 0.04)
+    if mode == MODE_GIF:
+        return round(height * 0.94)
+    from cqc_lem.utilities.video_captions import caption_band_top
+
+    return caption_band_top(size) - round(height * 0.03)
+
+
+def _background(size: tuple, pal: Any, drift: int) -> Any:
+    """The ground with a soft brand-gold glow, oversized by ``drift`` so a crop can orbit it."""
+    from PIL import Image
+
+    width, height = size
+    canvas = Image.new("RGB", (width + 2 * drift, height + 2 * drift), pal.ground)
+    if drift <= 0:
+        return canvas
+    radius = round(width * 0.75)
+    falloff = Image.radial_gradient("L").resize((2 * radius, 2 * radius))
+    # radial_gradient is 0 at the centre: invert it and square it for a soft, wide shoulder.
+    mask = falloff.point(lambda v: round(255 * (1 - min(v, 255) / 255) ** 2))
+    strength = 0.13 if _is_dark(pal.ground) else 0.2
+    glow = Image.new("RGB", mask.size, _mix(pal.ground, pal.rule, strength))
+    canvas.paste(glow, (round(width * 0.55) + drift - radius, round(height * 0.12) + drift - radius),
+                 mask)
+    return canvas
+
+
+def _ground(plan: MotionPlan, t: float) -> Any:
+    """The moving ground at ``t``: one full orbit per piece, so ``t = T`` is ``t = 0``."""
+    width, height = plan.size
+    if plan.background is None:
+        from PIL import Image
+
+        return Image.new("RGBA", plan.size, (*plan.palette.ground, 255))
+    angle = 2 * math.pi * (t / max(0.1, plan.seconds))
+    left = plan.drift + round(plan.drift * math.cos(angle))
+    top = plan.drift + round(plan.drift * math.sin(angle))
+    return plan.background.crop((left, top, left + width, top + height)).convert("RGBA")
 
 
 def _key_word(words: Sequence) -> Optional[int]:
@@ -292,31 +352,36 @@ def _key_word(words: Sequence) -> Optional[int]:
     return max(scored)[2] if scored else None
 
 
+def _drift_for(size: tuple) -> int:
+    return max(4, round(size[0] * 0.05))
+
+
 def plan_kinetic(layout: Any, style: str, mode: str = MODE_MP4) -> MotionPlan:
-    """Kinetic typography over a ``video_title_card`` layout — its frame 0 IS the static card.
+    """Kinetic typography over a ``video_title_card`` layout — frame 0 IS the complete card.
 
     Args:
-        layout: ``video_title_card.plan_title_card`` output.
+        layout: ``video_title_card.plan_title_card`` output (``clear_caption=False`` for a GIF).
         style: ``kinetic_mask`` or ``kinetic_slide``.
-        mode: ``mp4`` or ``gif`` (a GIF retracts the underline so it ends where it began).
+        mode: ``mp4`` or ``gif``.
 
     Returns:
         The plan.
     """
-    from PIL import Image, ImageDraw
+    from PIL import ImageDraw
 
     from cqc_lem.utilities.video_title_card import render_title_card_frame
 
     width, _height = layout.size
-    base = render_title_card_frame(layout, 0.0, hook=False).convert("RGBA")
+    pal = layout.palette
+    base = render_title_card_frame(layout, 0.0, hook=False, backdrop=False)
     pad = round(layout.hook_size * 0.18)
     sprites = []
     if layout.hero and layout.hero_font is not None:
         box = _text_box(layout.hero_font, layout.hero)
         top = layout.hero_xy[1] + box[1] - pad
-        strip = Image.new("RGBA", (width, box[3] - box[1] + 2 * pad), (0, 0, 0, 0))
+        strip = _layer((width, box[3] - box[1] + 2 * pad), pal)
         ImageDraw.Draw(strip).text((layout.hero_xy[0], layout.hero_xy[1] - top), layout.hero,
-                                   font=layout.hero_font, fill=layout.palette.hook)
+                                   font=layout.hero_font, fill=pal.hook)
         sprites.append(_Sprite(strip, top, hero=True))
     rows: dict = {}
     for word in layout.words:
@@ -324,12 +389,10 @@ def plan_kinetic(layout: Any, style: str, mode: str = MODE_MP4) -> MotionPlan:
     for y, row in sorted(rows.items()):
         box = _text_box(layout.hook_font, row[0].text)
         top = y - pad
-        strip_h = max(box[3], layout.hook_size) + 2 * pad
-        strip = Image.new("RGBA", (width, strip_h), (0, 0, 0, 0))
+        strip = _layer((width, max(box[3], layout.hook_size) + 2 * pad), pal)
         draw = ImageDraw.Draw(strip)
         for word in row:
-            draw.text((word.x, word.y - top), word.text, font=layout.hook_font,
-                      fill=layout.palette.hook)
+            draw.text((word.x, word.y - top), word.text, font=layout.hook_font, fill=pal.hook)
         sprites.append(_Sprite(strip, top))
     underline: tuple = ()
     key = _key_word(layout.words)
@@ -337,39 +400,59 @@ def plan_kinetic(layout: Any, style: str, mode: str = MODE_MP4) -> MotionPlan:
         word = layout.words[key]
         left, _t, right, bottom = _draw().textbbox((word.x, word.y), word.text,
                                                    font=layout.hook_font)
-        thick = max(4, round(width * 0.009))
+        thick = max(4, round(layout.hook_size * 0.08))
         gap = max(3, round(layout.hook_size * 0.06))
         underline = (left, bottom + gap, right, bottom + gap + thick)
     seconds = layout.seconds if mode == MODE_MP4 else MOTION_GIF_SECONDS
-    return MotionPlan(style=style, mode=mode, size=layout.size, seconds=seconds,
-                      palette=layout.palette, hook=" ".join(w.text for w in layout.words),
-                      base=base, sprites=tuple(sprites), underline=underline)
+    drift = _drift_for(layout.size)
+    return MotionPlan(style=style, mode=mode, size=layout.size, seconds=seconds, palette=pal,
+                      hook=" ".join(w.text for w in layout.words), base=base,
+                      background=_background(layout.size, pal, drift), drift=drift,
+                      sprites=tuple(sprites), underline=underline)
 
 
-def _data_base(hook: str, *, size: tuple, palette: Any, kicker: str,
-               byline: str) -> tuple:
-    """The data styles' static frame: the kicker + byline row, the hook, its rule, the slab.
+def _fit_wrap(text: str, width: int, max_h: int, high: int, low: int, max_lines: int,
+              medium: bool = False) -> Optional[tuple]:
+    """``(font, lines, line_h)`` for the largest size ``text`` wraps at within the box, or None."""
+    from cqc_lem.utilities.ai.image_compose import _line_height, _wrap
 
-    Returns ``(base RGBA, data region box)``; raises ``ValueError`` when the hook or the byline
-    cannot be set legibly or no data region is left.
+    draw = _draw()
+    for size_px in range(high, max(low, _MIN_TEXT_PX) - 1, -2):
+        font = _font(size_px, medium)
+        lines = _wrap(draw, text.split(), font, width)
+        line_h = _line_height(font, size_px)
+        if lines and len(lines) <= max_lines and line_h * len(lines) <= max_h:
+            return font, lines, line_h
+    return None
+
+
+def _fit_number(text: str, width: int, max_h: int, high: int, low: int) -> Any:
+    """The largest bold font whose INK fits ``width`` x ``max_h``; ValueError if none."""
+    for size_px in range(high, low - 1, -4):
+        font = _font(size_px)
+        box = _text_box(font, text)
+        if box[2] - box[0] <= width and box[3] - box[1] <= max_h:
+            return font
+    raise ValueError(f"{text!r} does not fit the data region")
+
+
+def _data_base(hook: str, *, size: tuple, palette: Any, kicker: str, byline: str,
+               mode: str, share: float = 0.4) -> tuple:
+    """The data styles' static layer: the kicker + byline row, the hook at headline scale, a rule.
+
+    Returns ``(base RGBA layer, data region box)``; raises ``ValueError`` when the hook or the
+    byline cannot be set legibly or no data region is left.
     """
-    from PIL import Image, ImageDraw
-
-    from cqc_lem.utilities.video_title_card import _fit_lines
+    from PIL import ImageDraw
 
     width, height = size
-    margin = round(width * 0.08)
-    floor_y = _floor(size)
-    base = Image.new("RGBA", size, (*palette.ground, 255))
+    margin = round(width * 0.07)
+    floor_y = _floor(size, mode)
+    base = _layer(size, palette)
     draw = ImageDraw.Draw(base)
-    # The slab sits below the safe area, under where the caption band burns: static ground.
-    slab_top = min(round(height * 0.86), floor_y + round(height * 0.06))
-    draw.rectangle((round(width * 0.46), slab_top, width, height), fill=palette.slab)
-    draw.rectangle((round(width * 0.46), slab_top, width,
-                    slab_top + max(6, round(width * 0.008)) - 1), fill=palette.rule)
-    row_y = round(height * 0.055)
-    small = _font(max(18, round(width * 0.03)))
-    by_font = _font(max(18, round(width * 0.032)), medium=True)
+    row_y = round(height * 0.04)
+    small = _font(max(_MIN_TEXT_PX, round(width * 0.032)))
+    by_font = _font(max(_MIN_TEXT_PX, round(width * 0.034)), medium=True)
     kicker = (kicker or "").upper().strip()
     byline = (byline or "").strip()
     by_w = draw.textlength(byline, font=by_font) if byline else 0
@@ -383,21 +466,22 @@ def _data_base(hook: str, *, size: tuple, palette: Any, kicker: str,
             raise ValueError("the byline does not fit the top row")
         draw.text((round(width - margin - by_w), row_y), byline, font=by_font,
                   fill=palette.byline)
-    top = row_y + round(by_font.size * 1.3) + round(height * 0.035)
-    fitted = _fit_lines(draw, hook, width - 2 * margin, round(height * 0.24),
-                        round(width * 0.072), round(width * 0.042), 3)
+    top = row_y + round(by_font.size * 1.3) + round(height * 0.03)
+    room = floor_y - top
+    fitted = _fit_wrap(hook, width - 2 * margin, round(room * share), round(width * 0.13),
+                       round(width * 0.045), 3)
     if fitted is None:
         raise ValueError("the hook does not fit above the data region")
-    font, _size_px, lines, line_h = fitted
+    font, lines, line_h = fitted
     for n, line in enumerate(lines):
         x = margin - draw.textbbox((0, 0), line, font=font)[0]
         draw.text((x, top + n * line_h), line, font=font, fill=palette.hook)
-    rule_y = top + line_h * len(lines) + round(line_h * 0.25)
-    rule_h = max(5, round(width * 0.007))
-    draw.rectangle((margin, rule_y, margin + round(width * 0.14), rule_y + rule_h),
+    rule_y = top + line_h * len(lines) + round(line_h * 0.15)
+    rule_h = max(5, round(width * 0.01))
+    draw.rectangle((margin, rule_y, margin + round(width * 0.16), rule_y + rule_h),
                    fill=palette.rule)
     region = (margin, rule_y + rule_h + round(height * 0.04), width - margin, floor_y)
-    if region[3] - region[1] < round(height * 0.16):
+    if region[3] - region[1] < round(height * 0.2):
         raise ValueError("no room for the data region under the hook")
     return base, region
 
@@ -432,38 +516,30 @@ def counter_text(display: str, p: float) -> str:
     return f"{prefix}{shown}{suffix}"
 
 
-def _fit_one_line(text: str, width: int, high: int, low: int, medium: bool = False) -> Any:
-    """The largest font at which ``text`` sets on one line within ``width``; ValueError if none."""
-    draw = _draw()
-    for size_px in range(high, low - 1, -2):
-        font = _font(size_px, medium)
-        if draw.textlength(text, font=font) <= width:
-            return font
-    raise ValueError(f"{text[:40]!r} does not fit legibly")
-
-
 def _plan_stat(graphic: dict, region: tuple, size: tuple) -> dict:
     fact = graphic["stat"]
     _counter_parts(fact["display"])
     rw, rh = region[2] - region[0], region[3] - region[1]
-    width = size[0]
-    label_font = _fit_one_line(fact["label"], rw, round(width * 0.04), round(width * 0.026), True)
-    bar_h = max(8, round(width * 0.016))
-    label_h = round(label_font.size * 1.3)
-    gap = round(rh * 0.07)
-    number_h = rh - label_h - bar_h - 2 * gap
-    number_font = None
-    for size_px in range(round(width * 0.2), round(width * 0.07) - 1, -4):
-        font = _font(size_px)
-        box = _text_box(font, fact["display"])
-        if box[2] - box[0] <= rw and box[3] <= number_h:
-            number_font = font
-            break
-    if number_font is None:
-        raise ValueError("the figure does not fit the data region")
-    number_bottom = region[1] + _text_box(number_font, fact["display"])[3]
-    return {"fact": fact, "number_font": number_font, "label_font": label_font,
-            "label_y": number_bottom + gap, "bar_y": number_bottom + 2 * gap + label_h,
+    width, height = size
+    label = _fit_wrap(fact["label"], rw, round(rh * 0.3), round(width * 0.068),
+                      round(width * 0.04), 2, medium=True)
+    if label is None:
+        raise ValueError("the stat's label does not fit")
+    label_font, label_lines, label_h = label
+    bar_h = max(8, round(height * 0.022))
+    gap = round(rh * 0.06)
+    room = rh - label_h * len(label_lines) - bar_h - 2 * gap
+    number_font = _fit_number(fact["display"], rw, min(room, round(height * 0.4)),
+                              round(width * 0.5), round(width * 0.08))
+    box = _text_box(number_font, fact["display"])
+    group = (box[3] - box[1]) + gap + label_h * len(label_lines) + gap + bar_h
+    y = region[1] + max(0, (rh - group) // 2)
+    number_y = y - box[1]
+    label_y = y + (box[3] - box[1]) + gap
+    return {"fact": fact, "number_font": number_font, "number_xy": (region[0] - box[0], number_y),
+            "number_box": (region[0], y, region[0] + box[2] - box[0], y + box[3] - box[1]),
+            "label_font": label_font, "label_lines": label_lines, "label_h": label_h,
+            "label_y": label_y, "bar_y": label_y + label_h * len(label_lines) + gap,
             "bar_h": bar_h}
 
 
@@ -473,38 +549,49 @@ def _plan_chart(graphic: dict, region: tuple, size: tuple) -> dict:
     highlight = int(comparison.get("highlight") or 0)
     annotation = comparison.get("annotation") or ""
     rw, rh = region[2] - region[0], region[3] - region[1]
-    width = size[0]
-    ann_font = _fit_one_line(annotation, rw, round(width * 0.034), round(width * 0.024),
-                             True) if annotation else None
-    ann_h = round(ann_font.size * 1.5) if ann_font else 0
+    width, height = size
+    ann = _fit_wrap(annotation, rw, round(rh * 0.16), round(width * 0.05), round(width * 0.03),
+                    2, medium=True) if annotation else None
+    if annotation and ann is None:
+        raise ValueError("the annotation does not fit")
+    ann_h = ann[2] * len(ann[1]) + round(rh * 0.04) if ann else 0
     row_h = (rh - ann_h) // len(items)
-    label_px = min(round(width * 0.032), round(row_h * 0.36))
-    if label_px < max(_MIN_TEXT_PX, round(width * 0.022)):
+    label_px = min(round(width * 0.06), round(row_h * 0.3))
+    if label_px < max(_MIN_TEXT_PX, round(width * 0.026)):
         raise ValueError("too many bars for the data region")
     draw = _draw()
     label_font = _font(label_px, medium=True)
-    value_font = _font(label_px)
-    value_w = max(draw.textlength(i["display"], font=value_font) for i in items)
-    bar_room = rw - value_w - round(width * 0.025)
+    bar_gold = min(round(row_h * 0.5), round(height * 0.11))
+    bar_grey = round(bar_gold * 0.68)
+    value_font = _font(min(round(width * 0.075), round(bar_grey * 0.9)))
+    pad = round(width * 0.025)
     for item in items:
         if draw.textlength(item["label"], font=label_font) > rw:
             raise ValueError("a bar label does not fit")
+    # The longest bar spans the whole width with its value set INSIDE its end; a bar too short
+    # for that carries its value just past its end.
     top = max(i["amount"] for i in items) or 1.0
-    bar_h = max(10, round(row_h * 0.34))
-    if round(label_px * 1.3) + bar_h > row_h:
-        raise ValueError("no room for a bar under its label")
     rows = []
     for n, item in enumerate(items):
         y = region[1] + n * row_h
-        rows.append({"label": item["label"], "display": item["display"],
-                     "y": y, "bar_y": y + round(label_px * 1.3),
-                     "length": max(bar_h, round(bar_room * item["amount"] / top)),
-                     "gold": n == highlight})
+        gold = n == highlight
+        thick = bar_gold if gold else bar_grey
+        length = max(thick // 2, round(rw * item["amount"] / top))
+        value_w = round(draw.textlength(item["display"], font=value_font))
+        inside = length + pad + value_w > rw
+        if inside and value_w + 2 * pad > length:
+            raise ValueError("a value fits neither inside nor beside its bar")
+        rows.append({"label": item["label"], "display": item["display"], "y": y,
+                     "bar_y": y + round(label_px * 1.35), "thick": thick, "length": length,
+                     "gold": gold, "value_x": (region[0] + length - pad - value_w if inside
+                                 else region[0] + length + pad),
+                     "inside": inside})
     # The non-highlighted bars grow first, in order; the gold bar lands last.
     order = [n for n in range(len(rows)) if not rows[n]["gold"]] + [highlight]
     return {"rows": rows, "order": order, "label_font": label_font, "value_font": value_font,
-            "bar_h": bar_h, "annotation": annotation, "ann_font": ann_font,
-            "ann_y": region[1] + row_h * len(items) + round(row_h * 0.1)}
+            "annotation": ann[1] if ann else [], "ann_font": ann[0] if ann else None,
+            "ann_h": ann[2] if ann else 0, "ann_y": region[1] + row_h * len(items)
+            + round(rh * 0.03)}
 
 
 def _plan_checklist(graphic: dict, region: tuple, size: tuple) -> dict:
@@ -514,58 +601,69 @@ def _plan_checklist(graphic: dict, region: tuple, size: tuple) -> dict:
     rh = region[3] - region[1]
     width = size[0]
     row_h = rh // len(steps)
-    box = min(round(width * 0.05), round(row_h * 0.62))
-    if box < max(_MIN_TEXT_PX, round(width * 0.026)):
+    box = min(round(width * 0.085), round(row_h * 0.55))
+    if box < max(_MIN_TEXT_PX, round(width * 0.03)):
         raise ValueError("too many steps for the data region")
-    text_x = region[0] + round(box * 1.6)
-    high = min(round(width * 0.038), round(row_h * 0.55))
-    font = None
-    for size_px in range(high, round(width * 0.024) - 1, -2):
-        candidate = _font(size_px, medium=True)
-        if all(_draw().textlength(s, font=candidate) <= region[2] - text_x for s in steps):
-            font = candidate
+    text_x = region[0] + round(box * 1.45)
+    high = min(round(width * 0.075), round(row_h * 0.45))
+    fitted = None
+    for size_px in range(high, max(_MIN_TEXT_PX, round(width * 0.03)) - 1, -2):
+        fits = [_fit_wrap(s, region[2] - text_x, row_h, size_px, size_px, 2, True)
+                for s in steps]
+        if all(fits):
+            fitted = fits
             break
-    if font is None:
+    if fitted is None:
         raise ValueError("a step does not fit the data region")
-    rows = [{"text": s, "y": region[1] + n * row_h + (row_h - box) // 2}
-            for n, s in enumerate(steps)]
-    return {"rows": rows, "states": checklist_states(len(steps)), "box": box, "font": font,
-            "text_x": text_x}
+    rows = []
+    for n, (step, (font, lines, line_h)) in enumerate(zip(steps, fitted)):
+        y = region[1] + n * row_h
+        text_h = line_h * len(lines)
+        rows.append({"text": step, "lines": lines, "line_h": line_h,
+                     "y": y + (row_h - box) // 2, "text_y": y + (row_h - text_h) // 2})
+    return {"rows": rows, "states": checklist_states(len(steps)), "box": box,
+            "font": fitted[0][0], "text_x": text_x}
 
 
 def _plan_before_after(graphic: dict, region: tuple, size: tuple, palette: Any) -> dict:
-    from PIL import Image, ImageDraw
+    from PIL import ImageDraw
 
     pair = graphic["before_after"]
     rw, rh = region[2] - region[0], region[3] - region[1]
-    width = size[0]
+    width, height = size
     inks = _inks(palette)
-    tag_font = _font(max(18, round(width * 0.03)))
+    tag_font = _font(max(_MIN_TEXT_PX, round(width * 0.055)))
+    tag_h = round(tag_font.size * 1.35)
+    labels = {}
+    for key in ("before", "after"):
+        fit = _fit_wrap(pair[key]["label"], rw, round(rh * 0.25), round(width * 0.065),
+                        round(width * 0.04), 2, medium=True)
+        if fit is None:
+            raise ValueError("a before/after label does not fit")
+        labels[key] = fit
+    label_room = max(f[2] * len(f[1]) for f in labels.values())
+    gap = round(rh * 0.04)
+    room = min(rh - tag_h - label_room - 2 * gap, round(height * 0.42))
+    # One size for both, so the wipe swaps the figure and never jumps its scale.
+    fonts = [_fit_number(pair[k]["display"], rw, room, round(width * 0.6), round(width * 0.1))
+             for k in ("before", "after")]
+    number_font = min(fonts, key=lambda f: f.size)
     layers = {}
     for key, tag, ink in (("before", "BEFORE", inks["text"]),
                           ("after", "AFTER", inks["accent_text"])):
         fact = pair[key]
-        label_font = _fit_one_line(fact["label"], rw, round(width * 0.04), round(width * 0.026),
-                                   True)
-        tag_h = round(tag_font.size * 1.6)
-        label_h = round(label_font.size * 1.35)
-        room = rh - tag_h - label_h
-        number_font = None
-        for size_px in range(round(width * 0.18), round(width * 0.07) - 1, -4):
-            font = _font(size_px)
-            box = _text_box(font, fact["display"])
-            if box[2] - box[0] <= rw and box[3] <= room:
-                number_font = font
-                break
-        if number_font is None:
-            raise ValueError("a before/after figure does not fit the data region")
-        layer = Image.new("RGBA", (rw, rh), (*palette.ground, 255))
+        font, lines, line_h = labels[key]
+        box = _text_box(number_font, fact["display"])
+        group = tag_h + (box[3] - box[1]) + 2 * gap + line_h * len(lines)
+        y = max(0, (rh - group) // 2)
+        layer = _layer((rw, rh), palette)
         draw = ImageDraw.Draw(layer)
-        draw.text((0, 0), tag, font=tag_font, fill=inks["gold"] if key == "after" else ink)
-        draw.text((0, tag_h), fact["display"], font=number_font, fill=ink)
-        number_bottom = tag_h + _text_box(number_font, fact["display"])[3]
-        draw.text((0, number_bottom + round(rh * 0.04)), fact["label"], font=label_font,
-                  fill=inks["text"])
+        draw.text((0, y), tag, font=tag_font, fill=inks["gold"] if key == "after" else ink)
+        number_top = y + tag_h + gap
+        draw.text((-box[0], number_top - box[1]), fact["display"], font=number_font, fill=ink)
+        label_y = number_top + (box[3] - box[1]) + gap
+        for n, line in enumerate(lines):
+            draw.text((0, label_y + n * line_h), line, font=font, fill=inks["text"])
         layers[key] = layer
     return {"layers": layers, "facts": pair}
 
@@ -578,7 +676,7 @@ def plan_data(style: str, graphic: dict, hook: str, *, size: tuple, palette: Any
     Args:
         style: One of ``DATA_STYLES``.
         graphic: Validated graphic data.
-        hook: The words the frame sets on frame 0.
+        hook: The headline the piece sets.
         size: ``(width, height)``.
         palette: ``video_title_card.TitleCardPalette``.
         kicker: The topic tag ('' for none).
@@ -599,31 +697,33 @@ def plan_data(style: str, graphic: dict, hook: str, *, size: tuple, palette: Any
     hook = " ".join(tidy_figures(hook or "").split())
     if not hook:
         raise ValueError("a motion piece needs a hook")
-    base, region = _data_base(hook, size=size, palette=palette, kicker=kicker, byline=byline)
-    if style == STYLE_STAT_COUNTER:
-        data = _plan_stat(graphic, region, size)
-    elif style == STYLE_CHART_DRAW:
-        data = _plan_chart(graphic, region, size)
-    elif style == STYLE_CHECKLIST_TICK:
-        data = _plan_checklist(graphic, region, size)
+    planners = {STYLE_STAT_COUNTER: _plan_stat, STYLE_CHART_DRAW: _plan_chart,
+                STYLE_CHECKLIST_TICK: _plan_checklist,
+                STYLE_BEFORE_AFTER_WIPE: lambda g, r, s: _plan_before_after(g, r, s, palette)}
+    refusal: Optional[ValueError] = None
+    # The headline takes up to 40% of the frame's room; a video's caption band leaves less, so
+    # it gives some back to the data before the style is refused.
+    for share in _HEADLINE_SHARES.get(style, _HEADLINE_SHARES[STYLE_STAT_COUNTER]):
+        try:
+            base, region = _data_base(hook, size=size, palette=palette, kicker=kicker,
+                                      byline=byline, mode=mode, share=share)
+            data = planners[style](graphic, region, size)
+            break
+        except ValueError as e:
+            refusal = e
     else:
-        data = _plan_before_after(graphic, region, size, palette)
+        raise refusal or ValueError("no layout")
+    drift = _drift_for(size)
     return MotionPlan(style=style, mode=mode, size=size,
                       seconds=seconds if mode == MODE_MP4 else MOTION_GIF_SECONDS,
-                      palette=palette, hook=hook, base=base, region=region, data=data)
+                      palette=palette, hook=hook, base=base,
+                      background=_background(size, palette, drift), drift=drift,
+                      region=region, data=data)
 
 
 # ---------------------------------------------------------------------------------------------
 # Frames.
 # ---------------------------------------------------------------------------------------------
-def _outro(plan: MotionPlan, t: float) -> float:
-    """1 while the piece is on screen; eases to 0 at the end of a GIF so it loops to frame 0."""
-    if plan.mode != MODE_GIF:
-        return 1.0
-    start = plan.seconds - _OUTRO_START
-    return 1.0 - _progress(t, start, _OUTRO_START - _OUTRO_END)
-
-
 def _with_alpha(image: Any, alpha: float) -> Any:
     if alpha >= 1:
         return image
@@ -632,38 +732,66 @@ def _with_alpha(image: Any, alpha: float) -> Any:
     return faded
 
 
+def _scaled(image: Any, scale: float) -> Any:
+    """``image`` scaled about its ink's centre, on a canvas of the same size."""
+    from PIL import Image
+
+    bbox = image.getbbox()
+    if not bbox or scale == 1.0:
+        return image
+    glyphs = image.crop(bbox)
+    w = max(1, round(glyphs.size[0] * scale))
+    h = max(1, round(glyphs.size[1] * scale))
+    out = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    cx, cy = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
+    out.alpha_composite(glyphs.resize((w, h), Image.LANCZOS),
+                        (round(cx - w / 2), round(cy - h / 2)))
+    return out
+
+
+def _data_clock(t: float) -> tuple:
+    """``(build_time, alpha)`` of the data layer at ``t``: complete, fading out, then building."""
+    if t < MOTION_HOLD_SECONDS:
+        return _DONE, 1.0
+    if t < _BUILD_AT:
+        return _DONE, 1.0 - _progress(t, MOTION_HOLD_SECONDS, _RESET_SECONDS)
+    return t - _BUILD_AT, 1.0
+
+
 def _kinetic_row(plan: MotionPlan, sprite: _Sprite, index: int, t: float) -> tuple:
     """``(dx, dy, alpha, scale)`` for one row at ``t``: at rest outside its own window."""
     width = plan.size[0]
-    start = MOTION_HOLD_SECONDS + index * _LINE_STAGGER
+    start = MOTION_HOLD_SECONDS + _UNDERLINE_RETRACT * 0.5 + index * _LINE_STAGGER
     exit_p = _progress(t, start, _LINE_EXIT)
-    enter_p = _progress(t, start + _LINE_EXIT, _LINE_ENTER)
-    if t < start or enter_p >= 1:
+    enter_t = (t - start - _LINE_EXIT) / _LINE_ENTER
+    if t < start or enter_t >= 1:
         return 0, 0, 1.0, 1.0
     height = sprite.image.size[1]
     if t < start + _LINE_EXIT:
         if sprite.hero:
-            return 0, 0, 1 - exit_p, 1.0
+            return 0, 0, 1 - exit_p, 1.0 - 0.2 * exit_p
         if plan.style == STYLE_KINETIC_MASK:
             return 0, -round(height * exit_p), 1.0, 1.0
         return round(width * 0.06 * exit_p), 0, 1 - exit_p, 1.0
+    enter_p = ease_out_cubic(enter_t)
     if sprite.hero:
-        return 0, 0, enter_p, 0.86 + 0.14 * enter_p
+        return 0, 0, min(1.0, enter_t * 2), 0.6 + 0.4 * ease_out_back(enter_t)
     if plan.style == STYLE_KINETIC_MASK:
         return 0, round(height * (1 - enter_p)), 1.0, 1.0
     return -round(width * 0.08 * (1 - enter_p)), 0, enter_p, 1.0
 
 
 def _underline_span(plan: MotionPlan, t: float) -> tuple:
-    """The drawn share of the underline as ``(from, to)`` in [0, 1]."""
+    """The drawn share of the underline as ``(from, to)`` in [0, 1] — full at rest."""
+    if t < MOTION_HOLD_SECONDS:
+        return 0.0, 1.0
+    retract = _progress(t, MOTION_HOLD_SECONDS, _UNDERLINE_RETRACT)
     rows = len(plan.sprites)
-    start = (MOTION_HOLD_SECONDS + (rows - 1) * _LINE_STAGGER + _LINE_EXIT + _LINE_ENTER
-             + _UNDERLINE_DELAY)
-    grow = _progress(t, start, _UNDERLINE_SWEEP)
-    if plan.mode == MODE_GIF:
-        retract = _progress(t, plan.seconds - _OUTRO_START, _OUTRO_START - _OUTRO_END - 0.1)
-        return retract, grow
-    return 0.0, grow
+    start = (MOTION_HOLD_SECONDS + _UNDERLINE_RETRACT * 0.5 + (rows - 1) * _LINE_STAGGER
+             + _LINE_EXIT + _LINE_ENTER + _UNDERLINE_DELAY)
+    if t < start:
+        return retract, 1.0
+    return 0.0, _progress(t, start, _UNDERLINE_SWEEP)
 
 
 def _render_kinetic(plan: MotionPlan, t: float, frame: Any) -> None:
@@ -671,17 +799,7 @@ def _render_kinetic(plan: MotionPlan, t: float, frame: Any) -> None:
 
     for index, sprite in enumerate(plan.sprites):
         dx, dy, alpha, scale = _kinetic_row(plan, sprite, index, t)
-        image = sprite.image
-        if scale != 1.0:
-            bbox = image.getbbox()
-            if bbox:
-                glyphs = image.crop(bbox)
-                w = max(1, round(glyphs.size[0] * scale))
-                h = max(1, round(glyphs.size[1] * scale))
-                glyphs = glyphs.resize((w, h), Image.LANCZOS)
-                image = Image.new("RGBA", sprite.image.size, (0, 0, 0, 0))
-                cx, cy = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
-                image.paste(glyphs, (round(cx - w / 2), round(cy - h / 2)))
+        image = _scaled(sprite.image, scale)
         if dx or dy:
             moved = Image.new("RGBA", image.size, (0, 0, 0, 0))
             moved.paste(image, (dx, dy))
@@ -696,138 +814,182 @@ def _render_kinetic(plan: MotionPlan, t: float, frame: Any) -> None:
                                             fill=plan.palette.rule)
 
 
-def _render_stat(plan: MotionPlan, t: float, draw: Any, inks: dict, alpha: float) -> None:
+def _render_stat(plan: MotionPlan, tb: float, frame: Any, inks: dict, alpha: float) -> None:
+    from PIL import ImageDraw
+
     d = plan.data
-    count = _progress(t, MOTION_HOLD_SECONDS, 1.8)
-    if t < MOTION_HOLD_SECONDS:
-        return
-    x0, y0, x1, _y1 = plan.region
-    draw.text((x0, y0), counter_text(d["fact"]["display"], count), font=d["number_font"],
-              fill=(*inks["strong"], round(255 * alpha)))
-    draw.rectangle((x0, d["bar_y"], x1, d["bar_y"] + d["bar_h"]),
-                   fill=(*inks["track"], round(255 * alpha)))
+    x0, _y0, x1, _y1 = plan.region
+    count = _progress(tb, 0.0, _COUNT_SECONDS)
+    pop = 0.7 + 0.3 * ease_out_back(tb / 0.55)
+    layer = _layer(plan.size, plan.palette)
+    ImageDraw.Draw(layer).text(d["number_xy"], counter_text(d["fact"]["display"], count),
+                               font=d["number_font"], fill=(*inks["strong"], 255))
+    if pop != 1.0:
+        # Scale about the figure's own box, never the whole frame.
+        box = d["number_box"]
+        pad = round(plan.size[0] * 0.02)
+        crop = (max(0, box[0] - pad), max(0, box[1] - pad), min(plan.size[0], box[2] + 4 * pad),
+                min(plan.size[1], box[3] + pad))
+        piece = _scaled(layer.crop(crop), pop)
+        layer = _layer(plan.size, plan.palette)
+        layer.alpha_composite(piece, crop[:2])
+    frame.alpha_composite(_with_alpha(layer, alpha))
+    overlay = _layer(plan.size, plan.palette)
+    draw = ImageDraw.Draw(overlay)
+    a = round(255 * alpha)
+    draw.rectangle((x0, d["bar_y"], x1, d["bar_y"] + d["bar_h"]), fill=(*inks["track"], a))
     filled = round((x1 - x0) * count)
     if filled > 0:
         draw.rectangle((x0, d["bar_y"], x0 + filled, d["bar_y"] + d["bar_h"]),
-                       fill=(*inks["gold"], round(255 * alpha)))
-    label = _progress(t, MOTION_HOLD_SECONDS + 1.8, 0.5) * alpha
+                       fill=(*inks["gold"], a))
+    label = _progress(tb, _COUNT_SECONDS, 0.45) * alpha
     if label > 0:
-        draw.text((x0, d["label_y"]), d["fact"]["label"], font=d["label_font"],
-                  fill=(*inks["text"], round(255 * label)))
+        for n, line in enumerate(d["label_lines"]):
+            draw.text((x0, d["label_y"] + n * d["label_h"]), line, font=d["label_font"],
+                      fill=(*inks["text"], round(255 * label)))
+    frame.alpha_composite(overlay)
 
 
-def _render_chart(plan: MotionPlan, t: float, draw: Any, inks: dict, alpha: float) -> None:
+def _render_chart(plan: MotionPlan, tb: float, frame: Any, inks: dict, alpha: float) -> None:
+    from PIL import ImageDraw
+
     d = plan.data
     x0 = plan.region[0]
-    start = MOTION_HOLD_SECONDS
+    overlay = _layer(plan.size, plan.palette)
+    draw = ImageDraw.Draw(overlay)
+    end = 0.0
     for step, n in enumerate(d["order"]):
         row = d["rows"][n]
         gold = row["gold"]
-        begin = start + step * 0.18 + (0.25 if gold else 0.0)
-        p = _progress(t, begin, 0.8 if gold else 0.6)
+        begin = step * 0.18 + (0.25 if gold else 0.0)
+        span = 0.8 if gold else 0.6
+        end = begin + span
+        p = _progress(tb, begin, span)
         if p <= 0:
             continue
         a = round(255 * alpha * min(1.0, p * 2))
         draw.text((x0, row["y"]), row["label"], font=d["label_font"], fill=(*inks["text"], a))
         length = max(1, round(row["length"] * p))
-        draw.rectangle((x0, row["bar_y"], x0 + length, row["bar_y"] + d["bar_h"]),
+        draw.rectangle((x0, row["bar_y"], x0 + length, row["bar_y"] + row["thick"]),
                        fill=(*(inks["gold"] if gold else inks["bar"]), round(255 * alpha)))
-        value_a = _progress(t, begin + (0.8 if gold else 0.6) - 0.15, 0.3) * alpha
+        value_a = _progress(tb, end - 0.15, 0.3) * alpha
         if value_a > 0:
-            draw.text((x0 + row["length"] + round(plan.size[0] * 0.02),
-                       row["bar_y"] + (d["bar_h"] - d["value_font"].size) // 2 - 2),
-                      row["display"], font=d["value_font"],
-                      fill=(*(inks["accent_text"] if gold else inks["text"]), round(255 * value_a)))
+            vbox = _text_box(d["value_font"], row["display"])
+            if row["inside"]:
+                bar = inks["gold"] if gold else inks["bar"]
+                ink = inks["on_gold"] if sum(bar) > 384 else inks["light"]
+            else:
+                ink = inks["accent_text"] if gold else inks["text"]
+            draw.text((row["value_x"] - vbox[0],
+                       row["bar_y"] + (row["thick"] - (vbox[3] - vbox[1])) // 2 - vbox[1]),
+                      row["display"], font=d["value_font"], fill=(*ink, round(255 * value_a)))
     if d["annotation"]:
-        done = start + (len(d["order"]) - 1) * 0.18 + 0.25 + 0.8
-        a = _progress(t, done + 0.1, 0.5) * alpha
+        a = _progress(tb, end + 0.1, 0.5) * alpha
         if a > 0:
-            draw.text((x0, d["ann_y"]), d["annotation"], font=d["ann_font"],
-                      fill=(*inks["accent_text"], round(255 * a)))
+            for n, line in enumerate(d["annotation"]):
+                draw.text((x0, d["ann_y"] + n * d["ann_h"]), line, font=d["ann_font"],
+                          fill=(*inks["accent_text"], round(255 * a)))
+    frame.alpha_composite(overlay)
 
 
 def _checklist_timing(count: int) -> tuple:
-    appear = [MOTION_HOLD_SECONDS + n * 0.3 for n in range(count)]
-    ticks_from = appear[-1] + 0.45
-    return appear, ticks_from
+    appear = [n * 0.3 for n in range(count)]
+    return appear, appear[-1] + 0.45
 
 
-def _render_checklist(plan: MotionPlan, t: float, draw: Any, inks: dict, alpha: float) -> None:
+def _stroke(draw: Any, points: list, p: float, fill: tuple, width: int) -> None:
+    """Draw the first ``p`` (0-1) of the polyline ``points`` — a path, never a glyph."""
+    lengths = [math.dist(a, b) for a, b in zip(points, points[1:])]
+    remaining = sum(lengths) * min(1.0, max(0.0, p))
+    path = [points[0]]
+    for (a, b), length in zip(zip(points, points[1:]), lengths):
+        if remaining <= 0:
+            break
+        share = min(1.0, remaining / length) if length else 1.0
+        path.append((a[0] + (b[0] - a[0]) * share, a[1] + (b[1] - a[1]) * share))
+        remaining -= length
+    if len(path) > 1:
+        draw.line(path, fill=fill, width=width, joint="curve")
+        r = width / 2
+        for x, y in (path[0], path[-1]):
+            draw.ellipse((x - r, y - r, x + r, y + r), fill=fill)
+
+
+def _render_checklist(plan: MotionPlan, tb: float, frame: Any, inks: dict, alpha: float) -> None:
+    from PIL import ImageDraw
+
     d = plan.data
     box = d["box"]
     x0 = plan.region[0]
     width = plan.size[0]
     appear, ticks_from = _checklist_timing(len(d["rows"]))
+    overlay = _layer(plan.size, plan.palette)
+    draw = ImageDraw.Draw(overlay)
     tick_n = 0
     for n, row in enumerate(d["rows"]):
-        p = _progress(t, appear[n], 0.4)
+        p = _progress(tb, appear[n], 0.4)
         if p <= 0:
             continue
         a = round(255 * alpha * p)
-        dx = -round(width * 0.04 * (1 - p))
+        dx = -round(width * 0.05 * (1 - p))
         y = row["y"]
         line = max(3, round(box * 0.09))
-        draw.rectangle((x0 + dx, y, x0 + dx + box, y + box), outline=(*inks["gold"], a),
-                       width=line)
-        draw.text((d["text_x"] + dx, y + (box - d["font"].size) // 2 - 2), row["text"],
-                  font=d["font"], fill=(*inks["strong"], a))
+        draw.rounded_rectangle((x0 + dx, y, x0 + dx + box, y + box), radius=round(box * 0.18),
+                               outline=(*inks["gold"], a), width=line)
+        for k, text in enumerate(row["lines"]):
+            draw.text((d["text_x"] + dx, row["text_y"] + k * row["line_h"]), text,
+                      font=d["font"], fill=(*inks["strong"], a))
         state = d["states"][n]
         if state == "open":
             continue
-        tick = _progress(t, ticks_from + tick_n * 0.4, 0.35)
+        tick = _progress(tb, ticks_from + tick_n * 0.4, 0.4)
         tick_n += 1
         if tick <= 0:
             continue
-        ta = round(255 * alpha * min(1.0, tick * 1.5))
-        draw.rectangle((x0 + dx, y, x0 + dx + box, y + box), fill=(*inks["gold"], ta))
+        ta = round(255 * alpha * min(1.0, tick * 2))
+        stroke = max(3, round(box * 0.14))
+        left, top = x0 + dx, y
         if state == "gap":
-            qfont = _font(round(box * 0.8))
-            qw = draw.textlength("?", font=qfont)
-            draw.text((x0 + dx + (box - qw) / 2, y + box * 0.02), "?", font=qfont,
-                      fill=(*inks["on_gold"], round(ta * tick)))
+            # In progress: a drawn dash across the box, half-done — never a "?" glyph.
+            _stroke(draw, [(left + box * 0.26, top + box * 0.5), (left + box * 0.74, top + box * 0.5)],
+                    tick, (*inks["gold"], ta), stroke)
             continue
-        # The tick draws as a stroke: down to the elbow, then up to the far corner.
-        a_pt = (x0 + dx + box * 0.22, y + box * 0.52)
-        b_pt = (x0 + dx + box * 0.42, y + box * 0.72)
-        c_pt = (x0 + dx + box * 0.80, y + box * 0.28)
-        stroke = max(3, round(box * 0.12))
-        first = min(1.0, tick / 0.4)
-        draw.line([a_pt, (a_pt[0] + (b_pt[0] - a_pt[0]) * first,
-                          a_pt[1] + (b_pt[1] - a_pt[1]) * first)],
-                  fill=(*inks["on_gold"], ta), width=stroke)
-        if tick > 0.4:
-            second = (tick - 0.4) / 0.6
-            draw.line([b_pt, (b_pt[0] + (c_pt[0] - b_pt[0]) * second,
-                              b_pt[1] + (c_pt[1] - b_pt[1]) * second)],
-                      fill=(*inks["on_gold"], ta), width=stroke)
+        draw.rounded_rectangle((left, top, left + box, top + box), radius=round(box * 0.18),
+                               fill=(*inks["gold"], ta))
+        _stroke(draw, [(left + box * 0.24, top + box * 0.52), (left + box * 0.43, top + box * 0.71),
+                       (left + box * 0.78, top + box * 0.3)], tick, (*inks["on_gold"], ta), stroke)
+    frame.alpha_composite(overlay)
 
 
-_WIPE_AT, _WIPE_SECONDS = MOTION_HOLD_SECONDS + 1.3, 1.2
-
-
-def _render_before_after(plan: MotionPlan, t: float, frame: Any, inks: dict,
+def _render_before_after(plan: MotionPlan, tb: float, frame: Any, inks: dict,
                          alpha: float) -> None:
     from PIL import ImageDraw
 
     d = plan.data
     x0, y0, x1, y1 = plan.region
-    shown = _progress(t, MOTION_HOLD_SECONDS, 0.4) * alpha
+    shown = _progress(tb, 0.0, 0.35) * alpha
     if shown <= 0:
         return
-    wipe = _progress(t, _WIPE_AT, _WIPE_SECONDS)
+    at = _WIPE_AT - _BUILD_AT
+    wipe = _progress(tb, at, _WIPE_SECONDS)
     edge = round((x1 - x0) * wipe)
     layer = d["layers"]["before"].copy()
     if edge > 0:
         layer.paste(d["layers"]["after"].crop((0, 0, edge, y1 - y0)), (0, 0))
     frame.alpha_composite(_with_alpha(layer, shown), (x0, y0))
     if 0 < wipe < 1:
-        bar = max(6, round(plan.size[0] * 0.008))
+        bar = max(6, round(plan.size[0] * 0.012))
         ImageDraw.Draw(frame).rectangle((x0 + edge - bar // 2, y0, x0 + edge + bar // 2, y1),
                                         fill=(*inks["gold"], round(255 * alpha)))
 
 
+_DATA_RENDERERS = {STYLE_STAT_COUNTER: _render_stat, STYLE_CHART_DRAW: _render_chart,
+                   STYLE_CHECKLIST_TICK: _render_checklist,
+                   STYLE_BEFORE_AFTER_WIPE: _render_before_after}
+
+
 def render_motion_frame(plan: MotionPlan, t: float) -> Any:
-    """One frame at ``t`` seconds, as a PIL RGB image — frame 0 carries the whole hook.
+    """One frame at ``t`` seconds, as a PIL RGB image — frame 0 is the complete piece.
 
     Args:
         plan: A ``plan_kinetic`` / ``plan_data`` plan.
@@ -836,22 +998,13 @@ def render_motion_frame(plan: MotionPlan, t: float) -> Any:
     Returns:
         The frame.
     """
-    from PIL import Image, ImageDraw
-
-    frame = plan.base.copy()
+    frame = _ground(plan, t)
+    frame.alpha_composite(plan.base)
     if plan.style in KINETIC_STYLES:
         _render_kinetic(plan, t, frame)
-        return frame.convert("RGB")
-    inks = _inks(plan.palette)
-    alpha = _outro(plan, t)
-    if plan.style == STYLE_BEFORE_AFTER_WIPE:
-        _render_before_after(plan, t, frame, inks, alpha)
-        return frame.convert("RGB")
-    overlay = Image.new("RGBA", frame.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
-    {STYLE_STAT_COUNTER: _render_stat, STYLE_CHART_DRAW: _render_chart,
-     STYLE_CHECKLIST_TICK: _render_checklist}[plan.style](plan, t, draw, inks, alpha)
-    frame.alpha_composite(overlay)
+    else:
+        tb, alpha = _data_clock(t)
+        _DATA_RENDERERS[plan.style](plan, tb, frame, _inks(plan.palette), alpha)
     return frame.convert("RGB")
 
 
@@ -873,10 +1026,11 @@ def build_motion(hook: str, *, graphic: Optional[dict], size: tuple, palette: An
     """Pick a style off the author's rotation and plan it, falling back to kinetic. Never raises.
 
     A data style that cannot be set (or whose facts no longer trace) falls to the next option and
-    finally to kinetic typography over ``card_layout`` (planned here when not given).
+    finally to kinetic typography over ``card_layout`` (planned here when not given — a GIF's
+    uses the whole frame, having no caption band).
 
     Args:
-        hook: The words frame 0 sets.
+        hook: The headline.
         graphic: Validated graphic data, or None.
         size: ``(width, height)``.
         palette: ``video_title_card.TitleCardPalette``.
@@ -909,7 +1063,8 @@ def build_motion(hook: str, *, graphic: Optional[dict], size: tuple, palette: An
                 from cqc_lem.utilities.video_title_card import plan_title_card
 
                 layout = plan_title_card(hook, size=size, palette=palette, kicker=kicker,
-                                         byline=byline, seconds=seconds)
+                                         byline=byline, seconds=seconds,
+                                         clear_caption=mode != MODE_GIF)
             return plan_kinetic(layout, style, mode)
         except (ValueError, GraphicError) as e:
             log_debug("Motion style could not be set — trying the next", style=style,
@@ -923,8 +1078,8 @@ def build_motion(hook: str, *, graphic: Optional[dict], size: tuple, palette: An
 
 def _gif_command(ffmpeg: str, size: tuple, fps: int, width: int, out_path: str) -> list:
     """Raw RGB frames in, a palette-optimised looping GIF out (``animated_loop``'s filter)."""
-    graph = (f"scale={int(width)}:-2:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];"
-             f"[b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle")
+    graph = (f"scale={int(width)}:-2:flags=lanczos,split[a][b];[a]palettegen=stats_mode=full[p];"
+             f"[b][p]paletteuse=dither=bayer:bayer_scale=4")
     return [ffmpeg, "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
             "-s", f"{size[0]}x{size[1]}", "-r", str(int(fps)), "-i", "-",
             "-filter_complex", graph, "-loop", "0", out_path]
@@ -985,7 +1140,7 @@ def create_motion_gif(hook: Optional[str], *, graphic: Optional[dict] = None,
     """A $0 kinetic GIF loop of the hook (and its verified facts). Never raises.
 
     Args:
-        hook: The words frame 0 sets.
+        hook: The headline.
         graphic: Validated graphic data, or None (kinetic typography).
         user_id: The author — brand colours and the style rotation.
         post_id: For the seed and log context.
@@ -1051,4 +1206,3 @@ def loop_from_receipt(receipt: Optional[dict], *, user_id: Optional[int],
     return create_motion_gif(hook, graphic=graphic, user_id=user_id, post_id=post_id,
                              kicker=str(concept.get("kicker") or ""), ratio=ratio,
                              prefer=ARCHETYPE_STYLE.get(str(receipt.get("archetype_rendered"))))
-

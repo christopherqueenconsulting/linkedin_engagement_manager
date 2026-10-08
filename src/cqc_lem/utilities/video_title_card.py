@@ -484,7 +484,7 @@ def _fit_lines(draw: Any, text: str, width: int, height: int, high: int, low: in
 
 def plan_title_card(hook: str, *, size: tuple, palette: TitleCardPalette, kicker: str = "",
                     byline: str = "", seconds: float = 7.0,
-                    variant: str = VARIANT_POSTER) -> TitleCardLayout:
+                    variant: str = VARIANT_POSTER, clear_caption: bool = True) -> TitleCardLayout:
     """Fit the hook and place every element. Raises ``ValueError`` when the hook cannot be set.
 
     Args:
@@ -496,6 +496,8 @@ def plan_title_card(hook: str, *, size: tuple, palette: TitleCardPalette, kicker
         seconds: The clip length.
         variant: One of ``TITLE_CARD_VARIANTS``; ``number_led`` without a leading figure is set
             as the poster.
+        clear_caption: Keep the caption band clear (a video). A GIF has no caption: the hook may
+            use the whole frame, set up to a third larger.
 
     Returns:
         The layout.
@@ -518,8 +520,8 @@ def plan_title_card(hook: str, *, size: tuple, palette: TitleCardPalette, kicker
     # rule + byline are reserved INSIDE it (`tail` below), so nothing the card draws can land there.
     from cqc_lem.utilities.video_captions import caption_band_top
 
-    floor_y = min(round(height * (1 - CAPTION_CLEARANCE)),
-                  caption_band_top((width, height))) - round(height * 0.08)
+    floor_y = (min(round(height * (1 - CAPTION_CLEARANCE)), caption_band_top((width, height)))
+               - round(height * 0.08)) if clear_caption else round(height * 0.92)
     usable_h = floor_y - top_zone
     kicker = (kicker or "").upper().strip()
     kicker_font = load_font(max(18, round(width * 0.03)))
@@ -555,7 +557,8 @@ def plan_title_card(hook: str, *, size: tuple, palette: TitleCardPalette, kicker
             kicker_xy = (left + pad, top - round(kh * 0.1))
             top_zone = max(top_zone, kicker_box[3] + round(height * 0.05))
             usable_h = floor_y - top_zone
-    high = round(width * (0.08 if variant == VARIANT_NUMBER else 0.105))
+    high = round(width * (0.08 if variant == VARIANT_NUMBER else 0.105)
+                 * (1.0 if clear_caption else 1.35))
     byline = (byline or "").strip()
     byline_font = _medium_font(max(18, round(width * 0.034)))
     rule_h = max(6, round(width * 0.008))
@@ -627,13 +630,16 @@ def _ease(p: float) -> float:
     return 1 - (1 - p) ** 3
 
 
-def render_title_card_frame(layout: TitleCardLayout, t: float, *, hook: bool = True) -> Any:
+def render_title_card_frame(layout: TitleCardLayout, t: float, *, hook: bool = True,
+                            backdrop: bool = True) -> Any:
     """One frame at ``t`` seconds, as a PIL RGB image — complete at ``t=0`` (the thumbnail).
 
     Args:
         layout: ``plan_title_card`` output.
         t: Seconds from the start.
         hook: Draw the hook (and its hero). ``motion_design`` draws them itself, as sprites.
+        backdrop: Draw the ground and the drifting slab. Without it the frame is a transparent
+            RGBA layer of the type alone (``motion_design`` draws its own moving ground).
 
     Returns:
         The frame.
@@ -642,7 +648,10 @@ def render_title_card_frame(layout: TitleCardLayout, t: float, *, hook: bool = T
 
     pal = layout.palette
     width, height = layout.size
-    image = Image.new("RGB", (width, height), pal.ground)
+    if not backdrop:
+        image = Image.new("RGBA", (width, height), (*pal.ground, 0))
+    else:
+        image = Image.new("RGB", (width, height), pal.ground)
     draw = ImageDraw.Draw(image)
     # The slab drifts left across the whole clip: the card moves for its whole length. It sits
     # below the type block with a gold edge, under where the caption band will burn.
@@ -650,8 +659,9 @@ def render_title_card_frame(layout: TitleCardLayout, t: float, *, hook: bool = T
     sx = round(width * (0.46 - 0.12 * drift))
     sy = (layout.slab_top or round(height * 0.66)) + round(height * 0.02 * (1 - drift))
     edge = max(6, round(width * 0.008))
-    draw.rectangle((sx, sy, width, height), fill=pal.slab)
-    draw.rectangle((sx, sy, width, sy + edge - 1), fill=pal.rule)
+    if backdrop:
+        draw.rectangle((sx, sy, width, height), fill=pal.slab)
+        draw.rectangle((sx, sy, width, sy + edge - 1), fill=pal.rule)
     if layout.kicker:
         if layout.kicker_box:
             draw.rectangle(layout.kicker_box, fill=pal.rule)
