@@ -362,8 +362,11 @@ missing a floor is a finding about the model, not the prompt.
        - Anything else: refused or an error, which fails the job.
     3. Upload `outputs.json` for 90 days. It is never committed.
     4. Run `scripts/prompt_eval_publish.py`. It force-pushes the state, report, leaderboard and
-       inventory to ONE branch, `bot/prompt-evals`, and opens its PR with `RELEASE_DISPATCH_TOKEN`, so
-       the required checks run. It also files or updates one `prompt-eval:failing` issue per failing
+       inventory to ONE branch, `bot/prompt-evals`, and opens its PR. The checkout persists
+       `RELEASE_DISPATCH_TOKEN`, so BOTH the push and the PR are the PAT's: a `GITHUB_TOKEN` force-push
+       to an already-open results PR fires no `synchronize`, and its required checks would never run.
+       The live `.github/workflows/prompt-evals.yml` must match the `docs/` copy (a unit test fails on
+       drift). It also files or updates one `prompt-eval:failing` issue per failing
        `prompt@version`, using a hidden marker as the dedup key. A re-run comments on the existing
        issue instead of filing another.
   - **Secrets:**

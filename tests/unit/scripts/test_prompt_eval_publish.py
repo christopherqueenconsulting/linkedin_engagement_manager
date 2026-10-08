@@ -7,6 +7,7 @@ issue bodies say — and that no generated text ever reaches GitHub.
 import json
 import pathlib
 import sys
+from collections.abc import Sequence
 
 import pytest
 
@@ -35,18 +36,18 @@ RUN = {"run_id": "pe-1", "date": "2026-10-12",
 class Recorder:
     """A fake runner: returns canned stdout by command prefix and records every call."""
 
-    def __init__(self, replies=None):
+    def __init__(self, replies: dict[str, str] | None = None) -> None:
         self.replies = replies or {}
         self.calls = []
 
-    def __call__(self, args):
+    def __call__(self, args: Sequence[str]) -> str:
         self.calls.append(list(args))
         for prefix, reply in self.replies.items():
             if " ".join(args).startswith(prefix):
                 return reply
         return ""
 
-    def ran(self, prefix):
+    def ran(self, prefix: str) -> list[list[str]]:
         return [c for c in self.calls if " ".join(c).startswith(prefix)]
 
 
@@ -84,6 +85,22 @@ class TestIssues:
         gh = Recorder()
         assert pub.publish_issues(gh, REPO, {**RUN, "failing": []}, "") == []
         assert gh.calls == []
+
+    def test_a_broken_marker_is_ignored_not_a_crash(self):
+        existing = [{"number": 5, "body": "<!-- prompt-eval:comment.feed@2 never closed"}]
+        gh = Recorder({"gh issue list": json.dumps(existing)})
+
+        assert pub.open_failure_issues(gh, REPO) == {}
+
+    def test_a_pipe_in_a_reason_cannot_break_the_table(self):
+        failure = {**RUN["failing"][0], "reasons": ["a | b"]}
+        _, body = pub.render_issue("comment.feed", 2, [failure], RUN, "")
+        assert "| prompt-fails | a \\| b |" in body
+
+    def test_mixed_version_types_still_sort(self):
+        run = {**RUN, "failing": [{**RUN["failing"][2], "version": "1a"}, RUN["failing"][2]]}
+        assert pub.publish_issues(Recorder({"gh issue list": "[]"}), REPO, run, "") == \
+            ["filed dm.nurture@1", "filed dm.nurture@1a"]
 
     def test_the_body_carries_scores_not_text(self):
         _, body = pub.render_issue("dm.nurture", 1, RUN["failing"][2:], RUN, "")
@@ -149,4 +166,25 @@ class TestCli:
         assert git.calls == []
 
     def test_the_real_runner_returns_stdout(self):
-        assert pub.run_command(["git", "rev-parse", "--is-inside-work-tree"]).strip() == "true"
+        assert pub.run_command([sys.executable, "-c", "print('ok')"]).strip() == "ok"
+
+
+def _from_name(text: str) -> str:
+    """The workflow from its `name:` line on — the header comments may differ between the copies."""
+    return text[text.index("\nname: ") + 1:]
+
+
+class TestWorkflowCopy:
+    DOCS = _ROOT / "docs/prompt-evals/prompt-evals.workflow.yml"
+    LIVE = _ROOT / ".github/workflows/prompt-evals.yml"
+
+    def test_the_live_workflow_matches_the_reviewed_copy(self):
+        if not self.LIVE.exists():
+            pytest.skip("the owner has not committed .github/workflows/prompt-evals.yml yet")
+        assert _from_name(self.LIVE.read_text()) == _from_name(self.DOCS.read_text()), (
+            "edit docs/prompt-evals/prompt-evals.workflow.yml and .github/workflows/prompt-evals.yml "
+            "together")
+
+    def test_the_push_credential_is_the_pat(self):
+        text = self.DOCS.read_text()
+        assert "token: ${{ secrets.RELEASE_DISPATCH_TOKEN || github.token }}" in text

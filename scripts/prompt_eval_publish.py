@@ -81,7 +81,8 @@ def render_issue(prompt_id: str, version: Any, failures: list[dict[str, Any]],
         "|---|---|---|",
     ]
     for f in sorted(failures, key=lambda x: (x["kind"], x["model"])):
-        lines.append(f"| `{f['model']}` | {f['kind']} | {'; '.join(f.get('reasons') or []) or '—'} |")
+        reasons = "; ".join(str(r).replace("|", "\\|") for r in f.get("reasons") or [])
+        lines.append(f"| `{f['model']}` | {f['kind']} | {reasons or '—'} |")
     lines += [
         "",
         f"- Report: `{report}` (lands with the results PR on `{BRANCH}`)",
@@ -100,8 +101,9 @@ def open_failure_issues(gh: Runner, repo: str) -> dict[str, int]:
     for issue in json.loads(raw or "[]"):
         body = str(issue.get("body") or "")
         start = body.find("<!-- prompt-eval:")
-        if start >= 0:
-            out[body[start:body.index("-->", start) + 3]] = int(issue["number"])
+        end = body.find("-->", start) if start >= 0 else -1
+        if end >= 0:  # a hand-edited body with a broken marker is ignored, never a crash
+            out[body[start:end + 3]] = int(issue["number"])
     return out
 
 
@@ -114,7 +116,7 @@ def publish_issues(gh: Runner, repo: str, run: dict[str, Any], run_url: str) -> 
         "--description", "A prompt missed its eval floor (docs/prompt-evals.md)"])
     existing = open_failure_issues(gh, repo)
     done = []
-    for (pid, version), failures in sorted(groups.items()):
+    for (pid, version), failures in sorted(groups.items(), key=lambda kv: (kv[0][0], str(kv[0][1]))):
         title, body = render_issue(pid, version, failures, run, run_url)
         number = existing.get(marker(pid, version))
         if number:
