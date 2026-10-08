@@ -149,6 +149,29 @@ class TestAddLinkedInProfile:
         assert params[1] == "jane@acme.com" and params[3] == 7
         conn.commit.assert_called_once()
 
+    def test_owned_write_first_clears_unowned_rows_it_would_collide_with(self, fake_cursor):
+        """Issue #2306: clear the unowned scrape row before the owned upsert.
+
+        One at the user's NEW url made the upsert raise 1062 on `profiles.email`. Only
+        `user_id IS NULL` rows go, and in the same transaction as the upsert.
+        """
+        conn, cur = fake_cursor()
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import add_linkedin_profile
+            assert add_linkedin_profile(_profile(), user_id=7) is True
+        delete_sql, delete_params = cur.execute.call_args_list[0][0]
+        assert delete_sql.startswith("DELETE FROM profiles WHERE user_id IS NULL")
+        assert delete_params[1] == "jane@acme.com"
+        assert "email = COALESCE(VALUES(email), email)" in cur.execute.call_args_list[1][0][0]
+
+    def test_anonymous_write_deletes_nothing(self, fake_cursor):
+        conn, cur = fake_cursor()
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import add_linkedin_profile
+            assert add_linkedin_profile(_profile()) is True
+        assert cur.execute.call_count == 1
+        assert "INSERT INTO profiles" in cur.execute.call_args[0][0]
+
 
 class TestGetPostTypeCounts:
     def test_returns_type_to_count_map(self, fake_cursor):
