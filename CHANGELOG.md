@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.187.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.186.0...v0.187.0) (2026-10-08)
+
+
+### Features
+
+* **agent-pipeline:** opt-in dontAsk permission profile for lanes ([a5d6a1e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a5d6a1e6b6b0eb25c4fdb138275d6498a6bfb534))
+* **agent-pipeline:** opt-in dontAsk permission profile for lanes (staged lockdown) ([#2289](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2289)) ([a5d6a1e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a5d6a1e6b6b0eb25c4fdb138275d6498a6bfb534))
+
+
+### Bug Fixes
+
+* **agent-pipeline:** root-run units execute root-owned copies of their scripts ([#2295](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2295)) ([9787108](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9787108c8645e0ace6c3ff947605fe206afa8a9c))
+* **prompt-evals:** make baseline failures readable (phase 5a) ([#2313](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2313)) ([f67ab7a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f67ab7afc62a997d45442ad946f7c98ade69668e))
+
 ## [0.186.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.185.0...v0.186.0) (2026-10-08)
 
 
