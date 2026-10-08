@@ -44,7 +44,10 @@ if _HERE not in sys.path:
 
 # The media harness owns the run cap and its meter; text and media runs share both, so one
 # `BENCHMARK_MAX_SPEND_USD` means the same thing on every tier.
-from benchmark_media import SpendCapExceeded, SpendMeter, max_spend_usd  # noqa: E402,F401
+import benchmark_media as _media  # noqa: E402
+
+SpendMeter = _media.SpendMeter
+max_spend_usd = _media.max_spend_usd
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/auth/key"
