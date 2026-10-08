@@ -115,11 +115,10 @@ def pinned_environment(extra_env: dict[str, str] | None = None,
             for module in (*PRELOAD, *preload):
                 importlib.import_module(module)
             with freeze_time(CAPTURE_DATE):
-                try:
-                    from cqc_lem.utilities import flags
-                    flags.reset_flag_state()
-                except ImportError:
-                    pass
+                from cqc_lem.utilities import flags
+
+                # A flag cached from before the pin would outrank POSTHOG_FLAGS_ENABLED=false.
+                flags.reset_flag_state()
                 random.seed(seed)
                 yield
     finally:
