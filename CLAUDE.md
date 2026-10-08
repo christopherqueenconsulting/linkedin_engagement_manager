@@ -255,7 +255,7 @@ The paragraph behind each row is `docs/observability-map.md`.
 | **Experiments** (#652) | `utilities/experiments.py` | Unresolvable experiment = **CONTROL**, with no per-experiment env fallback; rollout-% / distinct-ID flags only | `docs/experiments.md` |
 | **Feature flags** (#651) | `utilities/flags.py` | **Fails open to the env var** on every unresolvable path; read at CALL SITE, never at import; safety controls are NOT flags | `docs/feature-flags.md` |
 | **Marketing attribution** (#658) | `utilities/marketing/attribution.py` | Only OWNED destinations are tagged; existing UTMs are never overwritten; `signup_completed_web` ≠ `signup_completed` | `docs/marketing-attribution.md` |
-| **Model-tier benchmarks** (#721) | `scripts/benchmark_models.py` | The suite scores a FIRST draft, production ships an n-th — `contract` checks are the floor. An all-errored run is REFUSED, never a scorecard of zeros | `docs/model-benchmarks/README.md` |
+| **Model-tier benchmarks** (#721), **prompt evals** | `scripts/benchmark_models.py`, `prompt_capture.py` | `contract` is the floor; an all-errored run is REFUSED. An unregistered/unversioned prompt fails CI | `docs/model-benchmarks/README.md`, `docs/prompt-evals.md` |
 | **Content-quality telemetry** (#630) | `auto_nightly_content_quality` | The TREND LINE, not a gate — **unscored is never zero**, and it pauses nothing (safety is #629). A render/clip reading comes off the RECEIPT; `missing` is NULL, never 0 | `docs/content-quality-telemetry.md` |
 | **Surveys — NPS/CSAT** (#653) | PostHog Surveys + `utilities/surveys.py` | Type `api`, rendered headless; ONE answer = TWO paths counted ONCE; `markSurveySeen()` advances the 30d wait | `docs/surveys.md` |
 

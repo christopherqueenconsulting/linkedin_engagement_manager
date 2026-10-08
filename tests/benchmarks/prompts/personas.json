@@ -1,0 +1,102 @@
+{
+  "healthcare_ops": {
+    "profile": {
+      "full_name": "Dana Whitfield",
+      "job_title": "Healthcare Operations Consultant",
+      "company_name": "Whitfield Care Advisory",
+      "industry": "Hospitals and Health Care",
+      "skills": [
+        "Patient Flow",
+        "Lean Healthcare",
+        "Scheduling Operations",
+        "Change Management"
+      ],
+      "interests": [
+        "patient flow",
+        "nurse staffing",
+        "hospital operations"
+      ]
+    },
+    "synthesis": "Former charge nurse, now consults on hospital operations. Writes plainly, uses concrete ward-level examples, skeptical of software-first fixes, warm but direct. Often ends with a practical question."
+  },
+  "fractional_cfo": {
+    "profile": {
+      "full_name": "Marcus Oyelaran",
+      "job_title": "Fractional CFO",
+      "company_name": "Ledgerline Partners",
+      "industry": "Financial Services",
+      "skills": [
+        "Cash Flow Forecasting",
+        "Financial Planning",
+        "Month-End Close",
+        "Board Reporting"
+      ],
+      "interests": [
+        "cash flow",
+        "month-end close",
+        "founder finance"
+      ]
+    },
+    "synthesis": "Numbers-first, dry humor, short sentences. Talks about cash runway and close cycles from experience with small companies. Avoids hype; prefers one specific lesson per post."
+  },
+  "saas_founder": {
+    "profile": {
+      "full_name": "Priya Raman",
+      "job_title": "Co-founder & CEO",
+      "company_name": "Shiftboard Labs",
+      "industry": "Software Development",
+      "skills": [
+        "Product Management",
+        "B2B SaaS",
+        "Go-to-Market",
+        "Customer Discovery"
+      ],
+      "interests": [
+        "customer discovery",
+        "field service software",
+        "startup hiring"
+      ]
+    },
+    "synthesis": "Founder voice: candid about mistakes, shares customer-discovery anecdotes, energetic but not salesy. Writes in first person with short paragraphs."
+  },
+  "quality_lead": {
+    "profile": {
+      "full_name": "Tomasz Kowalczyk",
+      "job_title": "Plant Quality Manager",
+      "company_name": "Brightline Castings",
+      "industry": "Industrial Machinery Manufacturing",
+      "skills": [
+        "Root Cause Analysis",
+        "ISO 9001",
+        "Supplier Quality",
+        "Statistical Process Control"
+      ],
+      "interests": [
+        "scrap reduction",
+        "supplier audits",
+        "shop-floor training"
+      ]
+    },
+    "synthesis": "Plain-spoken plant-floor manager. Uses shop examples (scrap bins, shift handovers), distrusts buzzwords, practical and a little blunt."
+  },
+  "people_leader": {
+    "profile": {
+      "full_name": "Alicia Moreno",
+      "job_title": "VP of People",
+      "company_name": "Northbeam Logistics",
+      "industry": "Transportation, Logistics, Supply Chain and Storage",
+      "skills": [
+        "Talent Development",
+        "Employee Retention",
+        "Onboarding",
+        "Manager Coaching"
+      ],
+      "interests": [
+        "frontline retention",
+        "manager development",
+        "onboarding"
+      ]
+    },
+    "synthesis": "Empathetic and specific. Draws on stories from warehouse and driver teams, cares about frontline managers, avoids corporate jargon."
+  }
+}

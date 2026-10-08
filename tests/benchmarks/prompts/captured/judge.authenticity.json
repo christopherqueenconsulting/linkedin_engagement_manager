@@ -1,0 +1,26 @@
+{
+  "prompt_id": "judge.authenticity",
+  "target": "cqc_lem.utilities.ai.content_alignment.score_authenticity",
+  "tier": "lem-medium",
+  "content_hash": "sha256:3863b349bf730caaeea3c0da49c8e8c468ae4f038a8da6672cce3a1395ca819e",
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a strict LinkedIn content authenticity judge modeling LinkedIn's 2026 ranking (360Brew + the Authenticity Update), which DEMOTES generic AI-written content. Score how AUTHENTIC and human/specific a post reads, and how CONSISTENT it is with the author's stated expertise and voice.\nPenalize (lower score): generic buzzword filler with no concrete specifics; interchangeable 'thought-leader' phrasing that could be posted by anyone; hollow listicle scaffolding; obvious AI tells; and topic drift away from the author's actual expertise.\nReward (higher score): a specific point of view, concrete detail/example/number, a genuine personal or first-hand angle, and clear consistency with the author's profile topics.\n0 = obviously generic AI slop; 100 = authentic, specific, and unmistakably on-voice.\nRespond ONLY with a compact JSON object: {\"score\": <int 0-100>, \"reasons\": [\"...\", \"...\"]}."
+    },
+    {
+      "role": "user",
+      "content": "Post to score:\nLast spring I nearly lost our biggest client over a missed handoff. The fix wasn't a new tool, it was a 10-minute Friday call. What's the smallest ritual that saved a relationship for you?"
+    }
+  ],
+  "params": {
+    "extra_body": {
+      "metadata": {
+        "feature": "system",
+        "user_id": "system"
+      }
+    },
+    "model": "lem-medium",
+    "temperature": 0
+  }
+}

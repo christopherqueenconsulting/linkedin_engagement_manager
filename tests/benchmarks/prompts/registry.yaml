@@ -1,0 +1,420 @@
+# Prompt registry — one entry per LLM call site (docs/prompt-evals.md).
+#
+# Keyed by `module:function#index` exactly as `python scripts/prompt_registry.py --scan` prints it.
+# A call site the scan finds with no entry here fails tests/unit/benchmarks/test_prompt_registry.py.
+#
+# status: evaluated  — captured, versioned in prompts.lock.json, has a dataset and graders
+#         planned    — tracked and versioned by source hash; dataset not written yet
+#         exempt:<reason> — not graded here, and why
+# family: post_longform | comment | own_comment | dm | classifier | json_planner | rewrite | summary | media_prompt | judge
+
+# Grader defaults per family (docs/prompt-evals.md §4). Every row of an evaluated prompt in a family is
+# scored by these; an entry's `assertions` and a row's own `assertions` add to them. `production`
+# classes follow scripts/benchmark_models.py (#910): a contract failure is what the call site consumes,
+# a repairable one is what production's regeneration gates retry. `rubric` names the model-grader
+# rubric in rubrics/<rubric>.md; a family without one is graded by code only.
+families:
+  comment:
+    rubric: comment
+    assertions:
+      - {type: no_preamble}
+      - {type: max_chars, value: 700}
+      - {type: comment_contract}
+      - {type: slop_lint, content_type: comment}
+      - {type: meeting_ask}
+      - {type: ungrounded_metrics}
+  own_comment:
+    # The user's OWN first comment on their own post (seed / golden-hour wave). Production does not
+    # run it through the third-party comment contract or the grounding gate — it lints it on the
+    # `own_post_comment` surface — so neither is graded here.
+    rubric: comment
+    assertions:
+      - {type: no_preamble}
+      - {type: max_chars, value: 700}
+      - {type: slop_lint, content_type: own_post_comment}
+      - {type: meeting_ask}
+  dm:
+    rubric: dm
+    assertions:
+      - {type: no_preamble}
+      - {type: max_chars, value: 300}
+      - {type: slop_lint, content_type: dm}
+      - {type: meeting_ask}
+  post_longform:
+    rubric: post_longform
+    assertions:
+      - {type: no_preamble}
+      - {type: max_chars, value: 3000}
+      - {type: slop_lint, content_type: post}
+      - {type: min_burstiness, value: 0.3}
+      - {type: meeting_ask}
+      - {type: ungrounded_metrics}
+      - {type: dwell, min_score: 40}
+  classifier:
+    assertions: []
+  judge:
+    assertions: []
+
+sites:
+  cqc_lem.utilities.ai.ai_helper:_call_llm#0:
+    id: transport.call_llm
+    status: "exempt:wrapper — prompts are registered at each caller"
+  cqc_lem.utilities.ai.ai_helper:_draft_motion_prompt#0:
+    id: media.motion_prompt
+    family: media_prompt
+    status: planned
+  cqc_lem.utilities.ai.ai_helper:ai_check_message_history#0:
+    id: dm.message_history_check
+    family: json_planner
+    status: planned
+  cqc_lem.utilities.ai.ai_helper:apply_post_guidance#0:
+    id: post.apply_guidance
+    family: rewrite
+    status: planned
+  cqc_lem.utilities.ai.ai_helper:choose_post_reaction#0:
+    id: classify.post_reaction
+    family: classifier
+    status: planned
+  cqc_lem.utilities.ai.ai_helper:choose_post_reaction#1:
+    id: classify.post_reaction
+    family: classifier
+    status: "exempt:fallback transport — resends #0's prompt to OPENAI_FALLBACK_MODEL"
+    shares_prompt_with: cqc_lem.utilities.ai.ai_helper:choose_post_reaction#0
+  cqc_lem.utilities.ai.ai_helper:generate_ai_response._draft#0:
+    id: comment.feed
+    family: comment
+    status: evaluated
+    dataset: datasets/comment.feed.jsonl
+    capture:
+      target: cqc_lem.utilities.ai.ai_helper.generate_ai_response
+      select: 0
+      env: {HUMANIZE_ENABLED: "0", CONTENT_RESEARCH_ENABLED: "0", COMMENT_GATE_MAX_ATTEMPTS: "1"}
+      canonical:
+        post_content: "We cut our month-end close from 9 days to 4 by automating bank reconciliations."
+        profile: {$persona: fractional_cfo}
+        prefs: {comment_length: medium}
+        research: {}
+        recent_comments: []
+      reply: "Cutting the close from 9 days to 4 is real progress. Which reconciliation broke most often before you automated it?"
+  cqc_lem.utilities.ai.ai_helper:generate_ai_response_test#0:
+    id: smoke.ai_response_test
+    status: "exempt:connectivity smoke test, not a product prompt"
+  cqc_lem.utilities.ai.ai_helper:generate_carousel_content._draft#0:
+    id: post.carousel
+    family: json_planner
+    status: planned
+  cqc_lem.utilities.ai.ai_helper:generate_comment_reply_followup._draft#0:
+    id: comment.reply_followup
+    family: comment
+    status: planned
+  cqc_lem.utilities.ai.ai_helper:generate_engagement_prompt_post#0:
+    id: post.engagement_prompt
+    family: post_longform
+    status: planned
+  cqc_lem.utilities.ai.ai_helper:generate_group_post._draft#0:
+    id: post.group
+    family: post_longform
+    status: planned
+  cqc_lem.utilities.ai.ai_helper:generate_lead_response._draft#0:
+    id: dm.lead_response
+    family: dm
+    status: planned
+  cqc_lem.utilities.ai.ai_helper:generate_newsletter_edition._edition#0:
+    id: newsletter.edition
+    family: post_longform
+    status: planned
+  cqc_lem.utilities.ai.ai_helper:generate_nurture_dm._draft#0:
+    id: dm.nurture
+    family: dm
+    status: evaluated
+    dataset: datasets/dm.nurture.jsonl
+    capture:
+      target: cqc_lem.utilities.ai.ai_helper.generate_nurture_dm
+      select: 0
+      env: {HUMANIZE_ENABLED: "0", CONTENT_RESEARCH_ENABLED: "0", COMMENT_GATE_MAX_ATTEMPTS: "1"}
+      canonical:
+        their_message: "Honestly that's too expensive for us right now"
+        intent: objection
+        profile: {$persona: fractional_cfo}
+        first_name: Chris
+      reply: "Fair, Chris. Budget timing is real. What would need to be true for it to pay for itself?"
+  cqc_lem.utilities.ai.ai_helper:generate_onboarding_nudge_copy#0:
+    id: app.onboarding_nudge
+    family: dm
+    status: planned
+  cqc_lem.utilities.ai.ai_helper:generate_second_wave_comment._draft#0:
+    id: comment.second_wave
+    family: comment
+    status: planned
+  cqc_lem.utilities.ai.ai_helper:generate_seed_comment._draft#0:
+    id: comment.seed
+    family: own_comment
+    status: evaluated
+    dataset: datasets/comment.seed.jsonl
+    capture:
+      target: cqc_lem.utilities.ai.ai_helper.generate_seed_comment
+      select: 0
+      env: {HUMANIZE_ENABLED: "0", CONTENT_RESEARCH_ENABLED: "0", COMMENT_GATE_MAX_ATTEMPTS: "1"}
+      canonical:
+        post_content: "We cut our month-end close from 9 days to 4. The biggest win wasn't speed."
+        profile: {$persona: fractional_cfo}
+        prefs: {}
+      reply: "The part I left out: the first month after automating we found two accounts nobody had reconciled in a year."
+  cqc_lem.utilities.ai.ai_helper:generate_thread_reply._draft#0:
+    id: comment.thread_reply
+    family: comment
+    status: planned
+  cqc_lem.utilities.ai.ai_helper:get_ai_description_of_profile#0:
+    id: profile.description
+    family: summary
+    status: planned
+  cqc_lem.utilities.ai.ai_helper:get_ai_linked_post_refinement#0:
+    id: post.refine
+    family: rewrite
+    status: planned
+  cqc_lem.utilities.ai.ai_helper:get_ai_message_refinement#0:
+    id: dm.refine
+    family: rewrite
+    status: planned
+  cqc_lem.utilities.ai.ai_helper:get_blog_summary_post_from_ai#0:
+    id: post.blog_summary
+    family: post_longform
+    status: planned
+  cqc_lem.utilities.ai.ai_helper:get_industries_of_profile_from_ai#0:
+    id: profile.industries
+    family: json_planner
+    status: planned
+  cqc_lem.utilities.ai.ai_helper:get_industry_news_post_from_ai#0:
+    id: post.industry_news
+    family: post_longform
+    status: planned
+  cqc_lem.utilities.ai.ai_helper:get_industry_trend_from_ai#0:
+    id: research.industry_trend
+    family: summary
+    status: planned
+  cqc_lem.utilities.ai.ai_helper:get_personal_story_post_from_ai#0:
+    id: post.personal_story
+    family: post_longform
+    status: planned
+  cqc_lem.utilities.ai.ai_helper:get_thought_leadership_post_from_ai#0:
+    id: post.thought_leadership
+    family: post_longform
+    status: evaluated
+    dataset: datasets/post.thought_leadership.jsonl
+    capture:
+      target: cqc_lem.utilities.ai.ai_helper.get_thought_leadership_post_from_ai
+      select: 0
+      env: {HUMANIZE_ENABLED: "0", CONTENT_RESEARCH_ENABLED: "0", COMMENT_GATE_MAX_ATTEMPTS: "1"}
+      patches:
+        cqc_lem.utilities.ai.ai_helper.get_industry_trend_analysis_based_on_user_profile:
+          {industry: Financial Services, analysis: "Mid-market firms are moving to rolling 13-week cash forecasts.", sources: [], focus_topic: cash flow}
+      canonical:
+        linked_user_profile: {$persona: fractional_cfo}
+        buyer_stage: awareness
+        content_mix: value
+      reply: "Most founders forecast cash on invoice dates. Customers don't pay on invoice dates."
+  cqc_lem.utilities.ai.ai_helper:get_video_content_from_ai#0:
+    id: post.video_script
+    family: post_longform
+    status: planned
+  cqc_lem.utilities.ai.ai_helper:get_website_content_post_from_ai#0:
+    id: post.website_content
+    family: post_longform
+    status: planned
+  cqc_lem.utilities.ai.ai_helper:optimize_post_hook#0:
+    id: post.hook_optimize
+    family: rewrite
+    status: planned
+  cqc_lem.utilities.ai.ai_helper:plan_newsletter_topics#0:
+    id: newsletter.topic_plan
+    family: json_planner
+    status: planned
+  cqc_lem.utilities.ai.ai_helper:post_is_relevant#0:
+    id: classify.post_relevance
+    family: classifier
+    status: evaluated
+    dataset: datasets/classify.post_relevance.jsonl
+    capture:
+      target: cqc_lem.utilities.ai.ai_helper.post_is_relevant
+      canonical:
+        post_content: "We cut our month-end close from 9 days to 4 by automating bank reconciliations. Here's what actually moved the needle."
+        include_topics: ["finance automation", "accounting operations"]
+      reply: "yes"
+    assertions:
+      - {type: label_match, parse: yes_no}
+  cqc_lem.utilities.ai.ai_helper:summarize_recent_activity#0:
+    id: profile.activity_summary
+    family: summary
+    status: planned
+  cqc_lem.utilities.ai.ai_helper:synthesize_profile#0:
+    id: profile.synthesis
+    family: summary
+    status: planned
+  cqc_lem.utilities.ai.content_alignment:humanize_text#0:
+    id: rewrite.humanize
+    family: rewrite
+    status: planned
+  cqc_lem.utilities.ai.content_alignment:humanize_title#0:
+    id: rewrite.humanize_title
+    family: rewrite
+    status: planned
+  cqc_lem.utilities.ai.content_alignment:mechanical_edit_text#0:
+    id: rewrite.mechanical_edit
+    family: rewrite
+    status: planned
+  cqc_lem.utilities.ai.content_alignment:score_authenticity#0:
+    id: judge.authenticity
+    family: judge
+    status: evaluated
+    dataset: datasets/judge.authenticity.jsonl
+    capture:
+      target: cqc_lem.utilities.ai.content_alignment.score_authenticity
+      canonical:
+        content: "Last spring I nearly lost our biggest client over a missed handoff. The fix wasn't a new tool, it was a 10-minute Friday call. What's the smallest ritual that saved a relationship for you?"
+      reply: '{"score": 82, "reasons": ["specific personal detail"]}'
+    assertions:
+      - {type: production_json, required_keys: [score]}
+      - {type: label_match, parse: authenticity_action, threshold: 60}
+  cqc_lem.utilities.ai.content_research:_research_via_litellm#0:
+    id: research.web
+    status: "exempt:live web research — output depends on the live web, not reproducible"
+  cqc_lem.utilities.ai.curated_commentary:_complete#0:
+    id: transport.curated_complete
+    status: "exempt:wrapper — prompts are registered at each caller"
+  cqc_lem.utilities.ai.curated_commentary:extract_chart_facts#0:
+    id: curated.chart_facts
+    family: json_planner
+    status: planned
+  cqc_lem.utilities.ai.curated_commentary:generate_curated_commentary.draft#0:
+    id: curated.commentary
+    family: post_longform
+    status: planned
+  cqc_lem.utilities.ai.curated_commentary:score_audience_fit#0:
+    id: curated.audience_fit
+    family: classifier
+    status: planned
+  cqc_lem.utilities.ai.dm_nurture:_llm_intent#0:
+    id: classify.dm_reply_intent
+    family: classifier
+    status: evaluated
+    dataset: datasets/classify.dm_reply_intent.jsonl
+    capture:
+      target: cqc_lem.utilities.ai.dm_nurture._llm_intent
+      canonical:
+        text: "Thanks for the note. Things are hectic right now, maybe circle back in a couple of months?"
+      reply: "not_now"
+    assertions:
+      - {type: label_match, parse: enum, values: [interested, objection, not_now, disinterest, neutral]}
+  cqc_lem.utilities.ai.image_brief:_author_image_brief#0:
+    id: image.brief
+    family: media_prompt
+    status: planned
+  cqc_lem.utilities.ai.image_brief:check_prompt_against_concept#0:
+    id: image.prompt_concept_check
+    family: judge
+    status: planned
+  cqc_lem.utilities.ai.image_concept:_ensure_hook#0:
+    id: image.ensure_hook
+    family: json_planner
+    status: planned
+  cqc_lem.utilities.ai.image_concept:analyze_content_for_image#0:
+    id: image.analyze_content
+    family: json_planner
+    status: planned
+  cqc_lem.utilities.ai.image_concept:check_hook_against_thesis#0:
+    id: image.hook_thesis_check
+    family: judge
+    status: planned
+  cqc_lem.utilities.ai.image_concept:pick_visual_idea#0:
+    id: image.visual_idea
+    family: json_planner
+    status: planned
+  cqc_lem.utilities.ai.image_gen:_legacy_inspect#0:
+    id: vision.legacy_inspect
+    status: "exempt:vision — graded by scripts/benchmark_media.py"
+  cqc_lem.utilities.ai.image_gen:_render_via_gpt_image#0:
+    id: image.render
+    status: "exempt:image render — graded by scripts/benchmark_media.py"
+  cqc_lem.utilities.ai.image_gen:_staged_inspect#0:
+    id: vision.staged_inspect_blind
+    status: "exempt:vision — graded by scripts/benchmark_media.py"
+  cqc_lem.utilities.ai.image_gen:_staged_inspect#1:
+    id: vision.staged_inspect_targeted
+    status: "exempt:vision — graded by scripts/benchmark_media.py"
+  cqc_lem.utilities.ai.lead_intent:_llm_says_lead#0:
+    id: classify.lead_intent
+    family: classifier
+    status: evaluated
+    dataset: datasets/classify.lead_intent.jsonl
+    capture:
+      target: cqc_lem.utilities.ai.lead_intent._llm_says_lead
+      canonical:
+        text: "Interesting post. We're evaluating options for this next quarter, what does your engagement usually look like?"
+      reply: "yes"
+    assertions:
+      - {type: label_match, parse: yes_no}
+  cqc_lem.utilities.ai.post_treatment:pick_quote#0:
+    id: post.pick_quote
+    family: json_planner
+    status: planned
+  cqc_lem.utilities.ai.tools:chat_about_news#0:
+    id: tools.chat_about_news
+    status: "exempt:untiered legacy tool, hardcoded gpt-4o-mini"
+  cqc_lem.utilities.ai.tools:chat_with_tools#0:
+    id: tools.chat_with_tools
+    status: "exempt:untiered legacy tool, hardcoded gpt-4o-mini"
+  cqc_lem.utilities.ai.tools:google_news_tool#0:
+    id: tools.google_news
+    status: "exempt:untiered legacy tool, hardcoded gpt-4o-mini"
+  cqc_lem.utilities.avatar.likeness_probe:probe_avatar_likeness#0:
+    id: vision.avatar_likeness
+    status: "exempt:vision — graded by scripts/avatar_likeness_eval.py"
+  cqc_lem.utilities.carousel_creator:derive_image_query#0:
+    id: carousel.image_query
+    family: summary
+    status: planned
+  cqc_lem.utilities.feedback.classifier:classify_feedback#0:
+    id: classify.feedback
+    family: classifier
+    status: planned
+  cqc_lem.utilities.feedback.faq_service:generate_faq_answer#0:
+    id: app.faq_answer
+    family: summary
+    status: planned
+  cqc_lem.utilities.marketing.affiliate_content:_draft#0:
+    id: marketing.affiliate_post
+    family: post_longform
+    status: planned
+  cqc_lem.utilities.marketing.video_tutorials:generate_script#0:
+    id: marketing.tutorial_script
+    family: json_planner
+    status: planned
+  cqc_lem.utilities.newsletter_cover:classify_avatar_relevance#0:
+    id: classify.cover_avatar_relevance
+    family: classifier
+    status: planned
+  cqc_lem.utilities.video_clip_check:inspect_frames#0:
+    id: vision.video_frames
+    status: "exempt:vision — graded by scripts/benchmark_media.py"
+  scripts.benchmark_media:MediaProvider.render#0:
+    id: harness.media_render
+    status: "exempt:eval harness transport — the prompt is suite data"
+  scripts.benchmark_media:MediaProvider.vision#0:
+    id: harness.media_vision
+    status: "exempt:eval harness transport — the prompt is suite data"
+  scripts.benchmark_models:ProviderClient._create#0:
+    id: harness.provider
+    status: "exempt:eval harness transport — the prompt is suite data"
+  scripts.benchmark_models:fallback_judge#0:
+    id: harness.tier_judge
+    status: "exempt:eval harness judge — calibrated by the eval run itself (docs/prompt-evals.md)"
+  scripts.benchmark_routed:build_routed_client.RoutedProviderClient._create#0:
+    id: harness.routed_provider
+    status: "exempt:eval harness transport — the prompt is suite data"
+  scripts.model_health_check:probe_provider#0:
+    id: ops.health_probe
+    status: "exempt:liveness probe, output unused"
+  scripts.triage_issues:LLMClient.classify#0:
+    id: ops.issue_triage
+    family: classifier
+    status: planned

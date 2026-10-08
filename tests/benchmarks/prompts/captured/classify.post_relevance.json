@@ -1,0 +1,26 @@
+{
+  "prompt_id": "classify.post_relevance",
+  "target": "cqc_lem.utilities.ai.ai_helper.post_is_relevant",
+  "tier": "lem-simple",
+  "content_hash": "sha256:8b16bd501a6743f2f9308d9b99d212a0d81876881e8f6d1cf9bcffbb0ab94ce8",
+  "messages": [
+    {
+      "role": "system",
+      "content": "You classify whether a LinkedIn post is topically relevant to a set of topics. Answer with only 'yes' or 'no'."
+    },
+    {
+      "role": "user",
+      "content": "Topics: finance automation, accounting operations\n\nPost:\nWe cut our month-end close from 9 days to 4 by automating bank reconciliations. Here's what actually moved the needle.\n\nIs this post relevant to ANY of the topics? Answer yes or no."
+    }
+  ],
+  "params": {
+    "extra_body": {
+      "metadata": {
+        "feature": "system",
+        "user_id": "system"
+      }
+    },
+    "model": "lem-simple",
+    "temperature": 0
+  }
+}

@@ -16,34 +16,9 @@ import os
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-import httpx
 import pytest
-from openai import APIConnectionError
 
-_BLOCKED_URL = "http://litellm.invalid/v1/chat/completions"
-
-#: Raised by `_no_real_llm_calls`, for the same reason `_BLOCKED_MYSQL_MESSAGE` exists below and one
-#: more. `APIConnectionError`'s SDK default is "Connection error." — the exact string a genuinely
-#: unreachable LiteLLM proxy produces (#986) — so the message is the ONLY thing that tells this guard
-#: apart from the outage it imitates. It is also what a leaked `$exception` titles its error group
-#: with: this fixture is the single largest piece of the 2026-08 test-pollution residue at 6,154
-#: occurrences, and read as a production incident until someone traced the frame (#1665).
-#: Asserted on by tests/unit/utilities/ai/test_client_connect_retry.py.
-_BLOCKED_LLM_MESSAGE = (
-    "unit-test fixture: LLM calls blocked by tests/unit/conftest.py. Patch the `client` the "
-    "module under test imported (e.g. the mock_openai_client fixture) instead of reaching a "
-    "real endpoint."
-)
-
-#: Raised by `_no_real_mysql`. The wording is asserted on by
-#: tests/unit/platform/db/test_connection_config.py, because a REFUSED real socket is also a
-#: `mysql.connector.Error` — only the message tells the two apart, so only the message can prove
-#: the guard is the thing that answered.
-_BLOCKED_MYSQL_MESSAGE = (
-    "MySQL blocked in unit tests by tests/unit/conftest.py. Patch get_db_connection with "
-    "the fake_cursor factory, or state the fixture (e.g. `signed_in`) whose collaborators "
-    "this test forgot to stub."
-)
+from tests import hermetic
 
 # Sentinel for "caller said nothing", so `fetch_all=None` can still mean a literal None row set —
 # a handful of readers are tested against a driver that returns None instead of an empty list.
@@ -86,23 +61,13 @@ def pytest_collection_modifyitems(config, items):
     config.hook.pytest_deselected(items=dropped)
 
 
-def _blocked_llm_call(*args, **kwargs):
-    raise APIConnectionError(message=_BLOCKED_LLM_MESSAGE,
-                             request=httpx.Request("POST", _BLOCKED_URL))
-
-
 @pytest.fixture(autouse=True)
 def _no_real_llm_calls():
     """Fail un-mocked LLM traffic instantly instead of dialing out and retrying."""
     # Imported lazily: constructing the singleton needs the API key that the
     # session-scoped setup_test_environment fixture puts in os.environ, which is not
     # yet set at the time this conftest module is imported.
-    from cqc_lem.utilities.ai.client import client
-
-    with patch.object(client.chat.completions, "create",
-                      side_effect=_blocked_llm_call), \
-         patch.object(client.embeddings, "create", side_effect=_blocked_llm_call), \
-         patch.object(client.images, "generate", side_effect=_blocked_llm_call):
+    with hermetic.block_llm():
         yield
 
 
@@ -117,16 +82,11 @@ def _no_real_redis():
     behaviour. Tests that want a working handle keep patching `_redis_client` directly;
     those patches bypass this entirely.
     """
-    from cqc_lem.utilities.linkedin.rate_limit import reset_redis_client
-
     # The handle is cached per (pid, url) so hot paths stop paying a TCP handshake per command.
-    # Clear it around every test, or a test that patches `from_url` to SUCCEED leaves its mock
-    # cached for the next one — the same reason `flags.reset_flag_state()` is called below.
-    reset_redis_client()
-    blocked = ConnectionError("redis blocked in unit tests")
-    with patch("redis.Redis.from_url", side_effect=blocked):
+    # The guard clears it around every test, or a test that patches `from_url` to SUCCEED leaves its
+    # mock cached for the next one — the same reason `flags.reset_flag_state()` is called below.
+    with hermetic.block_redis():
         yield
-    reset_redis_client()
 
 
 @pytest.fixture(autouse=True)
@@ -151,14 +111,7 @@ def _no_real_celery_broker():
     A test that asserts on a dispatch still patches the task where the handler reads it; that patch
     replaces the whole task object, so it never reaches this.
     """
-    from celery import states
-    from celery.app.base import Celery
-    from celery.result import EagerResult
-
-    def _queued_without_a_broker(self, name, *args, **kwargs):
-        return EagerResult(kwargs.get("task_id") or f"test-task-{name}", None, states.PENDING)
-
-    with patch.object(Celery, "send_task", _queued_without_a_broker):
+    with hermetic.block_celery_broker():
         yield
 
 
@@ -191,13 +144,7 @@ def _no_real_mysql():
     tests/conftest.py's `_db_pool_disabled_by_default` was written for (#555); the pool being off
     suite-wide is a second belt, not the reason this one holds.
     """
-    import mysql.connector
-
-    def _blocked(*_args, **_kwargs):
-        raise mysql.connector.errors.InterfaceError(_BLOCKED_MYSQL_MESSAGE)
-
-    with patch("mysql.connector.connect", side_effect=_blocked), \
-         patch("mysql.connector.pooling.connect", side_effect=_blocked):
+    with hermetic.block_mysql():
         yield
 
 
@@ -216,16 +163,7 @@ def _no_real_selenium():
     `get_docker_driver` for real already patch this symbol themselves; their patch nests inside
     this one and wins.
     """
-    from cqc_lem.utilities import selenium_util
-
-    def _blocked(host, port, timeout=60):
-        raise TimeoutError(
-            f"Selenium not ready at http://{host}:{port}/wd/hub/status — blocked by "
-            "tests/unit/conftest.py. Patch _wait_for_selenium_ready or get_docker_driver if "
-            "this test needs a driver."
-        )
-
-    with patch.object(selenium_util, "_wait_for_selenium_ready", side_effect=_blocked):
+    with hermetic.block_selenium():
         yield
 
 

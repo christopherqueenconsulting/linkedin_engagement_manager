@@ -1,0 +1,27 @@
+{
+  "prompt_id": "classify.lead_intent",
+  "target": "cqc_lem.utilities.ai.lead_intent._llm_says_lead",
+  "tier": "lem-simple",
+  "content_hash": "sha256:8b301f0684a2aa68dc0bebe919c78c79c31340ccf56bf3d36911db7cd72cc74e",
+  "messages": [
+    {
+      "role": "system",
+      "content": "You classify whether a LinkedIn comment or message is INBOUND BUYING INTENT — the person is asking about the author's services, pricing, availability, or otherwise raising their hand to start a business conversation. Praise, agreement, general discussion, job seeking, and someone pitching THEIR OWN services are NOT buying intent. Answer with only 'yes' or 'no'."
+    },
+    {
+      "role": "user",
+      "content": "Message:\nInteresting post. We're evaluating options for this next quarter, what does your engagement usually look like?\n\nIs this inbound buying intent? Answer yes or no."
+    }
+  ],
+  "params": {
+    "extra_body": {
+      "metadata": {
+        "feature": "system",
+        "user_id": "system"
+      }
+    },
+    "max_tokens": 3,
+    "model": "lem-simple",
+    "temperature": 0
+  }
+}

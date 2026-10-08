@@ -15,8 +15,8 @@ from cqc_lem.platform.db import connection as db
 
 pytestmark = pytest.mark.unit
 
-#: A substring of `_BLOCKED_MYSQL_MESSAGE` (tests/unit/conftest.py). Kept as a literal rather than
-#: imported, because a conftest is not an importable module from here.
+#: A substring of `BLOCKED_MYSQL_MESSAGE` (tests/hermetic.py, installed by tests/unit/conftest.py).
+#: Kept as a literal so a reworded guard message fails here instead of silently matching itself.
 _GUARD_MARKER = "MySQL blocked in unit tests by tests/unit/conftest.py"
 
 

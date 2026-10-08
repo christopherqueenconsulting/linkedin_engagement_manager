@@ -1,0 +1,45 @@
+# Models the prompt evals run against (docs/prompt-evals.md §Models).
+#
+# Champions and their fallbacks are NOT listed here: they are read from .litellm/config.yaml, the
+# file that actually serves production, so this list can never disagree with what is deployed.
+#
+# `candidates` is the CONSIDERATION list. Adding a model as `considering` is how a new model is
+# evaluated: the next scheduled run grades every tracked prompt in its tiers against it, and nothing
+# else. `adopted` / `rejected` stop that, and keep the reason on record.
+#
+# `proxy_host` maps a production model id to the id the GitHub-hosted run reaches it by. The free
+# Ollama Cloud champions run in CI on their OpenRouter-hosted equivalent (labelled `proxy-host` in
+# reports) because the production Ollama key never goes into GitHub — eval traffic on it would spend
+# the quota live traffic needs. A champion with no mapping fails the run's plan step. These ids are
+# verified against OpenRouter's /models by the run's preflight, not by this file.
+
+judge:
+  model: anthropic/claude-sonnet-4.6   # OpenRouter id; verified at preflight, never a candidate
+  family: anthropic
+
+proxy_host:
+  openai/gpt-oss:20b: openai/gpt-oss-20b
+  openai/gpt-oss:120b: openai/gpt-oss-120b
+  openai/gemma4:31b: google/gemma-4-31b-it
+  openai/gpt-4o-mini: openai/gpt-4o-mini
+  openai/gpt-4o: openai/gpt-4o
+  openai/gpt-5.4-mini: openai/gpt-5.4-mini
+  openai/gpt-6.1-sol: openai/gpt-6.1-sol
+
+candidates:
+  - model: openai/gpt-5.4-mini
+    tiers: [lem-simple]
+    status: considering
+    note: "lem-medium champion since #2284; still a candidate for lem-simple"
+  - model: openai/gpt-5.4-mini
+    tiers: [lem-medium]
+    status: adopted
+    note: "promoted to lem-medium champion off live benchmarks (#2284)"
+  - model: openai/gpt-6.1-sol
+    tiers: [lem-complex]
+    status: adopted
+    note: "promoted to lem-complex champion off live benchmarks (#2284)"
+  - model: deepseek-v4.1-flash
+    tiers: [lem-medium, lem-complex]
+    status: considering
+    note: "lead Ollama candidate (#2063); OpenRouter host id resolved at preflight"

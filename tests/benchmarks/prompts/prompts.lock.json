@@ -1,0 +1,411 @@
+{
+  "app.faq_answer": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:3e0489e2f5d37bb5f24d692db57a264b3c1f9b59b881ff98f1f6793c095cd981",
+    "version": 1
+  },
+  "app.onboarding_nudge": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:badaf144af0044e80bea3db7dbbdd82cab19284a4a7649ed9eb8900e6887ca2c",
+    "version": 1
+  },
+  "carousel.image_query": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:d3bb406e863d02eed8e7e250fe863f9f4a442a68c413c8ad2fd578e592230150",
+    "version": 1
+  },
+  "classify.cover_avatar_relevance": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:c43140360f59a13c117929061cd97da7d038ec6f82c60164914443f49219f76e",
+    "version": 1
+  },
+  "classify.dm_reply_intent": {
+    "changed_in": null,
+    "content_hash": "sha256:75aada1a571fffff5079048108f692c67d5902d6bf0b436cea2471cceb6541d9",
+    "dataset_hash": "sha256:96b6dfc2bd9e700d275012cfadd7244a3d69094b57e72997bf8e67f5c035e4b9",
+    "dataset_history": [],
+    "dataset_version": 1,
+    "history": [],
+    "source_hash": "sha256:77ebd2ccb70020195341048386754d8c3fd670cecc19623fec76bdf99d109982",
+    "version": 1
+  },
+  "classify.feedback": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:1fb2dc331de0b4dbe18ff6946c0d6ba4074e586bb8e84c7b0b165a6d4654cb9a",
+    "version": 1
+  },
+  "classify.lead_intent": {
+    "changed_in": null,
+    "content_hash": "sha256:8b301f0684a2aa68dc0bebe919c78c79c31340ccf56bf3d36911db7cd72cc74e",
+    "dataset_hash": "sha256:ee266c3cbab97bc05896a33372c88b99b2a4e9d30cf78ea63c22077bd9129205",
+    "dataset_history": [],
+    "dataset_version": 1,
+    "history": [],
+    "source_hash": "sha256:a8fdd551f3bf7d2f6a776159212b1dfaedcb0f68fae78a9d89eb3e00af872bc0",
+    "version": 1
+  },
+  "classify.post_reaction": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:636e8528ead33c6abd4b36e82481a22bc0844b49b1f76c0db9824d0f393cba40",
+    "version": 1
+  },
+  "classify.post_relevance": {
+    "changed_in": null,
+    "content_hash": "sha256:8b16bd501a6743f2f9308d9b99d212a0d81876881e8f6d1cf9bcffbb0ab94ce8",
+    "dataset_hash": "sha256:ba8ce49a0b5a8d9a11538b92cafdb486c1044f998cd35a8c085fe44aeddc8cea",
+    "dataset_history": [],
+    "dataset_version": 1,
+    "history": [],
+    "source_hash": "sha256:374e33f91b7f7f96d4ae7085c5713af3258338797d3932e37b3fce55e100a4d0",
+    "version": 1
+  },
+  "comment.feed": {
+    "changed_in": null,
+    "content_hash": "sha256:02c2d8ac8dd41df93dc8b89e82c5d1f4e2d3781f397cdd741b3957f22bbdb033",
+    "dataset_hash": "sha256:ff5f1bf890479af2a8b1520e699772362a3859c7925d5aa138807aca72764ad5",
+    "dataset_history": [],
+    "dataset_version": 1,
+    "history": [],
+    "source_hash": "sha256:caa030e5a6f848a3669bd78f02826e2cae08772ea983352da2f152d5a34735db",
+    "version": 1
+  },
+  "comment.reply_followup": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:4c71fe66d08f65d3f6e90d35da0e8a4184d21adb2e6a453c644fa8b39305fd69",
+    "version": 1
+  },
+  "comment.second_wave": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:ad55816f509ad09da059cb9ae276ce625b8a0f38114abae8dbccc238d29a62e3",
+    "version": 1
+  },
+  "comment.seed": {
+    "changed_in": null,
+    "content_hash": "sha256:b8a78a2131b07c7fe62a0a176f481b1805d7903add3242f8c7519faff780ff33",
+    "dataset_hash": "sha256:f1bc8e4c29e4a2ff60075cd2ecfcf7e10b82aa41d1bc09aaa7d840bef49fc9db",
+    "dataset_history": [],
+    "dataset_version": 1,
+    "history": [],
+    "source_hash": "sha256:e90a1bf864eb49ff225fa8aa4fbde125b6ae0e214b6e4e68fb5dc0f2da3e8b4f",
+    "version": 1
+  },
+  "comment.thread_reply": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:39369f30040d258ff785a3f4db0428153a55ebd88444a59b203f396e015c84e1",
+    "version": 1
+  },
+  "curated.audience_fit": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:4d834bacdf085dccf9328c6ff5915b9d9b0c4fff518bbe85e18ea5a1a554a52d",
+    "version": 1
+  },
+  "curated.chart_facts": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:d8a019edf69d8caaf3c0bd68c7e5143e4c3765e6c98ee930815eaa2c6dda8666",
+    "version": 1
+  },
+  "curated.commentary": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:a837a995244a459c13d45c193c577f5e30f319a931ba4ed4acba271e38bceec0",
+    "version": 1
+  },
+  "dm.lead_response": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:13dcf461ef1d834666eeb0184be521f8a768132866e9583d68c840ff6de86788",
+    "version": 1
+  },
+  "dm.message_history_check": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:45733d440dfe151839b64498be556ac07862631da56131f732f81070c1f3ddba",
+    "version": 1
+  },
+  "dm.nurture": {
+    "changed_in": null,
+    "content_hash": "sha256:679d59cc08ed4846c4dbc66d1cebc1f4b9be5c237ebe8fd13fdb5e7a520a9c41",
+    "dataset_hash": "sha256:9da0e7a58e8bff8f273e5c910e821dc99f9160f3a5e7533fa729d235a084d525",
+    "dataset_history": [],
+    "dataset_version": 1,
+    "history": [],
+    "source_hash": "sha256:0b53b9e6dedd19fa367c77239b4d6b4898146ca4ef201c450c2c50804286cb56",
+    "version": 1
+  },
+  "dm.refine": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:e1067d6ec8ec805df069092d51225c75482ec969a7fd1915f940e9f490316fd8",
+    "version": 1
+  },
+  "image.analyze_content": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:3fff03137d9af08dd8439f184d8dd2acc29a2d32fe03502f27f5939ec1fe6973",
+    "version": 1
+  },
+  "image.brief": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:2cc4615c5420b55a5515320b653e13241a88ee99416e4945385ba7a5a90ea8ec",
+    "version": 1
+  },
+  "image.ensure_hook": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:c354465bb9de1501ccfd9d2a966b1c7069cd367d9c8b4aaaf0dd17a09331db7c",
+    "version": 1
+  },
+  "image.hook_thesis_check": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:9610b193a8daf39715afe5682a9bb43099461fe4fbf6324492d138f4cfe41277",
+    "version": 1
+  },
+  "image.prompt_concept_check": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:5c0581245cb95d90e2958f39c0aa8b76e137afe89af76b89ef65f839ff3b9775",
+    "version": 1
+  },
+  "image.visual_idea": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:333405e250e827dd664b9452d101c35f824b5f5b0f47f90de3e728376763a791",
+    "version": 1
+  },
+  "judge.authenticity": {
+    "changed_in": null,
+    "content_hash": "sha256:3863b349bf730caaeea3c0da49c8e8c468ae4f038a8da6672cce3a1395ca819e",
+    "dataset_hash": "sha256:3d17e4d0e0f1d2eadbeb8d175ba90b8850fa6099ced167731ea8f449cdf24bd9",
+    "dataset_history": [],
+    "dataset_version": 1,
+    "history": [],
+    "source_hash": "sha256:3b56489b1d34516dd136d0cd68b7ae876e42e2c89c73e80bbb414b98acb37df6",
+    "version": 1
+  },
+  "marketing.affiliate_post": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:43d90b57547d026223859c96059a99c184e2a332013b6f2f79ec0ce0d7985b22",
+    "version": 1
+  },
+  "marketing.tutorial_script": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:bbd0071db8319a8fd20a57961c0bc4241e85b492c4e88d6b303d938ab09de282",
+    "version": 1
+  },
+  "media.motion_prompt": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:00624a5cf6ddaf6d6e4e3d3dabb84e4c10f7c9049f387bf6b439ffbb54adcec6",
+    "version": 1
+  },
+  "newsletter.edition": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:ad44ec28fa44bfd45268dd798ad4bac1fb40bf266e5ade0726309fe63c1f299a",
+    "version": 1
+  },
+  "newsletter.topic_plan": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:fc4ee6cf9fbd0a73f5db2053c7709f13d1031173cf938f54487d81b41445b8a3",
+    "version": 1
+  },
+  "ops.issue_triage": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:237534a16ecfcf62ebecbecc0dd55ce6680157693a6b2b4ace892b6ffb28f937",
+    "version": 1
+  },
+  "post.apply_guidance": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:3e0b7be10a1d20df29d790d4339428735a7416179f236337b6af3e885c9bb020",
+    "version": 1
+  },
+  "post.blog_summary": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:f110ca178e799b380edb5bc2ef15e4a4e3917f0a5401f552c5febc265c4f9c29",
+    "version": 1
+  },
+  "post.carousel": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:8e3fa8ff74e6143ae195906bf32a307891eae9cdad202662ecf6a2400b12dc6c",
+    "version": 1
+  },
+  "post.engagement_prompt": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:4aaf35167564500143ae1ab8fc9fe58e6dbfcdabcee74a7dcfdd408646a430ec",
+    "version": 1
+  },
+  "post.group": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:44211be3e1964e2bdb8cb7fd9d3f36bcee9c5107f79be972a6967a9395be541f",
+    "version": 1
+  },
+  "post.hook_optimize": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:351ea2154c527f4be02770b42617eb37d9667f652a4d1dfa2502a58b7a69a044",
+    "version": 1
+  },
+  "post.industry_news": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:3dd41fecb9988e997604edd258b80346cb5d0be8dab86d21b3fcba042d61c2fd",
+    "version": 1
+  },
+  "post.personal_story": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:2388e922c671ba8b2d4f7381e9506c3b0820b7bcc8c3ffb21d5246e14050fc5e",
+    "version": 1
+  },
+  "post.pick_quote": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:5420f139558c8d22730d074ba9bc06146480aa46140e970e5f9e5c26b21db9dc",
+    "version": 1
+  },
+  "post.refine": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:74cfa905854f85b3bf3532b32a9da4823c6deb107e044e8766465908fb552741",
+    "version": 1
+  },
+  "post.thought_leadership": {
+    "changed_in": null,
+    "content_hash": "sha256:5220a3998e64ca2e21f9c8cb72602d7b88b061940049147a8314b4cc91ddd409",
+    "dataset_hash": "sha256:e0d04cb444b963d565e2f9abbc66c22ee3d7a87198493630d09851f0cade3d06",
+    "dataset_history": [],
+    "dataset_version": 1,
+    "history": [],
+    "source_hash": "sha256:2a0a5c012fd7db1848c49761271f8c61a508197c7dac61c6c978bd5db268ff92",
+    "version": 1
+  },
+  "post.video_script": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:007fb2237aaa7bb9bf5500de0b86dfbda9506618df632efca5473e4e5b7ceab2",
+    "version": 1
+  },
+  "post.website_content": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:ffa6ba6ab03bdaa2742ac78d07ba192097cf6a6fb2bef0779a15bd587b2035c0",
+    "version": 1
+  },
+  "profile.activity_summary": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:6adb68a4aa52865fc0c8fcf5b74a82fd0e1a02f6faa4d0b87e300780226233bb",
+    "version": 1
+  },
+  "profile.description": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:f2165ccd1d572a4355b853b03e08373328902b0cf74df470ebdb5d3c033c6f05",
+    "version": 1
+  },
+  "profile.industries": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:89fed0c4b704d63baa8b55de82cea64821995c7c9cc1f94fe0f5e0f7147072b8",
+    "version": 1
+  },
+  "profile.synthesis": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:dc895e1e41b2e32c60b4222a029ec06a01175e1b9c0847decd8c6c06fc323f21",
+    "version": 1
+  },
+  "research.industry_trend": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:4ba95634727b8cdc7280e5a957276370f9244673fe2c86be06bd8b19ab2e4599",
+    "version": 1
+  },
+  "rewrite.humanize": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:05e148a2b1049dbe0a4925d09b53cb94a364594983e4eb151eb8e23553180fbf",
+    "version": 1
+  },
+  "rewrite.humanize_title": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:d5db93bf8bb438a7321e2ef0f754c5de1ab3c733cc71cd5bc321338b82ead4c7",
+    "version": 1
+  },
+  "rewrite.mechanical_edit": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:7f940a6c6c50523235c0e383fec95aa6f6b21d3c545754d13dbde2b30c4c118f",
+    "version": 1
+  }
+}
