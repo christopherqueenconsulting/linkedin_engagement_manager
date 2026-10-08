@@ -48,7 +48,7 @@ import re
 import sys
 import urllib.request
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any, Optional
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
@@ -78,6 +78,8 @@ JUDGE_UNPARSEABLE = "judge:unparseable"
 #: The contract floor is the RAW rate. A Wilson lower bound of 0.90 at the suites' n≈40 passes only
 #: 40/40, so one miss failed a prompt (baseline pe-20261008-0250fe); the bound is still reported.
 CONTRACT_FLOOR = 0.95
+#: Samples with no output sit outside the contract denominator, so they get their own ceiling.
+MAX_NO_OUTPUT_RATE = 0.05
 ACCURACY_FLOOR = 0.90
 JUDGE_FLOOR = 0.80
 PAIRWISE_FLOOR = 0.50
@@ -490,7 +492,7 @@ def item_verdict(family: str, metrics: dict[str, Any], role: str) -> tuple[str, 
     # 33/40 empty with 7/7 valid read as a perfect contract in the baseline. More than the contract's
     # own tolerance of empties is a miss in itself.
     total = (metrics.get("errors") or 0) + (metrics.get("cases_scored") or 0)
-    if total and metrics.get("errors", 0) / total > 1 - CONTRACT_FLOOR:
+    if total and metrics.get("errors", 0) / total > MAX_NO_OUTPUT_RATE:
         misses.append(f"{metrics['errors']}/{total} sample(s) with no output"
                       + _counts_note(metrics.get("errors_by_kind")))
     if metrics.get("judge_calibrated") and metrics.get("judge_rate") is not None \
@@ -510,7 +512,7 @@ def _counts_note(counts: Optional[dict[str, int]]) -> str:
     return " (" + ", ".join(f"{name} {n}" for name, n in ordered) + ")"
 
 
-def _tally(names: Any) -> dict[str, int]:
+def _tally(names: Iterable[str]) -> dict[str, int]:
     out: dict[str, int] = {}
     for name in names:
         out[name] = out.get(name, 0) + 1
@@ -526,7 +528,11 @@ ERROR_UNKNOWN = "no output"
 
 
 def error_kind(error: Optional[str]) -> str:
-    """Classify one sample's generation error (``bm.ProviderClient.complete``'s ``error``)."""
+    """Classify one sample's generation error (``bm.ProviderClient.complete``'s ``error``).
+
+    Keys on that message's wording, which lives in this repo; a unit test drives the real
+    ``ProviderClient`` so a reworded message fails the build instead of misclassifying silently.
+    """
     text = str(error or "")
     if not text:
         return ERROR_UNKNOWN
@@ -743,6 +749,8 @@ def pairwise_item(provider: Any, judge_wire: str, rubric: str, suite: dict[str, 
             continue
         cand_first = rng.random() < 0.5
         a, b = (candidate[cid][0], champion[cid][0]) if cand_first else (champion[cid][0], candidate[cid][0])
+        # A provider error leaves no reply, which counts as unreadable below: pairwise only decides
+        # candidates, and the run's judge errors are already counted and named by calibration.
         reply, _error = judge_call(provider, judge_wire,
                                    pairwise_messages(text, case_inputs(case), a or "", b or ""), dry_run)
         winner = parse_pairwise(reply)

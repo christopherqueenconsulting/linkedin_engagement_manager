@@ -419,6 +419,22 @@ class TestFailureCounts:
         assert bp.error_kind("Error code: 404") == bp.ERROR_PROVIDER
         assert bp.error_kind(None) == bp.ERROR_UNKNOWN
 
+    def test_error_kind_matches_the_real_provider_messages(self, monkeypatch):
+        monkeypatch.setenv("BENCHMARK_EMPTY_REPEATS", "0")
+
+        class Empty(bm.ProviderClient):
+            def _create(self, model, messages, call_params):
+                choice = type("C", (), {"message": type("M", (), {"content": ""})(),
+                                        "finish_reason": "length"})()
+                return type("R", (), {"choices": [choice], "usage": None})()
+
+        client = Empty("http://unused", "k")
+        locked = client.complete("m", [], {"max_tokens": 3}, allow_budget_escalation=False)
+        unbounded = client.complete("m", [], {}, allow_budget_escalation=False)
+
+        assert bp.error_kind(locked["error"]) == bp.ERROR_EMPTY_AT_BUDGET
+        assert bp.error_kind(unbounded["error"]) == bp.ERROR_EMPTY
+
     def test_generation_errors_reach_the_metrics(self):
         suite = _suite(2)
         provider = FakeProvider(lambda m, msgs: None)
