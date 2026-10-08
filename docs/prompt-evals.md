@@ -16,8 +16,8 @@ Live inventory, generated: [`docs/prompt-evals/inventory.md`](prompt-evals/inven
 | 1 | Inventory, drift guard, versioning lock, capture, hermetic guards, this doc | **shipped** |
 | 2 | Datasets (≥20 rows) + code graders + rubrics + calibration sets for 8 wave-1 prompts | **shipped** |
 | 3 | `scripts/benchmark_prompts.py`: change-driven runner, model graders, spend plan | **shipped** |
-| 4 | `.github/workflows/prompt-evals.yml` (owner-landed) + the first baseline run | next |
-| 5 | Remediation PR for every wave-1 prompt that fails its floor | |
+| 4 | `scripts/prompt_eval_publish.py` + the workflow (owner-landed) + the first baseline run | **shipped** (workflow awaits the owner) |
+| 5 | Remediation PR for every wave-1 prompt that fails its floor | next, after the baseline |
 | 6 | Waves 2–3: datasets for the remaining planned prompts, about 10 per PR | |
 
 Sections below marked *(phase N)* describe the design the later phases implement.
@@ -344,19 +344,38 @@ missing a floor is a finding about the model, not the prompt.
 
 ## 7. Automation
 
-- **On every PR (free, already required).** The registry, capture and version guards run inside
-  `Unit Tests (Python 3.12)`.
-- **Weekly *(phase 4)*.** `.github/workflows/prompt-evals.yml` runs on cron Monday 04:00 UTC and on
-  `workflow_dispatch`, with inputs `prompt_ids`, `models`, `max_spend` and `force_full`. It:
-  - uses `concurrency: prompt-evals`;
-  - runs the plan, then the evals;
-  - uploads outputs as an artifact (`download-artifact` with `run-id` for re-grades);
-  - force-updates one `bot/prompt-evals` branch and its PR, opened with `RELEASE_DISPATCH_TOKEN` so
-    the required checks run;
-  - files one deduplicated `prompt-eval:failing` issue per failing `prompt@version`.
-
-  The secret is a dedicated, capped `PROMPT_EVAL_OPENROUTER_KEY`. **The owner lands this workflow
-  file**, because the pipeline credential has no `workflows` scope.
+- **On every PR (free, already required).** The registry, capture, version and dataset guards run
+  inside `Unit Tests (Python 3.12)`.
+- **Weekly: `.github/workflows/prompt-evals.yml`.** The reviewed source is
+  [`docs/prompt-evals/prompt-evals.workflow.yml`](prompt-evals/prompt-evals.workflow.yml).
+  - **Who lands it:** the owner copies the file into `.github/workflows/` and commits it, because the
+    pipeline credential has no `workflows` scope.
+  - **Triggers:** cron, Monday 04:00 UTC, and `workflow_dispatch`. The dispatch inputs are
+    `prompt_ids`, `models`, `max_spend` (default 15) and `force_full`.
+  - **Concurrency:** `concurrency: prompt-evals`. A run that has already spent is never cancelled.
+  - **Steps:**
+    1. Download the previous successful run's `prompt-eval-outputs` artifact (`gh run download`), so a
+       grader-only change re-grades for free.
+    2. Run `benchmark_prompts.py --run` with exit codes:
+       - `0`: ok, or no work.
+       - `2`: a floor was missed. This is reported as issues, not as a red run.
+       - Anything else: refused or an error, which fails the job.
+    3. Upload `outputs.json` for 90 days. It is never committed.
+    4. Run `scripts/prompt_eval_publish.py`. It force-pushes the state, report, leaderboard and
+       inventory to ONE branch, `bot/prompt-evals`, and opens its PR. The checkout persists
+       `RELEASE_DISPATCH_TOKEN`, so BOTH the push and the PR are the PAT's: a `GITHUB_TOKEN` force-push
+       to an already-open results PR fires no `synchronize`, and its required checks would never run.
+       The live `.github/workflows/prompt-evals.yml` must match the `docs/` copy (a unit test fails on
+       drift). It also files or updates one `prompt-eval:failing` issue per failing
+       `prompt@version`, using a hidden marker as the dedup key. A re-run comments on the existing
+       issue instead of filing another.
+  - **Secrets:**
+    - `PROMPT_EVAL_OPENROUTER_KEY`: a dedicated OpenRouter key with a hard monthly limit (about $40 is
+      suggested).
+    - `RELEASE_DISPATCH_TOKEN`: the existing secret.
+  - **The baseline:** after landing the workflow, dispatch it once with `prompt_ids=classify.lead_intent`
+    and `max_spend=1` as a smoke test of the key, the spend preflight, the artifact and the results PR.
+    Then dispatch `force_full=true` for the baseline.
 
 ## 8. Fixing a failing prompt
 
@@ -383,4 +402,6 @@ Wording that changes voice or tone is `risk:product-decision`, and nothing here 
 | `docs/prompt-evals/inventory.md` | `prompt_registry.py --inventory` (also run by `--write`) |
 | `tests/hermetic.py` | shared guards: unit lane + capture |
 | `scripts/benchmark_prompts.py` | the runner (phase 3): plan, generate, grade, judge, record |
+| `scripts/prompt_eval_publish.py` | the workflow's last step: results PR + deduplicated failure issues |
+| `docs/prompt-evals/prompt-evals.workflow.yml` | hand; the owner copies it to `.github/workflows/prompt-evals.yml` |
 | `docs/prompt-evals/<date>-<run>.md`, `docs/prompt-evals/README.md` (leaderboard) | `benchmark_prompts.py` (dry runs write wherever `--out-dir` says) |
