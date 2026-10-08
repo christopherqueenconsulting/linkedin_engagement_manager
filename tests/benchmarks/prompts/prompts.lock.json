@@ -28,14 +28,20 @@
     "version": 1
   },
   "classify.dm_reply_intent": {
-    "changed_in": null,
-    "content_hash": "sha256:75aada1a571fffff5079048108f692c67d5902d6bf0b436cea2471cceb6541d9",
+    "changed_in": "reasoning-safe max_tokens (prompt-eval baseline pe-20261008-0250fe)",
+    "content_hash": "sha256:ba3db279ba23032610fdbedd1e7745b89b603805adb4a509b1becaa5a28c32e9",
     "dataset_hash": "sha256:96b6dfc2bd9e700d275012cfadd7244a3d69094b57e72997bf8e67f5c035e4b9",
     "dataset_history": [],
     "dataset_version": 1,
-    "history": [],
-    "source_hash": "sha256:77ebd2ccb70020195341048386754d8c3fd670cecc19623fec76bdf99d109982",
-    "version": 1
+    "history": [
+      {
+        "hash": "sha256:75aada1a571fffff5079048108f692c67d5902d6bf0b436cea2471cceb6541d9",
+        "retired": "2026-10-08",
+        "version": 1
+      }
+    ],
+    "source_hash": "sha256:dccfbce130a2c4821b46b6deb7785d488a718e4233dc525e0c061af563fa9848",
+    "version": 2
   },
   "classify.feedback": {
     "changed_in": null,
@@ -45,21 +51,33 @@
     "version": 1
   },
   "classify.lead_intent": {
-    "changed_in": null,
-    "content_hash": "sha256:8b301f0684a2aa68dc0bebe919c78c79c31340ccf56bf3d36911db7cd72cc74e",
+    "changed_in": "reasoning-safe max_tokens (prompt-eval baseline pe-20261008-0250fe)",
+    "content_hash": "sha256:3c835011fed19d44e2ff77172dfd599574c853aa2fa201621c8053fab96ffc56",
     "dataset_hash": "sha256:ee266c3cbab97bc05896a33372c88b99b2a4e9d30cf78ea63c22077bd9129205",
     "dataset_history": [],
     "dataset_version": 1,
-    "history": [],
-    "source_hash": "sha256:a8fdd551f3bf7d2f6a776159212b1dfaedcb0f68fae78a9d89eb3e00af872bc0",
-    "version": 1
+    "history": [
+      {
+        "hash": "sha256:8b301f0684a2aa68dc0bebe919c78c79c31340ccf56bf3d36911db7cd72cc74e",
+        "retired": "2026-10-08",
+        "version": 1
+      }
+    ],
+    "source_hash": "sha256:b9a31ffad9889e08c82e56d662805fe081e49a74ed6cdc89eeed7504c8e61bc6",
+    "version": 2
   },
   "classify.post_reaction": {
-    "changed_in": null,
+    "changed_in": "reasoning-safe max_tokens (prompt-eval baseline pe-20261008-0250fe)",
     "content_hash": null,
-    "history": [],
-    "source_hash": "sha256:636e8528ead33c6abd4b36e82481a22bc0844b49b1f76c0db9824d0f393cba40",
-    "version": 1
+    "history": [
+      {
+        "hash": "sha256:636e8528ead33c6abd4b36e82481a22bc0844b49b1f76c0db9824d0f393cba40",
+        "retired": "2026-10-08",
+        "version": 1
+      }
+    ],
+    "source_hash": "sha256:0e224d686356c2e7dd6f1e648e15125b95c058ea7870e867b7a14a3d52127f68",
+    "version": 2
   },
   "classify.post_relevance": {
     "changed_in": null,

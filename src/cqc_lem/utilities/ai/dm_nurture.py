@@ -37,8 +37,11 @@ class ReplyIntent(StrEnum):
 _MIN_TEXT_CHARS = 4
 # Cap what we send to the classifier / carry into the draft prompt.
 _MAX_TEXT_CHARS = 1200
-# The tier-2 answer is one word — no reason to pay for more.
-_LLM_MAX_TOKENS = 4
+# The answer is one word, but `lem-simple`'s champion (gpt-oss:20b) is a REASONING model and spends
+# `max_tokens` thinking first: at 4 it returned nothing on 35 of 40 eval cases (prompt-eval baseline
+# pe-20261008-0250fe), and an empty reply reads as NEUTRAL. A ceiling, not a cost: a model that
+# does not reason stops at its one word.
+_LLM_MAX_TOKENS = 512
 
 # Ordered by precedence, SAFEST FIRST: someone saying "not interested right now" matches both
 # disinterest and not_now, and the only acceptable reading of that is stop.

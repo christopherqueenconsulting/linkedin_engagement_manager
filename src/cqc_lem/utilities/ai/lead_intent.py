@@ -33,8 +33,12 @@ _LLM_SCORE = 55
 _MIN_TEXT_CHARS = 8
 # Cap what we send to the classifier / store as evidence.
 _MAX_TEXT_CHARS = 1200
-# The tier-2 answer is one word ('yes'/'no') — no reason to pay for more.
-_LLM_MAX_TOKENS = 3
+# The answer is one word ('yes'/'no'), but `lem-simple`'s champion (gpt-oss:20b) is a REASONING model
+# and spends `max_tokens` thinking before it answers: at 3 it returned nothing on 33 of 40 eval cases
+# (prompt-eval baseline pe-20261008-0250fe; same on Ollama Cloud in bm-20260802-5fff18), and an empty
+# reply reads as "not a lead". This is a ceiling, not a cost: a model that does not reason stops at
+# its one word.
+_LLM_MAX_TOKENS = 512
 
 _STRONG_PATTERNS: "list[tuple[str, str]]" = [
     ("pricing", r"\b(how much|pricing|price list|prices?|what (does|would) (it|this|that) cost|"

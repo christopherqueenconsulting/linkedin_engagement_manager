@@ -1011,6 +1011,12 @@ def _match_reaction(text: str, options: list[str]) -> "str | None":
     return None
 
 
+# The reply is one word, but `lem-simple`'s champion (gpt-oss:20b) is a REASONING model that spends
+# `max_tokens` thinking first: at 3 it returned nothing on the production-budget reaction case
+# (bm-20260802-5fff18), and an empty pick falls through to a RANDOM reaction. A ceiling, not a cost.
+_REACTION_MAX_TOKENS = 512
+
+
 def choose_post_reaction(post_content: str, comment_text: str = None,
                          allowed: list[str] = None) -> str:
     """Pick the single most fitting LinkedIn reaction for a post we just commented on.
@@ -1033,7 +1039,8 @@ def choose_post_reaction(post_content: str, comment_text: str = None,
     ]
 
     try:
-        resp = _call_llm(model="lem-simple", messages=messages, temperature=0, max_tokens=3)
+        resp = _call_llm(model="lem-simple", messages=messages, temperature=0,
+                         max_tokens=_REACTION_MAX_TOKENS)
         pick = _match_reaction(resp.choices[0].message.content, options)
         if pick:
             return pick
@@ -1043,7 +1050,7 @@ def choose_post_reaction(post_content: str, comment_text: str = None,
             fallback = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
             resp = fallback.chat.completions.create(
                 model=os.getenv("OPENAI_FALLBACK_MODEL", "gpt-4o-mini"),
-                messages=messages, temperature=0, max_tokens=3)
+                messages=messages, temperature=0, max_tokens=_REACTION_MAX_TOKENS)
             pick = _match_reaction(resp.choices[0].message.content, options)
             if pick:
                 return pick
