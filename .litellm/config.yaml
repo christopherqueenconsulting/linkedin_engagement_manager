@@ -188,7 +188,17 @@ model_list:
 
   # ── RESEARCH: web-grounded current facts via Perplexity's Agent API ──────────
   # Used by utilities/ai/content_research.research_topic (newsletters, posts, opt-in comments) to
-  # ground content in current stats/examples. Falls back in code to the direct Perplexity helper.
+  # ground content in current stats/examples, but ONLY when the app sets RESEARCH_VIA_PROXY=true.
+  # Default OFF: the app calls Perplexity directly (tools.search_with_perplexity).
+  # LITELLM DEFECT (prod v0.183.0, 2026-10-08, image main-latest): Perplexity's Agent API answers
+  # `"truncation": ""`, and LiteLLM's pydantic ResponsesAPIResponse types that field as
+  # Literal["auto", "disabled"]. The proxy therefore 500s on its OWN parse of an answer Perplexity
+  # already served and billed ("1 validation error for ResponsesAPIResponse / truncation"). It failed
+  # 4 of 5 `scripts/probe_research.py --route proxy` runs. As of 2026-10-08 no LiteLLM release or
+  # main commit normalises the field, so pinning an image tag cannot fix it.
+  # FLIP BACK when a LiteLLM release accepts it: run `probe_research.py --route proxy` several
+  # times on the new image, all must pass, then set RESEARCH_VIA_PROXY=true. Until then this group
+  # serves no app traffic and only answers the probe.
   # #2255: Sonar Chat Completions (`perplexity/sonar`) was SUNSET 2026-09-27 and `sonar` left
   # Perplexity's /v1/models; calls only worked while Perplexity reformulated them. The successor is
   # the Agent API (`/v1/responses`) with a PRESET, which LiteLLM's perplexity provider sends as

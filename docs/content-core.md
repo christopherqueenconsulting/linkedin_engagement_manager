@@ -15,7 +15,7 @@ flow, the slop lint, or the deck reference gate.
 | File | Purpose |
 |---|---|
 | `src/cqc_lem/utilities/ai/content_framework.py` | ONE blueprint core (archetype/hook/CTA menus per content type + shared variety engine) |
-| `src/cqc_lem/utilities/ai/content_research.py` | ONE research layer (lem-research→Perplexity fallback; per-type cost toggles) |
+| `src/cqc_lem/utilities/ai/content_research.py` | ONE research layer (direct Perplexity Agent API primary, `lem-research` proxy opt-in via `RESEARCH_VIA_PROXY`; per-type cost toggles) |
 | `src/cqc_lem/utilities/ai/content_alignment.py` | ONE alignment core (voice synthesis + prefs + LEM purpose + promo policy) |
 | `src/cqc_lem/utilities/ai/story_bank.py` | ONE fact layer (the user's own anecdotes/numbers — the only permitted specifics) |
 | `src/cqc_lem/utilities/ai/slop_lint.py` | ONE deterministic AI-slop lint (no LLM) run on every surface |
