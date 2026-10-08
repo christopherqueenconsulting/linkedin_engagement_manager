@@ -132,7 +132,7 @@ def publish_issues(gh: Runner, repo: str, run: dict[str, Any], run_url: str) -> 
 
 def changed_result_paths(git: Runner) -> list[str]:
     """Return the result paths the run changed (tracked or new)."""
-    raw = git(["git", "status", "--porcelain", "--", *RESULT_PATHS])
+    raw = git(["git", "status", "--porcelain", "--no-renames", "--", *RESULT_PATHS])
     return [line[3:] for line in raw.splitlines() if line.strip()]
 
 
@@ -173,7 +173,12 @@ def main(argv: list[str] | None = None, *, git: Runner = run_command,
     if not args.results.exists():
         sys.stdout.write("no results file — nothing ran, nothing to publish\n")
         return 0
-    run = json.loads(args.results.read_text(encoding="utf-8"))
+    # stdout/stderr, not cqc_lem's logger: like the other scripts/ CLIs this is the CI log's report.
+    try:
+        run = json.loads(args.results.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        sys.stderr.write(f"{args.results} is not valid JSON: {exc}\n")
+        return 1
     missing = [k for k in ("run_id", "date") if k not in run]
     if missing:
         sys.stderr.write(f"{args.results} is not a benchmark_prompts.py results file "

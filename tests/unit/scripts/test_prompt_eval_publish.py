@@ -166,6 +166,13 @@ class TestCli:
         assert "missing run_id, date" in capsys.readouterr().err
         assert gh.calls == []
 
+    def test_corrupt_json_fails_loudly(self, tmp_path, capsys):
+        results = tmp_path / "results.json"
+        results.write_text("{not json")
+
+        assert pub.main(["--results", str(results)], git=Recorder(), gh=Recorder()) == 1
+        assert "is not valid JSON" in capsys.readouterr().err
+
     def test_no_pr_skips_git(self, tmp_path):
         results = tmp_path / "results.json"
         results.write_text(json.dumps({**RUN, "failing": []}))
