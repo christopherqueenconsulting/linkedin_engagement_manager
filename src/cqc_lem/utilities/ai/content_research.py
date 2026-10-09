@@ -223,6 +223,32 @@ def is_known_proxy_parse_defect(exc: BaseException) -> bool:
     return "ResponsesAPIResponse" in text and "truncation" in text
 
 
+#: How long one sighting of the known parse defect keeps this process off the proxy route.
+PROXY_DEFECT_BACKOFF_SECONDS = 6 * 3600
+
+# Monotonic deadline before which `research_topic` skips the proxy. Per process, never persisted:
+# a restart (every deploy) re-tries the proxy once, which is how a fixed LiteLLM gets noticed.
+_proxy_skip_until = 0.0
+
+
+def proxy_route_open(now: Optional[float] = None) -> bool:
+    """Whether `RESEARCH_VIA_PROXY` should still send this call to the proxy first.
+
+    Every proxy call that hits the truncation defect has already been served, and billed, by
+    Perplexity, and LiteLLM records it as a failed `$ai_generation`. With the flag left on, each
+    research call paid for that failure before the direct route answered.
+    """
+    current = time.monotonic() if now is None else now
+    return research_via_proxy_enabled() and current >= _proxy_skip_until
+
+
+def _park_proxy_route(now: Optional[float] = None) -> None:
+    """Close the proxy route for `PROXY_DEFECT_BACKOFF_SECONDS` after a known parse defect."""
+    global _proxy_skip_until
+    current = time.monotonic() if now is None else now
+    _proxy_skip_until = current + PROXY_DEFECT_BACKOFF_SECONDS
+
+
 def _usage_number(usage: Any, *path: str) -> Optional[float]:
     value: Any = usage
     for key in path:
@@ -298,7 +324,7 @@ def research_topic(subject: str, content_type: str = "newsletter", blueprint: di
     if not subject or not research_enabled(content_type, user_id=user_id):
         return dict(_EMPTY)
     query = _build_research_query(subject, content_type, blueprint, context_description, prefs)
-    if research_via_proxy_enabled():
+    if proxy_route_open():
         try:
             result = _research_via_litellm(query, max_sources)
             log_debug(f"Content research via lem-research succeeded ({content_type})",
@@ -306,9 +332,14 @@ def research_topic(subject: str, content_type: str = "newsletter", blueprint: di
             return result
         except Exception as exc:
             if is_known_proxy_parse_defect(exc):
-                # Expected while LiteLLM rejects Perplexity's `truncation: ""` — not news per call.
-                log_debug("Content research via LiteLLM hit the known Agent API parse defect; "
-                          "using direct Perplexity", api_provider="litellm")
+                # The flag is on while LiteLLM still rejects Perplexity's `truncation: ""`: a
+                # configuration fault, said once per backoff window rather than once per call.
+                _park_proxy_route()
+                log_warning("RESEARCH_VIA_PROXY is on but lem-research still hits the LiteLLM "
+                            "truncation parse defect; skipping the proxy for "
+                            f"{PROXY_DEFECT_BACKOFF_SECONDS // 3600}h and using direct Perplexity. "
+                            "Unset RESEARCH_VIA_PROXY until scripts/probe_research.py --route proxy "
+                            "passes.", api_provider="litellm")
             else:
                 log_warning("Content research via LiteLLM failed; trying direct Perplexity",
                             exc=exc, api_provider="litellm")
