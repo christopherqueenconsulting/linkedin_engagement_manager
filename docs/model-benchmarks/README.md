@@ -23,7 +23,7 @@ rather than an absolute claim about one model.
 | `lem-medium` | Feed comments (must satisfy the #617 comment quality contract), post refinement, blog summaries, DMs. |
 | `lem-complex` | Long-form thought leadership / personal story / industry news / carousels / newsletter editions — blueprint-shaped and slop-lint clean. |
 | `lem-router` | The `LEMComplexityRouter` classification contract, plus a clean answer at the router alias. |
-| `lem-vision` | Agreement with the ground truth of 10 synthetic, PIL-drawn fixtures: stray text, a cliché object, the emotion on a face (#2251, see *Media tiers* below). |
+| `lem-vision` | Agreement with the ground truth of 21 synthetic, PIL-drawn fixtures: stray text, a cliché object, the emotion on a face (#2251). v11-v21 (#2257) are the hard cases - tiny, faint, garbled or half-hidden text, a lone small gear, a neutral or cropped face - because v01-v10 saturated at 100% for every model (see *Media tiers* below). |
 | `lem-image` | The #2241/#2248 gauntlet rubric on synthetic briefs, judged by the `lem-vision` champion (#2251). |
 
 Two scoring layers, in this order:

@@ -78,9 +78,32 @@ class TestFixtures:
         truths = [f["truth"] for f in media.VISION_FIXTURES]
         assert {t["stray_text"] for t in truths} == {True, False}
         assert {c for t in truths for c in t["cliche_objects"]} == {"gears", "pipes",
-                                                                     "server_rack"}
-        assert {"happy", "sad", "surprised", "none"} <= {t["emotion"] for t in truths}
+                                                                     "server_rack", "light_bulb"}
+        assert {"happy", "sad", "surprised", "neutral", "angry", "none"} <= \
+            {t["emotion"] for t in truths}
         assert all(set(t) == set(media.VISION_FIELDS) for t in truths)
+
+    def test_hard_fixtures_carry_truth_and_a_rationale(self):
+        # #2257: the harder set - each case answers all three questions and says why it is hard.
+        hard = [f for f in media.VISION_FIXTURES if int(f["id"][1:3]) >= 11]
+        assert len(hard) >= 8
+        assert len({f["id"] for f in media.VISION_FIXTURES}) == len(media.VISION_FIXTURES)
+        for fixture in hard:
+            assert fixture["why"].strip(), fixture["id"]
+            truth = fixture["truth"]
+            assert set(truth) == set(media.VISION_FIELDS), fixture["id"]
+            assert isinstance(truth["stray_text"], bool)
+            assert set(truth["cliche_objects"]) <= set(media.CLICHE_CHOICES)
+            assert truth["emotion"] in media.EMOTION_CHOICES
+            first, second = media.render_fixture(fixture), media.render_fixture(fixture)
+            assert first == second, fixture["id"]
+
+    def test_hard_fixtures_cover_the_issue_categories(self):
+        ids = {f["id"] for f in media.VISION_FIXTURES}
+        assert {"v11-text-tiny-corner", "v12-text-low-contrast", "v13-text-glyph-soup",
+                "v14-text-occluded", "v15-text-sticky-note", "v16-face-neutral-group-caption",
+                "v17-small-gear-busy", "v18-light-bulb", "v19-face-neutral", "v20-face-angry",
+                "v21-face-cropped"} <= ids
 
     def test_fixture_images_are_the_size_promised(self):
         from PIL import Image
@@ -281,7 +304,7 @@ class TestRosterAndSpend:
         assert plan["unpriced"] == []
         vision = media.vision_call_cost("gpt-4o-mini", PRICES)
         assert vision == pytest.approx((600 + 8500) * 1.5e-07 + 1200 * 6e-07)
-        assert plan["items"][0]["est_usd"] == pytest.approx(vision * 10, rel=1e-4)
+        assert plan["items"][0]["est_usd"] == pytest.approx(vision * len(media.VISION_FIXTURES), rel=1e-4)
         render = media.image_render_cost("gpt-image-1", PRICES, "medium")
         assert render == pytest.approx(250 * 5e-06 + 1800 * 4e-05)
         assert plan["total_usd"] == pytest.approx(sum(i["est_usd"] for i in plan["items"]))

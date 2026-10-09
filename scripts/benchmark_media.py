@@ -200,6 +200,46 @@ VISION_FIXTURES = (
      "truth": {"stray_text": True, "cliche_objects": ["gears"], "emotion": "none"}},
     {"id": "v10-face-with-sign", "draw": ("face:happy", "text:WE ARE HIRING"),
      "truth": {"stray_text": True, "cliche_objects": [], "emotion": "happy"}},
+    # Harder cases (#2257): v01-v10 saturated (every model 100%), so they could not reproduce the
+    # lenient judging that moved the champion off gpt-4o-mini in #2241. Each case keeps ONE
+    # unambiguous answer. Left out on purpose: a "forced" grin (EMOTION_CHOICES has no label for
+    # it, so happy and neutral would both be defensible) and a circuit-board texture (not in
+    # CLICHE_CHOICES, so a model mapping it to server_rack would not be wrong).
+    {"id": "v11-text-tiny-corner", "draw": ("abstract", "tiny_text:2026 NORTHWIND STUDIO"),
+     "why": "a credit line a few pixels tall in a busy scene is still text; a lenient judge "
+            "misses it",
+     "truth": {"stray_text": True, "cliche_objects": [], "emotion": "none"}},
+    {"id": "v12-text-low-contrast", "draw": ("faint_text:SCALE WITH CONFIDENCE",),
+     "why": "pale-on-pale lettering is legible but easy to skim past",
+     "truth": {"stray_text": True, "cliche_objects": [], "emotion": "none"}},
+    {"id": "v13-text-glyph-soup", "draw": ("abstract", "nonsense_text:QVRNTA XLOPE|BRUMKAT"),
+     "why": "the pseudo-word captions gpt-image hallucinates are still letters",
+     "truth": {"stray_text": True, "cliche_objects": [], "emotion": "none"}},
+    {"id": "v14-text-occluded", "draw": ("occluded_text:ROADMAP",),
+     "why": "a word whose lower half is covered still shows letters",
+     "truth": {"stray_text": True, "cliche_objects": [], "emotion": "none"}},
+    {"id": "v15-text-sticky-note", "draw": ("abstract", "sticky_note:call Dana|re: Q3 plan"),
+     "why": "sticky-note handwriting, a prop #2241 had to ban, is text",
+     "truth": {"stray_text": True, "cliche_objects": [], "emotion": "none"}},
+    {"id": "v16-face-neutral-group-caption",
+     "draw": ("face:neutral", "poster:FOUNDERS & CONTENT TEAMS"),
+     "why": "#2241 round 9: a group noun painted as a caption, beside a face that is not smiling",
+     "truth": {"stray_text": True, "cliche_objects": [], "emotion": "neutral"}},
+    {"id": "v17-small-gear-busy", "draw": ("abstract", "small_gear"),
+     "why": "one small gear in a busy scene is still the gears cliché",
+     "truth": {"stray_text": False, "cliche_objects": ["gears"], "emotion": "none"}},
+    {"id": "v18-light-bulb", "draw": ("light_bulb",),
+     "why": "the idea light bulb, a stock symbol v01-v10 never showed",
+     "truth": {"stray_text": False, "cliche_objects": ["light_bulb"], "emotion": "none"}},
+    {"id": "v19-face-neutral", "draw": ("face:neutral",),
+     "why": "a flat mouth is neutral; a lenient judge rounds a face up to happy",
+     "truth": {"stray_text": False, "cliche_objects": [], "emotion": "neutral"}},
+    {"id": "v20-face-angry", "draw": ("face:angry",),
+     "why": "inward-slanted brows over a frown: the one emotion v01-v10 never asked about",
+     "truth": {"stray_text": False, "cliche_objects": [], "emotion": "angry"}},
+    {"id": "v21-face-cropped", "draw": ("face_cropped:happy",),
+     "why": "a smiling face cut off by the left frame edge is still a happy face",
+     "truth": {"stray_text": False, "cliche_objects": [], "emotion": "happy"}},
 )
 
 
@@ -263,8 +303,10 @@ def _draw_server_rack(draw) -> None:
         draw.ellipse((300, top + 12, 312, top + 24), fill=(60, 140, 255))
 
 
-def _draw_face(draw, emotion: str, has_other: bool) -> None:
+def _draw_face(draw, emotion: str, has_other: bool, center: Optional[tuple] = None) -> None:
     cx, cy, r = 256, (190 if has_other else 256), (150 if has_other else 190)
+    if center:
+        cx, cy = center
     draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(250, 204, 60), outline=(120, 90, 20),
                  width=6)
     eye_y, eye_dx, eye_r = cy - r * 0.25, r * 0.38, r * 0.1
@@ -290,6 +332,16 @@ def _draw_face(draw, emotion: str, has_other: bool) -> None:
             ex = cx + side * eye_dx
             draw.arc((ex - r * 0.16, eye_y - r * 0.42, ex + r * 0.16, eye_y - r * 0.18), 200, 340,
                      fill=(90, 60, 10), width=7)
+    elif emotion == "neutral":
+        draw.line((cx - mouth_w * 0.8, cy + r * 0.45, cx + mouth_w * 0.8, cy + r * 0.45),
+                  fill=(90, 30, 10), width=10)
+    elif emotion == "angry":
+        draw.arc((cx - mouth_w, cy + r * 0.35, cx + mouth_w, cy + r * 0.9), 200, 340,
+                 fill=(90, 30, 10), width=10)
+        for side in (-1, 1):  # brows slanting down toward the nose
+            ex = cx + side * eye_dx
+            draw.line((ex + side * r * 0.2, eye_y - r * 0.3, ex - side * r * 0.16, eye_y - r * 0.14),
+                      fill=(70, 40, 10), width=12)
 
 
 def _draw_abstract(draw) -> None:
@@ -299,6 +351,62 @@ def _draw_abstract(draw) -> None:
     draw.ellipse((90, 120, 250, 280), fill=(255, 160, 90))
     draw.ellipse((260, 220, 440, 400), fill=(90, 190, 170))
     draw.polygon(((300, 60), (440, 180), (330, 200)), fill=(240, 240, 250))
+
+
+def _fit_font(draw, line: str, size: int, width: int):
+    font = _font(size)
+    while size > 12 and hasattr(draw, "textlength") and draw.textlength(line, font=font) > width:
+        size -= 4
+        font = _font(size)
+    return font
+
+
+def _draw_tiny_text(draw, text: str) -> None:
+    draw.text((330, 492), text, fill=(40, 44, 52), font=_font(11))
+
+
+def _draw_faint_text(draw, text: str) -> None:
+    draw.text((40, 230), text, fill=(214, 219, 227), font=_fit_font(draw, text, 44, 432))
+
+
+def _draw_nonsense_text(draw, spec: str) -> None:
+    draw.rectangle((30, 380, 482, 490), fill=(250, 250, 252))
+    for i, line in enumerate(spec.split("|")):
+        draw.text((44, 390 + i * 48), line, fill=(30, 34, 44), font=_font(38))
+
+
+def _draw_occluded_text(draw, text: str) -> None:
+    draw.text((50, 200), text, fill=(20, 24, 33), font=_fit_font(draw, text, 96, 412))
+    draw.rectangle((0, 262, FIXTURE_SIZE, 380), fill=(90, 120, 170))
+
+
+def _draw_sticky_note(draw, spec: str) -> None:
+    draw.rectangle((318, 318, 488, 488), fill=(255, 236, 110), outline=(214, 190, 60), width=3)
+    for i, line in enumerate(spec.split("|")):
+        draw.text((332, 350 + i * 34), line, fill=(40, 50, 120), font=_font(22))
+
+
+def _draw_poster(draw, text: str) -> None:
+    draw.rectangle((40, 372, 472, 488), fill=(255, 255, 255), outline=(60, 64, 76), width=4)
+    draw.text((60, 412), text, fill=(30, 34, 44), font=_fit_font(draw, text, 32, 392))
+
+
+def _draw_light_bulb(draw) -> None:
+    import math
+    cx, cy = 256, 210
+    draw.ellipse((cx - 110, cy - 110, cx + 110, cy + 110), fill=(255, 226, 90),
+                 outline=(200, 160, 30), width=6)
+    draw.polygon(((cx - 60, cy + 90), (cx + 60, cy + 90), (cx + 46, cy + 150),
+                  (cx - 46, cy + 150)), fill=(255, 226, 90))
+    for band in range(4):  # threaded screw base
+        top = cy + 152 + band * 20
+        draw.rectangle((cx - 46, top, cx + 46, top + 14), fill=(150, 156, 166))
+    draw.line((cx - 30, cy + 40, cx, cy - 10, cx + 30, cy + 40), fill=(200, 120, 20), width=6)
+    for i in range(9):  # rays
+        angle = math.pi + math.pi * i / 8
+        draw.line((cx + 140 * math.cos(angle), cy + 140 * math.sin(angle),
+                   cx + 190 * math.cos(angle), cy + 190 * math.sin(angle)),
+                  fill=(240, 180, 40), width=8)
 
 
 def render_fixture(fixture: dict) -> bytes:
@@ -330,6 +438,24 @@ def render_fixture(fixture: dict) -> bytes:
             _draw_face(draw, arg, has_other)
         elif kind == "abstract":
             _draw_abstract(draw)
+        elif kind == "tiny_text":
+            _draw_tiny_text(draw, arg)
+        elif kind == "faint_text":
+            _draw_faint_text(draw, arg)
+        elif kind == "nonsense_text":
+            _draw_nonsense_text(draw, arg)
+        elif kind == "occluded_text":
+            _draw_occluded_text(draw, arg)
+        elif kind == "sticky_note":
+            _draw_sticky_note(draw, arg)
+        elif kind == "poster":
+            _draw_poster(draw, arg)
+        elif kind == "small_gear":
+            _draw_gear(draw, 420, 92, 26, 8, (110, 118, 130))
+        elif kind == "light_bulb":
+            _draw_light_bulb(draw)
+        elif kind == "face_cropped":
+            _draw_face(draw, arg, False, center=(70, 256))
         else:
             raise ValueError(f"unknown fixture element {element!r}")
     buffer = io.BytesIO()
