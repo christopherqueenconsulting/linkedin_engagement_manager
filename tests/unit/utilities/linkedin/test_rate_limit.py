@@ -617,3 +617,181 @@ class TestTheRedisHandleIsCachedPerProcess:
             assert rate_limit._redis_client() is client
             assert cgs._redis_client() is client
         assert from_url.call_count == 1
+
+
+class _FakeHashRedis:
+    """Just enough of a Redis hash for the egress streak: HSETNX/HINCRBY/HGETALL/EXPIRE/DELETE."""
+
+    def __init__(self):
+        self.store: dict = {}
+        self.ttl_set: dict = {}
+
+    def hsetnx(self, key, field, value):
+        h = self.store.setdefault(key, {})
+        if field in h:
+            return 0
+        h[field] = str(value).encode()
+        return 1
+
+    def hincrby(self, key, field, amount):
+        h = self.store.setdefault(key, {})
+        h[field] = str(int(h.get(field, b"0")) + amount).encode()
+        return int(h[field])
+
+    def expire(self, key, seconds):
+        self.ttl_set[key] = seconds
+        return True
+
+    def hgetall(self, key):
+        return {k.encode(): v for k, v in self.store.get(key, {}).items()}
+
+    def delete(self, key):
+        return 1 if self.store.pop(key, None) is not None else 0
+
+
+class TestEgressStreak:
+    """#2346: a persistent "browser never reached linkedin.com" escalates once, then clears."""
+
+    @pytest.fixture
+    def hash_redis(self, monkeypatch):
+        monkeypatch.delenv("LINKEDIN_EGRESS_ESCALATE_AFTER_SECONDS", raising=False)
+        monkeypatch.delenv("LINKEDIN_EGRESS_ESCALATE_MIN_FAILURES", raising=False)
+        client = _FakeHashRedis()
+        with patch(f"{_MOD}._redis_client", return_value=client):
+            yield client
+
+    def test_a_single_failure_does_not_escalate(self, hash_redis):
+        from cqc_lem.utilities.linkedin.rate_limit import record_egress_failure
+        state = record_egress_failure(7, now=1000)
+        assert state == {"first_at": 1000, "count": 1, "elapsed_seconds": 0, "escalate_now": False}
+        assert hash_redis.ttl_set["linkedin:egress_streak:7"] > 0
+
+    def test_many_failures_inside_the_window_do_not_escalate(self, hash_redis):
+        from cqc_lem.utilities.linkedin.rate_limit import record_egress_failure
+        results = [record_egress_failure(7, now=1000 + i * 60) for i in range(10)]
+        assert not any(r["escalate_now"] for r in results)
+
+    def test_a_long_run_escalates_exactly_once(self, hash_redis):
+        """Default window 2h and 3 sessions: the first failure past both escalates, later ones not."""
+        from cqc_lem.utilities.linkedin.rate_limit import record_egress_failure
+        start = 1000
+        results = [record_egress_failure(7, now=start + i * 1800) for i in range(10)]  # every 30 min
+        escalations = [i for i, r in enumerate(results) if r["escalate_now"]]
+        assert escalations == [4]  # 4 x 30 min = 2h, and the 5th session
+        assert results[4]["elapsed_seconds"] == 7200
+
+    def test_time_alone_does_not_escalate_below_the_session_floor(self, hash_redis, monkeypatch):
+        monkeypatch.setenv("LINKEDIN_EGRESS_ESCALATE_MIN_FAILURES", "3")
+        from cqc_lem.utilities.linkedin.rate_limit import record_egress_failure
+        assert not record_egress_failure(7, now=0)["escalate_now"]
+        assert not record_egress_failure(7, now=99999)["escalate_now"]  # 2 sessions only
+        assert record_egress_failure(7, now=99999 + 1)["escalate_now"]
+
+    def test_streaks_are_per_user(self, hash_redis):
+        from cqc_lem.utilities.linkedin.rate_limit import record_egress_failure
+        for i in range(5):
+            record_egress_failure(7, now=i * 3600)
+        assert record_egress_failure(8, now=5 * 3600)["count"] == 1
+
+    def test_clear_returns_the_streak_and_a_new_outage_escalates_again(self, hash_redis):
+        from cqc_lem.utilities.linkedin.rate_limit import (
+            clear_egress_failures,
+            egress_streak_state,
+            record_egress_failure,
+        )
+        for i in range(5):
+            record_egress_failure(7, now=i * 1800)
+        cleared = clear_egress_failures(7)
+        assert cleared["count"] == 5 and cleared["escalated_at"] == 4 * 1800
+        assert egress_streak_state(7) is None
+        assert clear_egress_failures(7) is None  # nothing left to clear
+        again = [record_egress_failure(7, now=50000 + i * 1800)["escalate_now"] for i in range(5)]
+        assert again == [False, False, False, False, True]
+
+    def test_env_overrides_and_bad_values(self, hash_redis, monkeypatch):
+        from cqc_lem.utilities.linkedin.rate_limit import (
+            _egress_escalate_after_seconds,
+            _egress_escalate_min_failures,
+        )
+        monkeypatch.setenv("LINKEDIN_EGRESS_ESCALATE_AFTER_SECONDS", "600")
+        monkeypatch.setenv("LINKEDIN_EGRESS_ESCALATE_MIN_FAILURES", "0")
+        assert _egress_escalate_after_seconds() == 600
+        assert _egress_escalate_min_failures() == 1
+        monkeypatch.setenv("LINKEDIN_EGRESS_ESCALATE_AFTER_SECONDS", "-5")
+        assert _egress_escalate_after_seconds() == 0
+        monkeypatch.setenv("LINKEDIN_EGRESS_ESCALATE_AFTER_SECONDS", "soon")
+        monkeypatch.setenv("LINKEDIN_EGRESS_ESCALATE_MIN_FAILURES", "many")
+        assert _egress_escalate_after_seconds() == 7200
+        assert _egress_escalate_min_failures() == 3
+
+    def test_fails_open_without_redis(self):
+        with patch(f"{_MOD}._redis_client", return_value=None):
+            from cqc_lem.utilities.linkedin.rate_limit import (
+                clear_egress_failures,
+                egress_streak_state,
+                record_egress_failure,
+            )
+            assert record_egress_failure(7) is None
+            assert clear_egress_failures(7) is None
+            assert egress_streak_state(7) is None
+
+    def test_a_redis_error_mid_record_is_a_warning_not_a_raise(self):
+        client = MagicMock()
+        client.hsetnx.side_effect = RuntimeError("redis down")
+        with patch(f"{_MOD}._redis_client", return_value=client), \
+             patch(f"{_MOD}.log_warning") as warn:
+            from cqc_lem.utilities.linkedin.rate_limit import record_egress_failure
+            assert record_egress_failure(7) is None
+        warn.assert_called_once()
+
+    def test_the_escalation_type_is_outside_the_self_clearing_family(self):
+        """`log_escalation` never escalates a LinkedInRateLimited — the filed type must not be one."""
+        from cqc_lem.utilities.linkedin.rate_limit import (
+            LinkedInEgressDown,
+            LinkedInEgressUnreachable,
+            LinkedInRateLimited,
+        )
+        assert issubclass(LinkedInEgressUnreachable, LinkedInRateLimited)
+        assert not issubclass(LinkedInEgressDown, LinkedInRateLimited)
+
+
+class TestEgressStreakEdges:
+    def test_a_failed_escalation_claim_does_not_escalate(self):
+        client = _FakeHashRedis()
+        real = client.hsetnx
+
+        def hsetnx(key, field, value):
+            if field == "escalated_at":
+                raise RuntimeError("redis blip")
+            return real(key, field, value)
+
+        client.hsetnx = hsetnx
+        with patch(f"{_MOD}._redis_client", return_value=client):
+            from cqc_lem.utilities.linkedin.rate_limit import record_egress_failure
+            results = [record_egress_failure(7, now=i * 3600) for i in range(5)]
+        assert not any(r["escalate_now"] for r in results)
+
+    def test_decode_skips_junk_and_needs_a_start_time(self):
+        from cqc_lem.utilities.linkedin.rate_limit import _decode_streak
+        assert _decode_streak({}) is None
+        assert _decode_streak({b"count": b"3"}) is None
+        assert _decode_streak({"first_at": "10", "count": "x", "junk": "y"}) == {
+            "first_at": 10, "count": 0, "escalated_at": None}
+
+    def test_an_unreadable_streak_is_none(self):
+        client = MagicMock()
+        client.hgetall.side_effect = RuntimeError("redis down")
+        with patch(f"{_MOD}._redis_client", return_value=client):
+            from cqc_lem.utilities.linkedin.rate_limit import (
+                clear_egress_failures,
+                egress_streak_state,
+                record_egress_failure,
+            )
+            assert clear_egress_failures(7) is None
+            assert egress_streak_state(7) is None
+            with patch(f"{_MOD}.log_warning"):
+                assert record_egress_failure(7) is None
+
+    def test_clear_without_a_user_is_a_no_op(self):
+        from cqc_lem.utilities.linkedin.rate_limit import clear_egress_failures
+        assert clear_egress_failures(None) is None

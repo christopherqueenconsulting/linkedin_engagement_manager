@@ -48,13 +48,17 @@ from cqc_lem.utilities.linkedin.login_status import (
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.linkedin.rate_limit import (
     LinkedInChallengeUnsolved,
+    LinkedInEgressDown,
+    LinkedInEgressUnreachable,
     LinkedInRateLimited,
     automation_pause_remaining,
+    clear_egress_failures,
     clear_rate_limit,
     is_automation_paused,
     is_measurement_paused,
     mark_rate_limited,
     rate_limit_cooldown_remaining,
+    record_egress_failure,
 )
 from cqc_lem.utilities.linkedin.scrapper import returnProfileInfo
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
@@ -472,6 +476,75 @@ def _user_id_for_email(user_email: str) -> Optional[int]:
         return None
 
 
+def _egress_label_for_user(user_id: int) -> str:
+    """host:port of the egress this user's browser is routed through, or DIRECT — never credentials.
+
+    Re-resolved the same way `get_driver_wait_pair` resolves it, because the login gate is handed
+    a driver, not the proxy it was built with. Best-effort: an unreadable answer is "unknown" and
+    can never raise into the login path.
+    """
+    try:
+        from cqc_lem.utilities.db import get_user_geo, get_user_proxy
+        from cqc_lem.utilities.proxy import resolve_proxy
+        from cqc_lem.utilities.selenium_util import _proxy_label
+        geo = get_user_geo(user_id) or {}
+        return _proxy_label(resolve_proxy(get_user_proxy(user_id), geo.get("country")))
+    except Exception:
+        return "unknown"
+
+
+def _note_egress_failure(user_id: Optional[int]) -> None:
+    """Count a session that never reached linkedin.com, and escalate ONCE when it persists (#2346).
+
+    Each failure on its own stays a transient back-off (#2320) — the WARNING at the login gate, no
+    breaker trip. What this adds is the run: when one user's sessions have been failing this way
+    for longer than the escalation window, ONE ERROR line names the likely causes in order and the
+    egress host:port (never credentials), and ONE `LinkedInEgressDown` is captured to error
+    tracking, where, if PostHog's "issue created or reopened" alert is enabled, the owner is
+    emailed.
+
+    The capture is fingerprinted per user AND per streak (its start time), so every outage opens a
+    NEW error-tracking issue, and so a new alert if that alert is on, instead of grouping into an
+    earlier outage's issue that may still be open. The exception text is host-free on purpose — it becomes
+    an issue title. A successful login clears the streak (`_clear_egress_streak`).
+    """
+    if not user_id:
+        return
+    state = record_egress_failure(user_id)
+    if not state or not state.get("escalate_now"):
+        return
+    hours = round(state["elapsed_seconds"] / 3600, 1)
+    message = (
+        f"LinkedIn browser egress has not reached linkedin.com for {hours}h "
+        f"({state['count']} sessions in a row, egress={_egress_label_for_user(user_id)}). "
+        "Likely causes, in order: the egress proxy is unreachable or refusing connections, "
+        "LinkedIn is down, the host network is down. Every Selenium lane for this user is "
+        "deferring until a login succeeds.")
+    log_error(message, user_id=user_id, action_type="login")
+    try:
+        from cqc_lem.utilities.observability import capture_exception
+        capture_exception(
+            LinkedInEgressDown(
+                "LinkedIn browser egress has not reached linkedin.com past the escalation window"),
+            user_id=user_id,
+            fingerprint=f"linkedin-egress-down:{int(user_id)}:{state['first_at']}",
+            log_message=message, log_level="ERROR", action_type="login")
+    except Exception as e:
+        log_debug(f"Could not capture the egress escalation: {type(e).__name__}",
+                  action_type="login")
+
+
+def _clear_egress_streak(user_id: Optional[int]) -> None:
+    """A login that reached LinkedIn ends the egress streak; say so if that streak had escalated."""
+    try:
+        state = clear_egress_failures(user_id)
+    except Exception:
+        return
+    if state and state.get("escalated_at"):
+        log_info(f"LinkedIn browser egress recovered after {state.get('count', 0)} failed sessions",
+                 user_id=user_id, action_type="login")
+
+
 def _persist_session_cookies(driver: WebDriver, user_email: str) -> bool:
     """Store the freshly authenticated session and report honestly whether it landed.
 
@@ -748,7 +821,8 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
             # and land on the password login (the path that draws a challenge) plus a false
             # "reconnect" email, so treat it like the feed transport error below: transient,
             # retried later, breaker untouched.
-            raise LinkedInRateLimited(
+            _note_egress_failure(challenge_uid)
+            raise LinkedInEgressUnreachable(
                 f"Base page did not load on LinkedIn's origin ({driver.current_url}) — stored "
                 "cookies could not be installed; transient, retrying later without tripping the "
                 "rate-limit breaker.") from e
@@ -806,13 +880,15 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
     # otherwise be mistaken for a live session below — clearing the breaker and storing junk cookies.
     # Raise a transient error WITHOUT tripping the 429 breaker so the task simply retries later.
     if _is_logged_in(driver.current_url) and _page_is_transport_error(driver):
-        raise LinkedInRateLimited(
+        _note_egress_failure(challenge_uid)
+        raise LinkedInEgressUnreachable(
             "Feed did not load (proxy/network error) — transient, retrying later without "
             "tripping the rate-limit breaker.")
 
     if _is_logged_in(driver.current_url):
         log_info(f"Already logged in! (current URL: {driver.current_url})")
         clear_rate_limit(reason="login_session_reused")
+        _clear_egress_streak(challenge_uid)
         _persist_session_cookies(driver, user_email)
         return True
 
@@ -909,6 +985,7 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
     if _is_logged_in(driver.current_url):
         log_info("Login successful!")
         clear_rate_limit(reason="login_success")
+        _clear_egress_streak(challenge_uid)
         _persist_session_cookies(driver, user_email)
         return True
 
