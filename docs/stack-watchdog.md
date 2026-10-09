@@ -255,8 +255,11 @@ grep -o "egress=[^ ]*" /opt/lem/logs/cqc_lem_$(date -u +%Y_%m_%d).log | sort | u
 ```
 
 `PROXY_URL` and `REGION_PROXIES` are set in `/opt/lem/.env`, and per-user overrides are in
-`users.proxy_url` (`docs/PER_USER_PROXY.md`). Those values carry credentials: read them on the host
-and never paste them into a ticket or chat.
+`users.proxy_url` (`docs/PER_USER_PROXY.md`). Those values carry credentials, and the log's
+`egress=` label already gives the host:port, so do not read them for this and never paste them
+into a ticket or chat. `/opt/lem/.env` also holds every other production secret, so never `cat`,
+open or paste it whole; read or change one line at a time with the commands in the Rollback bullet
+below.
 
 The egress for each user is resolved by `utilities/proxy.py:resolve_proxy`: the user's own
 `users.proxy_url`, else `REGION_PROXIES` for their country, else `REGION_PROXIES["DEFAULT"]`, else
@@ -273,19 +276,54 @@ is needed. The owner of the response is whoever receives the layer 3 monitor's a
   restarts or rolls back on it: deploys gate on `/health`, never `/health/deep`, and the host
   watchdog (layer 1) reads `docker compose ps`, not this endpoint.
 - **Rollback:** `HEALTH_DEEP_EGRESS_DEGRADES=false` in `/opt/lem/.env` keeps the `egress` fields
-  but stops them changing `status`. The API reads `.env` only when its container is created, so
-  saving the file does nothing on its own. To apply it now, re-deploy the tag that is already
-  running, as the deploy user (the same command CI runs over SSH):
-  `cd /opt/lem && ./scripts/deploy.sh "$(cat .last_good_tag)"` (if `.last_good_tag` is missing or
-  empty, take the tag as the Rollback steps in `docs/AUTOMATION_COOLDOWN.md` describe). That is a
-  full deploy, in this order: Flyway migrations (a no-op when no migration is pending), the
+  but stops them changing `status`. Change only that line, never by opening the file. First note
+  the current line, so you can put it back (it prints nothing if the line is absent):
+
+  ```
+  grep -E '^HEALTH_DEEP_EGRESS_DEGRADES=' /opt/lem/.env
+  ```
+
+  Then set it (this edits the line or appends it, as `persist_image_tag` in `scripts/deploy.sh`
+  does for `IMAGE_TAG`):
+
+  ```
+  if grep -qE '^HEALTH_DEEP_EGRESS_DEGRADES=' /opt/lem/.env; then
+    sed -i -E 's|^HEALTH_DEEP_EGRESS_DEGRADES=.*|HEALTH_DEEP_EGRESS_DEGRADES=false|' /opt/lem/.env
+  else
+    echo 'HEALTH_DEEP_EGRESS_DEGRADES=false' >> /opt/lem/.env
+  fi
+  ```
+
+  The API reads `.env` only when its container is created, so saving the file does nothing on its
+  own. To apply it now, re-deploy the tag that is already running, as the deploy user (the same
+  `deploy.sh <tag>` CI runs over SSH):
+  `cd /opt/lem && ./scripts/deploy.sh "$(cat .last_good_tag)"`. If `.last_good_tag` is missing or
+  empty, take the tag as the Rollback steps in `docs/AUTOMATION_COOLDOWN.md` describe. `deploy.sh`
+  pulls from GHCR and logs in only when `GHCR_USER` and `GHCR_PAT` are set, as CI sets them; on a
+  manual run it needs a `docker login ghcr.io` already on the box
+  (`grep -q 'ghcr.io' ~/.docker/config.json && echo 'ghcr.io login present'`, as the deploy user).
+  If there is none, do not type a token into the shell: dispatch the **Redeploy / Rollback VPS**
+  workflow (`.github/workflows/deploy-vps.yml`) with `tag` set to the running tag and `rollback`
+  left unchecked, which runs the same `deploy.sh <tag>` and passes `GHCR_USER` and `GHCR_PAT`.
+  Once it exits 0, check that the serving API container has the value; it should print `false`:
+
+  ```
+  docker exec "web_api_$(cat /opt/lem/.active_color)" printenv HEALTH_DEEP_EGRESS_DEGRADES
+  ```
+
+  The re-deploy is a full deploy, in this order: Flyway migrations (a no-op when no migration is
+  pending), the
   blue/green flip of the web tier, then the worker drain through the maintenance window, and only
   then are the workers recreated. Otherwise it takes effect on the next release deploy. Before you
   run it, check in GitHub Actions that no **Build & Deploy Release** or **Redeploy / Rollback VPS**
   run is in progress (`deploy.sh` takes no lock). If it exits non-zero, its last lines name the case;
   `docs/AUTOMATION_COOLDOWN.md` § Responding to a `LinkedInEgressDown` escalation, under Rollback,
-  says what each one leaves running and what to do. To undo the switch, delete the line
-  from `/opt/lem/.env` and run the same command again. Reverting the PR removes the fields; a
+  says what each one leaves running and what to do. To undo the switch, put back the line you
+  noted: if the first `grep` printed one, set that value with the same `if grep ... sed ... fi`
+  command; if it printed nothing, delete the line with
+  `sed -i -E '/^HEALTH_DEEP_EGRESS_DEGRADES=/d' /opt/lem/.env` (the code default, `true`, then
+  applies). Re-deploy the same way and run the same `printenv` check. Reverting the PR removes the
+  fields; a
   monitor asserting on `"status":"healthy"` is unaffected either way.
 - **To stop a false page before any deploy:** pausing the layer 3 monitor also silences the only
   off-box alarm: while it is paused, nothing reports the VPS down, the tunnel broken or any other

@@ -154,7 +154,10 @@ The app log is `/opt/lem/logs/cqc_lem_YYYY_MM_DD.log`, one file per UTC day
    `users.proxy_url` (written by `update_user_proxy` in `platform/db/repositories/users.py`), else
    `REGION_PROXIES` for their country, else `REGION_PROXIES["DEFAULT"]`, else `PROXY_URL`, else
    direct egress (`docs/PER_USER_PROXY.md`). `REGION_PROXIES` and `PROXY_URL` are set in
-   `/opt/lem/.env`; they carry credentials, so never paste them into a ticket or chat.
+   `/opt/lem/.env`; they carry credentials, so never paste them into a ticket or chat. The same
+   file holds every production secret (`LEM_SECRET_KEY`, `ADMIN_SECRET`, `API_ACCESS_TOKENS` and
+   more), so never `cat`, open or paste `/opt/lem/.env` whole: read or change one line at a time
+   with the `grep` and `sed` commands under Rollback below.
 2. **Check it from the host,** without credentials. What to check depends on the label:
 
    | `egress=` | Meaning | Check |
@@ -162,7 +165,7 @@ The app log is `/opt/lem/logs/cqc_lem_YYYY_MM_DD.log`, one file per UTC day
    | `<host>:<port>` or `<host>` | a proxy | `nc -vz <host> <port>` (a timeout is the proxy, a refusal is the port), then the provider's dashboard and status page |
    | `DIRECT` | no proxy resolved for this user | the host network and DNS from the Selenium worker; there is no proxy to test |
    | `invalid` | the resolved proxy URL has no parseable host | fix the value in `users.proxy_url`, `REGION_PROXIES` or `PROXY_URL` |
-   | `unknown` | resolving the user's egress raised an unexpected error (a MySQL error is not one: it reads as no override and falls through the order above) | the lookup logs nothing when it fails, so take the user's egress from their last session line, `grep 'egress=' /opt/lem/logs/cqc_lem_$(date -u +%Y_%m_%d).log \| grep -w 'user_id=<user_id>' \| tail -1`, and use the row for that label |
+   | `unknown` | resolving the user's egress raised an unexpected error (a MySQL error is not one: it reads as no override and falls through the order above) | the lookup logs nothing when it fails, so take the user's egress from their last session line, `grep "Selenium session '.*' egress=" /opt/lem/logs/cqc_lem_$(date -u +%Y_%m_%d).log \| grep -w 'user_id=<user_id>' \| tail -1` (the pattern matches only the per-session line from `get_docker_driver` in `utilities/selenium_util.py`, not the escalation line, which also carries `egress=unknown`), and use the row for that label |
 
    `/health/deep`'s `egress` field, where deployed, gives the proxy's answer from inside the API
    container.
@@ -183,17 +186,62 @@ The app log is `/opt/lem/logs/cqc_lem_YYYY_MM_DD.log`, one file per UTC day
    it was still active when the daily error-to-issue cron ran (`docs/error-tracking.md` § error →
    GitHub issues), the cron also filed a GitHub issue for it; close that too, since the fix was
    at the proxy, not in code. Resolving the PostHog issue before the cron runs means nothing is
-   filed.
+   filed. The cron's issue carries the labels `agent:ready` and `bug` and the body marker
+   `posthog-issue-<issue_id>`, where `<issue_id>` is the PostHog issue id. Find it with:
+
+   ```
+   gh issue list -R christopherqueenconsulting/linkedin_engagement_manager --state open \
+     --label agent:ready --search 'posthog-issue-<issue_id> in:body'
+   ```
+
+   Close it as soon as you find it, even mid-outage, or at least remove `agent:ready`:
+   that label queues it for the agent pipeline as a code task. The repo is public, so the closing
+   comment names no egress host and no `.env` value.
 
 **Rollback:** set `LINKEDIN_EGRESS_ESCALATE_AFTER_SECONDS` very high (e.g. `31536000`) in
 `/opt/lem/.env` to silence the escalation without a code change; the clearer WARNING wording stays.
 This only stops the escalation (the ERROR line and the `LinkedInEgressDown` issue); it does not
 bring the egress back. The affected users' sessions still raise `LinkedInEgressUnreachable`, which
 is rate-limit-class, so their automation keeps deferring until the egress recovers.
+
+`/opt/lem/.env` holds every production secret, so never `cat`, open or paste it whole; use only
+these line-scoped commands. First note the current line, so you can put it back later (it prints
+nothing if the line is absent):
+
+```
+grep -E '^LINKEDIN_EGRESS_ESCALATE_AFTER_SECONDS=' /opt/lem/.env
+```
+
+Then set the value. This edits the line if it exists and appends it if not, the same pattern
+`persist_image_tag` in `scripts/deploy.sh` uses for `IMAGE_TAG`:
+
+```
+if grep -qE '^LINKEDIN_EGRESS_ESCALATE_AFTER_SECONDS=' /opt/lem/.env; then
+  sed -i -E 's|^LINKEDIN_EGRESS_ESCALATE_AFTER_SECONDS=.*|LINKEDIN_EGRESS_ESCALATE_AFTER_SECONDS=31536000|' /opt/lem/.env
+else
+  echo 'LINKEDIN_EGRESS_ESCALATE_AFTER_SECONDS=31536000' >> /opt/lem/.env
+fi
+```
+
 The Celery workers read `.env` only when their containers are created, so saving the file does
-nothing on its own. To apply it now, re-deploy the tag that is already running, as the deploy user
-(the same command CI runs over SSH: the **Deploy over SSH** steps in
-`.github/workflows/build-and-push.yml` and `.github/workflows/deploy-vps.yml`).
+nothing on its own. To apply it now, re-deploy the tag that is already running, as the deploy user.
+This is the same `deploy.sh <tag>` that CI runs over SSH, in the **Deploy over SSH** step of
+`.github/workflows/deploy-vps.yml` and the **Deploy over SSH (attempt 1)** to **(attempt 5,
+final)** steps of `.github/workflows/build-and-push.yml`.
+
+`deploy.sh` pulls the image from GHCR. It logs in only when `GHCR_USER` and `GHCR_PAT` are both
+set in its environment, which CI does; on a manual run it relies on a `docker login ghcr.io`
+already on the box. Check for one as the deploy user (this prints no credential):
+
+```
+grep -q 'ghcr.io' ~/.docker/config.json && echo 'ghcr.io login present'
+```
+
+If there is none, do not type a token into the shell. Instead, dispatch the **Redeploy / Rollback
+VPS** workflow (`.github/workflows/deploy-vps.yml`) with `tag` set to the running tag and
+`rollback` left unchecked. It runs the same `deploy.sh <tag>` and passes `GHCR_USER` and
+`GHCR_PAT`. With `rollback` checked it runs `scripts/rollback.sh` instead, which is not this
+procedure.
 
 `deploy.sh` writes the tag to `/opt/lem/.last_good_tag` once the web tier is live on it. Check
 the file first:
@@ -209,11 +257,25 @@ cd /opt/lem && ./scripts/deploy.sh "$(cat .last_good_tag)"
 ```
 
 If the file is missing or empty, do not run the command above: with no argument `deploy.sh` stops
-at its usage line. Take the tag from the `IMAGE_TAG=` line in `/opt/lem/.env` instead (`deploy.sh`
-writes the same tag there), or from the last successful **Build & Deploy Release** run in GitHub
-Actions, and pass it by hand: `cd /opt/lem && ./scripts/deploy.sh <tag>`.
+at its usage line. Take the tag from the `IMAGE_TAG=` line instead (`deploy.sh` writes the same
+tag there), reading only that line:
 
-That recreates the workers with the new value. It is a full deploy, in this order: Flyway
+```
+grep -E '^IMAGE_TAG=' /opt/lem/.env
+```
+
+Or take it from the last successful **Build & Deploy Release** run in GitHub Actions. Then pass it
+by hand: `cd /opt/lem && ./scripts/deploy.sh <tag>`.
+
+Once it exits 0, check that the new value reached a Selenium worker. It should print the value you
+set:
+
+```
+docker exec celery_worker_selenium printenv LINKEDIN_EGRESS_ESCALATE_AFTER_SECONDS
+```
+
+The re-deploy is what recreates the workers with the new value. It is a full deploy, in this
+order: Flyway
 migrations (a no-op when no migration is pending), the blue/green flip of the web tier, then the
 worker drain through the maintenance window, and only then are the workers recreated.
 Otherwise the value takes effect on the next release deploy. A revert removes both the escalation
@@ -244,7 +306,16 @@ exits non-zero, its last lines say which case you are in:
   applied, so fix the failed command and re-run. If it was later, treat it as a partial deploy, as
   in the case above.
 
-To undo the switch, delete the line from `/opt/lem/.env` and run the same command again.
+To undo the switch, put back the line you noted. If the first `grep` printed a line, set that
+value again with the `if grep ... sed ... fi` command above, using the old value in place of
+`31536000`. If it printed nothing, delete the line:
+
+```
+sed -i -E '/^LINKEDIN_EGRESS_ESCALATE_AFTER_SECONDS=/d' /opt/lem/.env
+```
+
+With the line deleted, the code default applies. Then re-deploy the same way and run the same
+`printenv` check: it should print the old value, or nothing if you deleted the line.
 
 ## When to use
 
