@@ -23,7 +23,7 @@ rather than an absolute claim about one model.
 | `lem-medium` | Feed comments (must satisfy the #617 comment quality contract), post refinement, blog summaries, DMs. |
 | `lem-complex` | Long-form thought leadership / personal story / industry news / carousels / newsletter editions — blueprint-shaped and slop-lint clean. |
 | `lem-router` | The `LEMComplexityRouter` classification contract, plus a clean answer at the router alias. |
-| `lem-vision` | Agreement with the ground truth of 10 synthetic, PIL-drawn fixtures: stray text, a cliché object, the emotion on a face (#2251, see *Media tiers* below). |
+| `lem-vision` | Agreement with the ground truth of 21 synthetic, PIL-drawn fixtures: stray text, a cliché object, the emotion on a face (#2251). v11-v21 (#2257) are the hard cases - tiny, faint, garbled or half-hidden text, a lone small gear, a neutral or cropped face - because v01-v10 saturated at 100% for every model (see *Media tiers* below). |
 | `lem-image` | The #2241/#2248 gauntlet rubric on synthetic briefs, judged by the `lem-vision` champion (#2251). |
 
 Two scoring layers, in this order:
@@ -617,10 +617,13 @@ the table below is the one place a tier's whole standing is read.
 # Planned spend for the default roster. No network, no writes.
 poetry run python scripts/benchmark_models.py --dry-run --tiers lem-vision,lem-image
 # A real run (BENCHMARK_ENABLED=true, OPENAI_API_KEY). The cap is enforced before the first call.
-poetry run python scripts/benchmark_models.py --run --tiers lem-vision,lem-image --max-spend-usd 1.50
+poetry run python scripts/benchmark_models.py --run --tiers lem-vision,lem-image --max-spend-usd 2.00
 ```
 
-- **Vision.** Ten fixtures are drawn with PIL at run time. They are deterministic, nothing binary is
+- **Vision.** Twenty-one fixtures are drawn with PIL at run time (v11-v21, #2257, are the hard
+  cases). Their planned ceiling for the default roster is about $1.97, inside the $2.00 default cap
+  with little room: a unit test fails the build if the committed roster's plan ever crosses it, and
+  a third `lem-image` model would. They are deterministic, nothing binary is
   committed, and there is no customer content. Each fixture has ground truth for the three
   questions the render gate leans on: is there **stray text**, is a stock **cliché object**
   present (gears, pipes, a server rack), and what **emotion** does a drawn face show.
