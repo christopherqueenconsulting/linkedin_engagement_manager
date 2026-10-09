@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.187.3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.187.2...v0.187.3) (2026-10-09)
+
+
+### Bug Fixes
+
+* **linkedin:** treat a cookie refused for the wrong origin as a transient login back-off ([0e316fa](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0e316fa0741e370db29108931da6cc6ad2bfc011))
+* **linkedin:** treat wrong-origin cookie refusal as transient login back-off (closes [#2320](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2320)) ([#2323](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2323)) ([0e316fa](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0e316fa0741e370db29108931da6cc6ad2bfc011))
+* **outreach:** stop funnel roster walk on a crashed tab (closes [#2321](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2321)) ([#2322](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2322)) ([2f8a75e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2f8a75e2fb0c2625630a2b174df004e4ef52b0bd))
+* **outreach:** stop the funnel roster walk on a crashed tab ([2f8a75e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2f8a75e2fb0c2625630a2b174df004e4ef52b0bd))
+
 ## [0.187.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.187.1...v0.187.2) (2026-10-09)
 
 
