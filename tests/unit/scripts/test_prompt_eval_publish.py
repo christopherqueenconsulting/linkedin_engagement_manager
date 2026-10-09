@@ -142,6 +142,16 @@ class TestResultsPr:
 
         assert pub.publish_results_pr(git, gh, REPO, RUN, "") == "updated PR #99"
         assert not gh.ran("gh pr create")
+        edit = gh.ran("gh pr edit 99")[0]  # the force-pushed run renames the open PR (squash subject)
+        assert edit[edit.index("--title") + 1] == f"chore(prompt-evals): results of run {RUN['run_id']}"
+        assert RUN["run_id"] in edit[edit.index("--body") + 1]
+
+    def test_the_doc_index_is_committed_with_the_results(self):
+        """Without docs/README.md the run's new report is unlinked and CM013 fails the bot PR."""
+        assert "docs/README.md" in pub.RESULT_PATHS
+        git = Recorder({"git status": " M docs/README.md\n"})
+        pub.publish_results_pr(git, Recorder({"gh pr list": "[]"}), REPO, RUN, "")
+        assert "docs/README.md" in git.ran("git add")[0]
 
     def test_changed_result_paths_parses_porcelain(self):
         git = Recorder({"git status": " M a/b.json\n?? docs/prompt-evals/c.md\n\n"})

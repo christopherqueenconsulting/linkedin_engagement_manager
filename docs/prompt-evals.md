@@ -346,7 +346,9 @@ once:
 6. **Judges** a tag-stratified sample (`--judge-sample`, default 5) per prompt × model.
 7. **Pairwise-compares** each candidate with the champion.
 8. **Refuses** an all-errored run (#923). Otherwise it writes the report, the leaderboard
-   (`docs/prompt-evals/README.md`), the eval state and the inventory.
+   (`docs/prompt-evals/README.md`), the eval state and the inventory. A run written to
+   `docs/prompt-evals/` also links the leaderboard and its report from `docs/README.md`, because the
+   doc-index guard (CM013) fails any tracked doc the index does not link.
 
 `--outputs-out` writes the generated text for the workflow's artifact. It is **never committed**, and
 the report carries scores only.
@@ -374,8 +376,10 @@ missing a floor is a finding about the model, not the prompt.
        - `2`: a floor was missed. This is reported as issues, not as a red run.
        - Anything else: refused or an error, which fails the job.
     3. Upload `outputs.json` for 90 days. It is never committed.
-    4. Run `scripts/prompt_eval_publish.py`. It force-pushes the state, report, leaderboard and
-       inventory to ONE branch, `bot/prompt-evals`, and opens its PR. The checkout persists
+    4. Run `scripts/prompt_eval_publish.py`. It force-pushes the state, report, leaderboard,
+       inventory and doc-index lines to ONE branch, `bot/prompt-evals`, and opens its PR. When that
+       PR is already open it rewrites the PR's title and body to name this run, because a squash
+       merge makes the title the commit subject on `main`. The checkout persists
        `RELEASE_DISPATCH_TOKEN`, so BOTH the push and the PR are the PAT's: a `GITHUB_TOKEN` force-push
        to an already-open results PR fires no `synchronize`, and its required checks would never run.
        The live `.github/workflows/prompt-evals.yml` must match the `docs/` copy (a unit test fails on
@@ -390,6 +394,23 @@ missing a floor is a finding about the model, not the prompt.
   - **The baseline:** after landing the workflow, dispatch it once with `prompt_ids=classify.lead_intent`
     and `max_spend=1` as a smoke test of the key, the spend preflight, the artifact and the results PR.
     Then dispatch `force_full=true` for the baseline.
+
+### Weekly maintenance
+
+- **Who merges:** the repository owner reviews and merges the `bot/prompt-evals` PR. Nothing here is
+  auto-merged.
+- **Deadline:** merge it before the next scheduled run, Monday 04:00 UTC (`cron: "0 4 * * 1"`). The
+  scheduled run checks out `main` and rebuilds `bot/prompt-evals` from it, so an unmerged results PR
+  is replaced. Its report and `eval_state.json` are lost, and the run plans those prompts again as
+  `new prompt`, up to `max_spend`.
+- **When a merge cannot land in time:** run `gh workflow disable prompt-evals.yml` before Monday,
+  then `gh workflow enable prompt-evals.yml` after the merge.
+- **A refused run vs a missed floor:** a refused run (exit 1, for example over the spend cap) is a
+  red job with no PR. A missed floor (exit 2) is a green job that files or updates
+  `prompt-eval:failing` issues.
+- **The doc index:** a run written to `docs/prompt-evals/` links its report from `docs/README.md`.
+  If the `Prompt inventory` line there is renamed, the link is skipped and the doc-index guard
+  (CM013) fails the results PR.
 
 ## 8. Fixing a failing prompt
 

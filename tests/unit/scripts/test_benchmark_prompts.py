@@ -800,3 +800,77 @@ class TestCli:
         evaluated = bp.evaluated_prompts()
         assert evaluated["classify.lead_intent"]["tier"] == "lem-simple"
         assert evaluated["post.thought_leadership"]["tier"] == "lem-complex"
+
+
+# ───────────────────────────── the doc index ─────────────────────────────
+
+class TestIndexRunDocs:
+    """A results PR must link its new docs from docs/README.md, or CM013 fails the unit lane."""
+
+    INVENTORY = "- [Prompt inventory](prompt-evals/inventory.md) — GENERATED\n"
+
+    def _tree(self, tmp_path, index_text):
+        docs = tmp_path / "docs"
+        (docs / "prompt-evals").mkdir(parents=True)
+        index = docs / "README.md"
+        index.write_text(index_text, encoding="utf-8")
+        return index, docs / "prompt-evals" / "README.md"
+
+    def test_first_run_adds_leaderboard_then_report_after_the_inventory_line(self, tmp_path):
+        index, readme = self._tree(tmp_path, "# Docs\n" + self.INVENTORY + "- [Other](other.md)\n")
+
+        assert bp.index_run_docs(index, readme, readme.parent / "2026-10-12-pe-1.md", "pe-1")
+
+        lines = index.read_text(encoding="utf-8").splitlines()
+        assert lines[1] == self.INVENTORY.rstrip("\n")
+        assert lines[2].startswith("- [Prompt eval runs](prompt-evals/README.md)")
+        assert lines[3] == ("- [Prompt eval run — `pe-1`](prompt-evals/2026-10-12-pe-1.md) — "
+                            "archived run report")
+        assert lines[4] == "- [Other](other.md)"
+
+    def test_a_later_run_appends_after_earlier_runs_and_a_rerun_is_a_no_op(self, tmp_path):
+        index, readme = self._tree(tmp_path, self.INVENTORY)
+        bp.index_run_docs(index, readme, readme.parent / "2026-10-12-pe-1.md", "pe-1")
+
+        assert bp.index_run_docs(index, readme, readme.parent / "2026-10-19-pe-2.md", "pe-2")
+        assert not bp.index_run_docs(index, readme, readme.parent / "2026-10-19-pe-2.md", "pe-2")
+
+        text = index.read_text(encoding="utf-8")
+        assert text.count("prompt-evals/README.md") == 1
+        assert text.index("pe-1") < text.index("pe-2")
+        assert text.endswith("archived run report\n")
+
+    def test_missing_anchor_or_index_leaves_it_alone(self, tmp_path):
+        index, readme = self._tree(tmp_path, "# Docs\n")
+
+        assert not bp.index_run_docs(index, readme, readme.parent / "r.md", "pe-1")
+        assert index.read_text(encoding="utf-8") == "# Docs\n"
+        assert not bp.index_run_docs(tmp_path / "nope.md", readme, readme.parent / "r.md", "pe-1")
+
+    def test_write_outputs_indexes_only_the_real_output_dir(self, tmp_path, monkeypatch):
+        index, readme = self._tree(tmp_path, self.INVENTORY)
+        run = {"run_id": "pe-9", "date": "2026-10-12", "mode": "live", "judge": "j", "results": [],
+               "calibration": {}}
+
+        bp.write_outputs(run, tmp_path / "scratch")
+        assert "pe-9" not in index.read_text(encoding="utf-8")
+
+        monkeypatch.setattr(bp, "OUT_DIR", readme.parent)
+        monkeypatch.setattr(bp, "DOC_INDEX", index)
+        bp.write_outputs(run, readme.parent)
+        assert "](prompt-evals/2026-10-12-pe-9.md)" in index.read_text(encoding="utf-8")
+
+
+def test_leaderboard_cells_show_no_output_and_never_print_none():
+    run = {"run_id": "pe-3", "date": "2026-10-12", "results": [
+        {"prompt_id": "p.cls", "version": 2, "model": "m", "role": "champion", "verdict": "fail",
+         "metrics": {"contract_rate": 1.0, "first_draft_rate": 1.0, "errors": 35}},
+        {"prompt_id": "p.cls", "version": 2, "model": "n", "role": "fallback", "verdict": "pass",
+         "metrics": {"contract_rate": 0.975, "first_draft_rate": None, "judge_rate": 0.9}}]}
+
+    first, second = bp.leaderboard_rows(run)
+
+    assert first["contract"] == "1.0 (+35 no output)"
+    assert first["judge"] == first["latency"] == second["deterministic"] == "—"
+    assert second["contract"] == "0.975" and second["judge"] == 0.9
+    assert "None" not in bm.update_leaderboard("", [first, second])

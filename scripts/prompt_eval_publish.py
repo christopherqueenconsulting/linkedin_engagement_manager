@@ -33,7 +33,7 @@ from typing import Any
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 BRANCH = "bot/prompt-evals"
 LABEL = "prompt-eval:failing"
-RESULT_PATHS = ("docs/prompt-evals", "tests/benchmarks/prompts/eval_state.json")
+RESULT_PATHS = ("docs/prompt-evals", "docs/README.md", "tests/benchmarks/prompts/eval_state.json")
 BOT_NAME = "lem-prompt-evals[bot]"
 BOT_EMAIL = "prompt-evals@users.noreply.github.com"
 
@@ -154,16 +154,21 @@ def publish_results_pr(git: Runner, gh: Runner, repo: str, run: dict[str, Any],
     git(["git", "push", "--force", "origin", f"HEAD:refs/heads/{BRANCH}"])
     open_prs = json.loads(gh(["gh", "pr", "list", "--repo", repo, "--head", BRANCH, "--state",
                               "open", "--json", "number"]) or "[]")
-    if open_prs:
-        return f"updated PR #{open_prs[0]['number']}"
     failing = len(group_failures(run.get("failing") or []))
+    title = f"chore(prompt-evals): results of run {run['run_id']}"
     body = (f"Results of prompt-eval run `{run['run_id']}` ({run['date']}): "
             f"{len(run.get('results') or [])} prompt × model item(s) graded, {failing} "
             f"prompt@version(s) failing a floor (filed as `{LABEL}` issues).\n\n"
-            f"Updates the eval state, the run report and the leaderboard under `docs/prompt-evals/`. "
-            f"Scores only — no generated text.\n\n{run_url}\n")
+            f"Updates the eval state, the run report, the leaderboard under `docs/prompt-evals/` "
+            f"and their links in `docs/README.md`. Scores only — no generated text.\n\n{run_url}\n")
+    if open_prs:
+        # The force-push above replaced the branch with THIS run, so the open PR's title and body
+        # must name it too; a squash merge makes the title the commit subject on main.
+        number = open_prs[0]["number"]
+        gh(["gh", "pr", "edit", str(number), "--repo", repo, "--title", title, "--body", body])
+        return f"updated PR #{number}"
     gh(["gh", "pr", "create", "--repo", repo, "--head", BRANCH, "--base", "main", "--title",
-        f"chore(prompt-evals): results of run {run['run_id']}", "--body", body])
+        title, "--body", body])
     return "opened PR"
 
 
