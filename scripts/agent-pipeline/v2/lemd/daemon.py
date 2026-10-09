@@ -861,9 +861,23 @@ class Daemon:
             elif rc == dispatch.EX_TRUST:
                 # Never retried on a timer: a trust refusal is answered by a human re-labelling,
                 # which arrives as an event. The slow TTL is only a safety net against a lost one.
+                #
+                # A refused UN-PARK spends the answer (#2331). Left unrecorded, the same reply is
+                # still the newest comment after the menu, so the next observation — minutes later,
+                # not six hours — decided `owner_answered` again: 39 one-minute gh-pool runs on
+                # #2268 before the issue closed itself. Recording it as routed makes that reply
+                # attempted ONCE; a different, later owner comment is still read.
+                fields: dict[str, Any] = {}
+                if child.mode == "unpark":
+                    answer_id = self._answer_ids.pop((child.kind, child.number), None)
+                    if answer_id is not None:
+                        fields["last_comment_id"] = answer_id
+                    LOG.warning("unpark of %s #%s refused at the TRUST gate — answer %s spent; "
+                                "the item stays parked for a human", child.kind, child.number,
+                                answer_id or "unknown")
                 db.force_state(self.conn, item["id"], db.STATE_PARKED, dirty=0,
                                pending_mode=None, parked_reason="trust_refused",
-                               wake_at=int(time.time()) + self.cfg.ttl_parked)
+                               wake_at=int(time.time()) + self.cfg.ttl_parked, **fields)
             elif rc == dispatch.EX_BUSY:
                 # Someone else holds the branch — a v1 tick, most likely, during coexistence.
                 # Keep the decision and try again shortly.

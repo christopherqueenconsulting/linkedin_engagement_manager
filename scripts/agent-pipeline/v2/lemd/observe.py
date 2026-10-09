@@ -142,6 +142,10 @@ class Snapshot:
     #: may raise the one park that posts one. An item that ARRIVED held (triage cron, hand-filed)
     #: was never asked anything, so `answer` stays None for ever and the hold is permanent.
     menu_posted: bool | None = None
+    #: For a held ISSUE with no menu on it: would `unpark.sh`'s TRUST gate accept its author
+    #: (#2331)? Read only when row 9a could fire, so it costs nothing anywhere else. Three-valued,
+    #: and only a literal `False` suppresses the menu — `None` (unread, unreadable) asks as before.
+    author_trusted: bool | None = None
     #: How many times this item has already been parked for its CURRENT reason — the lap counter
     #: behind the give-up rule. 0 for anything that has never parked.
     park_laps: int = 0
@@ -430,6 +434,14 @@ def decide(snap: Snapshot, *, ttl_ci: int, ttl_review: int, ttl_queue: int,
             # `False` only: `None` is an unreadable (or unread) thread, and unreadable is never
             # evidence that no menu exists. And it needs `needs-human` specifically — a bare
             # `agent:blocked` is a dependency hold, not a question for the owner.
+            if snap.author_trusted is False:
+                # ...unless no answer could ever work (#2331). `unpark.sh` refuses any issue whose
+                # author the TRUST gate does not accept — a deploy-hold filed by
+                # `github-actions[bot]` is CONTRIBUTOR — so the menu was a dead end: the owner's
+                # `1A` on #2268 was refused, and its real way out is the human action written in
+                # the issue body. Keep the hold and post nothing.
+                return Decision(ACT_NONE, db.STATE_PARKED, "human_hold_untrusted_author",
+                                park_reason="needs_human", wake_in=ttl_parked)
             return Decision(ACT_PARK, db.STATE_PARKED, "human_hold_unasked", mode="park",
                             park_reason="human_hold_unasked")
         # Event-driven (an owner comment or a label removal), with a slow safety re-check so a
@@ -738,6 +750,9 @@ def snapshot_issue(slug: str, number: int, *, owner: str | None = None,
         return Snapshot(kind="issue", number=number, readable=False)
     labels = frozenset(github.label_names(facts))
     thread = _thread_for(slug, "issue", number, labels, owner)
+    # Only when row 9a could fire — the one decision this fact changes.
+    trusted = (github.author_trusted(slug, number)
+               if "needs-human" in labels and thread.menu_posted is False else None)
     work = None
     has_open_pr = None
     linked_state = None
@@ -775,6 +790,7 @@ def snapshot_issue(slug: str, number: int, *, owner: str | None = None,
         answer=thread.answer,
         answer_routed=answer_routed,
         menu_posted=thread.menu_posted,
+        author_trusted=trusted,
         readable=True,
     )
 

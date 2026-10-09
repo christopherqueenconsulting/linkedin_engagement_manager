@@ -265,6 +265,7 @@ second one — same action, same head-keyed comment, same counted lap.
 | 8 | hold label + `hold`/`question` answer | none → parked | `human_hold:{verdict}` | 6h |
 | 9 | hold label + an answer already spent | none → parked | `human_hold:answer_already_routed` | 6h |
 | 9a | `needs-human`, no answer, and the thread is READABLE with **no Decision Comment on it** (`menu_posted is False`) | **park** | `human_hold_unasked` | — |
+| 9b | …as 9a, but an ISSUE whose author the TRUST gate refuses (`author_trusted is False`) | none → parked | `human_hold_untrusted_author` | 6h |
 | 10 | hold label, no answer | none → parked | `human_hold` | 6h |
 
 Row 5 sits above the answer deliberately. Only `park.sh` ever ran `--disable-auto`, so a hold a
@@ -305,6 +306,14 @@ already on and adds only the comment, keyed on the thread rather than the head-S
 next observation reads `menu_posted=True` and takes row 10. The answer then routes through `unpark.sh`
 like any other — an issue with no PR goes back to `agent:ready`, so the backfill for the six is the
 fix's own next pass, not a one-shot.
+
+**Row 9b: no menu where no answer can work (#2331).** `unpark.sh` refuses any issue whose author
+`lib/guards.sh:author_trusted` rejects, so a menu on one is a dead end — measured on #2268, a
+deploy-hold filed by `github-actions[bot]` (CONTRIBUTOR), where the owner's `1A` was refused. Its way
+out is the human action written in the issue body, so the hold stays and nothing is posted.
+`Snapshot.author_trusted` is read (`github.author_trusted`, the same REST endpoint and rules) only when
+9a could fire, and only a literal `False` takes this row: an unreadable read, or a bot author while
+`GH_APP_BOT_LOGIN` is unknown to the daemon, reads `None` and asks as before.
 
 **Ambiguity never starts a build.** A reply that leads with `1B` and then says "but don't merge until
 Friday" reads as `hold` and stays parked.
@@ -610,7 +619,7 @@ meter by pushing a commit — is real and correct; the wiring is not.
 
 | Code | Means | Daemon does |
 |---|---|---|
-| `EX_TRUST` 70 | provenance refused or unreadable | park, 6h TTL — answered by a human, not a timer |
+| `EX_TRUST` 70 | provenance refused or unreadable | park, 6h TTL — answered by a human, not a timer. A refused `unpark` also records its answer as routed (one WARNING), so that reply is attempted ONCE (#2331) |
 | `EX_BUDGET` 71 | this (item, mode) is spent | park `{mode}_exhausted` |
 | `EX_BUSY` 72 | another claimant holds the branch | retry in 120s |
 | `EX_SETUP` 73 | environment not preparable | ⚠️ treated as a plain failure — no backoff |
