@@ -371,7 +371,9 @@ class TestLitellmReady:
 
 
 class TestLitellmRestartOrdering:
-    """A config-changing deploy restarted litellm AFTER the new workers were up, dropping their
+    """The litellm restart must sit inside the drain window and wait for readiness.
+
+    A config-changing deploy restarted litellm AFTER the new workers were up, dropping their
     in-flight LLM calls (issue #2304: 4x `APIConnectionError: Connection error.` on v0.184.0).
     The restart must sit inside the drain window — after the drain, before the worker converge —
     and wait for readiness, and only one restart may exist.
