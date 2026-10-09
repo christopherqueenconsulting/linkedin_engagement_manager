@@ -475,3 +475,11 @@ def test_a_c_recommendation_asks_for_the_close_never_for_a_1c_reply(action_tree,
     assert "`1C`." not in menu and "My recommendation: `1C`" not in menu
     assert "e.g. `1B`" in menu  # the retry path is still a parseable answer
     assert "no reply is needed. ✅ *recommended*" in menu
+
+
+def test_no_park_detail_claims_that_c_closes():
+    """The details are pasted into the same menu, so they must not undo its option-C wording."""
+    from lemd import observe
+
+    for reason, detail in observe.PARK_DETAILS.items():
+        assert "closes it for you" not in detail, reason
