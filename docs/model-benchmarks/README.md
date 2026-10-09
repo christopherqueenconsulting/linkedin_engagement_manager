@@ -773,8 +773,9 @@ The `tts-1` sunset is not a model-name swap. Read on 2026-10-09:
   <https://elevenlabs.io/docs/models>), so choosing this path should also move `ELEVENLABS_MODEL`.
 - **Per video.** `TUTORIAL_MAX_NARRATION_CHARS` defaults to 1400, so a full-length narration costs
   about $0.021 on `tts-1` and about $0.21 at the ElevenLabs default. The `produce-feature-tutorial`
-  beat renders at most one tutorial a week, so that is at most about $0.09 and $0.91 a month
-  respectively, and only while tutorials are enabled.
+  beat renders at most one tutorial a week (Wednesdays), so that is about $0.09 and $0.91 a month
+  on average, at most $0.105 and $1.05 in a five-Wednesday month, and only while tutorials are
+  enabled.
 
 Nothing is swapped yet. The route is a decision for the owner, and the audio samples need the
 production `OPENAI_API_KEY` (the dev key is a placeholder). The cost constant and the pinned price
