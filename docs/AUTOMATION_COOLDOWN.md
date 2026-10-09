@@ -98,6 +98,67 @@ and §1's escalating cooldown is the only thing that lets it decay. A transport 
 that is a proxy blip, transient, and tripping the shared breaker on it would pause every lane for
 nothing.
 
+## 4. A browser that never reaches LinkedIn is not a rate limit (#2320, #2346)
+
+When the egress route fails (the proxy stops answering, DNS, the host network), the base-page
+navigation lands on a Chrome error page, the stored cookies are refused for the wrong origin, and
+`login_to_linkedin` raises `LinkedInEgressUnreachable`. That is a `LinkedInRateLimited` subclass on
+purpose — every caller defers exactly as it does for a throttle, nothing is charged, and **this
+breaker is never tripped**, because LinkedIn was never contacted. The login gate in
+`linkedin/session.py` logs it as `LinkedIn login deferred — the browser could not reach linkedin.com
+through its egress route`, not as a rate limit.
+
+`log_escalation` never escalates the `LinkedInRateLimited` family, so on its own a dead proxy stays
+at WARNING forever (2026-10-09: every Selenium lane, more than nine hours, nothing past WARNING). The
+**egress streak** is the separate signal for that:
+
+- Per user, in Redis (`linkedin:egress_streak:<user_id>`): when the current run of egress failures
+  began and how many sessions it has cost. Any successful login clears it.
+- Once the streak is both `LINKEDIN_EGRESS_ESCALATE_MIN_FAILURES` sessions long (default 3) AND
+  older than `LINKEDIN_EGRESS_ESCALATE_AFTER_SECONDS` (default 7200 = 2 h), `login_to_linkedin`
+  (`_note_egress_failure` in `linkedin/helper.py`) escalates once. Both conditions, not either: the
+  session floor alone would page on a burst of retries in a few minutes (a deploy, a proxy blip),
+  and the window alone would page on two sessions hours apart. So under the defaults the earliest
+  escalation is 2 h after the first failed session.
+- The escalation is two things:
+  - one ERROR log line naming the likely causes in order (egress proxy, LinkedIn, host network) and
+    the egress `host:port` the browser is routed through, never credentials;
+  - one `LinkedInEgressDown` captured to error tracking, fingerprinted per user and per streak, so
+    **each outage opens a new issue**. The exception text carries no host, because it becomes an
+    issue title.
+- **Who is told:** the code guarantees the ERROR line and a new error-tracking issue. The owner is
+  emailed only if PostHog's "Issue created or reopened" alert is on (`docs/error-tracking.md` §
+  Alerts); that alert is PostHog configuration, not code, and this change does not verify it. The
+  daily error→issue cron (`scripts/posthog_error_issues.py`) also files a GitHub issue; it copies
+  the exception's name and text, which carry no host.
+- **Fan-out:** the streak is per user, so one shared proxy failing for N users opens N issues.
+- It escalates once per streak (an `HSETNX` claim, so two workers cannot both fire). A successful
+  login clears the streak; for a streak that had escalated it also logs `LinkedIn browser egress
+  recovered after N failed sessions` at INFO. A later outage is a new streak and escalates again.
+- Fails open: with Redis down nothing is counted and nothing escalates.
+- Known gap: a user with NO stored cookies never reaches the wrong-origin branch, so an outage is
+  counted only through users who have a stored session.
+
+### Responding to a `LinkedInEgressDown` escalation
+
+1. **Find the egress.** The ERROR line names it as `egress=<host:port>`. It is resolved by
+   `utilities/proxy.py:resolve_proxy`: the user's own `users.proxy_url` (written by `update_user_proxy` in
+   `platform/db/repositories/users.py`), else `REGION_PROXIES` for their country, else `PROXY_URL`.
+2. **Check it from the host,** without credentials: `nc -vz <host> <port>` (a timeout is the
+   proxy, a refusal is the port), then the provider's dashboard and status page. `/health/deep`'s
+   `egress` field, where deployed, says the same thing from inside the API container.
+3. **Fix or replace the proxy** at the provider. Do not point the account at a different IP
+   without deciding to: LinkedIn treats a new sign-in location as a risk signal.
+4. **Confirm recovery:** the next scheduled session logs `Already logged in!` (or `Login
+   successful!`) and `LinkedIn browser egress recovered after N failed sessions`, and the Redis key
+   `linkedin:egress_streak:<user_id>` is gone. No restart is needed; the lanes resume on their next
+   beat. Resolve the error-tracking issue once recovered.
+
+**Rollback:** set `LINKEDIN_EGRESS_ESCALATE_AFTER_SECONDS` very high (e.g. `31536000`) in
+`/opt/lem/.env` to silence the escalation without a code change; the clearer WARNING wording stays.
+The Celery workers read `.env` when their containers are created, so it takes effect on the next
+deploy (`scripts/deploy.sh`), not on save. A revert removes both.
+
 ## When to use
 
 If the account is 429'd for an extended period (login fails even when the breaker briefly clears),

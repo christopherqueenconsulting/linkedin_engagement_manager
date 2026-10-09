@@ -34,7 +34,9 @@ def _breaker_closed():
     with patch(f"{_MODULE}.rate_limit_cooldown_remaining", return_value=0), \
          patch(f"{_MODULE}.mark_rate_limited"), \
          patch(f"{_MODULE}.is_automation_paused", return_value=False), \
-         patch(f"{_MODULE}.clear_rate_limit"):
+         patch(f"{_MODULE}.clear_rate_limit"), \
+         patch(f"{_MODULE}.record_egress_failure", return_value=None), \
+         patch(f"{_MODULE}.clear_egress_failures", return_value=None):
         yield
 
 
@@ -165,6 +167,117 @@ class TestLoginToLinkedinCookiePath:
         mark_breaker.assert_not_called()
         mock_store.assert_not_called()
         notify.assert_not_called()
+
+    def test_wrong_origin_is_counted_against_the_egress_streak(self):
+        """Each origin-load failure is counted for the account, and raised as the egress subtype."""
+        from selenium.common.exceptions import InvalidCookieDomainException
+
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInEgressUnreachable
+
+        driver = _make_driver("chrome-error://chromewebdata/")
+        with patch(f"{_MODULE}.get_cookies", return_value=[{"name": "x"}]), \
+             patch(f"{_MODULE}.load_cookies",
+                   side_effect=InvalidCookieDomainException("invalid cookie domain")), \
+             patch(f"{_MODULE}._user_id_for_email", return_value=7), \
+             patch(f"{_MODULE}.challenge_cooldown_remaining", return_value=0), \
+             patch(f"{_MODULE}.record_egress_failure",
+                   return_value={"first_at": 0, "count": 1, "elapsed_seconds": 0,
+                                 "escalate_now": False}) as record, \
+             patch(f"{_MODULE}.log_error") as err, \
+             pytest.raises(LinkedInEgressUnreachable):
+            from cqc_lem.utilities.linkedin.helper import login_to_linkedin
+            login_to_linkedin(driver, _make_wait(), "user@e.com", "pw")
+        record.assert_called_once_with(7)
+        err.assert_not_called()  # one failure is still only the gate's WARNING
+
+    def test_persistent_wrong_origin_escalates_once_with_the_egress_named(self):
+        """Past the window, ONE ERROR with a grouped LinkedInEgressDown (#2346).
+
+        The log line names the likely causes and the egress host:port; the exception text — which
+        becomes an error-tracking issue title — carries no host at all.
+        """
+        from selenium.common.exceptions import InvalidCookieDomainException
+
+        from cqc_lem.utilities.linkedin.rate_limit import (
+            LinkedInEgressDown,
+            LinkedInEgressUnreachable,
+        )
+
+        driver = _make_driver("chrome-error://chromewebdata/")
+        with patch(f"{_MODULE}.get_cookies", return_value=[{"name": "x"}]), \
+             patch(f"{_MODULE}.load_cookies",
+                   side_effect=InvalidCookieDomainException("invalid cookie domain")), \
+             patch(f"{_MODULE}._user_id_for_email", return_value=7), \
+             patch(f"{_MODULE}.challenge_cooldown_remaining", return_value=0), \
+             patch(f"{_MODULE}.record_egress_failure",
+                   return_value={"first_at": 0, "count": 5, "elapsed_seconds": 9000,
+                                 "escalate_now": True}), \
+             patch(f"{_MODULE}._egress_label_for_user", return_value="proxy.example:8080"), \
+             patch(f"{_MODULE}.log_error") as err, \
+             patch("cqc_lem.utilities.observability.capture_exception") as capture, \
+             pytest.raises(LinkedInEgressUnreachable):
+            from cqc_lem.utilities.linkedin.helper import login_to_linkedin
+            login_to_linkedin(driver, _make_wait(), "user@e.com", "pw")
+        err.assert_called_once()
+        message = err.call_args.args[0]
+        assert "egress=proxy.example:8080" in message
+        assert "egress proxy is unreachable" in message
+        assert message.index("egress proxy") < message.index("LinkedIn is down") \
+            < message.index("host network")
+        assert err.call_args.kwargs["user_id"] == 7
+        capture.assert_called_once()
+        exc = capture.call_args.args[0]
+        assert isinstance(exc, LinkedInEgressDown)
+        assert "proxy.example" not in str(exc)
+        # One error-tracking issue PER OUTAGE: the fingerprint carries the streak's start time.
+        assert capture.call_args.kwargs["fingerprint"] == "linkedin-egress-down:7:0"
+        assert capture.call_args.kwargs["user_id"] == 7
+
+    def test_a_failing_capture_never_raises_into_the_login(self):
+        from cqc_lem.utilities.linkedin.helper import _note_egress_failure
+        with patch(f"{_MODULE}.record_egress_failure",
+                   return_value={"first_at": 5, "count": 3, "elapsed_seconds": 7200,
+                                 "escalate_now": True}), \
+             patch(f"{_MODULE}._egress_label_for_user", return_value="DIRECT"), \
+             patch(f"{_MODULE}.log_error") as err, \
+             patch("cqc_lem.utilities.observability.capture_exception",
+                   side_effect=RuntimeError("posthog down")):
+            _note_egress_failure(7)
+        err.assert_called_once()
+
+    def test_successful_login_clears_the_egress_streak_and_logs_a_recovery(self):
+        """One login that reaches LinkedIn ends the streak; an escalated one says it recovered."""
+        driver = _make_driver("https://www.linkedin.com/feed/")
+        with patch(f"{_MODULE}.get_cookies", return_value=[{"name": "x"}]), \
+             patch(f"{_MODULE}.load_cookies"), \
+             patch(f"{_MODULE}.store_cookies"), \
+             patch(f"{_MODULE}._user_id_for_email", return_value=7), \
+             patch(f"{_MODULE}.challenge_cooldown_remaining", return_value=0), \
+             patch(f"{_MODULE}.clear_egress_failures",
+                   return_value={"first_at": 0, "count": 12, "escalated_at": 9000}) as clear, \
+             patch(f"{_MODULE}.log_info") as info:
+            from cqc_lem.utilities.linkedin.helper import login_to_linkedin
+            assert login_to_linkedin(driver, _make_wait(), "user@e.com", "pw") is True
+        clear.assert_called_once_with(7)
+        assert any("egress recovered" in c.args[0] for c in info.call_args_list)
+
+    def test_feed_transport_error_is_the_egress_subtype_and_is_counted(self):
+        """A Chrome network error on /feed is the same egress failure, so it counts the same."""
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInEgressUnreachable
+
+        driver = _make_driver("https://www.linkedin.com/feed/")
+        driver.find_element.return_value.text = "This site can't be reached ERR_PROXY_CONNECTION_FAILED"
+        with patch(f"{_MODULE}.get_cookies", return_value=[{"name": "x"}]), \
+             patch(f"{_MODULE}.load_cookies"), \
+             patch(f"{_MODULE}._user_id_for_email", return_value=7), \
+             patch(f"{_MODULE}.challenge_cooldown_remaining", return_value=0), \
+             patch(f"{_MODULE}.record_egress_failure", return_value=None) as record, \
+             patch(f"{_MODULE}.mark_rate_limited") as mark_breaker, \
+             pytest.raises(LinkedInEgressUnreachable, match="proxy/network error"):
+            from cqc_lem.utilities.linkedin.helper import login_to_linkedin
+            login_to_linkedin(driver, _make_wait(), "user@e.com", "pw")
+        record.assert_called_once_with(7)
+        mark_breaker.assert_not_called()
 
     def test_challenge_for_an_unresolvable_account_trips_the_ip_breaker(self):
         """With no user id to scope a cooldown to, the IP-wide breaker is the only brake left."""
@@ -1215,3 +1328,49 @@ class TestPersistSessionCookies:
         ok, logged = self._run(False)
         assert ok is False
         logged.assert_called_once()
+
+
+@pytest.mark.unit
+class TestEgressHelpers:
+    """The label and recovery helpers the egress escalation uses (#2346)."""
+
+    def test_label_is_the_resolved_host_and_port_without_credentials(self, monkeypatch):
+        monkeypatch.delenv("REGION_PROXIES", raising=False)
+        monkeypatch.delenv("PROXY_URL", raising=False)
+        from cqc_lem.utilities.linkedin.helper import _egress_label_for_user
+        with patch("cqc_lem.utilities.db.get_user_geo", return_value={"country": "US"}), \
+             patch("cqc_lem.utilities.db.get_user_proxy",
+                   return_value="http://user:secret@proxy.example:8080"):
+            assert _egress_label_for_user(7) == "proxy.example:8080"
+
+    def test_label_is_direct_without_a_proxy(self, monkeypatch):
+        monkeypatch.delenv("REGION_PROXIES", raising=False)
+        monkeypatch.delenv("PROXY_URL", raising=False)
+        from cqc_lem.utilities.linkedin.helper import _egress_label_for_user
+        with patch("cqc_lem.utilities.db.get_user_geo", return_value=None), \
+             patch("cqc_lem.utilities.db.get_user_proxy", return_value=None):
+            assert _egress_label_for_user(7) == "DIRECT"
+
+    def test_label_is_unknown_when_the_lookup_fails(self):
+        from cqc_lem.utilities.linkedin.helper import _egress_label_for_user
+        with patch("cqc_lem.utilities.db.get_user_geo", side_effect=RuntimeError("db down")):
+            assert _egress_label_for_user(7) == "unknown"
+
+    def test_no_user_id_counts_nothing(self):
+        from cqc_lem.utilities.linkedin.helper import _note_egress_failure
+        with patch(f"{_MODULE}.record_egress_failure") as record:
+            _note_egress_failure(None)
+        record.assert_not_called()
+
+    def test_clearing_a_streak_that_never_escalated_logs_nothing(self):
+        from cqc_lem.utilities.linkedin.helper import _clear_egress_streak
+        with patch(f"{_MODULE}.clear_egress_failures",
+                   return_value={"first_at": 1, "count": 2, "escalated_at": None}), \
+             patch(f"{_MODULE}.log_info") as info:
+            _clear_egress_streak(7)
+        info.assert_not_called()
+
+    def test_a_failing_clear_never_raises_into_the_login(self):
+        from cqc_lem.utilities.linkedin.helper import _clear_egress_streak
+        with patch(f"{_MODULE}.clear_egress_failures", side_effect=RuntimeError("redis")):
+            _clear_egress_streak(7)

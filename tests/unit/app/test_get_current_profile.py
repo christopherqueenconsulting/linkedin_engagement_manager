@@ -129,6 +129,31 @@ class TestGetCurrentProfile:
         assert warn.call_args.kwargs.get("exc") is breaker
         err.assert_not_called()
 
+    def test_egress_unreachable_login_names_the_route_not_a_rate_limit(self):
+        """A browser that never reached linkedin.com is not a LinkedIn throttle (#2346).
+
+        Still WARNING and still re-raised (every lane defers exactly as before), but the line says
+        it was the egress route, so nobody goes looking for a rate limit that does not exist.
+        """
+        from cqc_lem.utilities.linkedin.rate_limit import (
+            LinkedInEgressUnreachable,
+            LinkedInRateLimited,
+        )
+        p = _patches()
+        down = LinkedInEgressUnreachable("Base page did not load on LinkedIn's origin")
+        with p["get_user_password_pair_by_id"], p["get_driver_wait_pair"], p["quit_gracefully"], \
+             patch(f"{_SESSION}.login_to_linkedin", side_effect=down), \
+             patch(f"{_SESSION}.log_warning") as warn, \
+             patch(f"{_SESSION}.log_error") as err:
+            from cqc_lem.utilities.linkedin.session import get_current_profile
+            with pytest.raises(LinkedInRateLimited):
+                get_current_profile(user_id=1)
+        warn.assert_called_once()
+        assert "could not reach linkedin.com" in warn.call_args.args[0]
+        assert "rate limit" not in warn.call_args.args[0]
+        assert warn.call_args.kwargs.get("exc") is down
+        err.assert_not_called()
+
     def test_other_login_failures_still_log_error(self):
         p = _patches()
         with p["get_user_password_pair_by_id"], p["get_driver_wait_pair"], p["quit_gracefully"], \

@@ -12,6 +12,7 @@ behave as before.
 import json
 import os
 import sys
+import time
 from datetime import datetime, timezone
 
 from cqc_lem.utilities.logger import log_info, log_warning
@@ -46,6 +47,27 @@ class LinkedInChallengeUnsolved(LinkedInRateLimited):
     was for; the ACCOUNT's own cooldown (`mark_challenge_unsolvable`) stops the next run
     re-submitting a live checkpoint page. It is a subclass, not a reworded LinkedInRateLimited, only
     so a caller can name it a distinct outcome — it adds no behaviour of its own.
+    """
+
+
+class LinkedInEgressUnreachable(LinkedInRateLimited):
+    """The browser never reached linkedin.com — the egress route (proxy, DNS, host network) failed.
+
+    Rate-limit-class so every caller keeps deferring the work exactly as before (#2320): nothing
+    was sent to LinkedIn, so nothing is charged and the 429 breaker is never tripped. It is a
+    subclass only so the login gate can say WHICH back-off this is — the generic "rate limit,
+    pause, or challenge cooldown" line read as a LinkedIn throttle during a nine-hour proxy outage
+    (#2346) — and so the persistence tracker below can count it.
+    """
+
+
+class LinkedInEgressDown(RuntimeError):
+    """Filed ONCE when `LinkedInEgressUnreachable` has persisted past the escalation window (#2346).
+
+    Never raised: it exists so the one escalation carries a stable exception type, which is what
+    PostHog groups an error-tracking issue on. Deliberately NOT a `LinkedInRateLimited` subclass —
+    `log_escalation` treats that family as self-clearing and never escalates it, which is exactly
+    how the outage stayed silent.
     """
 
 
@@ -612,6 +634,140 @@ def is_suppression_tripped(user_id: int) -> bool:
     not tripped), so an outage can never manufacture a standing trip.
     """
     return suppression_trip_state(user_id) is not None
+
+
+# --- egress failure streak (#2346) ------------------------------------------------
+# `LinkedInEgressUnreachable` is a self-clearing back-off for ONE session — and the log escalation
+# deliberately never escalates that family. That is right for a blip and wrong for an outage: on
+# 2026-10-09 every Selenium lane failed this way for over nine hours and nothing went past WARNING.
+# This streak is the separate signal: per user, it remembers when the current run of egress
+# failures began and how many sessions it has cost, so login_to_linkedin can escalate ONCE when it
+# persists. Any successful login clears it. Fails open like everything else here: with Redis down
+# nothing is counted and nothing escalates, which is today's behaviour, never a false alarm.
+
+_EGRESS_STREAK_KEY = "linkedin:egress_streak:{user_id}"
+_DEFAULT_EGRESS_ESCALATE_AFTER_SECONDS = 2 * 3600
+_DEFAULT_EGRESS_ESCALATE_MIN_FAILURES = 3
+# Long enough to span any realistic outage, short enough that a streak abandoned by a user who
+# stopped automating does not sit in Redis forever. Refreshed on every failure.
+_EGRESS_STREAK_TTL_SECONDS = 7 * 24 * 3600
+
+
+def _egress_escalate_after_seconds() -> int:
+    try:
+        return max(0, int(os.getenv("LINKEDIN_EGRESS_ESCALATE_AFTER_SECONDS",
+                                    str(_DEFAULT_EGRESS_ESCALATE_AFTER_SECONDS))))
+    except ValueError:
+        return _DEFAULT_EGRESS_ESCALATE_AFTER_SECONDS
+
+
+def _egress_escalate_min_failures() -> int:
+    try:
+        return max(1, int(os.getenv("LINKEDIN_EGRESS_ESCALATE_MIN_FAILURES",
+                                    str(_DEFAULT_EGRESS_ESCALATE_MIN_FAILURES))))
+    except ValueError:
+        return _DEFAULT_EGRESS_ESCALATE_MIN_FAILURES
+
+
+def _decode_streak(raw: "dict | None") -> "dict | None":
+    """A Redis hash (bytes or str keys) as {first_at, count, escalated_at}, or None when empty."""
+    if not raw:
+        return None
+    out: dict = {}
+    for k, v in raw.items():
+        key = k.decode("utf-8", "ignore") if isinstance(k, bytes) else str(k)
+        val = v.decode("utf-8", "ignore") if isinstance(v, bytes) else v
+        try:
+            out[key] = int(val)
+        except (TypeError, ValueError):
+            continue
+    if "first_at" not in out:
+        return None
+    out.setdefault("count", 0)
+    out.setdefault("escalated_at", None)
+    return out
+
+
+def record_egress_failure(user_id: int, now: "float | None" = None) -> "dict | None":
+    """Count one session whose browser never reached linkedin.com, and say whether to escalate.
+
+    Args:
+        user_id: The account whose session failed.
+        now: Epoch seconds; defaults to the wall clock (tests pass it).
+
+    Returns:
+        ``{"first_at", "count", "elapsed_seconds", "escalate_now"}``, or None when Redis is
+        unavailable (fail open: nothing counted, nothing escalates). ``escalate_now`` is True for
+        exactly ONE failure per streak — the first one at which the streak is both at least
+        ``LINKEDIN_EGRESS_ESCALATE_MIN_FAILURES`` sessions long AND older than
+        ``LINKEDIN_EGRESS_ESCALATE_AFTER_SECONDS``. Both, not either: the session floor alone
+        would page on a burst of retries inside a few minutes (a deploy, a proxy blip), and the
+        window alone would page on two sessions hours apart. The once-only claim is an ``HSETNX``,
+        so two workers failing at the same moment cannot both escalate.
+    """
+    client = _redis_client()
+    if client is None:
+        return None
+    key = _EGRESS_STREAK_KEY.format(user_id=int(user_id))
+    ts = int(now if now is not None else time.time())
+    try:
+        client.hsetnx(key, "first_at", ts)
+        client.hincrby(key, "count", 1)
+        client.expire(key, _EGRESS_STREAK_TTL_SECONDS)
+        state = _decode_streak(client.hgetall(key))
+    except Exception as e:
+        log_warning("Failed to record a LinkedIn egress failure", exc=e, action_type="login")
+        return None
+    if state is None:
+        return None
+    elapsed = max(0, ts - state["first_at"])
+    escalate_now = False
+    if (state["escalated_at"] is None and state["count"] >= _egress_escalate_min_failures()
+            and elapsed >= _egress_escalate_after_seconds()):
+        try:
+            escalate_now = bool(client.hsetnx(key, "escalated_at", ts))
+        except Exception:
+            escalate_now = False
+    return {"first_at": state["first_at"], "count": state["count"], "elapsed_seconds": elapsed,
+            "escalate_now": escalate_now}
+
+
+def clear_egress_failures(user_id: "int | None") -> "dict | None":
+    """Forget this user's egress failure streak — a successful login proves the route works.
+
+    Returns:
+        The streak that was cleared (``first_at``, ``count``, ``escalated_at``), so the caller can
+        log a recovery for one that had escalated; None when there was none or Redis is down.
+    """
+    if not user_id:
+        return None
+    client = _redis_client()
+    if client is None:
+        return None
+    key = _EGRESS_STREAK_KEY.format(user_id=int(user_id))
+    try:
+        state = _decode_streak(client.hgetall(key))
+        if state is not None:
+            client.delete(key)
+        return state
+    except Exception:
+        return None
+
+
+def egress_streak_state(user_id: int) -> "dict | None":
+    """The current streak for this user.
+
+    Returns:
+        The streak, or None when the last session reached LinkedIn — or when Redis is unavailable,
+        which this fail-open helper cannot tell apart.
+    """
+    client = _redis_client()
+    if client is None:
+        return None
+    try:
+        return _decode_streak(client.hgetall(_EGRESS_STREAK_KEY.format(user_id=int(user_id))))
+    except Exception:
+        return None
 
 
 # --- single-flight task locks -------------------------------------------------
