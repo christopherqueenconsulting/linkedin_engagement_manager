@@ -382,7 +382,7 @@
       "run": "pe-20261008-0250fe",
       "role": "fallback",
       "wire": "openai/gpt-4o-mini",
-      "verdict": "fail",
+      "verdict": "pass",
       "metrics": {
         "cases_scored": 40,
         "errors": 0,
@@ -471,7 +471,7 @@
       "run": "pe-20261008-0250fe",
       "role": "fallback",
       "wire": "google/gemma-4-31b-it",
-      "verdict": "fail",
+      "verdict": "pass",
       "metrics": {
         "cases_scored": 40,
         "errors": 0,

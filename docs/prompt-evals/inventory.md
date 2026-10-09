@@ -20,10 +20,10 @@
 | `post.group` | `cqc_lem.utilities.ai.ai_helper` | `generate_group_post._draft` | post_longform | planned | 1 | source | not yet measured |
 | `dm.lead_response` | `cqc_lem.utilities.ai.ai_helper` | `generate_lead_response._draft` | dm | planned | 1 | source | not yet measured |
 | `newsletter.edition` | `cqc_lem.utilities.ai.ai_helper` | `generate_newsletter_edition._edition` | post_longform | planned | 1 | source | not yet measured |
-| `dm.nurture` | `cqc_lem.utilities.ai.ai_helper` | `generate_nurture_dm._draft` | dm | evaluated | 1 | rendered text | openai/gemma4:31b: fail, openai/gpt-4o-mini: fail, openai/gpt-5.4-mini: fail, openai/gpt-oss:120b: fail |
+| `dm.nurture` | `cqc_lem.utilities.ai.ai_helper` | `generate_nurture_dm._draft` | dm | evaluated | 1 | rendered text | openai/gemma4:31b: pass, openai/gpt-4o-mini: fail, openai/gpt-5.4-mini: fail, openai/gpt-oss:120b: fail |
 | `app.onboarding_nudge` | `cqc_lem.utilities.ai.ai_helper` | `generate_onboarding_nudge_copy` | dm | planned | 1 | source | not yet measured |
 | `comment.second_wave` | `cqc_lem.utilities.ai.ai_helper` | `generate_second_wave_comment._draft` | comment | planned | 1 | source | not yet measured |
-| `comment.seed` | `cqc_lem.utilities.ai.ai_helper` | `generate_seed_comment._draft` | own_comment | evaluated | 1 | rendered text | openai/gemma4:31b: pass, openai/gpt-4o-mini: fail, openai/gpt-5.4-mini: pass, openai/gpt-oss:120b: pass |
+| `comment.seed` | `cqc_lem.utilities.ai.ai_helper` | `generate_seed_comment._draft` | own_comment | evaluated | 1 | rendered text | openai/gemma4:31b: pass, openai/gpt-4o-mini: pass, openai/gpt-5.4-mini: pass, openai/gpt-oss:120b: pass |
 | `comment.thread_reply` | `cqc_lem.utilities.ai.ai_helper` | `generate_thread_reply._draft` | comment | planned | 1 | source | not yet measured |
 | `profile.description` | `cqc_lem.utilities.ai.ai_helper` | `get_ai_description_of_profile` | summary | planned | 1 | source | not yet measured |
 | `post.refine` | `cqc_lem.utilities.ai.ai_helper` | `get_ai_linked_post_refinement` | rewrite | planned | 1 | source | not yet measured |
