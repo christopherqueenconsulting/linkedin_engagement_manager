@@ -27,6 +27,8 @@
 #   ./status.sh --hours N       window for the tick rollup (default 6)
 #   ./status.sh --no-gh         skip all GitHub calls (offline / rate-limited)
 #   ./status.sh --disk          also measure worktree disk usage (walks $BASE/work, slow)
+#   USAGE_STALE_SECONDS=N       label the usage reading STALE past N seconds (default: the later of
+#                               2 x LEMD_USAGE_PROBE_INTERVAL and the router's 3600s cutoff)
 set -uo pipefail
 
 BASE="${BASE:-/home/lem/agent-pipeline}"
@@ -654,6 +656,7 @@ collect_pipeline_state() {
 # is a trap that a comment in a Python file cannot close; printing the number that is actually in
 # force can.
 V2_ACTIVE=0; V2_CAP=""; V2_DB=""; V2_HB_AGE=-1; V2_SHADOW=""; V2_STATES=""; V2_USAGE=""
+V2_USAGE_AGE=""; V2_USAGE_STALE=0
 V2_HOLD=""; V2_GH_SLOTS=""; V2_DISPATCH_AGE=-1; V2_DISPATCH_MODE=""; V2_RUNS=""; V2_MODES=""; V2_RCS=""
 V2_POOL_AGENT=-1; V2_POOL_GH=-1
 collect_v2() {
@@ -722,14 +725,20 @@ d = json.load(open(sys.argv[1]))
 age = int(time.time() - float(d.get("at") or 0))
 print("week={}% session={}% ({}s old)".format(d.get("week_pct"), d.get("session_pct"), age))
 ' "$BASE/state/usage.json" 2>/dev/null)"
-    # The daemon refreshes the cache every USAGE_TTL (900s, lemd/spend.py). A reading older than two
-    # refreshes is not the current headroom: the probe has stopped producing readable answers and
-    # routing has fallen back to the health estimate. Printing it as a live figure hid a reading
-    # that had been frozen for weeks (#2337), so it is labelled STALE and warned about instead.
+    # A reading stops counting for lane routing once it is older than lane_for.py's MAX_AGE (3600s);
+    # the daemon rewrites it every LEMD_USAGE_PROBE_INTERVAL (lemd/config.py, default 900s). Past the
+    # later of those two marks (two refreshes, or the router's cutoff), routing IS on the health
+    # estimate, so the line says so instead of showing a figure that was frozen for weeks (#2337).
+    # USAGE_STALE_SECONDS overrides the threshold. The matching warning is raised below, with v2.
+    local probe_iv stale_after
+    probe_iv="$(grep -m1 '^LEMD_USAGE_PROBE_INTERVAL=' "$BASE/config.env" 2>/dev/null | cut -d= -f2 | tr -d ' "')"
+    case "$probe_iv" in ''|*[!0-9]*) probe_iv=900 ;; esac
+    stale_after=$(( 2 * probe_iv )); [ "$stale_after" -lt 3600 ] && stale_after=3600
+    case "${USAGE_STALE_SECONDS:-}" in ''|*[!0-9]*) ;; *) stale_after="$USAGE_STALE_SECONDS" ;; esac
     V2_USAGE_AGE="$(printf '%s' "$V2_USAGE" | sed -n 's/.*(\([0-9]*\)s old)$/\1/p')"
-    if [ -n "$V2_USAGE_AGE" ] && [ "$V2_USAGE_AGE" -gt "${USAGE_STALE_SECONDS:-1800}" ]; then
+    if [ -n "$V2_USAGE_AGE" ] && [ "$V2_USAGE_AGE" -gt "$stale_after" ]; then
+      V2_USAGE_STALE=1
       V2_USAGE="${C_YEL}STALE${C_RST} — last readable reading is $(fmt_dur "$V2_USAGE_AGE") old (${V2_USAGE% (*}); routing on the health estimate"
-      warn "subscription usage reading is $(fmt_dur "$V2_USAGE_AGE") old — the /usage probe is not producing readable answers, so lane routing cannot see headroom (#2337)"
     fi
   fi
 
@@ -745,6 +754,11 @@ print("week={}% session={}% ({}s old)".format(d.get("week_pct"), d.get("session_
     case "$V2_ABANDONED" in ''|*[!0-9]*) V2_ABANDONED=0 ;; esac
     [ "$V2_ABANDONED" -gt 0 ] && warn "$V2_ABANDONED item(s) ABANDONED — parked repeatedly for the same reason, so the pipeline stopped asking. They need a decision: remove agent:abandoned to retry, or close them. (gh issue list --label agent:abandoned; gh pr list --label agent:abandoned)"
     [ -z "$V2_USAGE" ] && warn "no v2 usage reading — lane routing is falling back to the failure-history estimate, which cannot see subscription headroom"
+    # Only blame the probe when the daemon is demonstrably looping: with no fresh heartbeat the cache
+    # is old because nothing refreshes it, and the heartbeat warnings above already say so.
+    if [ "$V2_USAGE_STALE" = 1 ] && [ "$V2_HB_AGE" -ge 0 ] 2>/dev/null && [ "$V2_HB_AGE" -le 600 ]; then
+      warn "subscription usage reading is $(fmt_dur "$V2_USAGE_AGE") old while the daemon is running — the /usage probe is not producing readable answers, so lane routing cannot see headroom (#2337)"
+    fi
   fi
 }
 
@@ -1131,7 +1145,7 @@ run_once() {
   AGENT_ROWS=(); OTHER_ROWS=(); WARNINGS=(); IDLE_TICKS=0; SLOTS_BUSY=""; SLOTS_FREE=""
   BUSY_WINDOW="no"; DEGRADED_CAP="no"   # --watch reuses this shell; a stale yes would never clear
   GH_OK=0; GH_READY=0; GH_WORKING=""; GH_BLOCKED=""; GH_HUMAN=""; GH_PRS=""
-  V2_ACTIVE=0; V2_CAP=""; V2_HB_AGE=-1; V2_SHADOW=""; V2_STATES=""; V2_USAGE=""
+  V2_ACTIVE=0; V2_CAP=""; V2_HB_AGE=-1; V2_SHADOW=""; V2_STATES=""; V2_USAGE=""; V2_USAGE_AGE=""; V2_USAGE_STALE=0
   V2_HOLD=""; V2_GH_SLOTS=""; V2_DISPATCH_AGE=-1; V2_DISPATCH_MODE=""
   V2_RUNS=""; V2_MODES=""; V2_RCS=""; V2_POOL_AGENT=-1; V2_POOL_GH=-1
   STALE_UNITS=""; LEMD_SRC_AGE=-1
