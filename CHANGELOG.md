@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.187.4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.187.3...v0.187.4) (2026-10-09)
+
+
+### Bug Fixes
+
+* **agent-pipeline:** fail the /usage probe closed and log why it is unreadable ([#2328](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2328)) ([e12aaac](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e12aaac5ee6bb06fc7602cd73076a212fa790ac4))
+* **agent-pipeline:** spend a trust-refused answer and skip dead-end menus (closes [#2331](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2331)) ([#2342](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2342)) ([0f6d737](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0f6d7379a3e687245a00e47fab5bc9afd363f7ce))
+* **agent-pipeline:** stop the park menu promising that a 1C reply closes ([#2330](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2330)) ([ae11722](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ae11722ecb4572df76aa4270e64c2a004121a39e))
+* **deploy:** restart litellm inside the drain window and wait for readiness (closes [#2304](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2304)) ([#2338](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2338)) ([c446d6f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c446d6f224c496a812a49b62ac564d4fc19c52c6))
+* **engagement:** skip the commenting session when today's budget is spent ([#2327](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2327)) ([ba85ba6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ba85ba636e3b21df95aa46c71d834740a38cb905))
+* **engagement:** skip the commenting session when today's budget is spent (closes [#2327](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2327)) ([#2340](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2340)) ([ba85ba6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ba85ba636e3b21df95aa46c71d834740a38cb905))
+* **linkedin:** little-text escape every /rest/posts commentary ([3177982](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3177982bf4c89a136bbc7878d2f323be64291e82)), closes [#2261](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2261)
+* **linkedin:** little-text escape every /rest/posts commentary ([#2261](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2261)) ([#2336](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2336)) ([3177982](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3177982bf4c89a136bbc7878d2f323be64291e82))
+* **outreach:** poll the mentions feed until it paints before grading the card walk (closes [#2135](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2135)) ([#2332](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2332)) ([cace138](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/cace1380302e8294bdc34e4dbeca91610c29711f))
+* **prompt-evals:** link each run's report from the doc index ([#2326](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2326)) ([e325c33](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e325c33361cf38382dadb2edfaa74bd0e65128a5))
+* **research:** when RESEARCH_VIA_PROXY is on, stop paying the proxy's known parse failure on every call ([#2333](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2333)) ([2f98437](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2f98437c8ddaa8b8052e24910c4c0da6cdc26ec7))
+* **sdui-probe:** grade connect_dialog on production's entry points (closes [#2224](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2224)) ([#2329](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2329)) ([ae803da](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ae803da0108b7cd75b6bc0b5cc1f03c2df8f983d))
+
 ## [0.187.3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.187.2...v0.187.3) (2026-10-09)
 
 
