@@ -162,7 +162,7 @@ The app log is `/opt/lem/logs/cqc_lem_YYYY_MM_DD.log`, one file per UTC day
    | `<host>:<port>` or `<host>` | a proxy | `nc -vz <host> <port>` (a timeout is the proxy, a refusal is the port), then the provider's dashboard and status page |
    | `DIRECT` | no proxy resolved for this user | the host network and DNS from the Selenium worker; there is no proxy to test |
    | `invalid` | the resolved proxy URL has no parseable host | fix the value in `users.proxy_url`, `REGION_PROXIES` or `PROXY_URL` |
-   | `unknown` | resolving the user's egress raised an unexpected error (a MySQL error is not one: it reads as no override and falls through the order above) | the worker log just before the ERROR line for the exception |
+   | `unknown` | resolving the user's egress raised an unexpected error (a MySQL error is not one: it reads as no override and falls through the order above) | the lookup logs nothing when it fails, so take the user's egress from their last session line, `grep 'egress=' /opt/lem/logs/cqc_lem_$(date -u +%Y_%m_%d).log \| grep 'user_id=<user_id>' \| tail -1`, and use the row for that label |
 
    `/health/deep`'s `egress` field, where deployed, gives the proxy's answer from inside the API
    container.
@@ -199,6 +199,21 @@ That recreates the workers with the new value. It is a full deploy: it also runs
 when no migration is pending) and drains the workers through the maintenance window first.
 Otherwise the value takes effect on the next release deploy. A revert removes both the escalation
 and the clearer WARNING wording.
+
+Before you run it, check in GitHub Actions that no **Build & Deploy Release** or **Redeploy /
+Rollback VPS** run is in progress: `deploy.sh` takes no lock, so two deploys can overlap. If it
+exits non-zero, its last `ERROR` line says which case you are in:
+
+- `did not become healthy` (or `does not exist`), then `restoring standby ... and aborting`: the
+  serving API colour was never touched and the site stays up. The new value is not applied; fix
+  the cause and re-run.
+- `edge health failed after flip — flipping back`: the edge is routed back to the previous colour
+  and the site keeps serving. The new value is not applied; fix the cause and re-run.
+- `stack left partially deployed` or `stack verification failed`: the web tier is live but some
+  workers did not come up. Re-run the same command, or see `docs/zero-downtime-deploys.md`
+  § Worker-tier resilience.
+
+To undo the switch, delete the line from `/opt/lem/.env` and run the same command again.
 
 ## When to use
 

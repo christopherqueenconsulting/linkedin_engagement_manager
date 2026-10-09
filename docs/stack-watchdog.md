@@ -277,10 +277,20 @@ is needed. The owner of the response is whoever receives the layer 3 monitor's a
   running, as the deploy user (the same command CI runs over SSH):
   `cd /opt/lem && ./scripts/deploy.sh "$(cat .last_good_tag)"`. That is a full deploy: it
   also runs Flyway (a no-op when no migration is pending) and drains the workers through the
-  maintenance window. Otherwise it takes effect on the next release deploy. Reverting the PR
-  removes the fields; a monitor asserting on `"status":"healthy"` is unaffected either way.
-- **To stop a false page before any deploy:** pause the layer 3 monitor in its own dashboard, and
-  unpause it once the switch is applied or the proxy is fixed.
+  maintenance window. Otherwise it takes effect on the next release deploy. Before you run it,
+  check in GitHub Actions that no **Build & Deploy Release** or **Redeploy / Rollback VPS** run is
+  in progress (`deploy.sh` takes no lock). If it exits non-zero, its last `ERROR` line names the
+  case; `docs/AUTOMATION_COOLDOWN.md` § Responding to a `LinkedInEgressDown` escalation, under
+  Rollback, says what each one leaves running and what to do. To undo the switch, delete the line
+  from `/opt/lem/.env` and run the same command again. Reverting the PR removes the fields; a
+  monitor asserting on `"status":"healthy"` is unaffected either way.
+- **To stop a false page before any deploy:** pausing the layer 3 monitor also silences the only
+  off-box alarm: while it is paused, nothing reports the VPS down, the tunnel broken or any other
+  non-healthy `/health/deep` reading. So keep the pause short: use the monitor's maintenance window
+  with an end time just past when the re-deploy should finish, or pause it by hand and set a
+  reminder. Whoever paused it unpauses it as soon as the re-deploy in the Rollback bullet finishes.
+  Do not wait for the proxy provider: with the switch applied, the egress reading no longer changes
+  `status`.
 
 ## Layer 3 — external dead-man's switch (owner setup)
 
