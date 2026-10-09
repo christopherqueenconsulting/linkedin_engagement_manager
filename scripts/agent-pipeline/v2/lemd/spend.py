@@ -118,9 +118,13 @@ def parse_usage(text: str, *, now: float | None = None) -> Usage:
                  readable=readable, raw=(text or "")[:500])
 
 
-#: The pipeline's own `claude setup-token` credential (lem-agentd.service's EnvironmentFile). `/usage`
-#: run under it has answered without a percentage line on every probe since 2026-08-19.
+#: The daemon's own long-lived token (set in its service environment). `/usage` has answered without
+#: a percentage line under it since 2026-08-19; see issue #2337.
 SETUP_TOKEN_VAR = "CLAUDE_CODE_OAUTH_TOKEN"
+
+# Whether this process has already said why the meter is unreadable. The daemon is long-lived and
+# probes every 15 minutes, so the explanation is logged once and then left to the existing warning.
+_explained_unreadable = False
 
 
 def _run_usage_cli(env: dict, timeout: int) -> Usage:
@@ -152,27 +156,25 @@ def probe_usage(*, timeout: int = 90) -> Usage:
     question is "how much of the SUBSCRIPTION is left" — pointing it at LiteLLM would answer about
     the wrong provider entirely.
 
-    Since 2026-08-19 the daemon authenticates with a `claude setup-token` value
-    (`CLAUDE_CODE_OAUTH_TOKEN`). Every probe since that switch exited 0 without a percentage line
-    (`lemd.log`: no rc warning, only "usage probe unreadable"), so the 50% rule never fired. A
-    setup token is an inference credential, so the likely cause is that `/usage` cannot read the
-    plan's utilisation with it; the retry's log line records what the CLI did say. When the
-    first answer is unreadable and that variable is set, the probe asks once more without it, which
-    falls back to this machine's interactive login. That reading is only right while the interactive
-    login is on the same subscription as the setup token. The retry is a local command with no API
-    spend (`duration_api_ms: 0`).
+    Fails CLOSED. Under the daemon's own token (`CLAUDE_CODE_OAUTH_TOKEN`) `/usage` has answered
+    without a percentage line, so the reading is unreadable and routing falls back to the health
+    estimate. Asking again through another credential was rejected: it may belong to a different
+    account, and a meter reading another plan would drive the 50% rule on wrong numbers. The first
+    unreadable answer in a process logs what the CLI said, so the cause can be read (#2337).
     """
+    global _explained_unreadable
     import os
 
     stripped = {"ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"}
     env = {k: v for k, v in os.environ.items() if k not in stripped}
     usage = _run_usage_cli(env, timeout)
-    if usage.readable or not env.get(SETUP_TOKEN_VAR):
-        return usage
-    first_line = next((ln.strip() for ln in usage.raw.splitlines() if ln.strip()), "")
-    LOG.info("usage probe unreadable under %s (%s); retrying with the interactive login",
-             SETUP_TOKEN_VAR, first_line[:120] or "empty answer")
-    return _run_usage_cli({k: v for k, v in env.items() if k != SETUP_TOKEN_VAR}, timeout)
+    if not usage.readable and not _explained_unreadable:
+        _explained_unreadable = True
+        first_line = next((ln.strip() for ln in usage.raw.splitlines() if ln.strip()), "")
+        LOG.warning("usage probe answered without a percentage line%s: %s (see #2337)",
+                    f" under {SETUP_TOKEN_VAR}" if env.get(SETUP_TOKEN_VAR) else "",
+                    first_line[:160] or "empty answer")
+    return usage
 
 
 def cached_usage(cache: str | Path, *, ttl: int = USAGE_TTL,
