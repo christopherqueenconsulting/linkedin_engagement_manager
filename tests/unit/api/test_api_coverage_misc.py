@@ -344,6 +344,7 @@ class TestLinkedInOAuth:
         assert "SECRET-ACCESS" not in logged
         assert "SECRET-REFRESH" not in logged
         assert "SUB1" not in logged
+        assert "li@x.com" not in logged
         assert "expires_in=3600" in logged
 
     def test_callback_without_session_upserts_by_email(self, api_client):
