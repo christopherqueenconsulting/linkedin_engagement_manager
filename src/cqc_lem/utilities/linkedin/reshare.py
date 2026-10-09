@@ -187,8 +187,8 @@ def share_curated_image_on_linkedin(user_id: int, commentary: str,
         return None
     image_urn = upload_image_versioned(token, sub, image_path)
     try:
-        return _create_image_post_versioned(token, f"urn:li:person:{sub}",
-                                            escape_little_text(commentary), image_urn)
+        # The builder escapes the commentary itself (#2261) — escaping here too would double it.
+        return _create_image_post_versioned(token, f"urn:li:person:{sub}", commentary, image_urn)
     except requests.exceptions.ReadTimeout as e:
         log_error("Re-chart publish timed out — not retrying, it may already be live", exc=e,
                   user_id=user_id, api_provider="linkedin")

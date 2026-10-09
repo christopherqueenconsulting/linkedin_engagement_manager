@@ -287,6 +287,18 @@ class TestDocumentPostRequests:
         assert body["commentary"] == "body"
         assert body["lifecycleState"] == "PUBLISHED"
 
+    def test_versioned_post_escapes_little_text_commentary(self):
+        from cqc_lem.utilities.linkedin.poster import _create_document_post_versioned
+
+        response = MagicMock(headers={"x-restli-id": "urn:li:share:1"})
+        response.raise_for_status = MagicMock()
+        with patch("requests.post", return_value=response) as mock_post:
+            _create_document_post_versioned("token", "urn:li:person:sub-1",
+                                            "Costs (est.) @ 5_000 #AI", "urn:li:document:abc", "Deck")
+
+        assert mock_post.call_args.kwargs["json"]["commentary"] == \
+            r"Costs \(est.\) \@ 5\_000 {hashtag|\#|AI}"
+
     def test_versioned_post_falls_back_to_body_id(self):
         from cqc_lem.utilities.linkedin.poster import _create_document_post_versioned
 

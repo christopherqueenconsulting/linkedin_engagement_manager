@@ -72,6 +72,16 @@ class TestShareAnimated:
         assert body["content"] == {"media": {"id": "urn:li:image:G1"}}
         assert body["commentary"] == "body"
 
+    def test_commentary_is_little_text_escaped(self, tmp_path, creds):
+        from cqc_lem.utilities.linkedin.poster import share_animated_image_on_linkedin
+        posted = MagicMock(headers={"x-restli-id": "urn:li:share:9"})
+        with patch(f"{_P}.upload_image_versioned", return_value="urn:li:image:G1"), \
+             patch("requests.post", return_value=posted) as post, \
+             patch(f"{_P}.share_on_linkedin"):
+            share_animated_image_on_linkedin(1, "Loop [v2] <3 ~ #GIF", _gif(tmp_path), _STILL)
+        assert post.call_args.kwargs["json"]["commentary"] == \
+            r"Loop \[v2\] \<3 \~ {hashtag|\#|GIF}"
+
     def test_over_250_frames_never_uploads_and_ships_the_still(self, tmp_path, creds):
         from cqc_lem.utilities.linkedin.poster import share_animated_image_on_linkedin
         with patch(f"{_P}.upload_image_versioned") as upload, \

@@ -112,7 +112,17 @@ class TestCuratedImage:
              patch(f"{_M}._create_image_post_versioned", return_value="urn:li:share:3") as create:
             assert rs.share_curated_image_on_linkedin(1, "a_b", "/tmp/x.png") == "urn:li:share:3"
         up.assert_called_once_with("tok", "abc", "/tmp/x.png")
-        assert create.call_args.args[2] == r"a\_b"
+        # Raw here: the builder is the ONE layer that escapes (#2261).
+        assert create.call_args.args[2] == "a_b"
+
+    def test_commentary_is_escaped_exactly_once_on_the_wire(self, creds):
+        posted = MagicMock(headers={"x-restli-id": "urn:li:share:4"})
+        posted.raise_for_status = MagicMock()
+        with patch(f"{_M}.upload_image_versioned", return_value="urn:li:image:1"), \
+             patch("requests.post", return_value=posted) as post:
+            assert rs.share_curated_image_on_linkedin(1, "a_b (c) #AI", "/tmp/x.png") == \
+                "urn:li:share:4"
+        assert post.call_args.kwargs["json"]["commentary"] == r"a\_b \(c\) {hashtag|\#|AI}"
 
     def test_timeout_and_no_creds(self, creds):
         with patch(f"{_M}.upload_image_versioned", return_value="urn:li:image:1"), \
