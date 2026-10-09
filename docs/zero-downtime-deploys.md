@@ -35,14 +35,24 @@ Cloudflare Tunnel (dashboard ingress: http://web_app:8000  — UNCHANGED)
    `nginx -s reload` (no dropped connections), verify `/health` through the edge, then write
    `/opt/lem/.active_color`.
 4. `up -d --remove-orphans` converges workers/beat and the now-standby color onto the new tag.
-   - If `.litellm/config.yaml` changed vs the last-good tag, `litellm` is restarted just BEFORE
-     this converge, inside the drain window, and the deploy waits for `/health/readiness`
-     (`LITELLM_READY_TIMEOUT`, default 90s; a timeout is a WARN, not an abort). Restarting it after
-     the converge dropped live worker LLM calls (issue #2304), and a dropped in-flight call is
+   - `litellm` is reconciled just BEFORE this converge, inside the drain window, on EVERY deploy
+     (`reconcile_litellm`), and the deploy then waits for `/health/readiness`
+     (`LITELLM_READY_TIMEOUT`, default 90s; a timeout or a failed `up` is a WARN, not an abort).
+     If `.litellm/config.yaml` changed vs the last-good tag it is `up -d --no-deps --force-recreate`
+     (litellm reads the bind-mounted config only at startup); otherwise a plain `up -d --no-deps`,
+     which recreates it only when step 1's `pull` brought a new `main-latest` digest (or its
+     service definition changed) and is a no-op otherwise. Either way it is recreated at most once,
+     and the converge then finds it already on target and leaves it alone.
+   - Why: recreating it after the converge (issue #2304), or inside it alongside the new workers on
+     a new digest (issue #2343), dropped live worker LLM calls, and a dropped in-flight call is
      never retried in-app because the provider may already have billed it. The guarantee holds
      only when the drain finished: a task still running after `DRAIN_TIMEOUT` can lose its
      in-flight call here, as it can to the worker recreate that follows. The probe runs `python3`
      inside the container, the same interpreter the compose healthcheck uses.
+   - The abort and rollback paths exit before this step, so they never recreate litellm on the
+     reverted config by this route. Residual: the legacy first-cutover rollback's own converge can
+     still recreate litellm if `pull` brought a new digest — that path only runs when there is no
+     serving colour to fall back behind.
 
 ### Worker-tier resilience (issue #831)
 
