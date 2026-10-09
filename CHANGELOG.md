@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.188.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.187.4...v0.188.0) (2026-10-09)
+
+
+### Features
+
+* **health:** report the automation browser's egress in /health/deep ([#2349](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2349)) ([8541802](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8541802c193be835601dbe19b2d2f165580140d7))
+
+
+### Bug Fixes
+
+* **agent-pipeline:** status.sh labels a frozen usage reading STALE instead of showing it as live ([#2347](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2347)) ([e52447e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e52447e81c487df30c21e4e999a9a5e23d7ebcd9))
+* **api:** stop logging the LinkedIn OAuth token response and the userinfo body ([#2345](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2345)) ([7d556a5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7d556a5c0a53e89e47f25bee448934a03cc13927))
+* **linkedin:** escalate a browser that persistently cannot reach linkedin.com ([#2348](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2348)) ([1d53cf5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1d53cf5bff4c41359134c3a54651c8523b52701e))
+
+
+### Documentation
+
+* **models:** lem-tts has no drop-in successor for the tts-1 sunset (refs [#2258](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2258)) ([#2341](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2341)) ([6a17142](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6a1714235e5e8d95bc5fdb5a5fb2b98d49116fd9))
+* **ops:** make the egress runbooks runnable without the source ([#2351](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2351)) ([19ff260](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/19ff260b40dd164a54386c48f5f2a73d31f9f5dc))
+
 ## [0.187.4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.187.3...v0.187.4) (2026-10-09)
 
 
