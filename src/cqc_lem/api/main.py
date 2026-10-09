@@ -1470,6 +1470,25 @@ def health_check_deep():
     if status == "degraded" and maintenance is True:
         status = "healthy"
 
+    # Egress (#2346): can the automation browser's proxy reach LinkedIn? On 2026-10-09 the proxy
+    # stopped answering for more than nine hours and every Selenium lane failed at login; this
+    # endpoint would have read `healthy` throughout, because it measured only Celery. The probe is
+    # a CONNECT to LinkedIn through each distinct configured egress (`utilities/egress_probe.py`),
+    # cached (`EGRESS_PROBE_CACHE_SECONDS`) so an unauthenticated burst cannot become a burst of
+    # outbound connections. Counts and a state word only — never a host, port or credential. An
+    # egress that has been FAILING for `EGRESS_DEGRADE_AFTER_SECONDS` (one clock shared by every
+    # API worker) degrades a healthy reading, because the automation pillar is then as dead as it
+    # was in the v0.118.0 Celery outage described above. `unknown` and `direct` never degrade.
+    # `HEALTH_DEEP_EGRESS_DEGRADES=false` keeps the reading but stops it changing `status`.
+    egress = {"egress": "unknown", "egress_checked": 0, "egress_failing": 0}
+    try:
+        from cqc_lem.utilities.egress_probe import FAILING, egress_health, should_degrade
+        egress = egress_health()
+        if status == "healthy" and egress.get("egress") in FAILING and should_degrade():
+            status = "degraded"
+    except Exception as e:
+        log_warning("Deep health check could not measure egress", exc=e)
+
     # `lanes` is computed but NOT returned (issue #1020): this endpoint is unauthenticated by
     # design — an external dead-man's switch cannot carry a credential — and the per-worker map was
     # the one field with disclosure value, naming container IDs and the internal queue topology.
@@ -1480,7 +1499,7 @@ def health_check_deep():
     # insertion order, so dropping the last key leaves the literal `"status":"healthy"` that
     # docs/stack-watchdog.md pins as a monitor contract byte-identical.
     return {"status": status, "workers": len(lanes), "consuming": consuming,
-            "maintenance": maintenance}
+            "maintenance": maintenance, **egress}
 
 
 @router.get("/app-info")

@@ -14,6 +14,10 @@ pytestmark = pytest.mark.unit
 
 _MAIN = "cqc_lem.api.main"
 
+# Captured at import, before the autouse fixture below patches it, for the one test that drives
+# the real reading end to end.
+from cqc_lem.utilities.egress_probe import egress_health as _REAL_EGRESS_HEALTH  # noqa: E402
+
 
 def _call():
     from cqc_lem.api.main import health_check_deep
@@ -27,6 +31,18 @@ def _no_maintenance():
     absent (or, worse, present) in the environment it runs in.
     """
     with patch("cqc_lem.utilities.maintenance.is_maintenance_mode", return_value=False):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _egress_direct():
+    """Default every test to "nothing proxied" so the egress probe never opens a socket.
+
+    Tests of the egress reading itself patch `egress_health` / `should_degrade` explicitly.
+    """
+    with patch("cqc_lem.utilities.egress_probe.egress_health",
+               return_value={"egress": "direct", "egress_checked": 0, "egress_failing": 0}), \
+         patch("cqc_lem.utilities.egress_probe.should_degrade", return_value=False):
         yield
 
 
@@ -63,7 +79,8 @@ class TestHealthDeep:
         }
         with patch("cqc_lem.utilities.maintenance._inspect", return_value=insp):
             out = _call()
-        assert set(out) == {"status", "workers", "consuming", "maintenance"}
+        assert set(out) == {"status", "workers", "consuming", "maintenance", "egress",
+                            "egress_checked", "egress_failing"}
         assert "3571c22235c8" not in json.dumps(out)
         assert "se_engage" not in json.dumps(out)
 
@@ -77,7 +94,8 @@ class TestHealthDeep:
         insp.active_queues.return_value = {"celery@worker": [{"name": "default"}]}
         with patch("cqc_lem.utilities.maintenance._inspect", return_value=insp):
             out = _call()
-        assert list(out) == ["status", "workers", "consuming", "maintenance"]
+        assert list(out) == ["status", "workers", "consuming", "maintenance", "egress",
+                             "egress_checked", "egress_failing"]
         assert json.dumps(out).startswith('{"status": "healthy"')
 
     def test_registered_but_consuming_nothing_is_degraded(self):
@@ -238,3 +256,76 @@ class TestHealthDeep:
         body = inspect.getsource(health_check)
         for forbidden in ("_inspect", "redis", "mysql", "get_db"):
             assert forbidden not in body
+
+
+def _healthy_inspect():
+    insp = MagicMock()
+    insp.active_queues.return_value = {"celery@worker": [{"name": "default"}]}
+    return patch("cqc_lem.utilities.maintenance._inspect", return_value=insp)
+
+
+class TestHealthDeepEgress:
+    """#2346: the proxy the browser egresses through died for nine hours under a `healthy` reading."""
+
+    def _with(self, reading, degrade):
+        return (patch("cqc_lem.utilities.egress_probe.egress_health", return_value=reading),
+                patch("cqc_lem.utilities.egress_probe.should_degrade", return_value=degrade))
+
+    def test_a_persistently_failing_egress_degrades_a_healthy_stack(self):
+        reading = {"egress": "unreachable", "egress_checked": 1, "egress_failing": 1}
+        h, d = self._with(reading, True)
+        with _healthy_inspect(), h, d:
+            out = _call()
+        assert out["status"] == "degraded"
+        assert out["egress"] == "unreachable" and out["egress_failing"] == 1
+        assert out["consuming"] == 1  # the reason is legible: Celery is fine, egress is not
+
+    def test_a_single_failed_probe_reports_but_does_not_degrade(self):
+        reading = {"egress": "auth_failed", "egress_checked": 1, "egress_failing": 1}
+        h, d = self._with(reading, False)
+        with _healthy_inspect(), h, d:
+            out = _call()
+        assert out["status"] == "healthy"
+        assert out["egress"] == "auth_failed"
+
+    @pytest.mark.parametrize("state", ["ok", "direct", "unknown"])
+    def test_non_failing_states_never_degrade(self, state):
+        reading = {"egress": state, "egress_checked": 0, "egress_failing": 0}
+        h, d = self._with(reading, True)
+        with _healthy_inspect(), h, d:
+            assert _call()["status"] == "healthy"
+
+    def test_egress_never_upgrades_an_unknown_reading(self):
+        reading = {"egress": "ok", "egress_checked": 1, "egress_failing": 0}
+        h, d = self._with(reading, False)
+        with patch("cqc_lem.utilities.maintenance._inspect", side_effect=RuntimeError("down")), \
+             patch(f"{_MAIN}.log_warning"), h, d:
+            assert _call()["status"] == "unknown"
+
+    def test_a_crashing_probe_is_unknown_and_never_raises(self):
+        with _healthy_inspect(), \
+             patch("cqc_lem.utilities.egress_probe.egress_health", side_effect=RuntimeError("x")), \
+             patch(f"{_MAIN}.log_warning") as warn:
+            out = _call()
+        assert out["status"] == "healthy"
+        assert out["egress"] == "unknown"
+        warn.assert_called_once()
+
+    def test_body_names_no_proxy(self):
+        """The reading is counts and a state word; a configured proxy's host never appears.
+
+        `user:secret@proxy.example` is a fake placeholder (an RFC 2606 domain), not a credential.
+        """
+        import json
+        with _healthy_inspect(), \
+             patch("cqc_lem.utilities.egress_probe.configured_egress_proxies",
+                   return_value=["http://user:secret@proxy.example:3128"]), \
+             patch("cqc_lem.utilities.egress_probe.probe_proxy", return_value="ok"), \
+             patch("cqc_lem.utilities.egress_probe._redis", return_value=None):
+            from cqc_lem.utilities.egress_probe import reset_cache
+            reset_cache()
+            with patch("cqc_lem.utilities.egress_probe.egress_health", new=_REAL_EGRESS_HEALTH):
+                body = json.dumps(_call())
+            reset_cache()
+        assert "proxy.example" not in body and "secret" not in body and "3128" not in body
+        assert '"egress": "ok"' in body
