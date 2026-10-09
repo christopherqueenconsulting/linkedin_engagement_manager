@@ -80,15 +80,15 @@ PARK_DETAILS: dict[str, str] = {
         "answering either DISMISSES this specific closed pull request — durably, so it survives "
         "the un-park — and returns the issue to the queue for a genuinely fresh attempt, once per "
         "answer. If that attempt is also closed without merging it parks again on ITS OWN pull "
-        "request number, so this never turns into a silent loop on the same rejected approach. `C` "
-        "still closes it for you to handle manually."
+        "request number, so this never turns into a silent loop on the same rejected approach. To "
+        "close it instead, close it by hand: a `1C` reply re-queues it like `1A`."
     ),
     "human_hold_unasked": (
         "This item arrived already carrying `needs-human` — applied by the triage cron or by "
         "hand — and no question was ever put to you, so the hold had no way out (#1736). Nothing "
         "has been attempted and no budget was spent. `1A` or `1B` releases the hold and puts it "
-        "back on the queue (an issue goes to `agent:ready`; there is nothing to rebase). `C` "
-        "closes it for you to handle manually."
+        "back on the queue (an issue goes to `agent:ready`; there is nothing to rebase). To close "
+        "it, close it by hand: a `1C` reply re-queues it like `1A`."
     ),
 }
 

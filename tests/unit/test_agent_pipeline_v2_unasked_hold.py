@@ -448,3 +448,53 @@ def test_the_marker_agrees_across_all_three_readers():
     park = (_V2 / "actions" / "park.sh").read_text()
     assert 'test("Human decision needed"; "i")' in park
     assert "**Human decision needed**" in park, "the menu park.sh writes must carry the marker"
+
+
+# ---------------------------------------------------------------- option C wording
+
+
+def test_option_c_is_a_human_close_and_says_a_reply_does_not_close(action_tree):
+    """`unpark.sh` has no close path, so the menu must never imply that replying `1C` closes."""
+    action_tree[3].write_text("bug")  # not yet held, so the park goes ahead and posts its menu
+    got = _run(action_tree, "issue", "2268", "budget_exhausted", "")
+    assert got.returncode == 0, got.stdout + got.stderr
+    menu = _menus(action_tree)[0]
+    assert "**C. I will close it by hand** — close this issue yourself; no reply is needed." in menu
+    assert "A reply never closes anything. `1C` reads like any other answer" in menu
+    assert "**C. Close this**" not in menu
+    assert "**My recommendation: `1B`.**" in menu
+
+
+def test_a_rejected_approach_asks_for_the_close_and_keeps_the_retry_answer(action_tree):
+    action_tree[3].write_text("bug")
+    got = _run(action_tree, "issue", "2268", "approach_rejected", "The linked PR was closed.")
+    assert got.returncode == 0, got.stdout + got.stderr
+    menu = _menus(action_tree)[0]
+    assert "**My recommendation: close this issue by hand (option C).**" in menu
+    assert "My recommendation: `1C`" not in menu
+    assert "e.g. `1B`" in menu  # a reply DOES re-queue here: it dismisses the closed PR (#1605)
+    assert "no reply is needed. ✅ *recommended*" in menu
+    assert "A reply never closes anything." in menu
+
+
+def test_shipped_work_offers_no_retry_because_a_reply_cannot_move_it(action_tree):
+    """`unpark.sh` keeps an issue whose linked PR merged parked, whatever the reply."""
+    action_tree[3].write_text("bug")
+    got = _run(action_tree, "issue", "2268", "work_shipped_needs_close", "The linked PR merged.")
+    assert got.returncode == 0, got.stdout + got.stderr
+    menu = _menus(action_tree)[0]
+    assert "**My recommendation: close this issue by hand (option C).**" in menu
+    assert "e.g. `1B`" not in menu and "To retry instead" not in menu
+    assert "A reply leaves this issue parked" in menu
+    assert "puts the work back in the queue" not in menu
+    for retry in ("Try again as-is", "Rebase onto latest main and retry", "A bare `B`"):
+        assert retry not in menu
+    assert "**C. I will close it by hand**" in menu
+
+
+def test_no_park_detail_claims_that_c_closes():
+    """The details are pasted into the same menu, so they must not undo its option-C wording."""
+    from lemd import observe
+
+    for reason, detail in observe.PARK_DETAILS.items():
+        assert "closes it for you" not in detail, reason

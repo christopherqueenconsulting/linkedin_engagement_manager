@@ -960,7 +960,7 @@ Failing merge_group run: ${runlink:-not readable — check the merge_group runs 
 ### 1. How should we proceed?
 - **A. Re-enqueue this head as-is** — I fixed the failing merge_group check.
 - **B. Rebase onto latest main and re-run the gate** — a queue failure at one head usually means main moved underneath it.  ✅ *recommended*
-- **C. Close this PR** — I'll handle it manually.
+- **C. I'll close this PR by hand** — no reply needed; a \`1C\` reply does not close it.
 
 **My recommendation: \`1B\`.** A merge_group failure at a head that main has moved past clears on a rebase far more often than it clears on a retry.
 
@@ -1469,7 +1469,7 @@ Reply one letter per question — e.g. \`1A\` — or \`ok\` for all recommendati
 ### 1. How should we proceed?
 - **A. Re-run the \`$mode\` lane** — I've addressed the blocker in the thread above; try again as-is.
 - **B. I'll push the needed change myself** — pick the PR back up afterwards  ✅ *recommended*
-- **C. Close this PR** — the approach is wrong, not just stuck.
+- **C. I'll close this PR by hand** — the approach is wrong, not just stuck. A \`1C\` reply does not close it.
 
 **My recommendation: \`1B\`.** $n automated runs failing the same way is usually a blocker the lane can't see, so the cheapest unblock is a human push before the next run." >/dev/null 2>&1
   fi

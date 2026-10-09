@@ -116,6 +116,20 @@ case "$REASON" in
   work_shipped_needs_close|approach_rejected) REC="C" ;;
   human_hold_unasked) REC="A" ;;
 esac
+# Option C is a human action, not an answer: `unpark.sh` has no close path (docs/agent-pipeline-v2.md),
+# so ANY reply — `1C` included — un-parks and re-queues. When C is the recommendation the comment
+# therefore asks for the close itself, never for a reply.
+# `work_shipped_needs_close` is the one reason a reply cannot move at all: `unpark.sh` leaves an
+# issue whose linked PR merged parked, so the menu offers no retry and says so.
+REPLY_LINE="A reply never closes anything. \`1C\` reads like any other answer: it releases the hold and puts the work back in the queue. To close, close the ${KIND} by hand."
+if [ "$REASON" = "work_shipped_needs_close" ]; then
+  REC_LINE="**My recommendation: close this ${KIND} by hand (option C).** Its linked pull request already merged, so there is nothing to retry."
+  REPLY_LINE="A reply leaves this ${KIND} parked: its linked pull request already merged. Closing it by hand is the only way out; if scope remains, file it as a new issue."
+elif [ "$REC" = "C" ]; then
+  REC_LINE="**My recommendation: close this ${KIND} by hand (option C).** To retry instead, reply with the question number and letter — e.g. \`1B\`."
+else
+  REC_LINE="**My recommendation: \`1${REC}\`.** Reply with the question number and letter — e.g. \`1B\` — or \`ok\` to take the recommendation."
+fi
 MARK=" ✅ *recommended*"
 A_MARK=""; B_MARK=""; C_MARK=""
 case "$REC" in
@@ -124,16 +138,27 @@ case "$REC" in
   *) B_MARK="$MARK" ;;
 esac
 
+OPTION_C="- **C. I will close it by hand** — close this ${KIND} yourself; no reply is needed.${C_MARK}"
+if [ "$REASON" = "work_shipped_needs_close" ]; then
+  # A reply cannot move a merged-link issue, so the retry options are not offered at all.
+  OPTIONS="$OPTION_C"
+else
+  OPTIONS="- **A. Try again as-is** — I have fixed the underlying problem.${A_MARK}
+- **B. Rebase onto latest main and retry** — main has moved since this was last attempted.${B_MARK}
+${OPTION_C}"
+  REC_LINE="${REC_LINE} (A bare \`B\` is NOT recognised as an answer; the answer lane needs the number.)"
+fi
+
 BODY="🛑 **Human decision needed** — the pipeline has parked this ${KIND} (\`${REASON}\`).
 
 ${DETAIL:-The automated lane exhausted its budget for this work and stopped rather than repeating a run that has not been converging.}
 
 ### 1. How should we proceed?
-- **A. Try again as-is** — I have fixed the underlying problem.${A_MARK}
-- **B. Rebase onto latest main and retry** — main has moved since this was last attempted.${B_MARK}
-- **C. Close this** — I will handle it manually.${C_MARK}
+${OPTIONS}
 
-**My recommendation: \`1${REC}\`.** Reply with the question number and letter — e.g. \`1B\` — or \`ok\` to take the recommendation. (A bare \`B\` is NOT recognised as an answer; the answer lane needs the number.)"
+${REC_LINE}
+
+${REPLY_LINE}"
 
 if [ "$KIND" = "pr" ]; then
   gh pr comment "$NUMBER" --repo "$SLUG" --body "$BODY" >/dev/null 2>&1
