@@ -68,6 +68,7 @@ RUBRIC_DIR = registry.PROMPTS_DIR / "rubrics"
 CONFIG_PATH = REPO / ".litellm" / "config.yaml"
 PRICES_PATH = REPO / ".litellm" / "model_prices_snapshot.json"
 OUT_DIR = REPO / "docs" / "prompt-evals"
+DOC_INDEX = REPO / "docs" / "README.md"
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 
 ROLE_CHAMPION, ROLE_FALLBACK, ROLE_CANDIDATE = "champion", "fallback", "candidate"
@@ -959,7 +960,59 @@ def write_outputs(run: dict[str, Any], out_dir: pathlib.Path) -> pathlib.Path:
         "`scripts/benchmark_prompts.py`. Posture: [`docs/prompt-evals.md`](../prompt-evals.md).\n\n"
         f"{bm.LEADERBOARD_BEGIN}\n{bm.LEADERBOARD_END}\n")
     readme.write_text(bm.update_leaderboard(text, leaderboard_rows(run)), encoding="utf-8")
+    if out_dir.resolve() == OUT_DIR.resolve():
+        index_run_docs(DOC_INDEX, readme, path, run["run_id"])
     return path
+
+
+def index_run_docs(index: pathlib.Path, readme: pathlib.Path, report: pathlib.Path,
+                   run_id: str) -> bool:
+    """Link the leaderboard README and one run report from the doc index.
+
+    `docs/README.md` must link every tracked doc (the CM013 guard in
+    `scripts/check_claude_md_size.py`), and every results PR adds a report. The lines go at the end
+    of the block that follows the inventory's own line, so runs read oldest first. When that anchor
+    is missing the index is left alone and the guard names the unlinked file.
+
+    Args:
+        index: The doc index, `docs/README.md`.
+        readme: The leaderboard README `write_outputs` refreshed.
+        report: The run report `write_outputs` wrote.
+        run_id: The run's id, shown as the link text.
+
+    Returns:
+        True when the index was rewritten.
+    """
+    if not index.exists():
+        return False
+    base = index.parent
+
+    def link(doc: pathlib.Path) -> str:
+        return os.path.relpath(doc, base).replace(os.sep, "/")
+
+    text = index.read_text(encoding="utf-8")
+    lines = text.splitlines(keepends=True)
+    anchor = f"]({link(readme.parent / 'inventory.md')})"
+    at = next((i for i, line in enumerate(lines) if anchor in line), None)
+    if at is None:
+        return False
+    folder = f"]({link(readme.parent)}/"
+    end = at + 1
+    while end < len(lines) and folder in lines[end]:
+        end += 1
+    wanted = [
+        (link(readme), f"- [Prompt eval runs]({link(readme)}) — GENERATED: the leaderboard, one row "
+                       "per prompt@version × model per run\n"),
+        (link(report), f"- [Prompt eval run — `{run_id}`]({link(report)}) — archived run report\n"),
+    ]
+    added = [line for target, line in wanted if f"]({target})" not in text]
+    if not added:
+        return False
+    if end == len(lines) and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
+    lines[end:end] = added
+    index.write_text("".join(lines), encoding="utf-8")
+    return True
 
 
 # ─────────────────────────────────── the CLI ───────────────────────────────────

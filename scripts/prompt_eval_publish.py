@@ -33,7 +33,7 @@ from typing import Any
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 BRANCH = "bot/prompt-evals"
 LABEL = "prompt-eval:failing"
-RESULT_PATHS = ("docs/prompt-evals", "tests/benchmarks/prompts/eval_state.json")
+RESULT_PATHS = ("docs/prompt-evals", "docs/README.md", "tests/benchmarks/prompts/eval_state.json")
 BOT_NAME = "lem-prompt-evals[bot]"
 BOT_EMAIL = "prompt-evals@users.noreply.github.com"
 

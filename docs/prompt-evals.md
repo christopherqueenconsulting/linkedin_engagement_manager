@@ -346,7 +346,9 @@ once:
 6. **Judges** a tag-stratified sample (`--judge-sample`, default 5) per prompt × model.
 7. **Pairwise-compares** each candidate with the champion.
 8. **Refuses** an all-errored run (#923). Otherwise it writes the report, the leaderboard
-   (`docs/prompt-evals/README.md`), the eval state and the inventory.
+   (`docs/prompt-evals/README.md`), the eval state and the inventory. A run written to
+   `docs/prompt-evals/` also links the leaderboard and its report from `docs/README.md`, because the
+   doc-index guard (CM013) fails any tracked doc the index does not link.
 
 `--outputs-out` writes the generated text for the workflow's artifact. It is **never committed**, and
 the report carries scores only.
@@ -374,8 +376,8 @@ missing a floor is a finding about the model, not the prompt.
        - `2`: a floor was missed. This is reported as issues, not as a red run.
        - Anything else: refused or an error, which fails the job.
     3. Upload `outputs.json` for 90 days. It is never committed.
-    4. Run `scripts/prompt_eval_publish.py`. It force-pushes the state, report, leaderboard and
-       inventory to ONE branch, `bot/prompt-evals`, and opens its PR. The checkout persists
+    4. Run `scripts/prompt_eval_publish.py`. It force-pushes the state, report, leaderboard,
+       inventory and doc-index lines to ONE branch, `bot/prompt-evals`, and opens its PR. The checkout persists
        `RELEASE_DISPATCH_TOKEN`, so BOTH the push and the PR are the PAT's: a `GITHUB_TOKEN` force-push
        to an already-open results PR fires no `synchronize`, and its required checks would never run.
        The live `.github/workflows/prompt-evals.yml` must match the `docs/` copy (a unit test fails on
