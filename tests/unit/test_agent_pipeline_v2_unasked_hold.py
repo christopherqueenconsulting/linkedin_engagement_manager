@@ -465,16 +465,28 @@ def test_option_c_is_a_human_close_and_says_a_reply_does_not_close(action_tree):
     assert "**My recommendation: `1B`.**" in menu
 
 
-@pytest.mark.parametrize("reason", ["work_shipped_needs_close", "approach_rejected"])
-def test_a_c_recommendation_asks_for_the_close_never_for_a_1c_reply(action_tree, reason):
+def test_a_rejected_approach_asks_for_the_close_and_keeps_the_retry_answer(action_tree):
     action_tree[3].write_text("bug")
-    got = _run(action_tree, "issue", "2268", reason, "The linked PR already merged.")
+    got = _run(action_tree, "issue", "2268", "approach_rejected", "The linked PR was closed.")
     assert got.returncode == 0, got.stdout + got.stderr
     menu = _menus(action_tree)[0]
     assert "**My recommendation: close this issue by hand (option C).**" in menu
-    assert "`1C`." not in menu and "My recommendation: `1C`" not in menu
-    assert "e.g. `1B`" in menu  # the retry path is still a parseable answer
+    assert "My recommendation: `1C`" not in menu
+    assert "e.g. `1B`" in menu  # a reply DOES re-queue here: it dismisses the closed PR (#1605)
     assert "no reply is needed. ✅ *recommended*" in menu
+    assert "A reply never closes anything." in menu
+
+
+def test_shipped_work_offers_no_retry_because_a_reply_cannot_move_it(action_tree):
+    """`unpark.sh` keeps an issue whose linked PR merged parked, whatever the reply."""
+    action_tree[3].write_text("bug")
+    got = _run(action_tree, "issue", "2268", "work_shipped_needs_close", "The linked PR merged.")
+    assert got.returncode == 0, got.stdout + got.stderr
+    menu = _menus(action_tree)[0]
+    assert "**My recommendation: close this issue by hand (option C).**" in menu
+    assert "e.g. `1B`" not in menu and "To retry instead" not in menu
+    assert "A reply leaves this issue parked" in menu
+    assert "puts the work back in the queue" not in menu
 
 
 def test_no_park_detail_claims_that_c_closes():

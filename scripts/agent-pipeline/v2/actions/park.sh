@@ -119,7 +119,13 @@ esac
 # Option C is a human action, not an answer: `unpark.sh` has no close path (docs/agent-pipeline-v2.md),
 # so ANY reply — `1C` included — un-parks and re-queues. When C is the recommendation the comment
 # therefore asks for the close itself, never for a reply.
-if [ "$REC" = "C" ]; then
+# `work_shipped_needs_close` is the one reason a reply cannot move at all: `unpark.sh` leaves an
+# issue whose linked PR merged parked, so the menu offers no retry and says so.
+REPLY_LINE="A reply never closes anything. \`1C\` reads like any other answer: it releases the hold and puts the work back in the queue. To close, close the ${KIND} by hand."
+if [ "$REASON" = "work_shipped_needs_close" ]; then
+  REC_LINE="**My recommendation: close this ${KIND} by hand (option C).** Its linked pull request already merged, so there is nothing to retry."
+  REPLY_LINE="A reply leaves this ${KIND} parked: its linked pull request already merged. Closing it by hand is the only way out; if scope remains, file it as a new issue."
+elif [ "$REC" = "C" ]; then
   REC_LINE="**My recommendation: close this ${KIND} by hand (option C).** To retry instead, reply with the question number and letter — e.g. \`1B\`."
 else
   REC_LINE="**My recommendation: \`1${REC}\`.** Reply with the question number and letter — e.g. \`1B\` — or \`ok\` to take the recommendation."
@@ -143,7 +149,7 @@ ${DETAIL:-The automated lane exhausted its budget for this work and stopped rath
 
 ${REC_LINE} (A bare \`B\` is NOT recognised as an answer; the answer lane needs the number.)
 
-A reply never closes anything. \`1C\` reads like any other answer: it releases the hold and puts the work back in the queue. To close, close the ${KIND} by hand."
+${REPLY_LINE}"
 
 if [ "$KIND" = "pr" ]; then
   gh pr comment "$NUMBER" --repo "$SLUG" --body "$BODY" >/dev/null 2>&1
