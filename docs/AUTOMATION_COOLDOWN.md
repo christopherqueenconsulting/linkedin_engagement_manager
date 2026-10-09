@@ -141,23 +141,64 @@ at WARNING forever (2026-10-09: every Selenium lane, more than nine hours, nothi
 
 ### Responding to a `LinkedInEgressDown` escalation
 
-1. **Find the egress.** The ERROR line names it as `egress=<host:port>`. It is resolved by
-   `utilities/proxy.py:resolve_proxy`: the user's own `users.proxy_url` (written by `update_user_proxy` in
-   `platform/db/repositories/users.py`), else `REGION_PROXIES` for their country, else `PROXY_URL`.
-2. **Check it from the host,** without credentials: `nc -vz <host> <port>` (a timeout is the
-   proxy, a refusal is the port), then the provider's dashboard and status page. `/health/deep`'s
-   `egress` field, where deployed, says the same thing from inside the API container.
+The app log is `/opt/lem/logs/cqc_lem_YYYY_MM_DD.log`, one file per UTC day
+(`docs/production-logs.md`).
+
+1. **Find the egress.** The ERROR line names it as `egress=<label>`:
+
+   ```
+   grep 'LinkedIn browser egress has not reached linkedin.com' /opt/lem/logs/cqc_lem_$(date -u +%Y_%m_%d).log
+   ```
+
+   It is resolved by `utilities/proxy.py:resolve_proxy`, first match wins: the user's own
+   `users.proxy_url` (written by `update_user_proxy` in `platform/db/repositories/users.py`), else
+   `REGION_PROXIES` for their country, else `REGION_PROXIES["DEFAULT"]`, else `PROXY_URL`, else
+   direct egress (`docs/PER_USER_PROXY.md`). `REGION_PROXIES` and `PROXY_URL` are set in
+   `/opt/lem/.env`; they carry credentials, so never paste them into a ticket or chat.
+2. **Check it from the host,** without credentials. What to check depends on the label:
+
+   | `egress=` | Meaning | Check |
+   |---|---|---|
+   | `<host>:<port>` or `<host>` | a proxy | `nc -vz <host> <port>` (a timeout is the proxy, a refusal is the port), then the provider's dashboard and status page |
+   | `DIRECT` | no proxy resolved for this user | the host network and DNS from the Selenium worker; there is no proxy to test |
+   | `invalid` | the resolved proxy URL has no parseable host | fix the value in `users.proxy_url`, `REGION_PROXIES` or `PROXY_URL` |
+   | `unknown` | resolving the user's egress raised an unexpected error (a MySQL error is not one: it reads as no override and falls through the order above) | the worker log just before the ERROR line for the exception |
+
+   `/health/deep`'s `egress` field, where deployed, gives the proxy's answer from inside the API
+   container.
 3. **Fix or replace the proxy** at the provider. Do not point the account at a different IP
    without deciding to: LinkedIn treats a new sign-in location as a risk signal.
 4. **Confirm recovery:** the next scheduled session logs `Already logged in!` (or `Login
-   successful!`) and `LinkedIn browser egress recovered after N failed sessions`, and the Redis key
-   `linkedin:egress_streak:<user_id>` is gone. No restart is needed; the lanes resume on their next
-   beat. Resolve the error-tracking issue once recovered.
+   successful!`) and the recovery line, and the streak key is gone:
+
+   ```
+   grep 'LinkedIn browser egress recovered after' /opt/lem/logs/cqc_lem_$(date -u +%Y_%m_%d).log
+   docker exec redis redis-cli EXISTS linkedin:egress_streak:<user_id>   # 0 = cleared
+   ```
+
+   The key lives in the Redis that `_resolve_redis_url` in `linkedin/rate_limit.py` picks
+   (`CELERY_BROKER_URL`, else `CELERY_RESULT_BACKEND`, else `redis://redis:6379/0`); on the compose
+   stack that is the `redis` container. No restart is needed; the lanes resume on their next beat.
+5. **Close the issues.** Resolve the `LinkedInEgressDown` error-tracking issue once recovered. If
+   it was still active when the daily error-to-issue cron ran (`docs/error-tracking.md` § error →
+   GitHub issues), the cron also filed a GitHub issue for it; close that too, since the fix was
+   at the proxy, not in code. Resolving the PostHog issue before the cron runs means nothing is
+   filed.
 
 **Rollback:** set `LINKEDIN_EGRESS_ESCALATE_AFTER_SECONDS` very high (e.g. `31536000`) in
 `/opt/lem/.env` to silence the escalation without a code change; the clearer WARNING wording stays.
-The Celery workers read `.env` when their containers are created, so it takes effect on the next
-deploy (`scripts/deploy.sh`), not on save. A revert removes both.
+The Celery workers read `.env` only when their containers are created, so saving the file does
+nothing on its own. To apply it now, re-deploy the tag that is already running, as the deploy user
+(the same command CI runs over SSH):
+
+```
+cd /opt/lem && ./scripts/deploy.sh "$(cat .last_good_tag)"
+```
+
+That recreates the workers with the new value. It is a full deploy: it also runs Flyway (a no-op
+when no migration is pending) and drains the workers through the maintenance window first.
+Otherwise the value takes effect on the next release deploy. A revert removes both the escalation
+and the clearer WARNING wording.
 
 ## When to use
 

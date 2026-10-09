@@ -185,6 +185,9 @@ a window we cannot confirm is not a window. This mirrors layer 1's `WATCHDOG_GRA
 layers refuse to alert on a state a deploy is expected to pass through, and both bound how long
 they will stay quiet.
 
+It never raises and never 503s on a partial: a monitor should read `status`, and a scrape that
+cannot tell must say so rather than give a confident wrong answer.
+
 ### Egress: the browser's proxy is part of the automation pillar (issue #2346)
 
 On 2026-10-09 the egress proxy every Selenium session routes through stopped answering for more than
@@ -217,9 +220,11 @@ missing reading.
   here, so it reaches a person only if the layer 3 monitor asserts on the `"status":"healthy"`
   keyword, as that section describes. Probes run only when the endpoint is called, so with the
   defaults and a 5-minute monitor as the only caller, the first check after the proxy dies starts
-  the clock and a later one reads `degraded`: the monitor turns red about 5 to 15 minutes after the
-  proxy dies (the second check can land just under 300 s, which pushes it to the third). This
-  change does not configure or verify the monitor.
+  the clock and a later one reads `degraded`: the first `degraded` check comes about 5 to 15
+  minutes after the proxy dies (the second check can land just under 300 s, which pushes it to the
+  third). Under layer 3's suggested rule of alerting after 2 consecutive failures, the alert reaches
+  a person about 10 to 20 minutes after the proxy dies. This change does not configure or verify the
+  monitor.
 - **Bounded, because this endpoint is unauthenticated:** readings are cached in-process for
   `EGRESS_PROBE_CACHE_SECONDS` (default 60), at most 10 proxies are probed, in parallel, each bounded
   by `EGRESS_PROBE_TIMEOUT_SECONDS` (default 5) for the connect and again for the reply (an
@@ -240,8 +245,21 @@ missing reading.
 | `auth_failed` | the proxy answered 407: the credentials (or its IP allowlist) refused us | the proxy credentials in `users.proxy_url` / `REGION_PROXIES` / `PROXY_URL`, and the provider's allowlist |
 | `refused` | the proxy answered but would not open the tunnel | the provider's target restrictions and plan status |
 
+The body names no proxy, so find the failing one in the app log
+(`/opt/lem/logs/cqc_lem_YYYY_MM_DD.log`, one file per UTC day; `docs/production-logs.md`). Every
+Selenium session logs the egress it used, as host:port and never with credentials:
+
+```
+grep -o "egress=[^ ]*" /opt/lem/logs/cqc_lem_$(date -u +%Y_%m_%d).log | sort | uniq -c
+```
+
+`PROXY_URL` and `REGION_PROXIES` are set in `/opt/lem/.env`, and per-user overrides are in
+`users.proxy_url` (`docs/PER_USER_PROXY.md`). Those values carry credentials: read them on the host
+and never paste them into a ticket or chat.
+
 The egress for each user is resolved by `utilities/proxy.py:resolve_proxy`: the user's own
-`users.proxy_url`, else `REGION_PROXIES` for their country, else `PROXY_URL`. Recovery is
+`users.proxy_url`, else `REGION_PROXIES` for their country, else `REGION_PROXIES["DEFAULT"]`, else
+`PROXY_URL`. Recovery is
 `egress: ok` here, then the next scheduled LinkedIn session logs `Already logged in!`; no restart
 is needed. The owner of the response is whoever receives the layer 3 monitor's alert.
 
@@ -253,12 +271,16 @@ is needed. The owner of the response is whoever receives the layer 3 monitor's a
 - **Who acts on `degraded`:** only the external uptime monitor (layer 3), which alerts. Nothing
   restarts or rolls back on it: deploys gate on `/health`, never `/health/deep`, and the host
   watchdog (layer 1) reads `docker compose ps`, not this endpoint.
-- **Rollback:** `HEALTH_DEEP_EGRESS_DEGRADES=false` in `/opt/lem/.env` (read when the API
-  container is created, so it takes effect on the next deploy) keeps the `egress` fields but stops them changing `status`. Reverting the
-  PR removes the fields; a monitor asserting on `"status":"healthy"` is unaffected either way.
-
-It never raises and never 503s on a partial: a monitor should read `status`, and a scrape that
-cannot tell must say so rather than give a confident wrong answer.
+- **Rollback:** `HEALTH_DEEP_EGRESS_DEGRADES=false` in `/opt/lem/.env` keeps the `egress` fields
+  but stops them changing `status`. The API reads `.env` only when its container is created, so
+  saving the file does nothing on its own. To apply it now, re-deploy the tag that is already
+  running, as the deploy user (the same command CI runs over SSH):
+  `cd /opt/lem && ./scripts/deploy.sh "$(cat .last_good_tag)"`. That is a full deploy: it
+  also runs Flyway (a no-op when no migration is pending) and drains the workers through the
+  maintenance window. Otherwise it takes effect on the next release deploy. Reverting the PR
+  removes the fields; a monitor asserting on `"status":"healthy"` is unaffected either way.
+- **To stop a false page before any deploy:** pause the layer 3 monitor in its own dashboard, and
+  unpause it once the switch is applied or the proxy is fixed.
 
 ## Layer 3 — external dead-man's switch (owner setup)
 
