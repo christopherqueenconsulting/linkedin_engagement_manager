@@ -10,8 +10,8 @@
 | `media.motion_prompt` | `cqc_lem.utilities.ai.ai_helper` | `_draft_motion_prompt` | media_prompt | planned | 1 | source | not yet measured |
 | `dm.message_history_check` | `cqc_lem.utilities.ai.ai_helper` | `ai_check_message_history` | json_planner | planned | 1 | source | not yet measured |
 | `post.apply_guidance` | `cqc_lem.utilities.ai.ai_helper` | `apply_post_guidance` | rewrite | planned | 1 | source | not yet measured |
-| `classify.post_reaction` | `cqc_lem.utilities.ai.ai_helper` | `choose_post_reaction` | classifier | planned | 1 | source | not yet measured |
-| `classify.post_reaction` | `cqc_lem.utilities.ai.ai_helper` | `choose_post_reaction` | classifier | exempt:fallback transport — resends #0's prompt to OPENAI_FALLBACK_MODEL | 1 | source | not yet measured |
+| `classify.post_reaction` | `cqc_lem.utilities.ai.ai_helper` | `choose_post_reaction` | classifier | planned | 2 | source | not yet measured |
+| `classify.post_reaction` | `cqc_lem.utilities.ai.ai_helper` | `choose_post_reaction` | classifier | exempt:fallback transport — resends #0's prompt to OPENAI_FALLBACK_MODEL | 2 | source | not yet measured |
 | `comment.feed` | `cqc_lem.utilities.ai.ai_helper` | `generate_ai_response._draft` | comment | evaluated | 1 | rendered text | not yet measured |
 | `smoke.ai_response_test` | `cqc_lem.utilities.ai.ai_helper` | `generate_ai_response_test` | — | exempt:connectivity smoke test, not a product prompt | — | — | — |
 | `post.carousel` | `cqc_lem.utilities.ai.ai_helper` | `generate_carousel_content._draft` | json_planner | planned | 1 | source | not yet measured |
@@ -50,7 +50,7 @@
 | `curated.chart_facts` | `cqc_lem.utilities.ai.curated_commentary` | `extract_chart_facts` | json_planner | planned | 2 | source | not yet measured |
 | `curated.commentary` | `cqc_lem.utilities.ai.curated_commentary` | `generate_curated_commentary.draft` | post_longform | planned | 2 | source | not yet measured |
 | `curated.audience_fit` | `cqc_lem.utilities.ai.curated_commentary` | `score_audience_fit` | classifier | planned | 1 | source | not yet measured |
-| `classify.dm_reply_intent` | `cqc_lem.utilities.ai.dm_nurture` | `_llm_intent` | classifier | evaluated | 1 | rendered text | not yet measured |
+| `classify.dm_reply_intent` | `cqc_lem.utilities.ai.dm_nurture` | `_llm_intent` | classifier | evaluated | 2 | rendered text | not yet measured |
 | `image.brief` | `cqc_lem.utilities.ai.image_brief` | `_author_image_brief` | media_prompt | planned | 2 | source | not yet measured |
 | `image.prompt_concept_check` | `cqc_lem.utilities.ai.image_brief` | `check_prompt_against_concept` | judge | planned | 2 | source | not yet measured |
 | `image.ensure_hook` | `cqc_lem.utilities.ai.image_concept` | `_ensure_hook` | json_planner | planned | 1 | source | not yet measured |
@@ -61,7 +61,7 @@
 | `image.render` | `cqc_lem.utilities.ai.image_gen` | `_render_via_gpt_image` | — | exempt:image render — graded by scripts/benchmark_media.py | — | — | — |
 | `vision.staged_inspect_blind` | `cqc_lem.utilities.ai.image_gen` | `_staged_inspect` | — | exempt:vision — graded by scripts/benchmark_media.py | — | — | — |
 | `vision.staged_inspect_targeted` | `cqc_lem.utilities.ai.image_gen` | `_staged_inspect` | — | exempt:vision — graded by scripts/benchmark_media.py | — | — | — |
-| `classify.lead_intent` | `cqc_lem.utilities.ai.lead_intent` | `_llm_says_lead` | classifier | evaluated | 1 | rendered text | not yet measured |
+| `classify.lead_intent` | `cqc_lem.utilities.ai.lead_intent` | `_llm_says_lead` | classifier | evaluated | 2 | rendered text | not yet measured |
 | `post.pick_quote` | `cqc_lem.utilities.ai.post_treatment` | `pick_quote` | json_planner | planned | 1 | source | not yet measured |
 | `tools.chat_about_news` | `cqc_lem.utilities.ai.tools` | `chat_about_news` | — | exempt:untiered legacy tool, hardcoded gpt-4o-mini | — | — | — |
 | `tools.chat_with_tools` | `cqc_lem.utilities.ai.tools` | `chat_with_tools` | — | exempt:untiered legacy tool, hardcoded gpt-4o-mini | — | — | — |

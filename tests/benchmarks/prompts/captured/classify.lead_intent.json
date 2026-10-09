@@ -2,7 +2,7 @@
   "prompt_id": "classify.lead_intent",
   "target": "cqc_lem.utilities.ai.lead_intent._llm_says_lead",
   "tier": "lem-simple",
-  "content_hash": "sha256:8b301f0684a2aa68dc0bebe919c78c79c31340ccf56bf3d36911db7cd72cc74e",
+  "content_hash": "sha256:3c835011fed19d44e2ff77172dfd599574c853aa2fa201621c8053fab96ffc56",
   "messages": [
     {
       "role": "system",
@@ -20,7 +20,7 @@
         "user_id": "system"
       }
     },
-    "max_tokens": 3,
+    "max_tokens": 512,
     "model": "lem-simple",
     "temperature": 0
   }
