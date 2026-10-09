@@ -397,6 +397,14 @@ class TestLitellmRestartOrdering:
         converge = self.MAIN.index("if ! converge_stack; then")
         assert restart < ready < converge
 
+    def test_probe_uses_the_interpreter_the_compose_healthcheck_proves(self) -> None:
+        # The probe's output is discarded, so a missing interpreter reads as "never ready" and
+        # costs every config-changing deploy the full timeout. Pin it to the healthcheck's binary.
+        compose = (DEPLOY_SH.parents[1] / "docker-compose.yml").read_text(encoding="utf-8")
+        litellm_service = compose.split("\n  litellm:\n", 1)[1]
+        assert 'test: ["CMD-SHELL", "python3 -c' in litellm_service
+        assert "exec -T litellm python3 -c" in self.BODY
+
 
 class TestColorHealthy:
     """The blue/green health probe (issue #1897).

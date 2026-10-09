@@ -294,8 +294,9 @@ color_healthy() {  # $1 = color, $2 = timeout seconds
 }
 
 # Wait for litellm to answer its readiness endpoint after a restart (issue #2304). Probed from INSIDE
-# the container with the image's own python: the litellm image is a python app, so that is the one
-# interpreter it is certain to ship (curl is not), and it works whatever the host port mapping is.
+# the container with the image's own `python3` — the same binary the compose healthcheck already
+# proves is there (curl is not guaranteed), and it works whatever the host port mapping is. A
+# missing interpreter would be swallowed by the redirect below and read as "never ready".
 # Returns 0 when ready, 1 if the timeout ran out. The caller treats 1 as a WARN, never an abort: a
 # slow proxy is no reason to leave the box half-deployed, and the client's connect-retry (#986)
 # still rides out a proxy that is not yet accepting connections.
@@ -303,7 +304,7 @@ LITELLM_READY_TIMEOUT="${LITELLM_READY_TIMEOUT:-90}"
 litellm_ready() {  # $1 = timeout seconds
   local deadline=$(( $(date +%s) + $1 ))
   while (( $(date +%s) < deadline )); do
-    if ${COMPOSE} exec -T litellm python -c \
+    if ${COMPOSE} exec -T litellm python3 -c \
       "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/readiness', timeout=5)" \
       >/dev/null 2>&1; then
       return 0
@@ -530,7 +531,9 @@ drain_workers
 
 # 6d. Reload litellm if its config changed (compose won't recreate it on a bind-mount edit alone).
 #     It restarts HERE, inside the drain window and before step 7 brings up the new workers, so no
-#     worker LLM call can be in flight across it. Restarting after the converge (the old step 7a)
+#     worker LLM call can be in flight across it — provided the drain finished. A drain that TIMED
+#     OUT leaves its stragglers running, and one mid-LLM-call is exposed here exactly as it is to the
+#     recreate that follows (warm shutdown, then SIGKILL). Restarting after the converge (the old step 7a)
 #     dropped live requests mid-response — 4 `APIConnectionError: Connection error.` on the v0.184.0
 #     deploy (issue #2304) — and those are deliberately NOT retried in-app, because the provider may
 #     already have billed them. The web API stays live through this, so a user-facing call at that

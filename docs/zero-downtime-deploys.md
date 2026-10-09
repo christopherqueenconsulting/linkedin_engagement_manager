@@ -39,7 +39,10 @@ Cloudflare Tunnel (dashboard ingress: http://web_app:8000  — UNCHANGED)
      this converge, inside the drain window, and the deploy waits for `/health/readiness`
      (`LITELLM_READY_TIMEOUT`, default 90s; a timeout is a WARN, not an abort). Restarting it after
      the converge dropped live worker LLM calls (issue #2304), and a dropped in-flight call is
-     never retried in-app because the provider may already have billed it.
+     never retried in-app because the provider may already have billed it. The guarantee holds
+     only when the drain finished: a task still running after `DRAIN_TIMEOUT` can lose its
+     in-flight call here, as it can to the worker recreate that follows. The probe runs `python3`
+     inside the container, the same interpreter the compose healthcheck uses.
 
 ### Worker-tier resilience (issue #831)
 
