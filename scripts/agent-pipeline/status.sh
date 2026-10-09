@@ -722,6 +722,15 @@ d = json.load(open(sys.argv[1]))
 age = int(time.time() - float(d.get("at") or 0))
 print("week={}% session={}% ({}s old)".format(d.get("week_pct"), d.get("session_pct"), age))
 ' "$BASE/state/usage.json" 2>/dev/null)"
+    # The daemon refreshes the cache every USAGE_TTL (900s, lemd/spend.py). A reading older than two
+    # refreshes is not the current headroom: the probe has stopped producing readable answers and
+    # routing has fallen back to the health estimate. Printing it as a live figure hid a reading
+    # that had been frozen for weeks (#2337), so it is labelled STALE and warned about instead.
+    V2_USAGE_AGE="$(printf '%s' "$V2_USAGE" | sed -n 's/.*(\([0-9]*\)s old)$/\1/p')"
+    if [ -n "$V2_USAGE_AGE" ] && [ "$V2_USAGE_AGE" -gt "${USAGE_STALE_SECONDS:-1800}" ]; then
+      V2_USAGE="${C_YEL}STALE${C_RST} — last readable reading is $(fmt_dur "$V2_USAGE_AGE") old (${V2_USAGE% (*}); routing on the health estimate"
+      warn "subscription usage reading is $(fmt_dur "$V2_USAGE_AGE") old — the /usage probe is not producing readable answers, so lane routing cannot see headroom (#2337)"
+    fi
   fi
 
   if [ "$V2_ACTIVE" = 1 ]; then
