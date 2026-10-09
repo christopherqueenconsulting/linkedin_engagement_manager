@@ -58,6 +58,12 @@ When the comment budget is spent, the log line names the limiter that applied: `
 today's comments reached `max_comments_per_day`, and otherwise `pacing` (the paced draw or the
 account envelope).
 
+`automate_commenting` reads that same budget (`_comment_allowance_today`) BEFORE it opens a session
+(issue #2327). When the budget is 0, for example on a pacing rest day, the run returns `Skipped: …`
+at DEBUG with no login and no requeue. Before this check, the golden-hour loop logged in every ~90 s
+for its whole 15-minute window and commented nothing. An unreadable budget fails OPEN, because the
+feed walk reads the same budget again and reports the fault.
+
 ### The scoring matrix is recency-DOMINANT
 
 `_score_feed_post` ranks candidates on four weighted terms — recency (dominant), relevance,
