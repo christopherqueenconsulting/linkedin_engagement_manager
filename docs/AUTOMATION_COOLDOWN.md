@@ -187,16 +187,35 @@ The app log is `/opt/lem/logs/cqc_lem_YYYY_MM_DD.log`, one file per UTC day
 
 **Rollback:** set `LINKEDIN_EGRESS_ESCALATE_AFTER_SECONDS` very high (e.g. `31536000`) in
 `/opt/lem/.env` to silence the escalation without a code change; the clearer WARNING wording stays.
+This only stops the escalation (the ERROR line and the `LinkedInEgressDown` issue); it does not
+bring the egress back. The affected users' sessions still raise `LinkedInEgressUnreachable`, which
+is rate-limit-class, so their automation keeps deferring until the egress recovers.
 The Celery workers read `.env` only when their containers are created, so saving the file does
 nothing on its own. To apply it now, re-deploy the tag that is already running, as the deploy user
-(the same command CI runs over SSH):
+(the same command CI runs over SSH: the **Deploy over SSH** steps in
+`.github/workflows/build-and-push.yml` and `.github/workflows/deploy-vps.yml`).
+
+`deploy.sh` writes the tag to `/opt/lem/.last_good_tag` once the web tier is live on it. Check
+the file first:
+
+```
+cat /opt/lem/.last_good_tag
+```
+
+If it prints a tag, run:
 
 ```
 cd /opt/lem && ./scripts/deploy.sh "$(cat .last_good_tag)"
 ```
 
-That recreates the workers with the new value. It is a full deploy: it also runs Flyway (a no-op
-when no migration is pending) and drains the workers through the maintenance window first.
+If the file is missing or empty, do not run the command above: with no argument `deploy.sh` stops
+at its usage line. Take the tag from the `IMAGE_TAG=` line in `/opt/lem/.env` instead (`deploy.sh`
+writes the same tag there), or from the last successful **Build & Deploy Release** run in GitHub
+Actions, and pass it by hand: `cd /opt/lem && ./scripts/deploy.sh <tag>`.
+
+That recreates the workers with the new value. It is a full deploy, in this order: Flyway
+migrations (a no-op when no migration is pending), the blue/green flip of the web tier, then the
+worker drain through the maintenance window, and only then are the workers recreated.
 Otherwise the value takes effect on the next release deploy. A revert removes both the escalation
 and the clearer WARNING wording.
 
@@ -207,6 +226,10 @@ exits non-zero, its last lines say which case you are in:
 - `did not become healthy` (or `does not exist`), then `restoring standby ... and aborting`: the
   serving API colour was never touched and the site stays up. The new value is not applied; fix
   the cause and re-run.
+- `did not become healthy` (or `does not exist`), then `Rolling back to <tag>`: no API colour was
+  serving, so the script drained the workers, re-converged the stack on the last good tag and
+  exited 1. Fix the cause and re-run. If neither `restoring standby` nor `Rolling back` follows,
+  `.last_good_tag` was empty and nothing was rolled back.
 - `rendered nginx conf failed validation — routing left unchanged`: the edge still routes to the
   previous colour and the site keeps serving. The new value is not applied; fix the cause and
   re-run.

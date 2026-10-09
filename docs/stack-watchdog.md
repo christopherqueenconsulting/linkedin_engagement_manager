@@ -223,8 +223,9 @@ missing reading.
   the clock and a later one reads `degraded`: the first `degraded` check comes about 5 to 15
   minutes after the proxy dies (the second check can land just under 300 s, which pushes it to the
   third). Under layer 3's suggested rule of alerting after 2 consecutive failures, the alert reaches
-  a person about 10 to 20 minutes after the proxy dies. This change does not configure or verify the
-  monitor.
+  a person about 10 to 20 minutes after the proxy dies. Both figures are estimates worked out from
+  the defaults, not measurements: they assume a 5-minute monitor and the 2-failure rule, and this
+  change does not configure or verify the monitor.
 - **Bounded, because this endpoint is unauthenticated:** readings are cached in-process for
   `EGRESS_PROBE_CACHE_SECONDS` (default 60), at most 10 proxies are probed, in parallel, each bounded
   by `EGRESS_PROBE_TIMEOUT_SECONDS` (default 5) for the connect and again for the reply (an
@@ -275,11 +276,13 @@ is needed. The owner of the response is whoever receives the layer 3 monitor's a
   but stops them changing `status`. The API reads `.env` only when its container is created, so
   saving the file does nothing on its own. To apply it now, re-deploy the tag that is already
   running, as the deploy user (the same command CI runs over SSH):
-  `cd /opt/lem && ./scripts/deploy.sh "$(cat .last_good_tag)"`. That is a full deploy: it
-  also runs Flyway (a no-op when no migration is pending) and drains the workers through the
-  maintenance window. Otherwise it takes effect on the next release deploy. Before you run it,
-  check in GitHub Actions that no **Build & Deploy Release** or **Redeploy / Rollback VPS** run is
-  in progress (`deploy.sh` takes no lock). If it exits non-zero, its last lines name the case;
+  `cd /opt/lem && ./scripts/deploy.sh "$(cat .last_good_tag)"` (if `.last_good_tag` is missing or
+  empty, take the tag as the Rollback steps in `docs/AUTOMATION_COOLDOWN.md` describe). That is a
+  full deploy, in this order: Flyway migrations (a no-op when no migration is pending), the
+  blue/green flip of the web tier, then the worker drain through the maintenance window, and only
+  then are the workers recreated. Otherwise it takes effect on the next release deploy. Before you
+  run it, check in GitHub Actions that no **Build & Deploy Release** or **Redeploy / Rollback VPS**
+  run is in progress (`deploy.sh` takes no lock). If it exits non-zero, its last lines name the case;
   `docs/AUTOMATION_COOLDOWN.md` § Responding to a `LinkedInEgressDown` escalation, under Rollback,
   says what each one leaves running and what to do. To undo the switch, delete the line
   from `/opt/lem/.env` and run the same command again. Reverting the PR removes the fields; a
