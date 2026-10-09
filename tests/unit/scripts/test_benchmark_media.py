@@ -311,6 +311,21 @@ class TestRosterAndSpend:
         assert media.spend_refusal(plan, 5.0) is None
         assert "exceeds the $0.10 cap" in media.spend_refusal(plan, 0.10)
 
+    def test_the_committed_roster_fits_the_default_cap(self):
+        # #2257: 21 fixtures put the committed roster's ceiling at ~$1.97 of the $2.00 default.
+        # The monthly model_eval_loop run passes no --max-spend-usd, so a fixture or roster change
+        # that crosses the cap would refuse that run every month - fail it here instead.
+        import provider_model_scan as pms
+        deployments = mhc.parse_deployments(mhc.load_config_text(
+            (_ROOT / ".litellm" / "config.yaml").read_text()))
+        prices = json.loads((_ROOT / media.DEFAULT_PRICES).read_text())["models"]
+        snapshot = pms.load_provider_snapshot((_ROOT / media.DEFAULT_PROVIDER_SNAPSHOT).read_text())
+        roster = media.resolve_roster(deployments, ["lem-vision", "lem-image"],
+                                      provider_snapshot=snapshot)
+        judge = media.tier_deployments(deployments, "lem-vision")[0]
+        plan = media.plan_spend(roster, prices, judge_model=judge)
+        assert media.spend_refusal(plan, media.DEFAULT_MAX_SPEND_USD) is None, plan
+
     def test_an_unpriced_model_refuses_the_whole_plan(self):
         roster = {"lem-image": {"champion": "gpt-image-9", "candidates": []},
                   "lem-vision": {"champion": "mystery", "candidates": []}}
