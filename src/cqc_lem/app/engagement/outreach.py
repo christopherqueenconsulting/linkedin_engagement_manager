@@ -652,6 +652,9 @@ _RECOMMENDATION_RENDER_ATTEMPTS = 5
 # Mentions notifications — the closest thing LinkedIn exposes to "we did something together":
 # somebody put this user's name in their own post or comment.
 _MENTIONS_URL = "https://www.linkedin.com/notifications/?filter=mentions"
+# Same render poll as `_RECOMMENDATION_RENDER_ATTEMPTS`, for the same reason: an early empty paint of
+# an SDUI feed reads exactly like a month with no mentions (#2135).
+_MENTION_RENDER_ATTEMPTS = 5
 _MENTION_CARD_LOCATORS = [
     (By.CSS_SELECTOR, "main article[data-view-name='notification-card']"),
     (By.CSS_SELECTOR, "main div[data-view-name='notification-card']"),
@@ -1003,13 +1006,25 @@ def get_recent_collaborators(driver, wait, user_id: int = None) -> dict[str, str
     wait_for_ajax(driver)
     time.sleep(random.uniform(2, 4))
 
-    cards = _mention_cards(driver, user_id)
+    # #2135: the feed paints asynchronously, so one read races the render. Production read once and
+    # never resolved a card after #2074 shipped, though the probe (which waits longer) did; the one
+    # day the sentences painted between the walk and its cross-check, that read as drift. So poll
+    # like the recommendations page does, and grade only the LAST read — both halves from one paint.
+    cards: list = []
+    page_native: "int | None" = None
+    for attempt in range(_MENTION_RENDER_ATTEMPTS):
+        cards = _mention_cards(driver, user_id)
+        if cards:
+            break
+        page_native = _mentions_page_native_count(driver, user_id)
+        if attempt + 1 < _MENTION_RENDER_ATTEMPTS:
+            time.sleep(2)
     if not cards:
         # #1374: zero cards is not "no mentions" until the page agrees. Grade it against the page's
         # own sentences — evidence no rung of the card chain depends on — so a rotated wrapper
         # reads as drift (WARNING) instead of another quiet day, and a genuinely empty feed still
         # logs DEBUG. Unreadable grounds nothing either way.
-        _grade_zero_walk(_mentions_page_native_count(driver, user_id), "Mention card walk",
+        _grade_zero_walk(page_native, "Mention card walk",
                          user_id=user_id, action_type="scrape", url=_MENTIONS_URL)
         return {}
 

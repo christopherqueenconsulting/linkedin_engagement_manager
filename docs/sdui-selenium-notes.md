@@ -320,6 +320,16 @@ once, so only an **exhausted** chain means "no cards", and that answer is still 
 page's own sentences (`_grade_zero_walk`) rather than believed. `<main>` first with a `<body>`
 fallback, mirroring the cross-check, because that asymmetry alone read as drift in #1985.
 
+**The feed is polled until it paints (#2135).** The climb shipped in v0.179.0 and production still
+never resolved a card: on every run since, the lane logged no `Found N collaboration mention(s)`
+line, while the probe resolved the same feed's card. The probe sleeps 5s before it reads;
+`get_recent_collaborators` read ONCE after `wait_for_ajax` and 2–4s, so the lazy-column feed was
+still empty and both the walk and its cross-check read zero, a quiet day at DEBUG. On 2026-09-29
+the sentences painted between the walk and the cross-check, which graded as drift on 3 runs in a
+row. It now re-reads up to `_MENTION_RENDER_ATTEMPTS` (5) times, 2s apart, like
+`_RECOMMENDATION_RENDER_ATTEMPTS`, and grades a zero only off the LAST read, so the walk and its
+cross-check always come from the same paint.
+
 The probe is piped into a worker running the DEPLOYED image, so — as with the recommendations read
 — it drives `_mention_cards` when the running image has it and an identical carried copy when it
 does not, naming which in `card_source`. Each mention row also reports `age_read_from`, the exact
