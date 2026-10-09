@@ -607,10 +607,12 @@ SURFACES = (
     {"key": "profile_experiences", "surface": "Profile experience rows (/details/experience/)",
      "code": "scrapper.parse_profile_experiences", "flag": "--profile-experiences",
      "arg": "<profile-url>", "sweep": True},
-    {"key": "connect_dialog", "surface": "Connect invite dialog (custom-invite URL route)",
+    {"key": "connect_dialog",
+     "surface": "Connect invite entry points (top-card Connect / More menu / custom-invite anchor)",
      "code": "engagement.invites._open_connect_invite_dialog", "flag": "--connect-dialog",
      "arg": "<profile-url>", "sweep": True,
-     "resolver": "_resolve_connect_dialog_target (engagement_targets, connected/pending only)"},
+     "resolver": "_resolve_connect_dialog_target (engagement_targets, connected/pending first, "
+                 "then any active roster target)"},
     {"key": "catchup_cards", "surface": "Catch-up moment cards",
      "code": "engagement.outreach._CATCHUP_CARD_LOCATORS + "
              "_CATCHUP_SUGGESTED_TEXT_LOCATORS/_CATCHUP_MESSAGE_TRIGGER_LOCATORS (#1774)",
@@ -3752,34 +3754,52 @@ def probe_more_menu_items(driver, wait, sleep=time.sleep) -> dict:
     return reading
 
 
-def connect_dialog_state(reading: Optional[dict]) -> str:
-    """Three-state grade for one connect-dialog read. The page's own words are the cross-check: a
-    profile that rendered and offers no dialog is drift UNLESS it says an invite is already pending,
-    or names an account-level limit — neither profile can ground this route, and grading either one
-    drift would file an issue for working behaviour.
+def connect_entry_points(reading: Optional[dict]) -> list:
+    """Which of production's own entry points into the Connect dialog resolved on the profile page.
 
-    The "did it render at all" check reads `invite_page_text` — the custom-invite URL's OWN text,
-    captured before `probe_connect_dialog` backfills the merged `page_text` from the profile page
-    it visits next. That backfill makes `page_text` non-empty on almost every run (the profile page
-    is the one page in this flow that reliably renders), so checking `page_text` here could never
-    see the URL route come back blank (issue #1807: a `driver.get` of the custom-invite URL is a
-    known-dead legacy fallback, `docs/sdui-selenium-notes.md` — it renders NOTHING, not a
-    rotated dialog selector, and every route production actually uses to open this dialog is a
-    CLICK the read-only guard refuses). Falls back to `page_text` for callers/fixtures that never
-    set `invite_page_text` (readings captured before this field existed).
+    Resolved, never clicked: the direct top-card Connect control (#1734), the More menu (production's
+    fallback, routes 2-3), and any `custom-invite` anchor already in the DOM. These are the controls
+    the invite lane actually clicks, so they are what a read-only sweep can grade (#2224).
+    """
+    reading = dict(reading or {})
+    found = []
+    if reading.get("direct_connect_present"):
+        found.append("direct_connect")
+    if reading.get("more_menu_present"):
+        found.append("more_menu")
+    if reading.get("custom_invite_anchors") or reading.get("custom_invite_anchors_menu_open"):
+        found.append("custom_invite_anchor")
+    return found
+
+
+def _profile_rendered_owner(reading: dict) -> bool:
+    owner = _norm_person(reading.get("owner_name"))
+    return bool(owner) and owner != "linkedin"
+
+
+def connect_dialog_state(reading: Optional[dict]) -> str:
+    """Three-state grade for one connect-dialog read (#2224).
+
+    `ok` when the dialog itself rendered (a manual `--connect-dialog` run can still see that) or when
+    any of production's entry points into it resolved on the profile page (`connect_entry_points`).
+    The custom-invite URL's own render (`invite_page_text`) is evidence only: that `driver.get` is the
+    known-dead route-4 fallback (#1807, `docs/sdui-selenium-notes.md`) and renders nothing, and every
+    route production actually uses is a CLICK the read-only guard refuses — so grading the URL route
+    left this surface `unknown` every week.
+
+    `drift` only when the profile rendered its owner and none of the entry points resolved. A profile
+    that never rendered, an invite already pending, a 1st-degree connection (no Connect on offer) or
+    an account-level wall grounds nothing about selectors and stays `unknown`.
 
     Deliberately still THREE states. `scripts/sdui_drift_issues.py` files only on `drift`, so the
     grade is a contract with the weekly sweep, not a description.
     """
     reading = dict(reading or {})
-    if reading.get("dialog_present"):
+    if reading.get("dialog_present") or connect_entry_points(reading):
         return STATE_OK
-    invite_text = reading.get("invite_page_text")
-    if invite_text is None:
-        invite_text = reading.get("page_text")
-    if not str(invite_text or "").strip():
+    if not _profile_rendered_owner(reading):
         return STATE_UNKNOWN
-    if reading.get("invite_pending"):
+    if reading.get("invite_pending") or reading.get("first_degree"):
         return STATE_UNKNOWN
     if reading.get("restriction"):
         # An account LinkedIn has walled grounds nothing about selectors: every profile reads the
@@ -3795,7 +3815,7 @@ def connect_dialog_verdict(reading: Optional[dict]) -> str:
     tail = (f" WARNING: {len(hazards)} 'Invite … to connect' control(s) on this page name someone "
             f"else ({hazards[:3]}) — never click one." if hazards else "")
     state = connect_dialog_state(reading)
-    if state == STATE_OK:
+    if state == STATE_OK and reading.get("dialog_present"):
         # An absent note affordance is NOT drift on its own — a spent personalized-invite quota
         # hides it, and production treats that as the expected bare-invite fallback (#1039). It is
         # reported here because this probe is the only place the two readings can be told apart.
@@ -3805,32 +3825,35 @@ def connect_dialog_verdict(reading: Optional[dict]) -> str:
                 "personalized invites left."
                 if reading.get("note_affordance_present") is False else "")
         return f"the custom-invite URL rendered the Connect dialog's own controls.{note}{tail}"
+    if state == STATE_OK:
+        return (f"production's entry point(s) into the Connect dialog resolved on the profile page "
+                f"({', '.join(connect_entry_points(reading))}) — resolved, never clicked; the dialog "
+                f"itself stays unit-tested (#2224).{tail}")
+    if not _profile_rendered_owner(reading):
+        return (f"the profile page never rendered its owner, so no entry point can be graded — "
+                f"re-run against a profile that loads.{tail}")
     if reading.get("invite_pending"):
-        return (f"an invite is already pending for this profile, so no dialog renders — this "
+        return (f"an invite is already pending for this profile, so no Connect is on offer — this "
                 f"reading grounds nothing; probe a profile with no outstanding invite.{tail}")
+    if reading.get("first_degree"):
+        return (f"this profile is already a 1st-degree connection, so no Connect is on offer — this "
+                f"reading grounds nothing.{tail}")
     if reading.get("restriction"):
         return (f"the page names an ACCOUNT-level wall ({reading['restriction']}): "
                 f"{str(reading.get('restriction_copy') or '')[:200]!r}. This is not selector rot and "
                 f"no locator should be changed on this reading — the invite lane should HOLD until "
                 f"it clears.{tail}")
-    invite_text = reading.get("invite_page_text")
-    if invite_text is None:
-        invite_text = reading.get("page_text")
-    if not str(invite_text or "").strip():
-        return (f"the custom-invite URL rendered nothing — the known-dead route-4 legacy fallback "
-                f"(docs/sdui-selenium-notes.md), not selector rot; no route this probe can drive "
-                f"(every click route the invite lane uses is a commit-labeled control the read-only "
-                f"guard refuses) opened the dialog, so `dialog_present: true` is not obtainable here. "
-                f"Re-run only confirms the same thing.{tail}")
-    return (f"the page rendered but no Connect dialog control resolved — re-ground "
-            f"_CONNECT_DIALOG_LOCATORS from `visible_controls`.{tail}")
+    return (f"the profile rendered its owner but none of the direct Connect control, the More menu "
+            f"or a custom-invite anchor resolved — re-ground _PROFILE_CONNECT_BUTTON_XPATH / "
+            f"_PROFILE_MORE_MENU_LOCATORS from `top_card_controls`.{tail}")
 
 
 def probe_connect_dialog(driver, profile_url: str, sleep=time.sleep,
                          open_more_menu: bool = False) -> dict:
     """#1012/#1013: navigate the custom-invite URL for `profile_url` and report whether the Connect
     dialog's own controls render, plus every 'Invite … to connect' control the PROFILE page carries
-    and which of them name somebody else.
+    and which of them name somebody else. The grade comes from production's entry points on the
+    profile page (`connect_entry_points`, #2224); the URL render is evidence only.
 
     STRICTLY read-only — it never clicks Send, never clicks an Invite control, and never opens the
     More menu. That is the whole point: this surface's last drift sent ~20 connection requests to
@@ -3925,7 +3948,8 @@ def probe_connect_dialog(driver, profile_url: str, sleep=time.sleep,
                     "more_menu_present": more_menu is not None,
                     "invite_controls": invite_control_names(profile_controls),
                     "rail_hazards": rail_invite_hazards(profile_controls, owner_name),
-                    "invite_pending": bool(_CONNECT_PENDING_RE.search(profile_text or ""))})
+                    "invite_pending": bool(_CONNECT_PENDING_RE.search(profile_text or "")),
+                    "first_degree": _first_degree_reading(driver)})
     # `page_text` is backfilled from the profile page for the general "did SOMETHING render" checks
     # (`invite_pending`, `restriction`) other callers read off it. `invite_page_text` above is left
     # untouched by this backfill — it is the ONLY field that can tell "the custom-invite URL itself
@@ -3947,6 +3971,15 @@ def probe_connect_dialog(driver, profile_url: str, sleep=time.sleep,
         start = max(0, hit.start() - 80)
         reading["restriction_copy"] = merged_copy[start:hit.end() + 120]
     return graded(reading, connect_dialog_state(reading), connect_dialog_verdict(reading))
+
+
+def _first_degree_reading(driver) -> bool:
+    """Production's own 1st-degree read (`_profile_is_first_degree`), failing to False like it does."""
+    try:
+        from cqc_lem.app.engagement.invites import _profile_is_first_degree
+        return bool(_profile_is_first_degree(driver))
+    except Exception:
+        return False
 
 
 def _page_owner_name(driver) -> str:
@@ -6938,21 +6971,26 @@ def _resolve_roster_target(user_id: int) -> tuple:
 
 
 def _resolve_connect_dialog_target(user_id: int) -> tuple:
-    """Prefer a roster target the account is ALREADY connected to or has a pending invite with, so
-    the connect dialog can be opened and read without a real invitation ever being on offer (#1770).
-    A target with no connect state on file is never used here — only a probe run by a human with an
-    explicit `--connect-dialog <url>` takes that risk knowingly.
+    """Prefer a roster target the account is ALREADY connected to or has a pending invite with
+    (#1770), then fall back to any active roster target with a profile URL (#2224).
+
+    The fallback is safe because the probe runs under `install_read_only_guard`, which refuses any
+    click on a Connect/Invite/Send control and any typing, with no override — the same basis
+    `roster_connect` and `roster_follow` already use. Without it the roster never offered a target:
+    `connect_status` is only written by the #979 escalation path.
     """
     try:
         from cqc_lem.utilities.db import get_engagement_targets
-        targets = get_engagement_targets(user_id, active_only=True) or []
+        targets = [t for t in (get_engagement_targets(user_id, active_only=True) or [])
+                   if t.get("profile_url")]
     except Exception:
         targets = []
-    safe = [t for t in targets if t.get("profile_url")
-            and t.get("connect_status") in ("connected", "requested")]
+    safe = [t for t in targets if t.get("connect_status") in ("connected", "requested")]
     if safe:
         return safe[0]["profile_url"], f"engagement_targets (connect_status={safe[0]['connect_status']})"
-    return None, "no roster target already connected or pending — declining to risk a real invite"
+    if targets:
+        return targets[0]["profile_url"], "engagement_targets (active roster, read-only guard)"
+    return None, "no active roster target with a profile URL"
 
 
 def _resolve_message_thread_target(user_id: int) -> tuple:

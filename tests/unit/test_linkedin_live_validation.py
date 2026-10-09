@@ -2084,18 +2084,35 @@ class TestSweepTargetResolution:
         assert target == "https://www.linkedin.com/in/pending/"
         assert "requested" in source
 
-    def test_connect_dialog_target_is_none_with_no_connected_or_pending_target(self, monkeypatch):
-        """A roster full of strangers must never be used to ground this probe.
+    def test_connect_dialog_falls_back_to_any_active_roster_target(self, monkeypatch):
+        """#2224: any active roster target may be read once none is connected or pending.
 
-        Declining is the correct read here, not falling back to whoever is first on the list.
+        `connect_status` is only written by the #979 escalation, so connected/pending-only resolved
+        nothing every week. The read-only guard, not the choice of profile, is what keeps a real
+        invite off the table.
         """
         monkeypatch.setattr(
             "cqc_lem.utilities.db.get_engagement_targets",
             lambda uid, active_only=False: [
+                {"profile_url": "", "connect_status": "requested"},
                 {"profile_url": "https://www.linkedin.com/in/stranger/", "connect_status": "unknown"}])
+        target, source = llv._resolve_connect_dialog_target(1)
+        assert target == "https://www.linkedin.com/in/stranger/"
+        assert "read-only guard" in source
+
+    def test_connect_dialog_target_is_none_with_no_roster_profile(self, monkeypatch):
+        monkeypatch.setattr("cqc_lem.utilities.db.get_engagement_targets",
+                            lambda uid, active_only=False: [{"profile_url": ""}])
         target, reason = llv._resolve_connect_dialog_target(1)
         assert target is None
-        assert "declining to risk a real invite" in reason
+        assert "no active roster target" in reason
+
+    def test_connect_dialog_target_is_none_when_the_roster_read_fails(self, monkeypatch):
+        def boom(uid, active_only=False):
+            raise RuntimeError("db down")
+
+        monkeypatch.setattr("cqc_lem.utilities.db.get_engagement_targets", boom)
+        assert llv._resolve_connect_dialog_target(1)[0] is None
 
     def test_message_thread_target_reads_the_most_recent_followup(self, monkeypatch):
         monkeypatch.setattr(
@@ -2170,7 +2187,7 @@ class TestSweepTargetResolution:
     def test_run_sweep_grades_unknown_when_nothing_resolves(self, monkeypatch):
         monkeypatch.setattr(llv, "resolve_sweep_targets", lambda user_id: {
             "connect_dialog": {"target": None, "source": None, "resolved": False,
-                              "reason": "no roster target already connected or pending"}})
+                              "reason": "no active roster target with a profile URL"}})
         report = llv.run_sweep(MagicMock(), 1, keys=["connect_dialog"], session_state="signed_in")
         assert report["probes"]["connect_dialog"]["state"] == llv.STATE_UNKNOWN
         assert report["summary"]["drift"] == []
@@ -2201,41 +2218,56 @@ class TestConnectDialogProbe:
         assert llv.invite_control_names(["Invite A B to connect", "Follow", None]) == ["A B"]
 
     def test_a_pending_invite_grounds_nothing_rather_than_reading_as_drift(self):
-        reading = {"dialog_present": False, "page_text": "Pending", "invite_pending": True}
+        reading = {"dialog_present": False, "page_text": "Pending", "invite_pending": True,
+                   "owner_name": "Jane Doe"}
         assert llv.connect_dialog_state(reading) == llv.STATE_UNKNOWN
         assert "already pending" in llv.connect_dialog_verdict(reading)
 
-    def test_a_rendered_profile_with_no_dialog_is_drift(self):
-        reading = {"dialog_present": False, "page_text": "About Experience", "invite_pending": False}
+    def test_a_first_degree_profile_grounds_nothing_rather_than_reading_as_drift(self):
+        reading = {"dialog_present": False, "owner_name": "Jane Doe", "first_degree": True}
+        assert llv.connect_dialog_state(reading) == llv.STATE_UNKNOWN
+        assert "1st-degree" in llv.connect_dialog_verdict(reading)
+
+    def test_a_rendered_profile_with_no_entry_point_is_drift(self):
+        """#2224: the owner rendered and none of production's entry points resolved."""
+        reading = {"dialog_present": False, "page_text": "About Experience", "invite_pending": False,
+                   "owner_name": "Jane Doe", "direct_connect_present": False,
+                   "more_menu_present": False, "custom_invite_anchors": []}
         assert llv.connect_dialog_state(reading) == llv.STATE_DRIFT
+        assert "_PROFILE_MORE_MENU_LOCATORS" in llv.connect_dialog_verdict(reading)
 
-    def test_a_blank_invite_url_render_grounds_nothing_rather_than_reading_as_drift(self):
-        """#1807: a blank custom-invite render must grade `unknown`, never `drift`.
+    def test_a_profile_that_never_rendered_its_owner_is_unknown(self):
+        for owner in ("", "LinkedIn"):
+            reading = {"dialog_present": False, "owner_name": owner}
+            assert llv.connect_dialog_state(reading) == llv.STATE_UNKNOWN
+            assert "never rendered its owner" in llv.connect_dialog_verdict(reading)
 
-        `probe_connect_dialog` backfills `page_text` from the profile page it visits AFTER the
-        custom-invite URL, so `page_text` is almost never empty even when the URL route itself (the
-        known-dead legacy fallback) rendered nothing. The state check must read `invite_page_text`
-        — the URL route's OWN, un-backfilled render — or a blank custom-invite page always misreads
-        as selector drift.
+    @pytest.mark.parametrize("field,value,named", [
+        ("direct_connect_present", True, "direct_connect"),
+        ("more_menu_present", True, "more_menu"),
+        ("custom_invite_anchors", ["/preload/custom-invite/?vanityName=jane"], "custom_invite_anchor"),
+        ("custom_invite_anchors_menu_open", ["/preload/custom-invite/?vanityName=jane"],
+         "custom_invite_anchor"),
+    ])
+    def test_any_resolved_entry_point_grades_ok(self, field, value, named):
+        """#2224: the entry points production clicks are what a read-only sweep can grade."""
+        reading = {"dialog_present": False, "invite_page_text": "", "owner_name": "Jane Doe",
+                   field: value}
+        assert llv.connect_dialog_state(reading) == llv.STATE_OK
+        verdict = llv.connect_dialog_verdict(reading)
+        assert named in verdict
+        assert "never clicked" in verdict
+
+    def test_a_blank_invite_url_render_is_evidence_not_the_grade(self):
+        """#1807/#2224: a blank custom-invite render no longer decides the grade either way.
+
+        That URL is the known-dead route 4 and renders nothing; the profile's entry points decide.
         """
         reading = {"dialog_present": False, "invite_page_text": "",
                    "page_text": "Nikunj Bajaj · 2nd Co-founder & CEO at TrueFoundry",
-                   "invite_pending": False}
-        assert llv.connect_dialog_state(reading) == llv.STATE_UNKNOWN
-        verdict = llv.connect_dialog_verdict(reading)
-        assert "known-dead" in verdict
-        assert "_CONNECT_DIALOG_LOCATORS" not in verdict
-
-    def test_a_rendered_invite_url_with_no_dialog_is_still_drift(self):
-        """The blank-URL carve-out must not swallow genuine drift.
-
-        When the custom-invite URL DOES render something (`invite_page_text` non-empty) but no
-        dialog control resolves, that is still selector rot.
-        """
-        reading = {"dialog_present": False, "invite_page_text": "Send an invitation to connect",
-                   "page_text": "Send an invitation to connect", "invite_pending": False}
-        assert llv.connect_dialog_state(reading) == llv.STATE_DRIFT
-        assert "_CONNECT_DIALOG_LOCATORS" in llv.connect_dialog_verdict(reading)
+                   "owner_name": "Nikunj Bajaj", "direct_connect_present": True,
+                   "more_menu_present": True, "invite_pending": False}
+        assert llv.connect_dialog_state(reading) == llv.STATE_OK
 
     def test_the_verdict_carries_the_hazard_even_when_the_dialog_opened(self):
         reading = {"dialog_present": True, "page_text": "x", "rail_hazards": ["Bob Smith"]}
@@ -2271,6 +2303,7 @@ class TestConnectDialogProbe:
         monkeypatch.setattr(llv, "page_text_sample", lambda d, **k: page_text)
         monkeypatch.setattr(llv, "visible_button_labels", lambda d, **k: [])
         monkeypatch.setattr(llv, "_page_owner_name", lambda d: "Jane Doe")
+        monkeypatch.setattr(llv, "_first_degree_reading", lambda d: False)
         reading = llv.probe_connect_dialog(driver, "https://www.linkedin.com/in/jane/",
                                            sleep=lambda *_: None)
         return reading, looked_up
@@ -2298,32 +2331,42 @@ class TestConnectDialogProbe:
         assert "Add a note button" not in looked_up
         assert "Add-a-note" not in reading["verdict"]
 
-    def test_a_blank_custom_invite_url_grades_unknown_even_though_the_profile_page_renders(
-            self, monkeypatch):
-        """#1807: a blank URL read followed by a rendered profile read must still grade `unknown`.
+    def _live_shape(self, monkeypatch, present: set[str]):
+        """The 2026-10-09 live reading on #2224.
 
-        The probe navigates the custom-invite URL first, then the profile — this test makes the
-        FIRST read blank (the known-dead route-4 render) and the SECOND non-blank (the profile,
-        which almost always renders), the exact shape that used to misread as drift.
+        The custom-invite URL renders a blank document, then the profile renders — and production's
+        entry points are resolved there, never clicked.
         """
         driver = MagicMock()
         driver.current_url = "https://www.linkedin.com/preload/custom-invite/?vanityName=jane"
         page_texts = iter(["", "Jane Doe · 2nd  About Experience"])
 
-        monkeypatch.setattr("cqc_lem.utilities.selenium_util.find_first", lambda *a, **k: None)
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.find_first",
+                            lambda _d, _w, _l, label, **k: MagicMock() if label in present else None)
+        monkeypatch.setattr(llv, "element_evidence", lambda el: "aria-label=Connect")
         monkeypatch.setattr(llv, "page_text_sample", lambda d, **k: next(page_texts))
         monkeypatch.setattr(llv, "page_copy_sections",
                             lambda d, **k: {"main": "", "body": "", "dialog": ""})
         monkeypatch.setattr(llv, "visible_button_labels", lambda d, **k: [])
         monkeypatch.setattr(llv, "_page_owner_name", lambda d: "Jane Doe")
+        monkeypatch.setattr(llv, "_first_degree_reading", lambda d: False)
+        return llv.probe_connect_dialog(driver, "https://www.linkedin.com/in/jane/",
+                                        sleep=lambda *_: None)
 
-        reading = llv.probe_connect_dialog(driver, "https://www.linkedin.com/in/jane/",
-                                           sleep=lambda *_: None)
-
+    def test_a_blank_custom_invite_url_still_grades_ok_on_the_profiles_entry_points(
+            self, monkeypatch):
+        """#2224 acceptance: the live shape grades `ok`, not `unknown`, so the surface is measured."""
+        reading = self._live_shape(monkeypatch, {"Profile Connect button", "Profile More menu"})
         assert reading["invite_page_text"] == ""
         assert reading["page_text"] == "Jane Doe · 2nd  About Experience"
-        assert reading["state"] == llv.STATE_UNKNOWN
-        assert "known-dead" in reading["verdict"]
+        assert reading["direct_connect_present"] is True
+        assert reading["first_degree"] is False
+        assert reading["state"] == llv.STATE_OK
+        assert "direct_connect, more_menu" in reading["verdict"]
+
+    def test_a_rendered_profile_with_no_entry_point_grades_drift(self, monkeypatch):
+        reading = self._live_shape(monkeypatch, set())
+        assert reading["state"] == llv.STATE_DRIFT
 
 
 @pytest.mark.unit
@@ -4879,18 +4922,18 @@ class TestInviteLimitSignal:
 
     def test_a_restricted_reading_is_unknown_never_drift(self):
         reading = {"dialog_present": False, "page_text": "some copy", "invite_pending": False,
-                   "restriction": "weekly_limit"}
+                   "owner_name": "Jane Doe", "restriction": "weekly_limit"}
         assert llv.connect_dialog_state(reading) == llv.STATE_UNKNOWN
 
     def test_the_same_reading_without_the_wall_is_drift(self):
         reading = {"dialog_present": False, "page_text": "some copy", "invite_pending": False,
-                   "restriction": ""}
+                   "owner_name": "Jane Doe", "restriction": ""}
         assert llv.connect_dialog_state(reading) == llv.STATE_DRIFT
 
     def test_the_verdict_says_it_grounds_no_selector(self):
         verdict = llv.connect_dialog_verdict(
             {"dialog_present": False, "page_text": "x", "restriction": "weekly_limit",
-             "restriction_copy": "weekly invitation limit"})
+             "owner_name": "Jane Doe", "restriction_copy": "weekly invitation limit"})
         assert "not selector rot" in verdict
         assert "weekly_limit" in verdict
 
@@ -5033,3 +5076,17 @@ class TestCardUrnEvidence:
         assert llv._PROBE_CAPABILITY_SYMBOLS["group_feed_composer.urn_evidence"] == \
             "card_urn_evidence"
         assert "group_feed_composer.urn_evidence" in llv.probe_script_reading()["capabilities"]
+
+
+@pytest.mark.unit
+class TestFirstDegreeReading:
+    def test_it_is_productions_own_read(self, monkeypatch):
+        monkeypatch.setattr("cqc_lem.app.engagement.invites._profile_is_first_degree", lambda d: True)
+        assert llv._first_degree_reading(MagicMock()) is True
+
+    def test_a_failed_read_is_false_like_production(self, monkeypatch):
+        def boom(_driver):
+            raise RuntimeError("stale")
+
+        monkeypatch.setattr("cqc_lem.app.engagement.invites._profile_is_first_degree", boom)
+        assert llv._first_degree_reading(MagicMock()) is False

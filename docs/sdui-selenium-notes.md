@@ -457,6 +457,16 @@ always fell through to `drift`. Fixed by capturing the URL route's OWN text unde
 reads `unknown` (`"the custom-invite URL rendered nothing — the known-dead route-4 legacy
 fallback…"`), live-reconfirmed on both `nikunj-bajaj-10476824` and `johnwinner`.
 
+That fix made the grade honest but left the surface unmeasured: three weekly sweeps in a row read
+`unknown` (#2224) — first because the resolver found no target (`connect_status` is only written by
+the #979 escalation), and behind that because a blank route-4 render is all a read-only probe can
+reach. The sweep now grades the **entry points** production clicks, resolved never clicked: the
+direct top-card Connect control, the More menu, or a `custom-invite` anchor (`connect_entry_points`).
+The URL render stays in the reading as evidence. `drift` needs a profile that rendered its owner with
+none of the three, and that is neither 1st-degree, pending nor walled. The resolver falls back to any
+active roster target, because the read-only guard — not which profile is visited — is what keeps a
+real invite off the table.
+
 ### The Connect dialog has an email-verification variant, and only its PROSE differs (#1836)
 
 For a subset of targets LinkedIn will not accept the invite without the recipient's email address.
