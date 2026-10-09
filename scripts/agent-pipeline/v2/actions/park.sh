@@ -116,6 +116,14 @@ case "$REASON" in
   work_shipped_needs_close|approach_rejected) REC="C" ;;
   human_hold_unasked) REC="A" ;;
 esac
+# Option C is a human action, not an answer: `unpark.sh` has no close path (docs/agent-pipeline-v2.md),
+# so ANY reply — `1C` included — un-parks and re-queues. When C is the recommendation the comment
+# therefore asks for the close itself, never for a reply.
+if [ "$REC" = "C" ]; then
+  REC_LINE="**My recommendation: close this ${KIND} by hand (option C).** To retry instead, reply with the question number and letter — e.g. \`1B\`."
+else
+  REC_LINE="**My recommendation: \`1${REC}\`.** Reply with the question number and letter — e.g. \`1B\` — or \`ok\` to take the recommendation."
+fi
 MARK=" ✅ *recommended*"
 A_MARK=""; B_MARK=""; C_MARK=""
 case "$REC" in
@@ -131,9 +139,11 @@ ${DETAIL:-The automated lane exhausted its budget for this work and stopped rath
 ### 1. How should we proceed?
 - **A. Try again as-is** — I have fixed the underlying problem.${A_MARK}
 - **B. Rebase onto latest main and retry** — main has moved since this was last attempted.${B_MARK}
-- **C. Close this** — I will handle it manually.${C_MARK}
+- **C. I will close it by hand** — close this ${KIND} yourself; no reply is needed.${C_MARK}
 
-**My recommendation: \`1${REC}\`.** Reply with the question number and letter — e.g. \`1B\` — or \`ok\` to take the recommendation. (A bare \`B\` is NOT recognised as an answer; the answer lane needs the number.)"
+${REC_LINE} (A bare \`B\` is NOT recognised as an answer; the answer lane needs the number.)
+
+A reply never closes anything. \`1C\` reads like any other answer: it releases the hold and puts the work back in the queue. To close, close the ${KIND} by hand."
 
 if [ "$KIND" = "pr" ]; then
   gh pr comment "$NUMBER" --repo "$SLUG" --body "$BODY" >/dev/null 2>&1

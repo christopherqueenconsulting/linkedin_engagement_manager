@@ -371,6 +371,13 @@ the retry options genuinely cannot move it, and the detail says so (`PARK_DETAIL
   number, not the whole issue — a later approach that is also closed without merging parks again, on
   its own (undismissed) PR number, so this cannot become a silent loop from the other direction.
 
+**Option C is a human action, not an answer.** `unpark.sh` has no close path, so every actionable
+reply — `1C` included — un-parks and re-queues exactly as `1A` does. The menu therefore says
+"I will close it by hand … no reply is needed", and when `park.sh` recommends C
+(`work_shipped_needs_close`, `approach_rejected`) its recommendation line asks the owner to close the
+item, never to reply. Closing stays a human call, which is why the fix was the wording and not a
+close path.
+
 ### PR lanes, cheapest-to-unblock first
 
 | # | Condition | Action | Reason | Wake |
