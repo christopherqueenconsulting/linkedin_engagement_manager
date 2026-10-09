@@ -920,14 +920,39 @@ def render_report(run: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+_NOT_MEASURED = "—"
+
+
+def _leaderboard_contract(metrics: dict[str, Any]) -> str:
+    """The contract cell, carrying the no-output count the rate itself cannot see.
+
+    A sample with no output is outside the contract denominator, so 5 valid of 40 read as a bare
+    `1.0` while the verdict says fail.
+    """
+    rate = metrics.get("contract_rate")
+    cell = _NOT_MEASURED if rate is None else str(rate)
+    errors = metrics.get("errors") or 0
+    return f"{cell} (+{errors} no output)" if errors else cell
+
+
 def leaderboard_rows(run: dict[str, Any]) -> list[dict[str, Any]]:
-    """Rows for the shared `bm.update_leaderboard` table, one per prompt × model."""
-    return [{"date": run["date"], "run_id": run["run_id"], "tier": f"{r['prompt_id']}@{r['version']}",
-             "model": r["model"], "role": r["role"],
-             "contract": r["metrics"].get("contract_rate"),
-             "deterministic": r["metrics"].get("first_draft_rate"),
-             "judge": r["metrics"].get("judge_rate"), "latency": None,
-             "verdict": r["verdict"]} for r in run["results"]]
+    """Rows for the shared `bm.update_leaderboard` table, one per prompt × model.
+
+    Prompt evals measure no latency and a judge only scores calibrated rubrics, so those cells read
+    `—` rather than Python's `None`.
+    """
+    rows = []
+    for r in run["results"]:
+        m = r["metrics"]
+        first = m.get("first_draft_rate")
+        judge = m.get("judge_rate")
+        rows.append({"date": run["date"], "run_id": run["run_id"],
+                     "tier": f"{r['prompt_id']}@{r['version']}", "model": r["model"],
+                     "role": r["role"], "contract": _leaderboard_contract(m),
+                     "deterministic": _NOT_MEASURED if first is None else first,
+                     "judge": _NOT_MEASURED if judge is None else judge,
+                     "latency": _NOT_MEASURED, "verdict": r["verdict"]})
+    return rows
 
 
 def failing_prompts(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -970,7 +995,7 @@ def index_run_docs(index: pathlib.Path, readme: pathlib.Path, report: pathlib.Pa
     """Link the leaderboard README and one run report from the doc index.
 
     `docs/README.md` must link every tracked doc (the CM013 guard in
-    `scripts/check_claude_md_size.py`), and every results PR adds a report. The lines go at the end
+    `scripts/check_claude_md_size.py`), and a run written to `docs/prompt-evals/` adds a report. The lines go at the end
     of the block that follows the inventory's own line, so runs read oldest first. When that anchor
     is missing the index is left alone and the guard names the unlinked file.
 

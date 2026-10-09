@@ -859,3 +859,18 @@ class TestIndexRunDocs:
         monkeypatch.setattr(bp, "DOC_INDEX", index)
         bp.write_outputs(run, readme.parent)
         assert "](prompt-evals/2026-10-12-pe-9.md)" in index.read_text(encoding="utf-8")
+
+
+def test_leaderboard_cells_show_no_output_and_never_print_none():
+    run = {"run_id": "pe-3", "date": "2026-10-12", "results": [
+        {"prompt_id": "p.cls", "version": 2, "model": "m", "role": "champion", "verdict": "fail",
+         "metrics": {"contract_rate": 1.0, "first_draft_rate": 1.0, "errors": 35}},
+        {"prompt_id": "p.cls", "version": 2, "model": "n", "role": "fallback", "verdict": "pass",
+         "metrics": {"contract_rate": 0.975, "first_draft_rate": None, "judge_rate": 0.9}}]}
+
+    first, second = bp.leaderboard_rows(run)
+
+    assert first["contract"] == "1.0 (+35 no output)"
+    assert first["judge"] == first["latency"] == second["deterministic"] == "—"
+    assert second["contract"] == "0.975" and second["judge"] == 0.9
+    assert "None" not in bm.update_leaderboard("", [first, second])
