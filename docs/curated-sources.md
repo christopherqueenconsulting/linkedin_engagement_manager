@@ -110,8 +110,12 @@ the publisher by name (`third_person_vendor`). The author's own "our clients", "
 built" is never touched.
 
 Every `/rest/posts` commentary on this path is escaped with `escape_little_text` (reserved
-`\ | { } @ [ ] ( ) < > # * _ ~`; a `#word` becomes the `{hashtag|\#|word}` template). Existing
-API posts are NOT changed here — #2261 tracks that.
+`\ | { } @ [ ] ( ) < > # * _ ~`; a `#word` becomes the `{hashtag|\#|word}` template). Since
+#2261 the same holds for every OTHER `/rest/posts` body: `poster._create_document_post_versioned`
+and `poster._create_image_post_versioned` escape the commentary they are given, so they are the
+ONE escaping layer for document and image posts — `share_curated_image_on_linkedin` passes its
+commentary through RAW, or it would be escaped twice. The legacy `/ugcPosts` path
+(`shareCommentary.text`) is not the little format and is not escaped.
 
 ## The pick (showcase round 4)
 

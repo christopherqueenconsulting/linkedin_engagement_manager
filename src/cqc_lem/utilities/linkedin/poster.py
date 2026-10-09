@@ -32,6 +32,7 @@ from cqc_lem.utilities.ai.outbound_qa import (
     SURFACE_COMMENT as OUTBOUND_SURFACE_COMMENT,
     refusal_reason as outbound_refusal_reason,
 )
+from cqc_lem.utilities.curated_sources import escape_little_text
 from cqc_lem.utilities.db import get_user_access_token, get_user_linked_sub_id
 from cqc_lem.utilities.env_constants import LI_API_VERSION
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
@@ -468,7 +469,11 @@ def upload_document(access_token: str, owner_sub_id: str, document_path: str) ->
 
 def _create_document_post_versioned(access_token: str, author: str, content: str,
                                     document_urn: str, title: str) -> Optional[str]:
-    """Publish the uploaded document through the versioned /rest/posts endpoint."""
+    """Publish the uploaded document through the versioned /rest/posts endpoint.
+
+    ``content`` is the commentary AS WRITTEN: /rest/posts parses it as the "little" text format,
+    so it is escaped here, the one layer every caller passes through (#2261).
+    """
     response = requests.post(
         "https://api.linkedin.com/rest/posts",
         headers={
@@ -479,7 +484,7 @@ def _create_document_post_versioned(access_token: str, author: str, content: str
         },
         json={
             "author": author,
-            "commentary": content,
+            "commentary": escape_little_text(content),
             "visibility": "PUBLIC",
             "distribution": {
                 "feedDistribution": "MAIN_FEED",
@@ -672,14 +677,18 @@ def upload_image_versioned(access_token: str, owner_sub_id: str, image_path: str
 
 def _create_image_post_versioned(access_token: str, author: str, content: str,
                                  image_urn: str) -> Optional[str]:
-    """Publish one uploaded image through the versioned /rest/posts endpoint."""
+    """Publish one uploaded image through the versioned /rest/posts endpoint.
+
+    ``content`` is the commentary AS WRITTEN — escaped here for the "little" text format, so a
+    caller (the curated re-chart path included) must never escape it first (#2261).
+    """
     response = requests.post(
         "https://api.linkedin.com/rest/posts",
         headers={**_VERSIONED_HEADERS_BASE, "Authorization": f"Bearer {access_token}",
                  "LinkedIn-Version": LI_API_VERSION},
         json={
             "author": author,
-            "commentary": content,
+            "commentary": escape_little_text(content),
             "visibility": "PUBLIC",
             "distribution": {
                 "feedDistribution": "MAIN_FEED",
