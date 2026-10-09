@@ -279,9 +279,9 @@ is needed. The owner of the response is whoever receives the layer 3 monitor's a
   also runs Flyway (a no-op when no migration is pending) and drains the workers through the
   maintenance window. Otherwise it takes effect on the next release deploy. Before you run it,
   check in GitHub Actions that no **Build & Deploy Release** or **Redeploy / Rollback VPS** run is
-  in progress (`deploy.sh` takes no lock). If it exits non-zero, its last `ERROR` line names the
-  case; `docs/AUTOMATION_COOLDOWN.md` § Responding to a `LinkedInEgressDown` escalation, under
-  Rollback, says what each one leaves running and what to do. To undo the switch, delete the line
+  in progress (`deploy.sh` takes no lock). If it exits non-zero, its last lines name the case;
+  `docs/AUTOMATION_COOLDOWN.md` § Responding to a `LinkedInEgressDown` escalation, under Rollback,
+  says what each one leaves running and what to do. To undo the switch, delete the line
   from `/opt/lem/.env` and run the same command again. Reverting the PR removes the fields; a
   monitor asserting on `"status":"healthy"` is unaffected either way.
 - **To stop a false page before any deploy:** pausing the layer 3 monitor also silences the only
