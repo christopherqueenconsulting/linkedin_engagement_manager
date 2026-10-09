@@ -19,7 +19,11 @@ import re
 import time
 from typing import Optional
 
-from selenium.common.exceptions import TimeoutException, WebDriverException
+from selenium.common.exceptions import (
+    InvalidCookieDomainException,
+    TimeoutException,
+    WebDriverException,
+)
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.support import expected_conditions as EC
@@ -735,7 +739,19 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
 
     if cookies:
         log_info("Found previous cookies. Loading them now!")
-        load_cookies(driver, cookies)
+        try:
+            load_cookies(driver, cookies)
+        except InvalidCookieDomainException as e:
+            # Chrome only accepts a cookie for the origin it is ON, so this means the base-page
+            # navigation above never reached LinkedIn (a proxy/network error page, issue #2320) —
+            # not that the stored session is bad. Falling through would replay the feed cookie-less
+            # and land on the password login (the path that draws a challenge) plus a false
+            # "reconnect" email, so treat it like the feed transport error below: transient,
+            # retried later, breaker untouched.
+            raise LinkedInRateLimited(
+                f"Base page did not load on LinkedIn's origin ({driver.current_url}) — stored "
+                "cookies could not be installed; transient, retrying later without tripping the "
+                "rate-limit breaker.") from e
         # Human-like jitter before hitting the feed. Rapid, perfectly-timed base→feed navigations
         # from a headless browser are an easy automation tell; a short randomized settle lets the
         # base page finish and spaces requests out. Tunable/zeroable via env for tests.
