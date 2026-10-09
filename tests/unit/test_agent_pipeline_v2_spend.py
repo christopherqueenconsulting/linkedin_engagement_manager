@@ -128,3 +128,89 @@ def test_cache_write_is_atomic(tmp_path):
 
 # ---------------------------------------------------------------- CLI result parsing
 
+
+
+# ---------------------------------------------------------------- the probe fails closed
+
+
+class _FakeCli:
+    """Stands in for `subprocess.run`: one canned answer, every call's env recorded."""
+
+    def __init__(self, answer: str, rc: int = 0):
+        self.answer = answer
+        self.rc = rc
+        self.envs: list[dict] = []
+
+    def __call__(self, cmd, **kwargs):
+        self.envs.append(kwargs["env"])
+        return type("Proc", (), {"returncode": self.rc, "stderr": "",
+                                 "stdout": json.dumps({"result": self.answer})})()
+
+
+#: A stand-in for the answer under the daemon's token; the real text is what the new log captures.
+NO_PERCENTAGES = "You are currently using your subscription to power your Claude Code usage\n"
+
+
+@pytest.fixture(autouse=True)
+def _fresh_explanation(monkeypatch):
+    monkeypatch.setitem(spend._PROBE_STATE, "explained_unreadable", False)
+
+
+def test_unreadable_under_the_daemon_token_is_asked_once_and_never_through_another_login(
+        monkeypatch, caplog):
+    cli = _FakeCli(NO_PERCENTAGES)
+    monkeypatch.setattr(spend.subprocess, "run", cli)
+    monkeypatch.setenv(spend.SETUP_TOKEN_VAR, "t")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://litellm:4000")
+
+    with caplog.at_level("WARNING", logger="lemd.spend"):
+        usage = spend.probe_usage()
+
+    assert usage.readable is False and usage.worst_pct is None  # unreadable, never 0%
+    assert len(cli.envs) == 1 and spend.SETUP_TOKEN_VAR in cli.envs[0]
+    assert "ANTHROPIC_BASE_URL" not in cli.envs[0]
+    assert f"under {spend.SETUP_TOKEN_VAR}" in caplog.text
+    assert "You are currently using your subscription" in caplog.text
+
+
+def test_the_cause_is_explained_once_per_process(monkeypatch, caplog):
+    monkeypatch.setattr(spend.subprocess, "run", _FakeCli(NO_PERCENTAGES))
+    monkeypatch.delenv(spend.SETUP_TOKEN_VAR, raising=False)
+
+    with caplog.at_level("WARNING", logger="lemd.spend"):
+        spend.probe_usage()
+        spend.probe_usage()
+    assert caplog.text.count("answered without a percentage line") == 1
+
+
+def test_a_readable_answer_is_used_as_is(monkeypatch, caplog):
+    monkeypatch.setattr(spend.subprocess, "run", _FakeCli(REAL_OUTPUT))
+    monkeypatch.setenv(spend.SETUP_TOKEN_VAR, "t")
+
+    with caplog.at_level("WARNING", logger="lemd.spend"):
+        assert spend.probe_usage().week_pct == 65.0
+    assert "percentage line" not in caplog.text
+
+
+def test_a_failed_cli_run_is_unreadable_and_logged(monkeypatch, caplog):
+    monkeypatch.setattr(spend.subprocess, "run", _FakeCli(REAL_OUTPUT, rc=1))
+    monkeypatch.delenv(spend.SETUP_TOKEN_VAR, raising=False)
+
+    with caplog.at_level("WARNING", logger="lemd.spend"):
+        assert spend.probe_usage().readable is False
+    assert "usage probe rc=1" in caplog.text and "empty answer" in caplog.text
+
+
+def test_probe_cli_missing_is_unreadable(monkeypatch):
+    def boom(*_a, **_k):
+        raise FileNotFoundError("claude")
+    monkeypatch.setattr(spend.subprocess, "run", boom)
+
+    assert spend.probe_usage().readable is False
+
+
+def test_non_json_stdout_is_parsed_as_text(monkeypatch):
+    proc = type("Proc", (), {"returncode": 0, "stderr": "", "stdout": REAL_OUTPUT})()
+    monkeypatch.setattr(spend.subprocess, "run", lambda *a, **k: proc)
+
+    assert spend.probe_usage().week_pct == 65.0

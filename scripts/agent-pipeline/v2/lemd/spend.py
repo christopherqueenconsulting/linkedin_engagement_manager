@@ -118,17 +118,17 @@ def parse_usage(text: str, *, now: float | None = None) -> Usage:
                  readable=readable, raw=(text or "")[:500])
 
 
-def probe_usage(*, timeout: int = 90) -> Usage:
-    """Ask the CLI for real subscription usage.
+#: The daemon's own long-lived token (set in its service environment). `/usage` has answered without
+#: a percentage line under it since 2026-08-19; see issue #2337.
+SETUP_TOKEN_VAR = "CLAUDE_CODE_OAUTH_TOKEN"
 
-    Runs with the Claude lane's own credential (no `ANTHROPIC_BASE_URL` override), because the
-    question is "how much of the SUBSCRIPTION is left" — pointing it at LiteLLM would answer about
-    the wrong provider entirely.
-    """
-    env_clean = {"ANTHROPIC_BASE_URL": "", "ANTHROPIC_AUTH_TOKEN": "", "ANTHROPIC_API_KEY": ""}
-    import os
+# Whether this process has already said why the meter is unreadable. The daemon is long-lived and
+# probes every 15 minutes, so the explanation is logged once and then left to the existing warning.
+_PROBE_STATE = {"explained_unreadable": False}
 
-    env = {k: v for k, v in os.environ.items() if k not in env_clean}
+
+def _run_usage_cli(env: dict, timeout: int) -> Usage:
+    """Run `claude -p /usage` once under `env` and parse what it printed."""
     try:
         proc = subprocess.run(
             ["claude", "-p", "/usage", "--output-format", "json",
@@ -147,6 +147,33 @@ def probe_usage(*, timeout: int = 90) -> Usage:
     except ValueError:
         text = proc.stdout
     return parse_usage(text)
+
+
+def probe_usage(*, timeout: int = 90) -> Usage:
+    """Ask the CLI for real subscription usage.
+
+    Runs with the Claude lane's own credential (no `ANTHROPIC_BASE_URL` override), because the
+    question is "how much of the SUBSCRIPTION is left" — pointing it at LiteLLM would answer about
+    the wrong provider entirely.
+
+    Fails CLOSED. Under the daemon's own token (`CLAUDE_CODE_OAUTH_TOKEN`) `/usage` has answered
+    without a percentage line, so the reading is unreadable and routing falls back to the health
+    estimate. Asking again through another credential was rejected: it may belong to a different
+    account, and a meter reading another plan would drive the 50% rule on wrong numbers. The first
+    unreadable answer in a process logs what the CLI said, so the cause can be read (#2337).
+    """
+    import os
+
+    stripped = {"ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"}
+    env = {k: v for k, v in os.environ.items() if k not in stripped}
+    usage = _run_usage_cli(env, timeout)
+    if not usage.readable and not _PROBE_STATE["explained_unreadable"]:
+        _PROBE_STATE["explained_unreadable"] = True
+        first_line = next((ln.strip() for ln in usage.raw.splitlines() if ln.strip()), "")
+        LOG.warning("usage probe answered without a percentage line%s: %s (see #2337)",
+                    f" under {SETUP_TOKEN_VAR}" if env.get(SETUP_TOKEN_VAR) else "",
+                    first_line[:160] or "empty answer")
+    return usage
 
 
 def cached_usage(cache: str | Path, *, ttl: int = USAGE_TTL,
