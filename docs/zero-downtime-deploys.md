@@ -26,16 +26,20 @@ Cloudflare Tunnel (dashboard ingress: http://web_app:8000  — UNCHANGED)
 
 ## Deploy flow (scripts/deploy.sh)
 
-1. Pull images, maintenance-drain the Celery workers, run Flyway (old code keeps serving —
-   migrations must stay backward-compatible, which additive Flyway migrations are).
+1. Pull images, run Flyway (old code keeps serving — migrations must stay backward-compatible,
+   which additive Flyway migrations are).
 2. Start the INACTIVE color on the new tag (`up -d --no-deps web_api_<target>`), health-check it.
    - **Failure here costs zero downtime**: the active color was never touched; the standby is
      restored to the last-good tag and the deploy aborts.
 3. Render `/opt/lem/deploy/nginx/default.conf` to the new color, `nginx -t`, graceful
    `nginx -s reload` (no dropped connections), verify `/health` through the edge, then write
    `/opt/lem/.active_color`.
-4. `up -d --remove-orphans` converges workers/beat and the now-standby color onto the new tag.
-   - `litellm` is reconciled just BEFORE this converge, inside the drain window, on EVERY deploy
+4. Persist the tag baseline (`.last_good_tag`, `IMAGE_TAG`), then enter maintenance mode and drain
+   the Celery workers: stop beat, pause dispatch, cancel queue consumers and wait up to
+   `DRAIN_TIMEOUT` for running tasks. The site is already on the new code, so a slow drain costs
+   deploy duration, not availability.
+5. `up -d --remove-orphans` converges workers/beat and the now-standby color onto the new tag.
+   - `litellm` is reconciled just BEFORE this converge, inside step 4's drain window, on EVERY deploy
      (`reconcile_litellm`), and the deploy then waits for `/health/readiness`
      (`LITELLM_READY_TIMEOUT`, default 90s; a timeout or a failed `up` is a WARN, not an abort).
      If `.litellm/config.yaml` changed vs the last-good tag it is `up -d --no-deps --force-recreate`
@@ -53,6 +57,33 @@ Cloudflare Tunnel (dashboard ingress: http://web_app:8000  — UNCHANGED)
      reverted config by this route. Residual: the legacy first-cutover rollback's own converge can
      still recreate litellm if `pull` brought a new digest — that path only runs when there is no
      serving colour to fall back behind.
+   - Every reconcile adds up to `LITELLM_READY_TIMEOUT` (90s) to the deploy when the proxy is slow
+     to answer.
+
+#### litellm not ready after a deploy
+
+The reconcile never aborts a deploy, so a broken `main-latest` digest can go live with the deploy
+reporting success. Look for these lines in the deploy log (the CI SSH step, or a local
+`scripts/deploy.sh` run):
+
+- `litellm image before reconcile: <id>` and `litellm image after reconcile: <id>`. Different IDs
+  mean a new digest landed on this deploy; `<none>` means no `litellm` container existed.
+- `WARN: litellm not ready after <N>s (continuing; previous image <id>)`, the readiness wait ran
+  out. Workers resume against the proxy anyway when maintenance mode ends.
+
+Diagnose: `docker logs --tail 200 litellm`, then re-run the readiness probe by hand:
+`docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T litellm python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/readiness', timeout=5)"`.
+
+Pin back to the previous image: tag the logged previous ID
+(`docker tag <previous-id> ghcr.io/berriai/litellm:main-latest`), then
+`docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --no-deps --force-recreate litellm`
+from `/opt/lem` (add `-f docker-compose.grid.yml` when the box runs the Grid overlay, as
+`deploy.sh` does). The next deploy's
+`pull` moves the tag forward again, so pin a digest in `docker-compose.yml` by PR if the new one
+stays broken. The same deploy ends with `docker image prune -af --filter until=168h`, which deletes
+every image created more than 7 days ago that no container uses. If the previous digest was that
+old, it is gone by the time the deploy finishes, and the pin-back needs a `docker pull` of an older
+digest by its `sha256` reference instead.
 
 ### Worker-tier resilience (issue #831)
 

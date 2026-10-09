@@ -323,9 +323,19 @@ litellm_ready() {  # $1 = timeout seconds
 #        bind-mounted config only at startup and compose cannot see a bind-mount edit.
 #   otherwise a plain `up`, which recreates only when the image digest or the service definition
 #        changed, and is a no-op when neither did.
-# Exactly one recreate either way. Every failure is a WARN, never an abort: the web tier is already
+# At most one recreate either way. Every failure is a WARN, never an abort: the web tier is already
 # live on the new tag, and the client's connect-retry (#986) rides out a proxy that is still coming up.
+# The container's image ID is logged before and after, so the deploy log shows whether a new digest
+# landed and which one it replaced — the ID to pin back to if the new one is broken
+# (docs/zero-downtime-deploys.md, "litellm not ready after a deploy").
+litellm_image_id() {
+  docker inspect -f '{{.Image}}' litellm 2>/dev/null || echo "<none>"
+}
+
 reconcile_litellm() {  # $1 = 1 when .litellm/config.yaml changed
+  local before after
+  before="$(litellm_image_id)"
+  log "litellm image before reconcile: ${before}"
   if [[ "$1" == "1" ]]; then
     log "litellm config changed vs ${PREV_TAG:-<none>} — recreating litellm to reload it"
     if ! ${COMPOSE} up -d --no-deps --force-recreate litellm; then
@@ -339,10 +349,12 @@ reconcile_litellm() {  # $1 = 1 when .litellm/config.yaml changed
       return 0
     fi
   fi
+  after="$(litellm_image_id)"
+  log "litellm image after reconcile: ${after}"
   if litellm_ready "${LITELLM_READY_TIMEOUT}"; then
     log "litellm is ready"
   else
-    log "WARN: litellm not ready after ${LITELLM_READY_TIMEOUT}s (continuing)"
+    log "WARN: litellm not ready after ${LITELLM_READY_TIMEOUT}s (continuing; previous image ${before})"
   fi
 }
 

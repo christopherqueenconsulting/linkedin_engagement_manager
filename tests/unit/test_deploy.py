@@ -166,6 +166,20 @@ _FAKE_DOCKER = textwrap.dedent(
     if args[:1] == ["inspect"]:
         fmt = args[args.index("-f") + 1]
         wanted = args[-1]
+        if ".Image" in fmt:
+            # DOCKER_FAKE_IMAGE_IDS: comma-separated IDs handed out one per inspect, in order; unset
+            # means no such container.
+            ids = [i for i in os.environ.get("DOCKER_FAKE_IMAGE_IDS", "").split(",") if i]
+            if not ids:
+                sys.exit(1)
+            counter = os.environ["DOCKER_FAKE_IMAGE_STATE"]
+            n = 0
+            if os.path.exists(counter):
+                with open(counter, encoding="utf-8") as fh:
+                    n = int(fh.read().strip() or "0")
+            bump(counter)
+            print(ids[min(n, len(ids) - 1)])
+            sys.exit(0)
         for cid, name, running in containers():
             if cid == wanted:
                 print(running if "State.Running" in fmt else "/" + name)
@@ -387,9 +401,53 @@ class TestReconcileLitellm:
     One recreate at most, a readiness wait after it, and every failure a WARN rather than an abort.
     """
 
+    @pytest.fixture(autouse=True)
+    def _fake_docker(self, tmp_path: Path) -> None:
+        # The image-ID lookup calls `docker inspect`; never let it reach a real daemon.
+        _write_docker_stub(tmp_path)
+
     @staticmethod
     def _calls(path: Path) -> list[str]:
         return path.read_text(encoding="utf-8").splitlines()
+
+    def test_logs_the_image_id_before_and_after(self, tmp_path: Path) -> None:
+        result = _run(
+            tmp_path,
+            {
+                "DEPLOY_FAKE_STATE": str(tmp_path / "state"),
+                "DEPLOY_FAKE_LITELLM_READY_AFTER": "0",
+                "DOCKER_FAKE_IMAGE_IDS": "sha256:old,sha256:new",
+                "DOCKER_FAKE_IMAGE_STATE": str(tmp_path / "image-state"),
+            },
+            "reconcile_litellm 0",
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "litellm image before reconcile: sha256:old" in result.stdout
+        assert "litellm image after reconcile: sha256:new" in result.stdout
+
+    def test_not_ready_warn_names_the_previous_image(self, tmp_path: Path) -> None:
+        result = _run(
+            tmp_path,
+            {
+                "DEPLOY_FAKE_STATE": str(tmp_path / "state"),
+                "LITELLM_READY_TIMEOUT": "1",
+                "DOCKER_FAKE_IMAGE_IDS": "sha256:old,sha256:new",
+                "DOCKER_FAKE_IMAGE_STATE": str(tmp_path / "image-state"),
+            },
+            "set -e; reconcile_litellm 1; echo after",
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "WARN: litellm not ready after 1s (continuing; previous image sha256:old)" in result.stdout
+
+    def test_a_missing_container_logs_none_and_does_not_trip_set_e(self, tmp_path: Path) -> None:
+        result = _run(
+            tmp_path,
+            {"DEPLOY_FAKE_STATE": str(tmp_path / "state"), "DEPLOY_FAKE_LITELLM_READY_AFTER": "0"},
+            "set -e; reconcile_litellm 0; echo after",
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "litellm image before reconcile: <none>" in result.stdout
+        assert result.stdout.rstrip().endswith("after")
 
     def test_config_change_force_recreates_exactly_once_then_waits(self, tmp_path: Path) -> None:
         calls = tmp_path / "calls"
@@ -436,7 +494,7 @@ class TestReconcileLitellm:
             "set -e; reconcile_litellm 1; echo after",
         )
         assert result.returncode == 0, result.stdout + result.stderr
-        assert "WARN: litellm not ready after 2s" in result.stdout
+        assert "WARN: litellm not ready after 2s (continuing" in result.stdout
         assert result.stdout.rstrip().endswith("after")
 
     @pytest.mark.parametrize(("changed", "needle"), [("1", "recreate failed"), ("0", "reconcile failed")])
