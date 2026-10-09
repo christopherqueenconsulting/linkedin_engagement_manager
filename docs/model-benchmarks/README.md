@@ -740,6 +740,32 @@ The Sonar sunset was acted on in #2255. `lem-research` now runs on Perplexity's 
 python scripts/probe_research.py            # --route direct skips the proxy
 ```
 
+### `lem-tts` successor: no drop-in exists (#2258)
+
+The `tts-1` sunset is not a model-name swap. Read on 2026-10-09:
+
+- **Every speech-endpoint model OpenAI serves goes on the same day.** The deprecations page entry
+  "2026-10-01: Text-to-speech models" removes `tts-1`, `tts-1-hd`, `gpt-4o-mini-tts-2025-03-20`
+  and `gpt-4o-mini-tts-2025-12-15` on **2027-01-06**
+  (<https://developers.openai.com/api/docs/deprecations>). The undated `gpt-4o-mini-tts` alias
+  points at the `2025-12-15` snapshot (its model page), so moving to it buys nothing.
+- **The named successor is realtime-only.** `gpt-realtime-2.1-mini` supports `v1/realtime` and
+  nothing else. `v1/audio/speech`, the route `_tts_openai` calls (`client.audio.speech.create`),
+  is listed as "Not supported"
+  (<https://developers.openai.com/api/docs/models/gpt-realtime-2.1-mini>). Pointing `lem-tts` at
+  it would fail every tutorial render at the voice-over step.
+- **Price.** `tts-1` is $15.00 per 1M characters. `gpt-realtime-2.1-mini` is billed per token:
+  $0.60 per 1M text input tokens and $20.00 per 1M audio output tokens
+  (<https://developers.openai.com/api/docs/pricing>). OpenAI publishes no per-character or
+  per-minute figure for it, so the comparison needs a measured render, not arithmetic.
+- **The code already has a non-OpenAI path.** `TUTORIAL_TTS_PROVIDER=elevenlabs` calls ElevenLabs
+  directly (`_tts_elevenlabs`), priced by `ELEVENLABS_COST_PER_1K_CHARS` (default $0.15 per 1K
+  characters, 10x `tts-1`).
+
+Nothing is swapped yet. The route is a decision for the owner, and the audio samples need the
+production `OPENAI_API_KEY` (the dev key is a placeholder). The cost constant and the pinned price
+in `.litellm/model_prices_snapshot.json` change with the swap, not before it.
+
 ### Metered text candidates: OpenRouter or OpenAI (#2256)
 
 Until #2256 the text tiers measured only Ollama tags, so every OpenAI deployment read
