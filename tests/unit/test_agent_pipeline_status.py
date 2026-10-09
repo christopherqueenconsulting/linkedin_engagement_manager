@@ -437,7 +437,7 @@ def test_a_frozen_usage_reading_is_labelled_stale_not_shown_as_live(tmp_path):
     base = _v2_base(tmp_path)
     _usage(base, age_s=5 * 86400)
     text = _run(base, "--no-gh").stdout
-    line = next(l for l in text.splitlines() if "subscription:" in l)
+    line = next(ln for ln in text.splitlines() if "subscription:" in ln)
     assert "STALE" in line
     assert "week=71.0% session=1.0%" in line
     assert "routing on the health estimate" in line
@@ -449,7 +449,7 @@ def test_a_fresh_usage_reading_renders_as_is(tmp_path):
     base = _v2_base(tmp_path)
     _usage(base, age_s=60)
     text = _run(base, "--no-gh").stdout
-    line = next(l for l in text.splitlines() if "subscription:" in l)
+    line = next(ln for ln in text.splitlines() if "subscription:" in ln)
     assert "STALE" not in line
     assert re.search(r"week=71\.0% session=1\.0% \(\d+s old\)", line)
     assert "subscription usage reading is" not in text
