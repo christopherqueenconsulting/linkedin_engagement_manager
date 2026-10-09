@@ -128,3 +128,97 @@ def test_cache_write_is_atomic(tmp_path):
 
 # ---------------------------------------------------------------- CLI result parsing
 
+
+
+# ---------------------------------------------------------------- the probe's credential
+
+
+class _FakeCli:
+    """Stands in for `subprocess.run`: answers per credential, records each call's env."""
+
+    def __init__(self, with_token: str, without_token: str, rc: int = 0):
+        self.answers = {True: with_token, False: without_token}
+        self.rc = rc
+        self.envs: list[dict] = []
+
+    def __call__(self, cmd, **kwargs):
+        env = kwargs["env"]
+        self.envs.append(env)
+        result = self.answers[spend.SETUP_TOKEN_VAR in env]
+        return type("Proc", (), {"returncode": self.rc, "stderr": "",
+                                 "stdout": json.dumps({"result": result})})()
+
+
+NO_PERCENTAGES = "You are currently using your subscription to power your Claude Code usage\n"
+
+
+def test_setup_token_answer_without_percentages_retries_on_the_interactive_login(monkeypatch):
+    """The 2026-08-19 regression: under the setup token every probe read unreadable."""
+    cli = _FakeCli(with_token=NO_PERCENTAGES, without_token=REAL_OUTPUT)
+    monkeypatch.setattr(spend.subprocess, "run", cli)
+    monkeypatch.setenv(spend.SETUP_TOKEN_VAR, "t")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://litellm:4000")
+
+    usage = spend.probe_usage()
+
+    assert usage.readable and usage.week_pct == 65.0
+    assert len(cli.envs) == 2
+    assert spend.SETUP_TOKEN_VAR in cli.envs[0] and spend.SETUP_TOKEN_VAR not in cli.envs[1]
+    assert all("ANTHROPIC_BASE_URL" not in env for env in cli.envs)
+
+
+def test_readable_answer_under_the_setup_token_is_not_re_asked(monkeypatch):
+    cli = _FakeCli(with_token=REAL_OUTPUT, without_token="")
+    monkeypatch.setattr(spend.subprocess, "run", cli)
+    monkeypatch.setenv(spend.SETUP_TOKEN_VAR, "t")
+
+    assert spend.probe_usage().readable
+    assert len(cli.envs) == 1
+
+
+def test_no_setup_token_means_one_attempt_and_unreadable_stays_unreadable(monkeypatch):
+    cli = _FakeCli(with_token="", without_token=NO_PERCENTAGES)
+    monkeypatch.setattr(spend.subprocess, "run", cli)
+    monkeypatch.delenv(spend.SETUP_TOKEN_VAR, raising=False)
+
+    assert spend.probe_usage().readable is False
+    assert len(cli.envs) == 1
+
+
+def test_both_credentials_unreadable_is_unreadable_never_zero(monkeypatch):
+    cli = _FakeCli(with_token=NO_PERCENTAGES, without_token=NO_PERCENTAGES)
+    monkeypatch.setattr(spend.subprocess, "run", cli)
+    monkeypatch.setenv(spend.SETUP_TOKEN_VAR, "t")
+
+    usage = spend.probe_usage()
+
+    assert usage.readable is False and usage.worst_pct is None
+    assert len(cli.envs) == 2
+
+
+def test_a_failed_cli_run_is_retried_without_the_token_and_logged(monkeypatch, caplog):
+    cli = _FakeCli(with_token=REAL_OUTPUT, without_token=REAL_OUTPUT, rc=1)
+    monkeypatch.setattr(spend.subprocess, "run", cli)
+    monkeypatch.setenv(spend.SETUP_TOKEN_VAR, "t")
+
+    with caplog.at_level("INFO", logger="lemd.spend"):
+        assert spend.probe_usage().readable is False
+    assert len(cli.envs) == 2
+    assert "usage probe rc=1" in caplog.text and "empty answer" in caplog.text
+
+
+def test_probe_cli_missing_is_unreadable(monkeypatch):
+    def boom(*_a, **_k):
+        raise FileNotFoundError("claude")
+    monkeypatch.setattr(spend.subprocess, "run", boom)
+    monkeypatch.delenv(spend.SETUP_TOKEN_VAR, raising=False)
+
+    assert spend.probe_usage().readable is False
+
+
+def test_non_json_stdout_is_parsed_as_text(monkeypatch):
+    proc = type("Proc", (), {"returncode": 0, "stderr": "", "stdout": REAL_OUTPUT})()
+    monkeypatch.setattr(spend.subprocess, "run", lambda *a, **k: proc)
+    monkeypatch.delenv(spend.SETUP_TOKEN_VAR, raising=False)
+
+    assert spend.probe_usage().week_pct == 65.0

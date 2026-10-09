@@ -56,7 +56,8 @@ drain_events     webhook rows  → items.dirty=1      (≤200 per pass)
 reconcile        GitHub labels → the queue          (600s; 120s only if silent AND drifting)
 takeover_posthog spawn actions/posthog_takeover.sh  (PostHog PRs a delivery or the reconcile relist
                                                       named — not items; docs/posthog-pr-takeover.md)
-refresh_usage    subscription meter → state/usage.json
+refresh_usage    subscription meter → state/usage.json   (`claude -p /usage`; retried without the
+                                                      setup token when it prints no percentages)
 observe_dirty    changed items → decide()           (≤25 per pass)
 sweep_ttls       expired waits → decide()           (≤25 per pass)
 act              fill both pools with what decide() already decided
