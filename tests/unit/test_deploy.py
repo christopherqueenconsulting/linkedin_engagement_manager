@@ -163,6 +163,17 @@ _FAKE_DOCKER = textwrap.dedent(
                 print(name.strip())
         sys.exit(0)
 
+    if args[:2] == ["image", "inspect"]:
+        # DOCKER_FAKE_REPO_DIGESTS: comma-separated "<image id>=<repo digest>"; an unlisted ID has no
+        # repo digest, which real docker reports as a template error (non-zero exit).
+        digests = dict(
+            item.split("=", 1) for item in os.environ.get("DOCKER_FAKE_REPO_DIGESTS", "").split(",") if item
+        )
+        if args[-1] not in digests:
+            sys.exit(1)
+        print(digests[args[-1]])
+        sys.exit(0)
+
     if args[:1] == ["inspect"]:
         fmt = args[args.index("-f") + 1]
         wanted = args[-1]
@@ -422,8 +433,31 @@ class TestReconcileLitellm:
             "reconcile_litellm 0",
         )
         assert result.returncode == 0, result.stdout + result.stderr
-        assert "litellm image before reconcile: sha256:old" in result.stdout
-        assert "litellm image after reconcile: sha256:new" in result.stdout
+        assert "litellm image before reconcile: sha256:old (repo digest <none>)" in result.stdout
+        assert "litellm image after reconcile: sha256:new (repo digest <none>)" in result.stdout
+
+    def test_logs_the_registry_digest_to_pin_back_to(self, tmp_path: Path) -> None:
+        old_digest = "ghcr.io/berriai/litellm@sha256:aaa"
+        new_digest = "ghcr.io/berriai/litellm@sha256:bbb"
+        result = _run(
+            tmp_path,
+            {
+                "DEPLOY_FAKE_STATE": str(tmp_path / "state"),
+                "LITELLM_READY_TIMEOUT": "1",
+                "DOCKER_FAKE_IMAGE_IDS": "sha256:old,sha256:new",
+                "DOCKER_FAKE_IMAGE_STATE": str(tmp_path / "image-state"),
+                "DOCKER_FAKE_REPO_DIGESTS": f"sha256:old={old_digest},sha256:new={new_digest}",
+            },
+            "set -e; reconcile_litellm 0; echo after",
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert f"litellm image before reconcile: sha256:old (repo digest {old_digest})" in result.stdout
+        assert f"litellm image after reconcile: sha256:new (repo digest {new_digest})" in result.stdout
+        assert (
+            f"WARN: litellm not ready after 1s (continuing; previous image sha256:old, repo digest {old_digest})"
+            in result.stdout
+        )
+        assert result.stdout.rstrip().endswith("after")
 
     def test_not_ready_warn_names_the_previous_image(self, tmp_path: Path) -> None:
         result = _run(
@@ -437,7 +471,10 @@ class TestReconcileLitellm:
             "set -e; reconcile_litellm 1; echo after",
         )
         assert result.returncode == 0, result.stdout + result.stderr
-        assert "WARN: litellm not ready after 1s (continuing; previous image sha256:old)" in result.stdout
+        assert (
+            "WARN: litellm not ready after 1s (continuing; previous image sha256:old, repo digest <none>)"
+            in result.stdout
+        )
 
     def test_a_missing_container_logs_none_and_does_not_trip_set_e(self, tmp_path: Path) -> None:
         result = _run(
@@ -446,7 +483,8 @@ class TestReconcileLitellm:
             "set -e; reconcile_litellm 0; echo after",
         )
         assert result.returncode == 0, result.stdout + result.stderr
-        assert "litellm image before reconcile: <none>" in result.stdout
+        assert "litellm image before reconcile: <none> (repo digest <none>)" in result.stdout
+        assert "litellm image after reconcile: <none> (repo digest <none>)" in result.stdout
         assert result.stdout.rstrip().endswith("after")
 
     def test_config_change_force_recreates_exactly_once_then_waits(self, tmp_path: Path) -> None:

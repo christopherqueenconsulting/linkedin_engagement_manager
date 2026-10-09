@@ -66,10 +66,12 @@ The reconcile never aborts a deploy, so a broken `main-latest` digest can go liv
 reporting success. Look for these lines in the deploy log (the CI SSH step, or a local
 `scripts/deploy.sh` run):
 
-- `litellm image before reconcile: <id>` and `litellm image after reconcile: <id>`. Different IDs
-  mean a new digest landed on this deploy; `<none>` means no `litellm` container existed.
-- `WARN: litellm not ready after <N>s (continuing; previous image <id>)`, the readiness wait ran
-  out. Workers resume against the proxy anyway when maintenance mode ends.
+- `litellm image before reconcile: <id> (repo digest <digest>)` and the matching `after` line.
+  Different IDs mean a new digest landed on this deploy. `<digest>` is the registry digest,
+  `ghcr.io/berriai/litellm@sha256:...`. `<none>` means no `litellm` container existed (or the image
+  has no registry digest).
+- `WARN: litellm not ready after <N>s (continuing; previous image <id>, repo digest <digest>)`, the
+  readiness wait ran out. Workers resume against the proxy anyway when maintenance mode ends.
 - `WARN: litellm recreate failed (continuing)` or `WARN: litellm reconcile failed (continuing)`,
   the `up` itself failed and no readiness wait ran. The worker converge that follows may then
   recreate litellm alongside the new workers, which is the dropped-call hazard this step exists to
@@ -78,16 +80,19 @@ reporting success. Look for these lines in the deploy log (the CI SSH step, or a
 Diagnose: `docker logs --tail 200 litellm`, then re-run the readiness probe by hand:
 `docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T litellm python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/readiness', timeout=5)"`.
 
-Pin back to the previous image: tag the logged previous ID
+Pin back to the previous image. The logged `ghcr.io/berriai/litellm@sha256:...` repo digest is
+the value to pin as `image:` for the `litellm` service in `docker-compose.yml`; it still pulls after
+the local image is pruned. The image ID (`sha256:...` without a registry name) is for `docker tag`
+only. Quick, box-local route: tag the logged previous ID
 (`docker tag <previous-id> ghcr.io/berriai/litellm:main-latest`), then
 `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --no-deps --force-recreate litellm`
 from `/opt/lem` (add `-f docker-compose.grid.yml` when the box runs the Grid overlay, as
 `deploy.sh` does). The next deploy's
 `pull` moves the tag forward again, so pin a digest in `docker-compose.yml` by PR if the new one
-stays broken. The same deploy ends with `docker image prune -af --filter until=168h`, which deletes
+stays broken, using the logged repo digest. The same deploy ends with `docker image prune -af --filter until=168h`, which deletes
 every image created more than 7 days ago that no container uses. If the previous digest was that
-old, it is gone by the time the deploy finishes and cannot be re-tagged. Pin a known-good digest in
-`docker-compose.yml` by PR instead.
+old, it is gone by the time the deploy finishes and cannot be re-tagged. Pin the logged repo
+digest in `docker-compose.yml` by PR instead.
 
 ### Worker-tier resilience (issue #831)
 

@@ -325,17 +325,28 @@ litellm_ready() {  # $1 = timeout seconds
 #        changed, and is a no-op when neither did.
 # At most one recreate either way. Every failure is a WARN, never an abort: the web tier is already
 # live on the new tag, and the client's connect-retry (#986) rides out a proxy that is still coming up.
-# The container's image ID is logged before and after, so the deploy log shows whether a new digest
-# landed and which one it replaced — the ID to pin back to if the new one is broken
+# The container's image ID and its registry digest are logged before and after, so the deploy log
+# shows whether a new digest landed and which one it replaced. The registry digest
+# (ghcr.io/berriai/litellm@sha256:...) is what to pin as `image:` if the new one is broken; the
+# image ID only works with `docker tag`, and only while the image is still on the box
 # (docs/zero-downtime-deploys.md, "litellm not ready after a deploy").
 litellm_image_id() {
   docker inspect -f '{{.Image}}' litellm 2>/dev/null || echo "<none>"
 }
 
+litellm_repo_digest() {  # $1 = image ID from litellm_image_id
+  if [[ "$1" == "<none>" ]]; then
+    echo "<none>"
+    return 0
+  fi
+  docker image inspect -f '{{index .RepoDigests 0}}' "$1" 2>/dev/null || echo "<none>"
+}
+
 reconcile_litellm() {  # $1 = 1 when .litellm/config.yaml changed
-  local before after
+  local before before_digest after
   before="$(litellm_image_id)"
-  log "litellm image before reconcile: ${before}"
+  before_digest="$(litellm_repo_digest "${before}")"
+  log "litellm image before reconcile: ${before} (repo digest ${before_digest})"
   if [[ "$1" == "1" ]]; then
     log "litellm config changed vs ${PREV_TAG:-<none>} — recreating litellm to reload it"
     if ! ${COMPOSE} up -d --no-deps --force-recreate litellm; then
@@ -350,11 +361,11 @@ reconcile_litellm() {  # $1 = 1 when .litellm/config.yaml changed
     fi
   fi
   after="$(litellm_image_id)"
-  log "litellm image after reconcile: ${after}"
+  log "litellm image after reconcile: ${after} (repo digest $(litellm_repo_digest "${after}"))"
   if litellm_ready "${LITELLM_READY_TIMEOUT}"; then
     log "litellm is ready"
   else
-    log "WARN: litellm not ready after ${LITELLM_READY_TIMEOUT}s (continuing; previous image ${before})"
+    log "WARN: litellm not ready after ${LITELLM_READY_TIMEOUT}s (continuing; previous image ${before}, repo digest ${before_digest})"
   fi
 }
 
