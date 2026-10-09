@@ -111,6 +111,8 @@ index and the `CLAUDE.md` row that points at it, or the pointer becomes a dead e
 - [Benchmark run — `bm-20261008-6dd2bf`](model-benchmarks/2026-10-08-bm-20261008-6dd2bf.md) — `lem-complex` scorecard behind the `gpt-6.1-sol` promotion
 - ★ [Prompt evals](prompt-evals.md) — every LLM call site registered and versioned (`prompts.lock.json`), captured as production renders it; datasets, code + model graders, the change-driven weekly runner
 - [Prompt inventory](prompt-evals/inventory.md) — GENERATED: one row per call site with family, status, version and latest verdicts
+- [Prompt eval runs](prompt-evals/README.md) — GENERATED: the leaderboard, one row per prompt@version × model per run
+- [Prompt eval run — `pe-20261008-0250fe`](prompt-evals/2026-10-08-pe-20261008-0250fe.md) — archived run report
 - ★ [Stack watchdog & deep health](stack-watchdog.md) — the host watchdog and the `/health/deep` monitor contract
 - ★ [Production log files](production-logs.md) — `/opt/lem/logs/`, one dated file per UTC day; INFO not DEBUG; grep beats `docker logs`
 
