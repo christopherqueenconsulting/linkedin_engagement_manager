@@ -82,8 +82,8 @@ from `/opt/lem` (add `-f docker-compose.grid.yml` when the box runs the Grid ove
 `pull` moves the tag forward again, so pin a digest in `docker-compose.yml` by PR if the new one
 stays broken. The same deploy ends with `docker image prune -af --filter until=168h`, which deletes
 every image created more than 7 days ago that no container uses. If the previous digest was that
-old, it is gone by the time the deploy finishes, and the pin-back needs a `docker pull` of an older
-digest by its `sha256` reference instead.
+old, it is gone by the time the deploy finishes and cannot be re-tagged. Pin a known-good digest in
+`docker-compose.yml` by PR instead.
 
 ### Worker-tier resilience (issue #831)
 
