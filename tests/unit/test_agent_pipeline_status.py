@@ -419,3 +419,81 @@ def test_the_check_covers_every_unit_that_imports_the_package(tmp_path):
 
     report = _json(base, env_extra=env)
     assert report["v2"]["stale_units"] == ["lem-agent-newthing.service"]
+
+
+def _usage(base: Path, age_s: int) -> None:
+    (base / "state" / "usage.json").write_text(json.dumps({
+        "at": time.time() - age_s, "week_pct": 71.0, "session_pct": 1.0,
+    }), encoding="utf-8")
+
+
+@pytest.mark.skipif(not HAS_SQLITE3, reason="the v2 block needs the sqlite3 CLI")
+def test_a_frozen_usage_reading_is_labelled_stale_not_shown_as_live(tmp_path):
+    """The cache froze on 2026-08-19 and the report kept printing `week=71.0%` as the headroom.
+
+    The daemon refreshes it every 900s, so a reading weeks old means the probe stopped producing
+    readable answers (#2337): routing is on the health estimate, and the report has to say so.
+    """
+    base = _v2_base(tmp_path)
+    _usage(base, age_s=5 * 86400)
+    text = _run(base, "--no-gh").stdout
+    line = next(ln for ln in text.splitlines() if "subscription:" in ln)
+    assert "STALE" in line
+    assert "week=71.0% session=1.0%" in line
+    assert "routing on the health estimate" in line
+    assert "subscription usage reading is" in text
+
+
+@pytest.mark.skipif(not HAS_SQLITE3, reason="the v2 block needs the sqlite3 CLI")
+def test_a_fresh_usage_reading_renders_as_is(tmp_path):
+    base = _v2_base(tmp_path)
+    _usage(base, age_s=60)
+    text = _run(base, "--no-gh").stdout
+    line = next(ln for ln in text.splitlines() if "subscription:" in ln)
+    assert "STALE" not in line
+    assert re.search(r"week=71\.0% session=1\.0% \(\d+s old\)", line)
+    assert "subscription usage reading is" not in text
+
+
+@pytest.mark.skipif(not HAS_SQLITE3, reason="the v2 block needs the sqlite3 CLI")
+def test_a_reading_the_router_still_uses_is_not_called_stale(tmp_path):
+    """lane_for.py keeps routing on a reading for MAX_AGE (3600s): calling it stale earlier is wrong."""
+    base = _v2_base(tmp_path)
+    _usage(base, age_s=2700)
+    text = _run(base, "--no-gh").stdout
+    assert "STALE" not in next(ln for ln in text.splitlines() if "subscription:" in ln)
+    assert "subscription usage reading is" not in text
+
+
+@pytest.mark.skipif(not HAS_SQLITE3, reason="the v2 block needs the sqlite3 CLI")
+def test_the_threshold_follows_the_daemons_probe_interval(tmp_path):
+    base = _v2_base(tmp_path, config="LEMD_USAGE_PROBE_INTERVAL=3600\n")
+    _usage(base, age_s=5000)  # under 2 x 3600, so the daemon may simply not have refreshed yet
+    text = _run(base, "--no-gh").stdout
+    assert "STALE" not in next(ln for ln in text.splitlines() if "subscription:" in ln)
+    assert "subscription usage reading is" not in text
+
+
+@pytest.mark.skipif(not HAS_SQLITE3, reason="the v2 block needs the sqlite3 CLI")
+def test_usage_stale_seconds_overrides_the_threshold(tmp_path):
+    base = _v2_base(tmp_path)
+    _usage(base, age_s=200)
+    text = _run(base, "--no-gh", env_extra={"USAGE_STALE_SECONDS": "100"}).stdout
+    assert "STALE" in next(ln for ln in text.splitlines() if "subscription:" in ln)
+
+
+@pytest.mark.skipif(not HAS_SQLITE3, reason="the v2 block needs the sqlite3 CLI")
+def test_a_dead_daemon_is_not_blamed_on_the_usage_probe(tmp_path):
+    """No fresh heartbeat means nothing refreshes the cache; the heartbeat warning owns that."""
+    base = _v2_base(tmp_path, heartbeat_age=7200)
+    _usage(base, age_s=5 * 86400)
+    text = _run(base, "--no-gh").stdout
+    assert "STALE" in next(ln for ln in text.splitlines() if "subscription:" in ln)
+    assert "/usage probe is not producing readable answers" not in text
+
+
+def test_without_v2_in_control_a_leftover_usage_cache_raises_nothing(tmp_path):
+    base = _base(tmp_path)
+    _usage(base, age_s=5 * 86400)
+    text = _run(base, "--no-gh").stdout
+    assert "subscription usage reading is" not in text
