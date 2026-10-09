@@ -3366,6 +3366,14 @@ def _funnel_prospects_from_roster(driver, user_id: int, roster: list, my_name: s
         try:
             activity = get_profile_recent_activity(driver, author_url) or []
         except Exception as e:
+            if is_tab_crashed(e):
+                # The renderer died, so every later author would fail on the same dead tab and warn
+                # once each — one crash escalating into a grouped $exception from a single run
+                # (issue #2321). Stop the walk on ONE warning and keep what was already sourced.
+                log_warning(f"Browser tab crashed after {authors_walked - 1} roster author(s) — "
+                            f"stopping outreach funnel roster sourcing", exc=e, user_id=user_id,
+                            action_type="outreach_funnel")
+                break
             log_warning("Could not read a roster author's recent activity", exc=e, user_id=user_id,
                         action_type="outreach_funnel")
             continue
@@ -3387,6 +3395,12 @@ def _funnel_prospects_from_roster(driver, user_id: int, roster: list, my_name: s
         try:
             commenters = _harvest_post_commenters(driver, post["link"], author_name, now)
         except Exception as e:
+            if is_tab_crashed(e):
+                # Same dead tab as above: one warning, end the walk (issue #2321).
+                log_warning(f"Browser tab crashed after {authors_walked - 1} roster author(s) — "
+                            f"stopping outreach funnel roster sourcing", exc=e, user_id=user_id,
+                            action_type="outreach_funnel")
+                break
             log_warning("Could not harvest commenters from a roster post", exc=e, user_id=user_id,
                         action_type="outreach_funnel")
             continue
@@ -3496,9 +3510,17 @@ def scan_outreach_funnel_targets(self, user_id: int, max_new: int = None):
             counts.update(roster_counts)
         except Exception as e:
             # Own-post engagers stand on their own — degrade, don't abort the whole scan.
-            log_warning("Roster sourcing for the outreach funnel failed; using post engagers only",
-                        exc=e, user_id=user_id, task_name="scan_outreach_funnel_targets",
-                        action_type="outreach_funnel")
+            if is_tab_crashed(e):
+                # get_current_profile already warned where it detected the crash (the first login
+                # navigation); a second warning here double-files the same occurrence (issue #2321,
+                # same rule as process_user_followups' tab-crash branch).
+                log_debug("Browser tab crashed while starting outreach funnel sourcing; using post "
+                          "engagers only", exc=e, user_id=user_id,
+                          task_name="scan_outreach_funnel_targets", action_type="outreach_funnel")
+            else:
+                log_warning("Roster sourcing for the outreach funnel failed; using post engagers "
+                            "only", exc=e, user_id=user_id, task_name="scan_outreach_funnel_targets",
+                            action_type="outreach_funnel")
         finally:
             if driver is not None:
                 quit_gracefully(driver)
