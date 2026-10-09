@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -516,6 +517,39 @@ def open_pr_numbers_by_author(slug: str, author: str, *, limit: int = 50,
     ) or []
     return [r["number"] for r in rows
             if isinstance(r, dict) and isinstance(r.get("number"), int) and r["number"] > 0]
+
+
+def author_trusted(slug: str, number: int, *, timeout: int = 30) -> bool | None:
+    """Would `unpark.sh`'s TRUST gate accept this issue's AUTHOR (#2331)?
+
+    The read-side mirror of `lib/guards.sh:author_trusted`, asked for the same reason the daemon
+    mirrors `v2_owner_answered`: so `decide()` does not offer the owner a menu whose every answer
+    the action is certain to refuse. Same REST endpoint, same rules — the pipeline's own App login,
+    then `TRUSTED_ASSOCIATIONS` (default `OWNER MEMBER COLLABORATOR`).
+
+    Three-valued, and only `False` changes anything downstream. `None` covers an unreadable read,
+    an empty association, and a bot author when `GH_APP_BOT_LOGIN` is not in this process's
+    environment — the pipeline's own App would read as untrusted there, and a wrong `False` is the
+    direction that silently drops a menu the owner needed.
+    """
+    try:
+        data = gh_json(["api", f"repos/{slug}/issues/{number}"], timeout=timeout) or {}
+    except GitHubUnavailable as exc:
+        LOG.debug("issue #%s author unreadable: %s", number, exc)
+        return None
+    assoc = str(data.get("author_association") or "")
+    author = str((data.get("user") or {}).get("login") or "")
+    app_login = os.environ.get("GH_APP_BOT_LOGIN", "")
+    if app_login and author == app_login:
+        return True
+    if not assoc:
+        return None
+    trusted = os.environ.get("TRUSTED_ASSOCIATIONS", "OWNER MEMBER COLLABORATOR").split()
+    if assoc in trusted:
+        return True
+    if author.endswith("[bot]") and not app_login:
+        return None
+    return False
 
 
 def label_names(obj: dict[str, Any]) -> set[str]:
