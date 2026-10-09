@@ -124,7 +124,7 @@ SETUP_TOKEN_VAR = "CLAUDE_CODE_OAUTH_TOKEN"
 
 # Whether this process has already said why the meter is unreadable. The daemon is long-lived and
 # probes every 15 minutes, so the explanation is logged once and then left to the existing warning.
-_explained_unreadable = False
+_PROBE_STATE = {"explained_unreadable": False}
 
 
 def _run_usage_cli(env: dict, timeout: int) -> Usage:
@@ -162,14 +162,13 @@ def probe_usage(*, timeout: int = 90) -> Usage:
     account, and a meter reading another plan would drive the 50% rule on wrong numbers. The first
     unreadable answer in a process logs what the CLI said, so the cause can be read (#2337).
     """
-    global _explained_unreadable
     import os
 
     stripped = {"ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"}
     env = {k: v for k, v in os.environ.items() if k not in stripped}
     usage = _run_usage_cli(env, timeout)
-    if not usage.readable and not _explained_unreadable:
-        _explained_unreadable = True
+    if not usage.readable and not _PROBE_STATE["explained_unreadable"]:
+        _PROBE_STATE["explained_unreadable"] = True
         first_line = next((ln.strip() for ln in usage.raw.splitlines() if ln.strip()), "")
         LOG.warning("usage probe answered without a percentage line%s: %s (see #2337)",
                     f" under {SETUP_TOKEN_VAR}" if env.get(SETUP_TOKEN_VAR) else "",

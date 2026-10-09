@@ -153,7 +153,7 @@ NO_PERCENTAGES = "You are currently using your subscription to power your Claude
 
 @pytest.fixture(autouse=True)
 def _fresh_explanation(monkeypatch):
-    monkeypatch.setattr(spend, "_explained_unreadable", False)
+    monkeypatch.setitem(spend._PROBE_STATE, "explained_unreadable", False)
 
 
 def test_unreadable_under_the_daemon_token_is_asked_once_and_never_through_another_login(
