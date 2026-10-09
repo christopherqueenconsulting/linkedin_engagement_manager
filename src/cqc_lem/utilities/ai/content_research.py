@@ -223,12 +223,25 @@ def is_known_proxy_parse_defect(exc: BaseException) -> bool:
     return "ResponsesAPIResponse" in text and "truncation" in text
 
 
-#: How long one sighting of the known parse defect keeps this process off the proxy route.
+#: How long one sighting of the known parse defect keeps the proxy route closed.
 PROXY_DEFECT_BACKOFF_SECONDS = 6 * 3600
 
-# Monotonic deadline before which `research_topic` skips the proxy. Per process, never persisted:
-# a restart (every deploy) re-tries the proxy once, which is how a fixed LiteLLM gets noticed.
+#: Redis key that closes the proxy route for every worker, not just the one that saw the defect.
+#: Celery recycles a child every few tasks (`worker_max_tasks_per_child`), so an in-process flag
+#: alone would let each fresh child pay the failure again.
+PROXY_PARKED_KEY = "lem:research:proxy_parse_defect"
+
+# Monotonic deadline in THIS process, the fallback when Redis is unreachable.
 _proxy_skip_until = 0.0
+
+
+def _shared_redis():
+    """The app's shared Redis handle, or None; research never fails because Redis did."""
+    try:
+        from cqc_lem.utilities.linkedin.rate_limit import shared_redis_client
+        return shared_redis_client()
+    except Exception:
+        return None
 
 
 def proxy_route_open(now: Optional[float] = None) -> bool:
@@ -236,17 +249,41 @@ def proxy_route_open(now: Optional[float] = None) -> bool:
 
     Every proxy call that hits the truncation defect has already been served, and billed, by
     Perplexity, and LiteLLM records it as a failed `$ai_generation`. With the flag left on, each
-    research call paid for that failure before the direct route answered.
+    research call paid for that failure before the direct route answered. Closed while this
+    process's own deadline is ahead, or while the shared Redis key exists; an unreadable Redis
+    reads as open (the in-process deadline still applies).
     """
+    if not research_via_proxy_enabled():
+        return False
     current = time.monotonic() if now is None else now
-    return research_via_proxy_enabled() and current >= _proxy_skip_until
+    if current < _proxy_skip_until:
+        return False
+    client = _shared_redis()
+    if client is None:
+        return True
+    try:
+        return not client.exists(PROXY_PARKED_KEY)
+    except Exception:
+        return True
 
 
-def _park_proxy_route(now: Optional[float] = None) -> None:
-    """Close the proxy route for `PROXY_DEFECT_BACKOFF_SECONDS` after a known parse defect."""
+def _park_proxy_route(now: Optional[float] = None) -> bool:
+    """Close the proxy route for `PROXY_DEFECT_BACKOFF_SECONDS` after a known parse defect.
+
+    Returns:
+        True when this call opened a new closed window for the whole fleet (or Redis is
+        unavailable), which is when the caller warns. False when another worker already did.
+    """
     global _proxy_skip_until
     current = time.monotonic() if now is None else now
     _proxy_skip_until = current + PROXY_DEFECT_BACKOFF_SECONDS
+    client = _shared_redis()
+    if client is None:
+        return True
+    try:
+        return bool(client.set(PROXY_PARKED_KEY, "1", nx=True, ex=PROXY_DEFECT_BACKOFF_SECONDS))
+    except Exception:
+        return True
 
 
 def _usage_number(usage: Any, *path: str) -> Optional[float]:
@@ -333,13 +370,19 @@ def research_topic(subject: str, content_type: str = "newsletter", blueprint: di
         except Exception as exc:
             if is_known_proxy_parse_defect(exc):
                 # The flag is on while LiteLLM still rejects Perplexity's `truncation: ""`: a
-                # configuration fault, said once per backoff window rather than once per call.
-                _park_proxy_route()
-                log_warning("RESEARCH_VIA_PROXY is on but lem-research still hits the LiteLLM "
-                            "truncation parse defect; skipping the proxy for "
-                            f"{PROXY_DEFECT_BACKOFF_SECONDS // 3600}h and using direct Perplexity. "
-                            "Unset RESEARCH_VIA_PROXY until scripts/probe_research.py --route proxy "
-                            "passes.", api_provider="litellm")
+                # configuration fault, warned once per fleet-wide backoff window, not per call.
+                # Repeated windows escalate under the logging contract, which is intended: a
+                # flag left on against a broken route is a defect someone should act on.
+                if not _park_proxy_route():
+                    log_debug("lem-research parse defect again; proxy route already closed",
+                              api_provider="litellm")
+                else:
+                    log_warning("RESEARCH_VIA_PROXY is on but lem-research still hits the LiteLLM "
+                                "truncation parse defect; skipping the proxy for "
+                                f"{PROXY_DEFECT_BACKOFF_SECONDS // 3600}h and using direct "
+                                "Perplexity. Unset RESEARCH_VIA_PROXY until "
+                                "scripts/probe_research.py --route proxy passes.",
+                                api_provider="litellm")
             else:
                 log_warning("Content research via LiteLLM failed; trying direct Perplexity",
                             exc=exc, api_provider="litellm")
