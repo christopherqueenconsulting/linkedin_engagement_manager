@@ -463,6 +463,62 @@ class TestZeroMentionCardsIsGradedNotAssumed:
             assert _mentions_page_native_count(driver, 1) is None
 
 
+class TestMentionFeedIsPolledUntilItPaints:
+    """#2135: after #2074 shipped, production never resolved a mention card on any day.
+
+    The probe, which waits 5s before reading, resolved the same feed's card. Production read once
+    after a 2-4s wait, so an unpainted feed read as a quiet day, and on 2026-09-29 the sentences
+    painted between the walk and its cross-check, which read as drift 3 runs in a row.
+    """
+
+    def _run(self, card_reads, page_texts):
+        from cqc_lem.app.engagement.outreach import get_recent_collaborators
+        driver = MagicMock()
+        roots = []
+        for text in page_texts:
+            root = MagicMock()
+            root.text = text
+            roots.append(root)
+        driver.find_element.side_effect = roots
+        with patch(f"{_OUT}._mention_cards", side_effect=card_reads) as walk, \
+             patch(f"{_OUT}.wait_for_ajax"), \
+             patch(f"{_OUT}.getText", side_effect=lambda el: el.text), \
+             patch("cqc_lem.utilities.linkedin.zero_walk.log_warning") as warn:
+            got = get_recent_collaborators(driver, MagicMock(), 1)
+        return got, walk, warn
+
+    def test_a_card_that_paints_on_a_later_read_is_found(self):
+        card = _card("Jane Doe mentioned you in a comment\n9h")
+        got, walk, warn = self._run([[], [], [card]], ["Notifications", "Notifications"])
+        assert got == {"https://www.linkedin.com/in/jane": "Jane Doe"}
+        assert walk.call_count == 3
+        warn.assert_not_called()
+
+    def test_sentences_painting_after_an_early_walk_are_not_drift(self):
+        """The 2026-09-29 signature: walk sees nothing, then the page shows a mention line."""
+        card = _card("Jane Doe mentioned you in a comment\n9h")
+        got, _, warn = self._run([[], [card]], ["Jane Doe mentioned you in a comment 9h"])
+        assert got == {"https://www.linkedin.com/in/jane": "Jane Doe"}
+        warn.assert_not_called()
+
+    def test_a_feed_that_never_paints_is_read_the_bounded_number_of_times(self):
+        from cqc_lem.app.engagement.outreach import _MENTION_RENDER_ATTEMPTS
+        got, walk, warn = self._run([[]] * _MENTION_RENDER_ATTEMPTS,
+                                    ["Notifications"] * _MENTION_RENDER_ATTEMPTS)
+        assert got == {}
+        assert walk.call_count == _MENTION_RENDER_ATTEMPTS >= 3
+        warn.assert_not_called()
+
+    def test_drift_is_graded_off_the_last_read_only(self):
+        """Every read sees the sentence and no card resolves: that is still drift, logged once."""
+        from cqc_lem.app.engagement.outreach import _MENTION_RENDER_ATTEMPTS
+        got, _, warn = self._run([[]] * _MENTION_RENDER_ATTEMPTS,
+                                 ["Notifications"] * (_MENTION_RENDER_ATTEMPTS - 1)
+                                 + ["Jane Doe mentioned you in a comment 9h"])
+        assert got == {}
+        assert warn.call_count == 1
+
+
 class TestMentionCardLocatorsFallBackToBody:
     """#1985: production warned "Mention card walk matched nothing" for several minutes straight.
 
