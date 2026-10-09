@@ -28,6 +28,8 @@ _TRACK = "cqc_lem.utilities.observability.track_llm_call"
 def _clean_toggles(monkeypatch):
     for name in _RESEARCH_ENVS + ("RESEARCH_VIA_PROXY",):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(cr, "_proxy_skip_until", 0.0)  # the in-process fallback deadline
+    monkeypatch.setattr(cr, "_shared_redis", lambda: None)  # no Redis unless a test brings one
 
 
 @pytest.fixture(autouse=True)
@@ -350,17 +352,33 @@ class TestDirectRouteIsPrimary:
 
 @pytest.mark.usefixtures("proxy_on")
 class TestProxyFailureLogLevel:
-    """Once is a warning, repeatedly is a defect: the KNOWN parse failure must not warn per call."""
+    """Once is a warning, repeatedly is a defect: the KNOWN parse failure warns once, then backs off."""
 
-    def test_the_known_truncation_defect_is_debug_not_a_warning(self):
+    def test_the_known_truncation_defect_warns_once_and_parks_the_proxy(self):
         with patch(_CLIENT) as client, patch(_DIRECT) as direct, \
-                patch.object(cr, "log_warning") as warn, patch.object(cr, "log_debug") as debug:
+                patch.object(cr, "log_warning") as warn:
             client.responses.create.side_effect = Exception(_TRUNCATION_DEFECT)
             direct.return_value = {"answer": "direct findings", "sources": []}
-            out = cr.research_topic("a subject", content_type="newsletter")
-        warn.assert_not_called()
-        assert any("known Agent API parse defect" in c.args[0] for c in debug.call_args_list)
-        assert out["findings"] == "direct findings"
+            first = cr.research_topic("a subject", content_type="newsletter")
+            second = cr.research_topic("another subject", content_type="post")
+        assert first["findings"] == second["findings"] == "direct findings"
+        assert client.responses.create.call_count == 1  # the second call never paid the proxy
+        warn.assert_called_once()
+        assert "RESEARCH_VIA_PROXY is on" in warn.call_args.args[0]
+        assert direct.call_count == 2
+
+    def test_the_proxy_is_tried_again_after_the_backoff(self):
+        cr._park_proxy_route(now=1000.0)
+        assert not cr.proxy_route_open(now=1000.0 + cr.PROXY_DEFECT_BACKOFF_SECONDS - 1)
+        assert cr.proxy_route_open(now=1000.0 + cr.PROXY_DEFECT_BACKOFF_SECONDS)
+
+    def test_a_proxy_success_keeps_the_route_open(self):
+        with patch(_CLIENT) as client, patch(_DIRECT) as direct:
+            client.responses.create.return_value = _sdk_response(_resp("proxy findings"))
+            cr.research_topic("a subject", content_type="newsletter")
+            cr.research_topic("a subject", content_type="newsletter")
+        assert client.responses.create.call_count == 2
+        direct.assert_not_called()
 
     def test_an_unknown_proxy_failure_still_warns(self):
         with patch(_CLIENT) as client, patch(_DIRECT) as direct, \
@@ -379,3 +397,75 @@ class TestProxyFailureLogLevel:
     ])
     def test_only_the_truncation_literal_counts_as_known(self, text, known):
         assert cr.is_known_proxy_parse_defect(Exception(text)) is known
+
+
+def test_the_proxy_route_stays_closed_without_the_flag():
+    assert cr.proxy_route_open() is False
+
+
+class _FakeRedis:
+    """Just the two calls the proxy latch makes: SET NX EX, and EXISTS."""
+
+    def __init__(self, fail: bool = False):
+        self.keys: dict = {}
+        self.fail = fail
+
+    def set(self, key, value, nx=False, ex=None):
+        if self.fail:
+            raise ConnectionError("redis down")
+        if nx and key in self.keys:
+            return None
+        self.keys[key] = (value, ex)
+        return True
+
+    def exists(self, key):
+        if self.fail:
+            raise ConnectionError("redis down")
+        return int(key in self.keys)
+
+
+@pytest.mark.usefixtures("proxy_on")
+class TestFleetWideProxyLatch:
+    """Celery recycles worker children every few tasks, so the closed route must outlive one."""
+
+    def test_a_fresh_worker_child_sees_the_route_closed(self, monkeypatch):
+        fake = _FakeRedis()
+        monkeypatch.setattr(cr, "_shared_redis", lambda: fake)
+
+        assert cr._park_proxy_route() is True
+        assert fake.keys[cr.PROXY_PARKED_KEY][1] == cr.PROXY_DEFECT_BACKOFF_SECONDS
+        monkeypatch.setattr(cr, "_proxy_skip_until", 0.0)  # a new child: no in-process memory
+        assert cr.proxy_route_open() is False
+
+    def test_only_the_worker_that_opens_the_window_warns(self, monkeypatch):
+        fake = _FakeRedis()
+        monkeypatch.setattr(cr, "_shared_redis", lambda: fake)
+        fake.keys[cr.PROXY_PARKED_KEY] = ("1", cr.PROXY_DEFECT_BACKOFF_SECONDS)  # another worker
+        monkeypatch.setattr(cr, "proxy_route_open", lambda now=None: True)  # it raced past the check
+
+        with patch(_CLIENT) as client, patch(_DIRECT) as direct, \
+                patch.object(cr, "log_warning") as warn, patch.object(cr, "log_debug") as debug:
+            client.responses.create.side_effect = Exception(_TRUNCATION_DEFECT)
+            direct.return_value = {"answer": "direct findings", "sources": []}
+            cr.research_topic("a subject", content_type="newsletter")
+        warn.assert_not_called()
+        assert any("already closed" in c.args[0] for c in debug.call_args_list)
+
+    def test_an_unreachable_redis_falls_back_to_the_process_deadline(self, monkeypatch):
+        monkeypatch.setattr(cr, "_shared_redis", lambda: _FakeRedis(fail=True))
+
+        assert cr.proxy_route_open() is True  # unreadable Redis is never "closed"
+        assert cr._park_proxy_route() is True  # and the window is still warned once here
+        assert cr.proxy_route_open() is False  # the in-process deadline holds
+
+
+_REAL_SHARED_REDIS = cr._shared_redis  # captured before the autouse stub replaces it
+
+
+def test_shared_redis_never_raises(monkeypatch):
+    import cqc_lem.utilities.linkedin.rate_limit as rl
+
+    def boom():
+        raise RuntimeError("redis client unavailable")
+    monkeypatch.setattr(rl, "shared_redis_client", boom)
+    assert _REAL_SHARED_REDIS() is None
