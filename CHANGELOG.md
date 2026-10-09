@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.187.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.187.1...v0.187.2) (2026-10-09)
+
+
+### Bug Fixes
+
+* **ai:** give the one-word classifiers a reasoning-safe max_tokens (phase 5b) ([#2315](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2315)) ([3620b1c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3620b1cfda839c21968827231eb61c88b49691b2))
+
 ## [0.187.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.187.0...v0.187.1) (2026-10-08)
 
 
