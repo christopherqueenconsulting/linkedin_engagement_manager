@@ -138,6 +138,34 @@ class TestLoginToLinkedinCookiePath:
         mark_account.assert_called_once_with(7)
         mark_breaker.assert_not_called()
 
+    def test_cookie_refused_for_wrong_origin_is_transient_not_a_password_login(self):
+        """InvalidCookieDomainException means the base page never reached LinkedIn (issue #2320).
+
+        It must surface as a transient LinkedInRateLimited — no feed navigation, no password
+        login, no "reconnect" email, and the IP-wide breaker left shut.
+        """
+        from selenium.common.exceptions import InvalidCookieDomainException
+
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
+
+        driver = _make_driver("chrome-error://chromewebdata/")
+        wait = _make_wait()
+
+        with patch(f"{_MODULE}.get_cookies", return_value=[{"name": "x"}]), \
+             patch(f"{_MODULE}.load_cookies",
+                   side_effect=InvalidCookieDomainException("invalid cookie domain")), \
+             patch(f"{_MODULE}.store_cookies") as mock_store, \
+             patch(f"{_MODULE}.mark_rate_limited") as mark_breaker, \
+             patch("cqc_lem.utilities.notifications.notify_linkedin_session") as notify, \
+             pytest.raises(LinkedInRateLimited, match="did not load on LinkedIn's origin"):
+            from cqc_lem.utilities.linkedin.helper import login_to_linkedin
+            login_to_linkedin(driver, wait, "user@e.com", "pw")
+
+        assert [c.args[0] for c in driver.get.call_args_list] == ["https://www.linkedin.com"]
+        mark_breaker.assert_not_called()
+        mock_store.assert_not_called()
+        notify.assert_not_called()
+
     def test_challenge_for_an_unresolvable_account_trips_the_ip_breaker(self):
         """With no user id to scope a cooldown to, the IP-wide breaker is the only brake left."""
         from cqc_lem.utilities.linkedin.rate_limit import LinkedInChallengeUnsolved
