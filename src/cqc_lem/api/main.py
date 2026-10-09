@@ -2762,12 +2762,14 @@ def linkedin_callback(code: str, state: str = None) -> Union[ResponseModel, Redi
     try:
         access_token_response = client.exchange_auth_code_for_access_token(code)
     except (ResponseFormattingError, Exception) as exc:
-        log_info(f"LinkedIn token exchange failed: {exc}")
+        log_info(f"LinkedIn token exchange failed: {type(exc).__name__}")
         return _account_redirect({'li_error': 'token_exchange_failed'})
 
-    log_info("Access token Response from api call")
-    for key, value in access_token_response.__dict__.items():
-        log_info(f"{key}: {value}")
+    # Never log the response object: it carries the access and refresh tokens, and the log files
+    # are persistent and readable on the box. The expiry and the granted scope are all a reader
+    # needs.
+    log_info(f"LinkedIn token exchange ok (expires_in={access_token_response.expires_in}, "
+             f"scope={getattr(access_token_response, 'scope', None)})")
 
     if not access_token_response.access_token:
         log_info("LinkedIn token exchange returned no access_token")
@@ -2779,11 +2781,9 @@ def linkedin_callback(code: str, state: str = None) -> Union[ResponseModel, Redi
             resource_path='/userinfo',
             access_token=access_token_response.access_token,
         )
-        log_info("Response from /userinfo api call:")
-        for key, value in response.__dict__.items():
-            log_info(f"{key}: {value}")
+        log_info(f"LinkedIn /userinfo answered {getattr(response, 'status_code', None)}")
     except Exception as exc:
-        log_info(f"LinkedIn /userinfo call failed: {exc}")
+        log_info(f"LinkedIn /userinfo call failed: {type(exc).__name__}")
         return _account_redirect({'li_error': 'userinfo_failed'})
 
     user_email = response.entity.get('email', '')
@@ -2807,7 +2807,7 @@ def linkedin_callback(code: str, state: str = None) -> Union[ResponseModel, Redi
         if not user_email:
             log_info("LinkedIn /userinfo returned no email and no valid session")
             return _account_redirect({'li_error': 'no_email'})
-        log_info(f"No session in state — upserting by LinkedIn email {user_email}")
+        log_info("No session in state — upserting the LinkedIn account by its email")
         add_user_with_access_token(
             user_email,
             linked_sub_id,

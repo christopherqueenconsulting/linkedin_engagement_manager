@@ -328,6 +328,25 @@ class TestLinkedInOAuth:
         assert upd.call_args[1]["linkedin_email"] == "li@x.com"
         add.assert_not_called()
 
+    def test_callback_never_logs_the_tokens_or_the_userinfo_body(self, api_client):
+        auth_client = MagicMock()
+        auth_client.exchange_auth_code_for_access_token.return_value = _token_response(
+            access_token="SECRET-ACCESS", refresh_token="SECRET-REFRESH")
+        restli = MagicMock()
+        restli.get.return_value = SimpleNamespace(
+            status_code=200, entity={"email": "li@x.com", "sub": "SUB1"})
+        with patch(f"{_M}.AuthClient", return_value=auth_client), \
+             patch(f"{_M}.RestliClient", return_value=restli), \
+             patch(f"{_M}.add_user_with_access_token"), \
+             patch(f"{_M}.log_info") as log:
+            api_client.get("/auth/linkedin/callback?code=c", follow_redirects=False)
+        logged = " ".join(str(c.args) for c in log.call_args_list)
+        assert "SECRET-ACCESS" not in logged
+        assert "SECRET-REFRESH" not in logged
+        assert "SUB1" not in logged
+        assert "li@x.com" not in logged
+        assert "expires_in=3600" in logged
+
     def test_callback_without_session_upserts_by_email(self, api_client):
         auth_client = MagicMock()
         auth_client.exchange_auth_code_for_access_token.return_value = _token_response()
