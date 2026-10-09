@@ -758,9 +758,23 @@ The `tts-1` sunset is not a model-name swap. Read on 2026-10-09:
   $0.60 per 1M text input tokens and $20.00 per 1M audio output tokens
   (<https://developers.openai.com/api/docs/pricing>). OpenAI publishes no per-character or
   per-minute figure for it, so the comparison needs a measured render, not arithmetic.
+- **A plain-HTTP OpenAI route also exists.** The same deprecations page names `gpt-audio-1.5` as the
+  successor for the `gpt-audio` family. It supports `v1/chat/completions` with audio output and
+  nothing else (`v1/audio/speech` and `v1/realtime` are "Not supported"), at $2.50 per 1M text
+  input tokens and $64.00 per 1M audio output tokens
+  (<https://developers.openai.com/api/docs/models/gpt-audio-1.5>). It needs no websocket client,
+  but `_tts_openai` would need a chat-completions branch that decodes the returned audio. Its cost
+  against `tts-1` also needs a measured render.
 - **The code already has a non-OpenAI path.** `TUTORIAL_TTS_PROVIDER=elevenlabs` calls ElevenLabs
-  directly (`_tts_elevenlabs`), priced by `ELEVENLABS_COST_PER_1K_CHARS` (default $0.15 per 1K
-  characters, 10x `tts-1`).
+  directly (`_tts_elevenlabs`), priced by `ELEVENLABS_COST_PER_1K_CHARS`. Its default of $0.15 per
+  1K characters (10x `tts-1`) is the repo's own constant, not a checked ElevenLabs list price. The
+  wired default model, `ELEVENLABS_MODEL=eleven_turbo_v2_5`, is listed under "Deprecated models"
+  by ElevenLabs (replacement `eleven_flash_v2_5`, no removal date given;
+  <https://elevenlabs.io/docs/models>), so choosing this path should also move `ELEVENLABS_MODEL`.
+- **Per video.** `TUTORIAL_MAX_NARRATION_CHARS` defaults to 1400, so a full-length narration costs
+  about $0.021 on `tts-1` and about $0.21 at the ElevenLabs default. The `produce-feature-tutorial`
+  beat renders at most one tutorial a week, so that is at most about $0.09 and $0.91 a month
+  respectively, and only while tutorials are enabled.
 
 Nothing is swapped yet. The route is a decision for the owner, and the audio samples need the
 production `OPENAI_API_KEY` (the dev key is a placeholder). The cost constant and the pinned price
