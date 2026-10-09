@@ -121,7 +121,8 @@ broker's control channel (`_inspect().active_queues()`), so a lane whose contain
 simply is not in the reply.
 
 ```json
-{"status": "healthy", "workers": 5, "consuming": 5, "maintenance": false}
+{"status": "healthy", "workers": 5, "consuming": 5, "maintenance": false,
+ "egress": "ok", "egress_checked": 1, "egress_failing": 0}
 ```
 
 | Field | Meaning |
@@ -130,6 +131,9 @@ simply is not in the reply.
 | `workers` | workers that answered the control channel — **presence, not usefulness** |
 | `consuming` | workers subscribed to ≥1 queue. **This is the one that decides `status`.** |
 | `maintenance` | `true`/`false`, or `null` when Redis couldn't be read. A declared window holds `status` at `healthy`. |
+| `egress` | Can the automation browser's egress proxy reach LinkedIn? `ok` / `unreachable` / `auth_failed` / `refused` / `unknown` / `direct` — see below |
+| `egress_checked` | distinct egress proxies probed (counts only) |
+| `egress_failing` | how many of them are `unreachable`, `auth_failed` or `refused` |
 
 ### Counts only — the endpoint names nothing (issue #1020)
 
@@ -147,6 +151,7 @@ Go on the box for the detail the map used to give: `stack_watchdog.sh` reads the
 |---|---|
 | `healthy` | at least one worker is **consuming a queue** — or a maintenance window is **declared** |
 | `degraded` | broker reachable, **nothing consuming and no declared window** — either no workers (the v0.118.0 shape) or workers registered but idle |
+| `degraded` with `consuming` > 0 | Celery is fine but the automation browser's **egress has been failing** for `EGRESS_DEGRADE_AFTER_SECONDS` — see [Egress](#egress-the-browsers-proxy-is-part-of-the-automation-pillar-issue-2346) |
 | `unknown` | control channel unreachable. **Unmeasured is never `healthy`.** |
 
 ### Why `consuming`, not `workers`
@@ -179,6 +184,78 @@ window, and the reading goes `degraded`. Unreadable Redis (`maintenance: null`) 
 a window we cannot confirm is not a window. This mirrors layer 1's `WATCHDOG_GRACE_SECONDS`: both
 layers refuse to alert on a state a deploy is expected to pass through, and both bound how long
 they will stay quiet.
+
+### Egress: the browser's proxy is part of the automation pillar (issue #2346)
+
+On 2026-10-09 the egress proxy every Selenium session routes through stopped answering for more than
+nine hours, and every LinkedIn lane failed at login and backed off quietly. This endpoint would have
+read `healthy` throughout, because it measured only Celery. `utilities/egress_probe.py` is the
+missing reading.
+
+- **What it does:** for each distinct egress the active users resolve to (`proxy.resolve_proxy`, the
+  same rule the browser uses), send `CONNECT www.linkedin.com:443` and classify the proxy's answer:
+  `200` is `ok`, `407` is `auth_failed`, any other status is `refused`, and no connection, a hang-up,
+  a timeout or a reply that trickles past the deadline is `unreachable`.
+- **What reaches LinkedIn:** on a `200` the proxy has opened a TCP connection to
+  www.linkedin.com:443 from the egress IP. The probe closes it before any TLS, so no HTTP request,
+  cookie or account is ever sent. That happens at most once per `EGRESS_PROBE_CACHE_SECONDS` per API
+  process per distinct proxy. A SOCKS proxy gets a TCP connect to the proxy itself only.
+- **`egress`** is the worst outcome across the probed proxies. `direct` means no active user is
+  proxied; `unknown` means resolving the configuration raised. **A database outage reads as
+  `direct`**, because the user helpers swallow a MySQL error and return no rows; the egress reading
+  is not the signal for a database outage.
+- **Only the first 10 distinct proxies are probed,** in the order the active users are returned.
+  Any beyond the tenth are skipped, cannot affect `egress` or `egress_failing`, and `egress_checked`
+  is capped at 10.
+- **Degrades `status`** only once the egress has been failing for `EGRESS_DEGRADE_AFTER_SECONDS`
+  (default 300). The clock starts at the first failing fresh probe on any API worker and is shared
+  through Redis (`health:egress_failing_since`), so several uvicorn workers agree; any worker's `ok`
+  probe clears it. Without Redis each worker keeps its own clock. `unknown` and `direct` never
+  degrade, and egress never upgrades an `unknown` or `degraded` reading.
+  `HEALTH_DEEP_EGRESS_DEGRADES=false` keeps the fields but stops them changing `status`.
+- **It pages only through the body.** `degraded` is returned with HTTP 200, like every reading
+  here, so it reaches a person only if the layer 3 monitor asserts on the `"status":"healthy"`
+  keyword, as that section describes. Probes run only when the endpoint is called, so with the
+  defaults and a 5-minute monitor as the only caller, the first check after the proxy dies starts
+  the clock and a later one reads `degraded`: the monitor turns red about 5 to 15 minutes after the
+  proxy dies (the second check can land just under 300 s, which pushes it to the third). This
+  change does not configure or verify the monitor.
+- **Bounded, because this endpoint is unauthenticated:** readings are cached in-process for
+  `EGRESS_PROBE_CACHE_SECONDS` (default 60), at most 10 proxies are probed, in parallel, each bounded
+  by `EGRESS_PROBE_TIMEOUT_SECONDS` (default 5) for the connect and again for the reply (an
+  `https://` proxy adds a TLS handshake under the same socket timeout). Requests that arrive during
+  a probe wait on the same lock rather than starting their own, so a dead proxy costs a request up
+  to about 15 seconds in the worst case.
+- **Counts only**, like the rest of the body: no host, port or credential ever appears.
+- **Why one reading, not per user:** the body is public, and a per-user map would publish which
+  users exist and which of them are failing. A degraded reading says "some active user's egress is
+  down"; `egress_failing` says how many proxies, and the app log's per-session `Selenium session …
+  egress=<host:port>` line says which.
+
+#### Responding to an egress reading
+
+| `egress` | What it means | Check |
+|---|---|---|
+| `unreachable` | no TCP connection to the proxy, or it hung up or stalled | `nc -vz <host> <port>` from the host; the provider's status page and dashboard |
+| `auth_failed` | the proxy answered 407: the credentials (or its IP allowlist) refused us | the proxy credentials in `users.proxy_url` / `REGION_PROXIES` / `PROXY_URL`, and the provider's allowlist |
+| `refused` | the proxy answered but would not open the tunnel | the provider's target restrictions and plan status |
+
+The egress for each user is resolved by `utilities/proxy.py:resolve_proxy`: the user's own
+`users.proxy_url`, else `REGION_PROXIES` for their country, else `PROXY_URL`. Recovery is
+`egress: ok` here, then the next scheduled LinkedIn session logs `Already logged in!`; no restart
+is needed. The owner of the response is whoever receives the layer 3 monitor's alert.
+
+#### Risk and rollback
+
+- **Load anyone can cause:** at most one probe round per `EGRESS_PROBE_CACHE_SECONDS` per API
+  process, of at most 10 `CONNECT`s with a 5 s timeout each, in parallel. Concurrent requests during
+  a probe wait on the same lock rather than starting their own.
+- **Who acts on `degraded`:** only the external uptime monitor (layer 3), which alerts. Nothing
+  restarts or rolls back on it: deploys gate on `/health`, never `/health/deep`, and the host
+  watchdog (layer 1) reads `docker compose ps`, not this endpoint.
+- **Rollback:** `HEALTH_DEEP_EGRESS_DEGRADES=false` in `/opt/lem/.env` (read when the API
+  container is created, so it takes effect on the next deploy) keeps the `egress` fields but stops them changing `status`. Reverting the
+  PR removes the fields; a monitor asserting on `"status":"healthy"` is unaffected either way.
 
 It never raises and never 503s on a partial: a monitor should read `status`, and a scrape that
 cannot tell must say so rather than give a confident wrong answer.
