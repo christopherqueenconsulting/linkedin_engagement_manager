@@ -70,6 +70,10 @@ reporting success. Look for these lines in the deploy log (the CI SSH step, or a
   mean a new digest landed on this deploy; `<none>` means no `litellm` container existed.
 - `WARN: litellm not ready after <N>s (continuing; previous image <id>)`, the readiness wait ran
   out. Workers resume against the proxy anyway when maintenance mode ends.
+- `WARN: litellm recreate failed (continuing)` or `WARN: litellm reconcile failed (continuing)`,
+  the `up` itself failed and no readiness wait ran. The worker converge that follows may then
+  recreate litellm alongside the new workers, which is the dropped-call hazard this step exists to
+  avoid, so treat this WARN like the not-ready one.
 
 Diagnose: `docker logs --tail 200 litellm`, then re-run the readiness probe by hand:
 `docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T litellm python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/readiness', timeout=5)"`.
