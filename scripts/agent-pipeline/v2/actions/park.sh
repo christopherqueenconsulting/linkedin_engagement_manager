@@ -138,16 +138,25 @@ case "$REC" in
   *) B_MARK="$MARK" ;;
 esac
 
+OPTION_C="- **C. I will close it by hand** — close this ${KIND} yourself; no reply is needed.${C_MARK}"
+if [ "$REASON" = "work_shipped_needs_close" ]; then
+  # A reply cannot move a merged-link issue, so the retry options are not offered at all.
+  OPTIONS="$OPTION_C"
+else
+  OPTIONS="- **A. Try again as-is** — I have fixed the underlying problem.${A_MARK}
+- **B. Rebase onto latest main and retry** — main has moved since this was last attempted.${B_MARK}
+${OPTION_C}"
+  REC_LINE="${REC_LINE} (A bare \`B\` is NOT recognised as an answer; the answer lane needs the number.)"
+fi
+
 BODY="🛑 **Human decision needed** — the pipeline has parked this ${KIND} (\`${REASON}\`).
 
 ${DETAIL:-The automated lane exhausted its budget for this work and stopped rather than repeating a run that has not been converging.}
 
 ### 1. How should we proceed?
-- **A. Try again as-is** — I have fixed the underlying problem.${A_MARK}
-- **B. Rebase onto latest main and retry** — main has moved since this was last attempted.${B_MARK}
-- **C. I will close it by hand** — close this ${KIND} yourself; no reply is needed.${C_MARK}
+${OPTIONS}
 
-${REC_LINE} (A bare \`B\` is NOT recognised as an answer; the answer lane needs the number.)
+${REC_LINE}
 
 ${REPLY_LINE}"
 

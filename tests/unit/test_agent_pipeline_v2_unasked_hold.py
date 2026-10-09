@@ -487,6 +487,9 @@ def test_shipped_work_offers_no_retry_because_a_reply_cannot_move_it(action_tree
     assert "e.g. `1B`" not in menu and "To retry instead" not in menu
     assert "A reply leaves this issue parked" in menu
     assert "puts the work back in the queue" not in menu
+    for retry in ("Try again as-is", "Rebase onto latest main and retry", "A bare `B`"):
+        assert retry not in menu
+    assert "**C. I will close it by hand**" in menu
 
 
 def test_no_park_detail_claims_that_c_closes():
