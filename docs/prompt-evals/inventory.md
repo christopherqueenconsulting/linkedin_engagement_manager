@@ -12,7 +12,7 @@
 | `post.apply_guidance` | `cqc_lem.utilities.ai.ai_helper` | `apply_post_guidance` | rewrite | planned | 1 | source | not yet measured |
 | `classify.post_reaction` | `cqc_lem.utilities.ai.ai_helper` | `choose_post_reaction` | classifier | planned | 2 | source | not yet measured |
 | `classify.post_reaction` | `cqc_lem.utilities.ai.ai_helper` | `choose_post_reaction` | classifier | exempt:fallback transport — resends #0's prompt to OPENAI_FALLBACK_MODEL | 2 | source | not yet measured |
-| `comment.feed` | `cqc_lem.utilities.ai.ai_helper` | `generate_ai_response._draft` | comment | evaluated | 1 | rendered text | not yet measured |
+| `comment.feed` | `cqc_lem.utilities.ai.ai_helper` | `generate_ai_response._draft` | comment | evaluated | 1 | rendered text | openai/gemma4:31b: pass, openai/gpt-4o-mini: pass, openai/gpt-5.4-mini: pass, openai/gpt-oss:120b: pass |
 | `smoke.ai_response_test` | `cqc_lem.utilities.ai.ai_helper` | `generate_ai_response_test` | — | exempt:connectivity smoke test, not a product prompt | — | — | — |
 | `post.carousel` | `cqc_lem.utilities.ai.ai_helper` | `generate_carousel_content._draft` | json_planner | planned | 1 | source | not yet measured |
 | `comment.reply_followup` | `cqc_lem.utilities.ai.ai_helper` | `generate_comment_reply_followup._draft` | comment | planned | 1 | source | not yet measured |
@@ -20,10 +20,10 @@
 | `post.group` | `cqc_lem.utilities.ai.ai_helper` | `generate_group_post._draft` | post_longform | planned | 1 | source | not yet measured |
 | `dm.lead_response` | `cqc_lem.utilities.ai.ai_helper` | `generate_lead_response._draft` | dm | planned | 1 | source | not yet measured |
 | `newsletter.edition` | `cqc_lem.utilities.ai.ai_helper` | `generate_newsletter_edition._edition` | post_longform | planned | 1 | source | not yet measured |
-| `dm.nurture` | `cqc_lem.utilities.ai.ai_helper` | `generate_nurture_dm._draft` | dm | evaluated | 1 | rendered text | not yet measured |
+| `dm.nurture` | `cqc_lem.utilities.ai.ai_helper` | `generate_nurture_dm._draft` | dm | evaluated | 1 | rendered text | openai/gemma4:31b: pass, openai/gpt-4o-mini: fail, openai/gpt-5.4-mini: fail, openai/gpt-oss:120b: fail |
 | `app.onboarding_nudge` | `cqc_lem.utilities.ai.ai_helper` | `generate_onboarding_nudge_copy` | dm | planned | 1 | source | not yet measured |
 | `comment.second_wave` | `cqc_lem.utilities.ai.ai_helper` | `generate_second_wave_comment._draft` | comment | planned | 1 | source | not yet measured |
-| `comment.seed` | `cqc_lem.utilities.ai.ai_helper` | `generate_seed_comment._draft` | own_comment | evaluated | 1 | rendered text | not yet measured |
+| `comment.seed` | `cqc_lem.utilities.ai.ai_helper` | `generate_seed_comment._draft` | own_comment | evaluated | 1 | rendered text | openai/gemma4:31b: pass, openai/gpt-4o-mini: pass, openai/gpt-5.4-mini: pass, openai/gpt-oss:120b: pass |
 | `comment.thread_reply` | `cqc_lem.utilities.ai.ai_helper` | `generate_thread_reply._draft` | comment | planned | 1 | source | not yet measured |
 | `profile.description` | `cqc_lem.utilities.ai.ai_helper` | `get_ai_description_of_profile` | summary | planned | 1 | source | not yet measured |
 | `post.refine` | `cqc_lem.utilities.ai.ai_helper` | `get_ai_linked_post_refinement` | rewrite | planned | 1 | source | not yet measured |
@@ -33,18 +33,18 @@
 | `post.industry_news` | `cqc_lem.utilities.ai.ai_helper` | `get_industry_news_post_from_ai` | post_longform | planned | 1 | source | not yet measured |
 | `research.industry_trend` | `cqc_lem.utilities.ai.ai_helper` | `get_industry_trend_from_ai` | summary | planned | 1 | source | not yet measured |
 | `post.personal_story` | `cqc_lem.utilities.ai.ai_helper` | `get_personal_story_post_from_ai` | post_longform | planned | 1 | source | not yet measured |
-| `post.thought_leadership` | `cqc_lem.utilities.ai.ai_helper` | `get_thought_leadership_post_from_ai` | post_longform | evaluated | 1 | rendered text | not yet measured |
+| `post.thought_leadership` | `cqc_lem.utilities.ai.ai_helper` | `get_thought_leadership_post_from_ai` | post_longform | evaluated | 1 | rendered text | openai/gpt-4o: pass, openai/gpt-6.1-sol: pass |
 | `post.video_script` | `cqc_lem.utilities.ai.ai_helper` | `get_video_content_from_ai` | post_longform | planned | 1 | source | not yet measured |
 | `post.website_content` | `cqc_lem.utilities.ai.ai_helper` | `get_website_content_post_from_ai` | post_longform | planned | 1 | source | not yet measured |
 | `post.hook_optimize` | `cqc_lem.utilities.ai.ai_helper` | `optimize_post_hook` | rewrite | planned | 1 | source | not yet measured |
 | `newsletter.topic_plan` | `cqc_lem.utilities.ai.ai_helper` | `plan_newsletter_topics` | json_planner | planned | 1 | source | not yet measured |
-| `classify.post_relevance` | `cqc_lem.utilities.ai.ai_helper` | `post_is_relevant` | classifier | evaluated | 1 | rendered text | not yet measured |
+| `classify.post_relevance` | `cqc_lem.utilities.ai.ai_helper` | `post_is_relevant` | classifier | evaluated | 1 | rendered text | openai/gpt-4o-mini: pass, openai/gpt-5.4-mini: pass, openai/gpt-oss:20b: pass |
 | `profile.activity_summary` | `cqc_lem.utilities.ai.ai_helper` | `summarize_recent_activity` | summary | planned | 1 | source | not yet measured |
 | `profile.synthesis` | `cqc_lem.utilities.ai.ai_helper` | `synthesize_profile` | summary | planned | 1 | source | not yet measured |
 | `rewrite.humanize` | `cqc_lem.utilities.ai.content_alignment` | `humanize_text` | rewrite | planned | 1 | source | not yet measured |
 | `rewrite.humanize_title` | `cqc_lem.utilities.ai.content_alignment` | `humanize_title` | rewrite | planned | 1 | source | not yet measured |
 | `rewrite.mechanical_edit` | `cqc_lem.utilities.ai.content_alignment` | `mechanical_edit_text` | rewrite | planned | 1 | source | not yet measured |
-| `judge.authenticity` | `cqc_lem.utilities.ai.content_alignment` | `score_authenticity` | judge | evaluated | 1 | rendered text | not yet measured |
+| `judge.authenticity` | `cqc_lem.utilities.ai.content_alignment` | `score_authenticity` | judge | evaluated | 1 | rendered text | openai/gemma4:31b: pass, openai/gpt-4o-mini: pass, openai/gpt-5.4-mini: pass, openai/gpt-oss:120b: fail |
 | `research.web` | `cqc_lem.utilities.ai.content_research` | `_research_via_litellm` | — | exempt:live web research — output depends on the live web, not reproducible | — | — | — |
 | `transport.curated_complete` | `cqc_lem.utilities.ai.curated_commentary` | `_complete` | — | exempt:wrapper — prompts are registered at each caller | — | — | — |
 | `curated.chart_facts` | `cqc_lem.utilities.ai.curated_commentary` | `extract_chart_facts` | json_planner | planned | 2 | source | not yet measured |

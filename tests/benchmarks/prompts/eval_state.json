@@ -1,1 +1,702 @@
-{}
+{
+  "classify.dm_reply_intent@1": {
+    "openai/gpt-oss:20b": {
+      "dataset_version": 1,
+      "graders": {
+        "code:label_match": "e5cf0ca263d3"
+      },
+      "run": "pe-20261008-0250fe",
+      "role": "champion",
+      "wire": "openai/gpt-oss-20b",
+      "verdict": "fail",
+      "metrics": {
+        "cases_scored": 5,
+        "errors": 35,
+        "contract_rate": 1.0,
+        "contract_wilson": 0.5655,
+        "first_draft_rate": 1.0,
+        "accuracy": 0.125,
+        "macro_f1": 0.198
+      },
+      "outputs_artifact": "37737939493"
+    },
+    "openai/gpt-4o-mini": {
+      "dataset_version": 1,
+      "graders": {
+        "code:label_match": "e5cf0ca263d3"
+      },
+      "run": "pe-20261008-0250fe",
+      "role": "fallback",
+      "wire": "openai/gpt-4o-mini",
+      "verdict": "pass",
+      "metrics": {
+        "cases_scored": 40,
+        "errors": 0,
+        "contract_rate": 1.0,
+        "contract_wilson": 0.9124,
+        "first_draft_rate": 1.0,
+        "accuracy": 1.0,
+        "macro_f1": 1.0
+      },
+      "outputs_artifact": "37737939493"
+    },
+    "openai/gpt-5.4-mini": {
+      "dataset_version": 1,
+      "graders": {
+        "code:label_match": "e5cf0ca263d3"
+      },
+      "run": "pe-20261008-0250fe",
+      "role": "candidate",
+      "wire": "openai/gpt-5.4-mini",
+      "verdict": "pass",
+      "metrics": {
+        "cases_scored": 40,
+        "errors": 0,
+        "contract_rate": 1.0,
+        "contract_wilson": 0.9124,
+        "first_draft_rate": 1.0,
+        "accuracy": 1.0,
+        "macro_f1": 1.0
+      },
+      "outputs_artifact": "37737939493"
+    }
+  },
+  "classify.lead_intent@1": {
+    "openai/gpt-oss:20b": {
+      "dataset_version": 1,
+      "graders": {
+        "code:label_match": "e5cf0ca263d3"
+      },
+      "run": "pe-20261008-0250fe",
+      "role": "champion",
+      "wire": "openai/gpt-oss-20b",
+      "verdict": "fail",
+      "metrics": {
+        "cases_scored": 7,
+        "errors": 33,
+        "contract_rate": 1.0,
+        "contract_wilson": 0.6457,
+        "first_draft_rate": 1.0,
+        "accuracy": 0.175,
+        "macro_f1": 0.2971
+      },
+      "outputs_artifact": "37737939493"
+    },
+    "openai/gpt-4o-mini": {
+      "dataset_version": 1,
+      "graders": {
+        "code:label_match": "e5cf0ca263d3"
+      },
+      "run": "pe-20261008-0250fe",
+      "role": "fallback",
+      "wire": "openai/gpt-4o-mini",
+      "verdict": "pass",
+      "metrics": {
+        "cases_scored": 40,
+        "errors": 0,
+        "contract_rate": 0.95,
+        "contract_wilson": 0.835,
+        "first_draft_rate": 0.95,
+        "accuracy": 0.95,
+        "macro_f1": 0.9499
+      },
+      "outputs_artifact": "37737939493"
+    },
+    "openai/gpt-5.4-mini": {
+      "dataset_version": 1,
+      "graders": {
+        "code:label_match": "e5cf0ca263d3"
+      },
+      "run": "pe-20261008-0250fe",
+      "role": "candidate",
+      "wire": "openai/gpt-5.4-mini",
+      "verdict": "pass",
+      "metrics": {
+        "cases_scored": 40,
+        "errors": 0,
+        "contract_rate": 0.95,
+        "contract_wilson": 0.835,
+        "first_draft_rate": 0.95,
+        "accuracy": 0.95,
+        "macro_f1": 0.9499
+      },
+      "outputs_artifact": "37737939493"
+    }
+  },
+  "classify.post_relevance@1": {
+    "openai/gpt-oss:20b": {
+      "dataset_version": 1,
+      "graders": {
+        "code:label_match": "e5cf0ca263d3"
+      },
+      "run": "pe-20261008-0250fe",
+      "role": "champion",
+      "wire": "openai/gpt-oss-20b",
+      "verdict": "pass",
+      "metrics": {
+        "cases_scored": 40,
+        "errors": 0,
+        "contract_rate": 0.975,
+        "contract_wilson": 0.8712,
+        "first_draft_rate": 0.975,
+        "accuracy": 0.975,
+        "macro_f1": 0.975
+      },
+      "outputs_artifact": "37737939493"
+    },
+    "openai/gpt-4o-mini": {
+      "dataset_version": 1,
+      "graders": {
+        "code:label_match": "e5cf0ca263d3"
+      },
+      "run": "pe-20261008-0250fe",
+      "role": "fallback",
+      "wire": "openai/gpt-4o-mini",
+      "verdict": "pass",
+      "metrics": {
+        "cases_scored": 40,
+        "errors": 0,
+        "contract_rate": 1.0,
+        "contract_wilson": 0.9124,
+        "first_draft_rate": 1.0,
+        "accuracy": 1.0,
+        "macro_f1": 1.0
+      },
+      "outputs_artifact": "37737939493"
+    },
+    "openai/gpt-5.4-mini": {
+      "dataset_version": 1,
+      "graders": {
+        "code:label_match": "e5cf0ca263d3"
+      },
+      "run": "pe-20261008-0250fe",
+      "role": "candidate",
+      "wire": "openai/gpt-5.4-mini",
+      "verdict": "pass",
+      "metrics": {
+        "cases_scored": 40,
+        "errors": 0,
+        "contract_rate": 1.0,
+        "contract_wilson": 0.9124,
+        "first_draft_rate": 1.0,
+        "accuracy": 1.0,
+        "macro_f1": 1.0
+      },
+      "outputs_artifact": "37737939493"
+    }
+  },
+  "comment.feed@1": {
+    "openai/gpt-oss:120b": {
+      "dataset_version": 1,
+      "graders": {
+        "code:comment_contract": "4f7978bede42",
+        "code:max_chars": "3271e2eee49e",
+        "code:meeting_ask": "38c77416b2bd",
+        "code:no_preamble": "04748b5e9ac5",
+        "code:slop_lint": "746aa9b4dff2",
+        "code:ungrounded_metrics": "6ba04cffa568",
+        "rubric:comment": "a204b0dea165"
+      },
+      "run": "pe-20261008-0250fe",
+      "role": "champion",
+      "wire": "openai/gpt-oss-120b",
+      "verdict": "pass",
+      "metrics": {
+        "cases_scored": 40,
+        "errors": 0,
+        "contract_rate": 1.0,
+        "contract_wilson": 0.9124,
+        "first_draft_rate": 0.475,
+        "accuracy": null,
+        "macro_f1": null,
+        "judged": 0,
+        "judge_passed": 0,
+        "judge_unparseable": 5,
+        "judge_rate": null,
+        "judge_calibrated": false
+      },
+      "outputs_artifact": "37737939493"
+    },
+    "openai/gemma4:31b": {
+      "dataset_version": 1,
+      "graders": {
+        "code:comment_contract": "4f7978bede42",
+        "code:max_chars": "3271e2eee49e",
+        "code:meeting_ask": "38c77416b2bd",
+        "code:no_preamble": "04748b5e9ac5",
+        "code:slop_lint": "746aa9b4dff2",
+        "code:ungrounded_metrics": "6ba04cffa568",
+        "rubric:comment": "a204b0dea165"
+      },
+      "run": "pe-20261008-0250fe",
+      "role": "fallback",
+      "wire": "google/gemma-4-31b-it",
+      "verdict": "pass",
+      "metrics": {
+        "cases_scored": 40,
+        "errors": 0,
+        "contract_rate": 1.0,
+        "contract_wilson": 0.9124,
+        "first_draft_rate": 0.7,
+        "accuracy": null,
+        "macro_f1": null,
+        "judged": 0,
+        "judge_passed": 0,
+        "judge_unparseable": 5,
+        "judge_rate": null,
+        "judge_calibrated": false
+      },
+      "outputs_artifact": "37737939493"
+    },
+    "openai/gpt-4o-mini": {
+      "dataset_version": 1,
+      "graders": {
+        "code:comment_contract": "4f7978bede42",
+        "code:max_chars": "3271e2eee49e",
+        "code:meeting_ask": "38c77416b2bd",
+        "code:no_preamble": "04748b5e9ac5",
+        "code:slop_lint": "746aa9b4dff2",
+        "code:ungrounded_metrics": "6ba04cffa568",
+        "rubric:comment": "a204b0dea165"
+      },
+      "run": "pe-20261008-0250fe",
+      "role": "fallback",
+      "wire": "openai/gpt-4o-mini",
+      "verdict": "pass",
+      "metrics": {
+        "cases_scored": 40,
+        "errors": 0,
+        "contract_rate": 1.0,
+        "contract_wilson": 0.9124,
+        "first_draft_rate": 0.675,
+        "accuracy": null,
+        "macro_f1": null,
+        "judged": 0,
+        "judge_passed": 0,
+        "judge_unparseable": 5,
+        "judge_rate": null,
+        "judge_calibrated": false
+      },
+      "outputs_artifact": "37737939493"
+    },
+    "openai/gpt-5.4-mini": {
+      "dataset_version": 1,
+      "graders": {
+        "code:comment_contract": "4f7978bede42",
+        "code:max_chars": "3271e2eee49e",
+        "code:meeting_ask": "38c77416b2bd",
+        "code:no_preamble": "04748b5e9ac5",
+        "code:slop_lint": "746aa9b4dff2",
+        "code:ungrounded_metrics": "6ba04cffa568",
+        "rubric:comment": "a204b0dea165"
+      },
+      "run": "pe-20261008-0250fe",
+      "role": "fallback",
+      "wire": "openai/gpt-5.4-mini",
+      "verdict": "pass",
+      "metrics": {
+        "cases_scored": 40,
+        "errors": 0,
+        "contract_rate": 1.0,
+        "contract_wilson": 0.9124,
+        "first_draft_rate": 0.725,
+        "accuracy": null,
+        "macro_f1": null,
+        "judged": 0,
+        "judge_passed": 0,
+        "judge_unparseable": 5,
+        "judge_rate": null,
+        "judge_calibrated": false
+      },
+      "outputs_artifact": "37737939493"
+    }
+  },
+  "comment.seed@1": {
+    "openai/gpt-oss:120b": {
+      "dataset_version": 1,
+      "graders": {
+        "code:max_chars": "3271e2eee49e",
+        "code:meeting_ask": "38c77416b2bd",
+        "code:no_preamble": "04748b5e9ac5",
+        "code:slop_lint": "746aa9b4dff2",
+        "rubric:comment": "a204b0dea165"
+      },
+      "run": "pe-20261008-0250fe",
+      "role": "champion",
+      "wire": "openai/gpt-oss-120b",
+      "verdict": "pass",
+      "metrics": {
+        "cases_scored": 40,
+        "errors": 0,
+        "contract_rate": 1.0,
+        "contract_wilson": 0.9124,
+        "first_draft_rate": 1.0,
+        "accuracy": null,
+        "macro_f1": null,
+        "judged": 0,
+        "judge_passed": 0,
+        "judge_unparseable": 5,
+        "judge_rate": null,
+        "judge_calibrated": false
+      },
+      "outputs_artifact": "37737939493"
+    },
+    "openai/gemma4:31b": {
+      "dataset_version": 1,
+      "graders": {
+        "code:max_chars": "3271e2eee49e",
+        "code:meeting_ask": "38c77416b2bd",
+        "code:no_preamble": "04748b5e9ac5",
+        "code:slop_lint": "746aa9b4dff2",
+        "rubric:comment": "a204b0dea165"
+      },
+      "run": "pe-20261008-0250fe",
+      "role": "fallback",
+      "wire": "google/gemma-4-31b-it",
+      "verdict": "pass",
+      "metrics": {
+        "cases_scored": 40,
+        "errors": 0,
+        "contract_rate": 1.0,
+        "contract_wilson": 0.9124,
+        "first_draft_rate": 1.0,
+        "accuracy": null,
+        "macro_f1": null,
+        "judged": 0,
+        "judge_passed": 0,
+        "judge_unparseable": 5,
+        "judge_rate": null,
+        "judge_calibrated": false
+      },
+      "outputs_artifact": "37737939493"
+    },
+    "openai/gpt-4o-mini": {
+      "dataset_version": 1,
+      "graders": {
+        "code:max_chars": "3271e2eee49e",
+        "code:meeting_ask": "38c77416b2bd",
+        "code:no_preamble": "04748b5e9ac5",
+        "code:slop_lint": "746aa9b4dff2",
+        "rubric:comment": "a204b0dea165"
+      },
+      "run": "pe-20261008-0250fe",
+      "role": "fallback",
+      "wire": "openai/gpt-4o-mini",
+      "verdict": "pass",
+      "metrics": {
+        "cases_scored": 40,
+        "errors": 0,
+        "contract_rate": 0.975,
+        "contract_wilson": 0.8712,
+        "first_draft_rate": 0.95,
+        "accuracy": null,
+        "macro_f1": null,
+        "judged": 0,
+        "judge_passed": 0,
+        "judge_unparseable": 5,
+        "judge_rate": null,
+        "judge_calibrated": false
+      },
+      "outputs_artifact": "37737939493"
+    },
+    "openai/gpt-5.4-mini": {
+      "dataset_version": 1,
+      "graders": {
+        "code:max_chars": "3271e2eee49e",
+        "code:meeting_ask": "38c77416b2bd",
+        "code:no_preamble": "04748b5e9ac5",
+        "code:slop_lint": "746aa9b4dff2",
+        "rubric:comment": "a204b0dea165"
+      },
+      "run": "pe-20261008-0250fe",
+      "role": "fallback",
+      "wire": "openai/gpt-5.4-mini",
+      "verdict": "pass",
+      "metrics": {
+        "cases_scored": 40,
+        "errors": 0,
+        "contract_rate": 1.0,
+        "contract_wilson": 0.9124,
+        "first_draft_rate": 1.0,
+        "accuracy": null,
+        "macro_f1": null,
+        "judged": 0,
+        "judge_passed": 0,
+        "judge_unparseable": 5,
+        "judge_rate": null,
+        "judge_calibrated": false
+      },
+      "outputs_artifact": "37737939493"
+    }
+  },
+  "dm.nurture@1": {
+    "openai/gpt-oss:120b": {
+      "dataset_version": 1,
+      "graders": {
+        "code:max_chars": "3271e2eee49e",
+        "code:meeting_ask": "38c77416b2bd",
+        "code:no_preamble": "04748b5e9ac5",
+        "code:slop_lint": "746aa9b4dff2",
+        "rubric:dm": "f87cbc7087ab"
+      },
+      "run": "pe-20261008-0250fe",
+      "role": "champion",
+      "wire": "openai/gpt-oss-120b",
+      "verdict": "fail",
+      "metrics": {
+        "cases_scored": 40,
+        "errors": 0,
+        "contract_rate": 0.875,
+        "contract_wilson": 0.7389,
+        "first_draft_rate": 0.85,
+        "accuracy": null,
+        "macro_f1": null,
+        "judged": 0,
+        "judge_passed": 0,
+        "judge_unparseable": 5,
+        "judge_rate": null,
+        "judge_calibrated": false
+      },
+      "outputs_artifact": "37737939493"
+    },
+    "openai/gemma4:31b": {
+      "dataset_version": 1,
+      "graders": {
+        "code:max_chars": "3271e2eee49e",
+        "code:meeting_ask": "38c77416b2bd",
+        "code:no_preamble": "04748b5e9ac5",
+        "code:slop_lint": "746aa9b4dff2",
+        "rubric:dm": "f87cbc7087ab"
+      },
+      "run": "pe-20261008-0250fe",
+      "role": "fallback",
+      "wire": "google/gemma-4-31b-it",
+      "verdict": "pass",
+      "metrics": {
+        "cases_scored": 40,
+        "errors": 0,
+        "contract_rate": 0.975,
+        "contract_wilson": 0.8712,
+        "first_draft_rate": 0.975,
+        "accuracy": null,
+        "macro_f1": null,
+        "judged": 0,
+        "judge_passed": 0,
+        "judge_unparseable": 5,
+        "judge_rate": null,
+        "judge_calibrated": false
+      },
+      "outputs_artifact": "37737939493"
+    },
+    "openai/gpt-4o-mini": {
+      "dataset_version": 1,
+      "graders": {
+        "code:max_chars": "3271e2eee49e",
+        "code:meeting_ask": "38c77416b2bd",
+        "code:no_preamble": "04748b5e9ac5",
+        "code:slop_lint": "746aa9b4dff2",
+        "rubric:dm": "f87cbc7087ab"
+      },
+      "run": "pe-20261008-0250fe",
+      "role": "fallback",
+      "wire": "openai/gpt-4o-mini",
+      "verdict": "fail",
+      "metrics": {
+        "cases_scored": 40,
+        "errors": 0,
+        "contract_rate": 0.825,
+        "contract_wilson": 0.6805,
+        "first_draft_rate": 0.775,
+        "accuracy": null,
+        "macro_f1": null,
+        "judged": 0,
+        "judge_passed": 0,
+        "judge_unparseable": 5,
+        "judge_rate": null,
+        "judge_calibrated": false
+      },
+      "outputs_artifact": "37737939493"
+    },
+    "openai/gpt-5.4-mini": {
+      "dataset_version": 1,
+      "graders": {
+        "code:max_chars": "3271e2eee49e",
+        "code:meeting_ask": "38c77416b2bd",
+        "code:no_preamble": "04748b5e9ac5",
+        "code:slop_lint": "746aa9b4dff2",
+        "rubric:dm": "f87cbc7087ab"
+      },
+      "run": "pe-20261008-0250fe",
+      "role": "fallback",
+      "wire": "openai/gpt-5.4-mini",
+      "verdict": "fail",
+      "metrics": {
+        "cases_scored": 40,
+        "errors": 0,
+        "contract_rate": 0.825,
+        "contract_wilson": 0.6805,
+        "first_draft_rate": 0.8,
+        "accuracy": null,
+        "macro_f1": null,
+        "judged": 0,
+        "judge_passed": 0,
+        "judge_unparseable": 5,
+        "judge_rate": null,
+        "judge_calibrated": false
+      },
+      "outputs_artifact": "37737939493"
+    }
+  },
+  "judge.authenticity@1": {
+    "openai/gpt-oss:120b": {
+      "dataset_version": 1,
+      "graders": {
+        "code:label_match": "e5cf0ca263d3",
+        "code:production_json": "8f50faa152bf"
+      },
+      "run": "pe-20261008-0250fe",
+      "role": "champion",
+      "wire": "openai/gpt-oss-120b",
+      "verdict": "fail",
+      "metrics": {
+        "cases_scored": 40,
+        "errors": 0,
+        "contract_rate": 0.925,
+        "contract_wilson": 0.8014,
+        "first_draft_rate": 0.925,
+        "accuracy": 0.925,
+        "macro_f1": 0.9371
+      },
+      "outputs_artifact": "37737939493"
+    },
+    "openai/gemma4:31b": {
+      "dataset_version": 1,
+      "graders": {
+        "code:label_match": "e5cf0ca263d3",
+        "code:production_json": "8f50faa152bf"
+      },
+      "run": "pe-20261008-0250fe",
+      "role": "fallback",
+      "wire": "google/gemma-4-31b-it",
+      "verdict": "pass",
+      "metrics": {
+        "cases_scored": 40,
+        "errors": 0,
+        "contract_rate": 1.0,
+        "contract_wilson": 0.9124,
+        "first_draft_rate": 1.0,
+        "accuracy": 1.0,
+        "macro_f1": 1.0
+      },
+      "outputs_artifact": "37737939493"
+    },
+    "openai/gpt-4o-mini": {
+      "dataset_version": 1,
+      "graders": {
+        "code:label_match": "e5cf0ca263d3",
+        "code:production_json": "8f50faa152bf"
+      },
+      "run": "pe-20261008-0250fe",
+      "role": "fallback",
+      "wire": "openai/gpt-4o-mini",
+      "verdict": "pass",
+      "metrics": {
+        "cases_scored": 40,
+        "errors": 0,
+        "contract_rate": 1.0,
+        "contract_wilson": 0.9124,
+        "first_draft_rate": 1.0,
+        "accuracy": 1.0,
+        "macro_f1": 1.0
+      },
+      "outputs_artifact": "37737939493"
+    },
+    "openai/gpt-5.4-mini": {
+      "dataset_version": 1,
+      "graders": {
+        "code:label_match": "e5cf0ca263d3",
+        "code:production_json": "8f50faa152bf"
+      },
+      "run": "pe-20261008-0250fe",
+      "role": "fallback",
+      "wire": "openai/gpt-5.4-mini",
+      "verdict": "pass",
+      "metrics": {
+        "cases_scored": 40,
+        "errors": 0,
+        "contract_rate": 1.0,
+        "contract_wilson": 0.9124,
+        "first_draft_rate": 1.0,
+        "accuracy": 1.0,
+        "macro_f1": 1.0
+      },
+      "outputs_artifact": "37737939493"
+    }
+  },
+  "post.thought_leadership@1": {
+    "openai/gpt-6.1-sol": {
+      "dataset_version": 1,
+      "graders": {
+        "code:dwell": "8eec9ec46194",
+        "code:max_chars": "3271e2eee49e",
+        "code:meeting_ask": "38c77416b2bd",
+        "code:min_burstiness": "6aa296eacb63",
+        "code:no_preamble": "04748b5e9ac5",
+        "code:slop_lint": "746aa9b4dff2",
+        "code:ungrounded_metrics": "6ba04cffa568",
+        "rubric:post_longform": "1ca15599fdbc"
+      },
+      "run": "pe-20261008-0250fe",
+      "role": "champion",
+      "wire": "openai/gpt-6.1-sol",
+      "verdict": "pass",
+      "metrics": {
+        "cases_scored": 40,
+        "errors": 0,
+        "contract_rate": 1.0,
+        "contract_wilson": 0.9124,
+        "first_draft_rate": 0.5,
+        "accuracy": null,
+        "macro_f1": null,
+        "judged": 0,
+        "judge_passed": 0,
+        "judge_unparseable": 5,
+        "judge_rate": null,
+        "judge_calibrated": false
+      },
+      "outputs_artifact": "37737939493"
+    },
+    "openai/gpt-4o": {
+      "dataset_version": 1,
+      "graders": {
+        "code:dwell": "8eec9ec46194",
+        "code:max_chars": "3271e2eee49e",
+        "code:meeting_ask": "38c77416b2bd",
+        "code:min_burstiness": "6aa296eacb63",
+        "code:no_preamble": "04748b5e9ac5",
+        "code:slop_lint": "746aa9b4dff2",
+        "code:ungrounded_metrics": "6ba04cffa568",
+        "rubric:post_longform": "1ca15599fdbc"
+      },
+      "run": "pe-20261008-0250fe",
+      "role": "fallback",
+      "wire": "openai/gpt-4o",
+      "verdict": "pass",
+      "metrics": {
+        "cases_scored": 40,
+        "errors": 0,
+        "contract_rate": 1.0,
+        "contract_wilson": 0.9124,
+        "first_draft_rate": 0.2,
+        "accuracy": null,
+        "macro_f1": null,
+        "judged": 0,
+        "judge_passed": 0,
+        "judge_unparseable": 5,
+        "judge_rate": null,
+        "judge_calibrated": false
+      },
+      "outputs_artifact": "37737939493"
+    }
+  }
+}
