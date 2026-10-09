@@ -68,6 +68,16 @@ _FAKE_COMPOSE = textwrap.dedent(
     elif "ps" in args:
         for svc in _ALL_PS.get(mode, _ALL_PS["pass"]):
             print(svc)
+    elif args[:1] == ["exec"] and "litellm" in args:
+        # The litellm readiness probe. DEPLOY_FAKE_LITELLM_READY_AFTER = how many probes fail
+        # before one succeeds; unset means never ready.
+        n = inc_state()
+        ready_after = os.environ.get("DEPLOY_FAKE_LITELLM_READY_AFTER")
+        if ready_after is not None and n > int(ready_after):
+            sys.exit(0)
+        print("urllib.error.URLError: <urlopen error [Errno 111] Connection refused>",
+              file=sys.stderr)
+        sys.exit(1)
     elif args[:3] == ["up", "-d", "--remove-orphans"]:
         n = inc_state()
         if n <= fail_count:
@@ -336,6 +346,64 @@ class TestDeployScriptWiring:
         persist = self.BODY.index('persist_image_tag "${TAG}"')
         converge = self.BODY.index("if ! converge_stack; then")
         assert persist < converge
+
+
+class TestLitellmReady:
+    """The readiness wait after a config-driven litellm restart (issue #2304)."""
+
+    def test_returns_0_once_the_proxy_answers(self, tmp_path: Path) -> None:
+        state = tmp_path / "state"
+        result = _run(
+            tmp_path,
+            {"DEPLOY_FAKE_STATE": str(state), "DEPLOY_FAKE_LITELLM_READY_AFTER": "2"},
+            "litellm_ready 30",
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        # Two refused probes, then the one that answered — it polls rather than giving up early.
+        assert state.read_text(encoding="utf-8") == "3"
+
+    def test_returns_1_when_the_proxy_never_answers(self, tmp_path: Path) -> None:
+        state = tmp_path / "state"
+        # 2s, not 1: `deadline` is whole-second `date +%s` (see TestColorHealthy).
+        result = _run(tmp_path, {"DEPLOY_FAKE_STATE": str(state)}, "litellm_ready 2")
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert int(state.read_text(encoding="utf-8")) >= 1
+
+
+class TestLitellmRestartOrdering:
+    """The litellm restart must sit inside the drain window and wait for readiness.
+
+    A config-changing deploy restarted litellm AFTER the new workers were up, dropping their
+    in-flight LLM calls (issue #2304: 4x `APIConnectionError: Connection error.` on v0.184.0).
+    The restart must sit inside the drain window — after the drain, before the worker converge —
+    and wait for readiness, and only one restart may exist.
+    """
+
+    BODY = DEPLOY_SH.read_text(encoding="utf-8")
+    MAIN = BODY[BODY.index("\nmain() {"):]
+
+    def test_restart_runs_after_the_drain_and_before_the_converge(self) -> None:
+        drain = self.MAIN.rindex("drain_workers")
+        restart = self.MAIN.index("${COMPOSE} restart litellm")
+        converge = self.MAIN.index("if ! converge_stack; then")
+        assert drain < restart < converge
+
+    def test_there_is_exactly_one_restart(self) -> None:
+        assert self.BODY.count("${COMPOSE} restart litellm") == 1
+
+    def test_restart_waits_for_readiness_before_the_converge(self) -> None:
+        restart = self.MAIN.index("${COMPOSE} restart litellm")
+        ready = self.MAIN.index('litellm_ready "${LITELLM_READY_TIMEOUT}"')
+        converge = self.MAIN.index("if ! converge_stack; then")
+        assert restart < ready < converge
+
+    def test_probe_uses_the_interpreter_the_compose_healthcheck_proves(self) -> None:
+        # The probe's output is discarded, so a missing interpreter reads as "never ready" and
+        # costs every config-changing deploy the full timeout. Pin it to the healthcheck's binary.
+        compose = (DEPLOY_SH.parents[1] / "docker-compose.yml").read_text(encoding="utf-8")
+        litellm_service = compose.split("\n  litellm:\n", 1)[1]
+        assert 'test: ["CMD-SHELL", "python3 -c' in litellm_service
+        assert "exec -T litellm python3 -c" in self.BODY
 
 
 class TestColorHealthy:

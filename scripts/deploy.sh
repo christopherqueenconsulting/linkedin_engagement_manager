@@ -293,6 +293,27 @@ color_healthy() {  # $1 = color, $2 = timeout seconds
   return 1
 }
 
+# Wait for litellm to answer its readiness endpoint after a restart (issue #2304). Probed from INSIDE
+# the container with the image's own `python3` — the same binary the compose healthcheck already
+# proves is there (curl is not guaranteed), and it works whatever the host port mapping is. A
+# missing interpreter would be swallowed by the redirect below and read as "never ready".
+# Returns 0 when ready, 1 if the timeout ran out. The caller treats 1 as a WARN, never an abort: a
+# slow proxy is no reason to leave the box half-deployed, and the client's connect-retry (#986)
+# still rides out a proxy that is not yet accepting connections.
+LITELLM_READY_TIMEOUT="${LITELLM_READY_TIMEOUT:-90}"
+litellm_ready() {  # $1 = timeout seconds
+  local deadline=$(( $(date +%s) + $1 ))
+  while (( $(date +%s) < deadline )); do
+    if ${COMPOSE} exec -T litellm python3 -c \
+      "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/readiness', timeout=5)" \
+      >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 3
+  done
+  return 1
+}
+
 main() {
 TAG="${1:?Usage: deploy.sh <image-tag>}"
 
@@ -508,6 +529,28 @@ persist_image_tag "${TAG}"
 #     code — so a slow drain costs deploy duration, not availability.
 drain_workers
 
+# 6d. Reload litellm if its config changed (compose won't recreate it on a bind-mount edit alone).
+#     It restarts HERE, inside the drain window and before step 7 brings up the new workers, so no
+#     worker LLM call can be in flight across it — provided the drain finished. A drain that TIMED
+#     OUT leaves its stragglers running, and one mid-LLM-call is exposed here exactly as it is to the
+#     recreate that follows (warm shutdown, then SIGKILL). Restarting after the converge (the old step 7a)
+#     dropped live requests mid-response — 4 `APIConnectionError: Connection error.` on the v0.184.0
+#     deploy (issue #2304) — and those are deliberately NOT retried in-app, because the provider may
+#     already have billed them. The web API stays live through this, so a user-facing call at that
+#     exact moment can still fail; that window is now the restart plus the readiness wait, not more.
+if [[ "${LITELLM_RESTART}" == "1" ]]; then
+  log "litellm config changed vs ${PREV_TAG:-<none>} — restarting litellm to reload it"
+  if ${COMPOSE} restart litellm; then
+    if litellm_ready "${LITELLM_READY_TIMEOUT}"; then
+      log "litellm is ready"
+    else
+      log "WARN: litellm not ready after ${LITELLM_READY_TIMEOUT}s (continuing)"
+    fi
+  else
+    log "WARN: litellm restart failed (continuing)"
+  fi
+fi
+
 # 7. Converge the rest of the stack on the new tag (workers, beat, the standby color). The active
 #    color and the edge are already at their target state, so this doesn't touch routing.
 log "Recreating remaining services"
@@ -523,13 +566,7 @@ if ! verify_stack_running; then
   exit 1
 fi
 
-# 7a. Reload litellm if its config changed (compose won't recreate it on a bind-mount edit alone).
-if [[ "${LITELLM_RESTART}" == "1" ]]; then
-  log "litellm config changed vs ${PREV_TAG:-<none>} — restarting litellm to reload it"
-  ${COMPOSE} restart litellm || log "WARN: litellm restart failed (continuing)"
-fi
-
-# 7b. Healthy on the new tag — lift the pause and restore consumers.
+# 7a. Healthy on the new tag — lift the pause and restore consumers.
 maint end || log "WARN: could not clear maintenance mode (pause TTL will expire it)"
 
 # 8. Prune old artifacts.
