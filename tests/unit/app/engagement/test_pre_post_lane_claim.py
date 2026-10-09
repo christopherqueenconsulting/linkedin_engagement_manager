@@ -107,6 +107,7 @@ class TestCommentingWindowIsOnePass:
         from cqc_lem.app.engagement import feed as mod
 
         with patch(f"{_FEED}.is_commenting_held", return_value=False), \
+             patch(f"{_FEED}._comment_allowance_today", return_value=5), \
              patch(f"{_FEED}.acquire_run_lock", return_value="tok"), \
              patch(f"{_FEED}.release_run_lock") as release, \
              patch(f"{_FEED}.claim_pre_post_lane", return_value=claimed) as claim, \
@@ -149,6 +150,7 @@ class TestCommentingWindowIsOnePass:
         from cqc_lem.app.engagement import feed as mod
 
         with patch(f"{_FEED}.is_commenting_held", return_value=False), \
+             patch(f"{_FEED}._comment_allowance_today", return_value=5), \
              patch(f"{_FEED}.acquire_run_lock", return_value=None), \
              patch(f"{_FEED}.claim_pre_post_lane") as claim, \
              patch(f"{_FEED}.get_current_profile") as session:

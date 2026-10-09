@@ -2822,6 +2822,24 @@ def _has_sourced_facts(user_id: int) -> bool:
                for entry in entries)
 
 
+def _comment_allowance_today(user_id: int) -> Optional[int]:
+    """Today's remaining comment allowance, or None when it cannot be read (the caller fails open).
+
+    The same budget `comment_on_feed_inline` enforces, read without a browser session.
+    """
+    try:
+        prefs = get_engagement_preferences(user_id)
+        daily_cap = prefs.get("max_comments_per_day") or 20
+        return remaining_actions(user_id, ACTION_COMMENT, daily_cap, count_comments_today(user_id),
+                                 caps=engagement_caps_from_prefs(prefs))
+    except Exception as e:
+        # The feed walk re-reads the same budget and surfaces the fault, so this pre-check only
+        # declines to skip.
+        log_debug(f"Comment allowance unreadable before the session — proceeding: {e}",
+                  user_id=user_id, task_name="automate_commenting")
+        return None
+
+
 def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: int,
                            max_posts: int = 10, deadline_ts: float = None, prefs: dict = None,
                            engagers: set = None, is_group_feed: bool = False) -> int:
@@ -4578,6 +4596,14 @@ def automate_commenting(self, user_id: int, loop_for_duration: int = None, futur
         log_warning(f"Feed commenting held for user {user_id}: {reason}", user_id=user_id,
                     action_type="comment", task_name="automate_commenting")
         return f"Skipped: feed commenting is held ({reason})"
+
+    # Today's comment allowance, BEFORE a session opens (issue #2327): on a pacing rest day the
+    # golden-hour loop logged in every ~90 s only for `comment_on_feed_inline` to find a budget of 0.
+    # Same inputs that function reads; returning here also ends the loop, since nothing re-queues.
+    if _comment_allowance_today(user_id) == 0:
+        log_debug("Daily comment budget already spent — no session opened", user_id=user_id,
+                  action_type="comment", task_name="automate_commenting")
+        return "Skipped: daily comment budget already spent"
 
     # Single-flight per user: the pre-post trigger, the golden-hour beat, and this task's own
     # self-requeue can otherwise run concurrently and double-walk the feed. Only one commenting
