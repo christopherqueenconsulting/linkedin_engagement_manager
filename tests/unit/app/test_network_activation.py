@@ -203,7 +203,7 @@ def _roster(**over):
 
 def _scan_funnel(prefs=None, roster=None, engagers=None, open_targets=0, requested=None,
                  existing=None, max_new=None, commenters=None, activity=None, profile_exc=None,
-                 activity_exc=None):
+                 activity_exc=None, commenters_exc=None):
     from cqc_lem.app.engagement import outreach as ra
     with patch(f"{_OUT}.get_engagement_preferences",
                return_value=prefs if prefs is not None else _prefs()), \
@@ -216,7 +216,8 @@ def _scan_funnel(prefs=None, roster=None, engagers=None, open_targets=0, request
          patch(f"{_OUT}.generate_ai_response", return_value="A grounded comment."), \
          patch(f"{_OUT}.get_ai_message_refinement", return_value="Refined note"), \
          patch(f"{_OUT}.insert_outreach_target", return_value=11) as insert, \
-         patch(f"{_OUT}._harvest_post_commenters", return_value=commenters or []), \
+         patch(f"{_OUT}._harvest_post_commenters", side_effect=commenters_exc,
+               return_value=commenters or []), \
          patch("cqc_lem.utilities.linkedin.scrapper.get_profile_recent_activity",
                side_effect=activity_exc,
                return_value=activity if activity is not None
@@ -415,6 +416,57 @@ class TestEmptyFunnelScanIsNotAWarning:
             _scan_funnel(roster=[_roster()], activity_exc=RuntimeError("profile gone"))
         assert any("Could not read a roster author's recent activity" in str(call.args[0])
                    for call in warn.call_args_list)
+
+
+class TestTabCrashEndsTheRosterWalk:
+    """A crashed tab ends the roster walk on ONE warning (issue #2321).
+
+    The renderer is dead, so every later roster author failed on the same tab and warned once
+    each — one crash recurred into a grouped `$exception` within a single run. The walk now stops
+    and keeps what it already sourced.
+    """
+
+    _CRASH = "Message: tab crashed\n  (Session info: chrome=153.0.8010.47)"
+
+    def _roster_of(self, n):
+        return [_roster(profile_url=f"https://www.linkedin.com/in/author-{i}", name=f"Author {i}")
+                for i in range(n)]
+
+    def test_a_crash_reading_activity_warns_once_and_stops(self):
+        from selenium.common.exceptions import WebDriverException
+        with patch(f"{_OUT}.log_warning") as warn, \
+             patch(f"{_OUT}.track_outreach_funnel_scan") as track:
+            _out, insert = _scan_funnel(roster=self._roster_of(3), engagers=[_engager(degree="2nd")],
+                                        activity_exc=WebDriverException(self._CRASH))
+        assert warn.call_count == 1
+        assert "stopping outreach funnel roster sourcing" in warn.call_args.args[0]
+        assert track.call_args.args[1]["roster_authors_walked"] == 1
+        assert insert.call_count == 1  # the engager still files
+
+    def test_a_crash_harvesting_commenters_keeps_the_author_already_sourced(self):
+        from selenium.common.exceptions import WebDriverException
+
+        from cqc_lem.utilities.db import OutreachStage
+        with patch(f"{_OUT}.log_warning") as warn, \
+             patch(f"{_OUT}.track_outreach_funnel_scan") as track:
+            _out, insert = _scan_funnel(roster=self._roster_of(3),
+                                        commenters_exc=WebDriverException(self._CRASH))
+        assert warn.call_count == 1
+        assert "stopping outreach funnel roster sourcing" in warn.call_args.args[0]
+        assert track.call_args.args[1]["roster_authors_walked"] == 1
+        assert insert.call_count == 1
+        assert insert.call_args.kwargs["stage"] == OutreachStage.COMMENT
+
+    def test_a_crash_at_login_is_not_warned_a_second_time(self):
+        """get_current_profile already warned where it detected the crash (#1749)."""
+        from selenium.common.exceptions import WebDriverException
+        with patch(f"{_OUT}.log_warning") as warn, patch(f"{_OUT}.log_debug") as debug:
+            _out, insert = _scan_funnel(roster=[_roster()], engagers=[_engager(degree="2nd")],
+                                        profile_exc=WebDriverException(self._CRASH))
+        warn.assert_not_called()
+        assert any("Browser tab crashed while starting outreach funnel sourcing" in str(c.args[0])
+                   for c in debug.call_args_list)
+        assert insert.call_count == 1
 
 
 class TestSourcingDispatch:
