@@ -20,6 +20,7 @@ from typing import Optional, Tuple
 
 import requests
 
+from cqc_lem.utilities.demo_mode import guard_linkedin, is_demo_mode
 from cqc_lem.utilities.env_constants import LI_CLIENT_ID, LI_CLIENT_SECRET
 from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 
@@ -133,7 +134,11 @@ def attempt_token_refresh(user_id: int) -> Tuple[bool, Optional[str]]:
         (succeeded, new_access_token). A False with no error is the ORDINARY case for an app
         LinkedIn never granted refresh tokens to; that path is DEBUG, not a warning, because
         warning on it would file a defect against working behaviour.
+
+    Raises:
+        DemoModeError: ``DEMO_MODE`` is on — the one exception to "never raises" (#2372).
     """
+    guard_linkedin("token_refresh.attempt_token_refresh")
     # Import here to avoid circular imports at module load
     from cqc_lem.utilities.db import get_user_token_info, update_user_access_token
 
@@ -218,7 +223,8 @@ def resolve_token_status(user_id: int, auto_refresh: bool = True) -> dict:
     refresh_attempted = False
     refresh_succeeded = False
 
-    if auto_refresh and expiring_soon and refresh_token_usable(token_info):
+    # Demo mode keeps this READ working for the SPA countdown; only the LinkedIn renewal is skipped.
+    if auto_refresh and expiring_soon and refresh_token_usable(token_info) and not is_demo_mode():
         refresh_attempted = True
         refresh_succeeded, _ = attempt_token_refresh(user_id)
         if refresh_succeeded:

@@ -332,8 +332,8 @@ def capture_flow(flow: TutorialFlow, driver=None) -> dict:
     create_folder_if_not_exists(frames_dir)
     owns_driver = driver is None
     # No user_id on purpose: this session hits OUR OWN SPA, never LinkedIn, so it wants neither a
-    # residential proxy nor a user's geo profile.
-    driver = driver or get_docker_driver(headless=True, session_name="TutorialCapture")
+    # residential proxy nor a user's geo profile — and is the one session DEMO_MODE allows (#2372).
+    driver = driver or get_docker_driver(headless=True, session_name="TutorialCapture", demo_safe=True)
     wait = WebDriverWait(driver, WAIT_DEFAULT_TIMEOUT)
     frames, markers = [], []
     try:

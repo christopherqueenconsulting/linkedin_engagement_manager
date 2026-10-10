@@ -155,6 +155,7 @@ from cqc_lem.utilities.db import (
     user_approver,
     user_owns_posts,
 )
+from cqc_lem.utilities.demo_mode import DemoModeError, guard_linkedin, is_demo_mode
 from cqc_lem.utilities.env_constants import (
     API_ACCESS_TOKENS,
     AUTH_CHALLENGE_TTL_SECONDS,
@@ -208,6 +209,12 @@ app = FastAPI(
 
 # All API routes live under /api so the React client's baseURL: '/api' works
 router = APIRouter(prefix="/api")
+
+
+@app.exception_handler(DemoModeError)
+async def demo_mode_refused(request: Request, exc: DemoModeError) -> JSONResponse:
+    """A LinkedIn call refused by DEMO_MODE (#2372) is a 503 the SPA can read, not a 500 defect."""
+    return JSONResponse(status_code=503, content={"detail": "Demo mode: LinkedIn is disabled."})
 
 
 @app.middleware("http")
@@ -1522,6 +1529,8 @@ def get_app_info() -> ResponseModel[dict[str, Any]]:
     return ResponseModel(status_code=200, detail={
         "version": get_app_version(),
         "show_version": SHOW_VERSION_FOOTER,
+        # The SPA's "Demo data" badge (#2372) renders only when this is true.
+        "demo_mode": is_demo_mode(),
     })
 
 
@@ -2728,6 +2737,7 @@ def linkedin_auth_init(session_token: str = None) -> RedirectResponse:
     signature named an account it did not use, and it put the address in a URL (browser history,
     `Referer`) for nothing. An unused actor parameter is the next author's invitation to use it.
     """
+    guard_linkedin("api.linkedin_auth_init")
     client = AuthClient(LI_CLIENT_ID, LI_CLIENT_SECRET, LI_REDIRECT_URL)
     # Embed the session_token in state so the callback can find the right user,
     # even when the LinkedIn account email differs from the login email.
@@ -2753,6 +2763,8 @@ def linkedin_callback(code: str, state: str = None) -> Union[ResponseModel, Redi
     caller is a browser mid-flow, and an API error page strands the user outside the app.
     """
     from urllib.parse import urlencode
+
+    guard_linkedin("api.linkedin_callback")
 
     def _account_redirect(params: dict) -> RedirectResponse:
         parsed_url = urlparse(LI_REDIRECT_URL)

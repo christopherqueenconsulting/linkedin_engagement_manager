@@ -291,12 +291,21 @@ class TestSessionCookieAttributes:
 
 
 class TestAppInfo:
-    def test_returns_version_and_toggle(self, main_mod, api_client):
+    def test_returns_version_and_toggle(self, main_mod, api_client, monkeypatch):
+        monkeypatch.delenv("DEMO_MODE", raising=False)
         with patch("cqc_lem.utilities.env_constants.get_app_version", return_value="1.2.3"), \
              patch("cqc_lem.utilities.env_constants.SHOW_VERSION_FOOTER", True):
             resp = api_client.get("/api/app-info")
         assert resp.status_code == 200
-        assert resp.json()["detail"] == {"version": "1.2.3", "show_version": True}
+        assert resp.json()["detail"] == {"version": "1.2.3", "show_version": True,
+                                          "demo_mode": False}
+
+    def test_reports_demo_mode_read_at_call_time(self, main_mod, api_client, monkeypatch):
+        # #2372: the SPA's "Demo data" badge keys off this; the env is read per request.
+        monkeypatch.setenv("DEMO_MODE", "true")
+        assert api_client.get("/api/app-info").json()["detail"]["demo_mode"] is True
+        monkeypatch.setenv("DEMO_MODE", "no")
+        assert api_client.get("/api/app-info").json()["detail"]["demo_mode"] is False
 
     def test_reachable_when_gate_enabled(self, main_mod, api_client):
         # The footer loads pre-login, so /api/app-info must clear the bearer gate.
