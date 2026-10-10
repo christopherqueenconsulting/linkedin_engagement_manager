@@ -3,6 +3,7 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import api from '../../api/client'
 import { useAuth } from '../../contexts/useAuth'
 import { useAccountReadiness } from '../../hooks/useAccountReadiness'
+import { useEngagementMode } from '../../hooks/useEngagementMode'
 import LinkedInSessionCard from '../../components/LinkedInSessionCard'
 import LinkedInSignInStatusCard from './LinkedInSignInStatusCard'
 import { useStepUp } from '../../hooks/useStepUp'
@@ -15,6 +16,11 @@ export default function LinkedInLoginCard() {
   const { data: readiness } = useAccountReadiness()
   const sessionOk = readiness?.items.find((i) => i.key === 'linkedin_session')?.ok ?? false
   const cookieMigrationNeeded = readiness?.cookie_migration_needed ?? false
+  // Suggest-only accounts (every trial) connect through LinkedIn sign-in only (issue #2368): the
+  // API refuses their cookie, extension-token and password writes, so none of those controls are
+  // shown. Fails closed — until the mode reads 'automate', the credential controls stay hidden.
+  const engagementMode = useEngagementMode()
+  const oauthOnly = engagementMode !== 'automate'
 
   const [liConnectedLocal] = useState(localStorage.getItem('lem_li_connected') === '1')
   const [liPassword, setLiPassword] = useState('')
@@ -143,7 +149,9 @@ export default function LinkedInLoginCard() {
           </div>
 
           <p className="text-xs text-gray-500">
-            Connecting allows LEM to post on your behalf, send DMs, reply to comments, and engage with your network automatically.
+            {engagementMode === 'suggest'
+              ? 'Connecting lets LEM publish the posts you approve.'
+              : 'Connecting allows LEM to post on your behalf, send DMs, reply to comments, and engage with your network automatically.'}
           </p>
 
           <a
@@ -173,17 +181,26 @@ export default function LinkedInLoginCard() {
         </div>
       )}
 
+      {engagementMode === 'suggest' && (
+        <p data-testid="oauth-only-note" className="text-xs text-gray-500 px-1">
+          Your account connects through LinkedIn sign-in only. LEM never asks for your LinkedIn
+          password or session cookie.
+        </p>
+      )}
+
       {/* LinkedIn Session (cookie) — the DEFAULT engagement login (issue #745, decision 2A) */}
-      <LinkedInSessionCard connected={sessionOk} migrationNeeded={cookieMigrationNeeded} />
+      {!oauthOnly && (
+        <LinkedInSessionCard connected={sessionOk} migrationNeeded={cookieMigrationNeeded} />
+      )}
 
       {/* Whether the automation's last sign-in landed, and whether it is waiting on the device
           approval the user was emailed about (issue #933). A saved session says only that a
           credential exists — this says whether it worked. */}
-      <LinkedInSignInStatusCard />
+      {!oauthOnly && <LinkedInSignInStatusCard />}
 
       {/* LinkedIn Automation Password — DEPRECATED, collapsed behind a disclosure so the cookie
           path above is the one users take. Kept working for accounts that already rely on it. */}
-      {isLinkedInConnected && !tokenExpired && (
+      {!oauthOnly && isLinkedInConnected && !tokenExpired && (
         <details className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 space-y-4">
           <summary className="cursor-pointer text-sm font-medium text-gray-500">
             Use a LinkedIn password instead (not recommended)
