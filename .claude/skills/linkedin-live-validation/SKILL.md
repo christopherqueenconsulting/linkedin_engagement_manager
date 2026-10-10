@@ -5,11 +5,11 @@ description: Use when a LinkedIn selector, scrape, or automation flow may have d
 
 # Live LinkedIn selector grounding
 
-> **Who may RUN the probe: the owner, and — since #1301 — a pipeline agent, under the three
-> conditions below.** The old rule was "owner only", because "read-only" was a property of the
-> prose and a headless lane launches with `--dangerously-skip-permissions`, so nothing but the code
-> stood between a probe and a post on the owner's real account. All three reasons are now
-> mechanisms, not intentions:
+> **Who may RUN the probe: the owner.** Pipeline agents run under a `dontAsk` permission profile
+> that denies the `sudo docker exec` the probe launches through, so an agent that needs a live
+> reading asks for the run in a Decision Comment. Since #1301 the probe is also safe by MECHANISM —
+> before it, "read-only" was a property of the prose while headless lanes ran with
+> `--dangerously-skip-permissions`. The three mechanisms:
 >
 > 1. **It cannot write.** `install_read_only_guard()` patches Selenium the moment the session is up
 >    (signing in is the one step that legitimately types — credentials and the emailed PIN — through

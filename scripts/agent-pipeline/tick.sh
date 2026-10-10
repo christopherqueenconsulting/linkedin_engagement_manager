@@ -182,6 +182,10 @@ fi
 # and let a genuinely exhausted lane dispatch again on the next real tick.
 if [ "$DRY_RUN" = "1" ]; then ledger_reset() { :; }; fi
 
+# A dispatch run_lane will REFUSE (permission profile missing) must not spend a run budget. v1
+# charges before run_claude at six sites, so the guard wraps ledger_charge once (lib/run_lane.sh).
+if command -v guard_ledger_charge_with_profile >/dev/null 2>&1; then guard_ledger_charge_with_profile; fi
+
 # --- v1/v2 coexistence: the V1_RETIRED sentinel and the --failsafe role ------------------------
 # After cutover the v2 daemon is the dispatcher and this script becomes the safety net. Two files,
 # two meanings, and keeping them separate is the whole point:
@@ -378,7 +382,7 @@ epoch() { date -d "$1" +%s 2>/dev/null || echo 0; }
 # and a merge to main, but labels have no ACL and this repo is PUBLIC — and three writers could
 # create that signal, two of them automated: an LLM triage cron with no author filter, and the
 # unauthenticated `POST /api/feedback` widget. So an outsider's issue body could become the prompt
-# for a `--dangerously-skip-permissions` run under the owner's token.
+# for an unattended agent run under the owner's token.
 #
 # Two INDEPENDENT halves must hold, because neither implies the other: an outsider's issue can be
 # labelled by a trusted bot (that was the feedback path), and a trusted author's issue can be

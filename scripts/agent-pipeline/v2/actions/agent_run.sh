@@ -71,6 +71,14 @@ if ! claim_branch "$BRANCH"; then
   exit "$EX_BUSY"
 fi
 
+# Permission profile BEFORE the budget. run_lane would refuse this dispatch with EX_SETUP anyway,
+# but only after the charge below — so a box missing config/claude-headless.json would burn every
+# item's budget on runs that never started, and then park them as if they had failed.
+if command -v permission_profile_ready >/dev/null 2>&1 && ! permission_profile_ready "$MODE"; then
+  log "permission profile missing — refusing $MODE for $KIND #$NUMBER before charging budget (EX_SETUP). Ship config/ with install.sh --sync."
+  exit "$EX_SETUP"
+fi
+
 # Budget. The reset key must never be derivable from something an agent can produce: agents push
 # heads, so keying on the head SHA refills the meter on the agent's own commits (finding H1). `-`
 # means "spans the item's lifetime until an owner event resets it".

@@ -152,8 +152,9 @@ def graded(reading: dict, state: str, verdict: str) -> dict:
 # ───────────────────────── read-only enforcement (issue #1301) ─────────────────────────
 # Until #1301 "read-only" was a PROPERTY of this file: every probe was written not to submit
 # anything, and a reviewer checked that by reading it. That is what kept autonomous agents out —
-# a headless lane launches with `--dangerously-skip-permissions`, so nothing but the code itself
-# stands between a probe and a post on the owner's real account.
+# a headless lane then launched with `--dangerously-skip-permissions` (its dontAsk profile is guard
+# rails, not a sandbox, and has an emergency off switch), so nothing but the code itself stands
+# between a probe and a post on the owner's real account.
 #
 # So it is a MECHANISM now. Every LinkedIn write needs one of exactly two things:
 #
@@ -7371,7 +7372,7 @@ def main(argv: Optional[list] = None) -> int:
 
     # Decided BEFORE Chrome opens, the same rule `plan_daily_invites` follows — a refusal that has
     # already spent a session is not a refusal.
-    # No override flag exists, deliberately. Agents run with `--dangerously-skip-permissions`, so
+    # No override flag exists, deliberately. An agent's permission profile is not a sandbox, so
     # a hatch guarded only by "an agent must never pass this" is guarded by nothing. An owner with a
     # genuinely stuck breaker clears the breaker itself — the state this reads — rather than
     # teaching the probe to ignore it.

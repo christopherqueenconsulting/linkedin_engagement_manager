@@ -345,14 +345,21 @@ def _posted_bodies(runbook: Path) -> list[str]:
     The raw markdown line is not what reaches GitHub — `gh pr comment $PR --body "…"` is, and the
     detector runs on the body. Asserting against the line would pass on a runbook whose posted text
     the detector cannot read.
+
+    Under the dontAsk profile comments are posted through `gh_safe.sh pr-comment` — an inline
+    one-line `--body "…"`, or a file whose FIRST line the runbook spells out ("Write `…` as the
+    FIRST line of tmp/…"). Both are what reaches GitHub, so both are collected.
     """
-    return re.findall(r'gh pr comment [^\n]*?--body "([^"]*)"', runbook.read_text(encoding="utf-8"))
+    text = runbook.read_text(encoding="utf-8")
+    inline = re.findall(r'(?:gh pr comment|gh_safe\.sh pr-comment) [^\n]*?--body "([^"]*)"', text)
+    from_file = re.findall(r"`([^`]*)` as the FIRST line of", text)
+    return inline + from_file
 
 
 def test_phasefix_tells_the_agent_how_to_clear_it():
     """The other half. A lane that cannot release its own hold re-dispatches until the budget parks."""
     bodies = _posted_bodies(PHASEFIX)
-    assert bodies, "phasefix.md gives the agent no `gh pr comment --body` to copy"
+    assert len(bodies) >= 2, f"phasefix.md must give the agent BOTH clearing bodies to post: {bodies}"
     assert all(github.PHASE_GAP_CLEARED_RE.search(b) for b in bodies), (
         "phasefix.md posts a body the CLEARED detector cannot read — the lane cannot release its "
         f"own hold: {bodies}"

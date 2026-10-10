@@ -2,7 +2,7 @@
 
 LEM is a **public** repo that accepts outside contributions and runs an **autonomous agent
 pipeline**: an hourly tick on the VPS picks up labelled issues, implements them with
-`claude -p --dangerously-skip-permissions` under the owner's credentials, opens a PR, reviews it,
+`claude -p` under a `dontAsk` permission profile with the owner's credentials, opens a PR, reviews it,
 and merges it. Merges to `main` reach production within a release window.
 
 That combination means one thing has to be true, and this document is about keeping it true:
