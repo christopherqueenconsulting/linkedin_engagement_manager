@@ -19,13 +19,25 @@ Scenes:
 * demo3: the voice fields are empty, and one PENDING draft is already written in the voice the
   presenter types in during the recording (`DEMO3_NEW_VOICE`).
 
-Hard guards, checked before anything is written:
+NEVER run this on the production VPS. Production MySQL is published on 127.0.0.1:3306 there (for
+SSH-tunnel database GUIs), and dev checkouts live on the same host, so from a shell on the VPS, or
+through an SSH tunnel to it, "127.0.0.1" IS production. The host check below cannot see that.
 
-* The database host must be `localhost` / `127.0.0.1` / `::1`, or a docker-compose service (or a
-  compose `hostname` / `container_name`) defined in this repository's compose files.
-* A host taken from an AWS secret is refused, because it cannot be checked before connecting.
-* `ENVIRONMENT`, `APP_ENV` or `ENV` naming production, or `ENCRYPTION_REQUIRED=true` (set only on the
-  production stack), is refused.
+Checks, in order, before anything is written (exit 2 = refused, 3 = could not connect):
+
+1. Production markers: `ENVIRONMENT`, `APP_ENV` or `ENV` naming production, or
+   `ENCRYPTION_REQUIRED=true` (set only on the production stack). Defence in depth only: production
+   is not required to set any of them, so their absence proves nothing.
+2. Host: `localhost` / `127.0.0.1` / `::1`, or a docker-compose service (or a compose `hostname` /
+   `container_name`) defined in this repository's compose files. A host taken from an AWS secret is
+   refused. This rules out a remote server by name, but not the production DB behind 127.0.0.1.
+3. Connection probe: a database that cannot be reached exits 3 with the connector's reason.
+4. Database fingerprint (the real control): a read-only count of what belongs to anyone other than
+   a demo account. Any POSTED post owned by a non-demo account, or more than
+   `MAX_NON_DEMO_USERS` non-demo accounts, refuses. A fingerprint that cannot be read refuses too:
+   an unreadable database is never treated as a local one.
+
+`--teardown` removes the demo account and every row it owns, behind the same checks.
 
 It makes no LinkedIn call and opens no browser: it only imports the database facade and the pure
 gate-finding builders, and it turns PostHog flag loading off for its own process.
@@ -55,16 +67,20 @@ if _SRC.is_dir() and str(_SRC) not in sys.path:
 os.environ.setdefault("LEM_TELEMETRY_MUTED", "1")
 os.environ["POSTHOG_FLAGS_ENABLED"] = "0"
 
+import mysql.connector  # noqa: E402
+
 from cqc_lem.platform.db import connection as db_connection  # noqa: E402
 from cqc_lem.utilities.db import (  # noqa: E402
     PostStatus,
     PostType,
     ensure_demo_user,
+    get_demo_db_fingerprint,
     insert_demo_post,
     insert_planned_post,
     mark_email_verified,
     reset_demo_user_rows,
     soft_delete_posts,
+    teardown_demo_user,
     update_db_post_authenticity_score,
     update_db_post_gate_reason,
     update_engagement_preferences,
@@ -72,6 +88,10 @@ from cqc_lem.utilities.db import (  # noqa: E402
     update_user_timezone,
 )
 from cqc_lem.utilities.quality_gates import authenticity_finding, similarity_finding  # noqa: E402
+
+EXIT_OK, EXIT_WRITE_FAILED, EXIT_REFUSED, EXIT_NO_CONNECTION = 0, 1, 2, 3
+#: A local database may hold a few test sign-ups besides the demo account; production holds many.
+MAX_NON_DEMO_USERS = 3
 
 SCENES = ("demo1", "demo2", "demo3")
 
@@ -354,6 +374,61 @@ def guard(env: dict, host: Optional[str], aws_secret_name: Optional[str],
     return check_db_host(host, names, has_placeholder)
 
 
+def fingerprint_refusal(fingerprint: dict) -> Optional[str]:
+    """Decide from the read-only fingerprint whether this database could be a real one.
+
+    Args:
+        fingerprint: What `get_demo_db_fingerprint` counted.
+
+    Returns:
+        A refusal reason, or None when the database looks like a local development one.
+    """
+    posted = int(fingerprint.get("non_demo_posted_posts", 0))
+    users = int(fingerprint.get("non_demo_users", 0))
+    if posted:
+        return (f"the database holds {posted} POSTED post(s) owned by non-demo accounts; "
+                "this looks like a real database")
+    if users > MAX_NON_DEMO_USERS:
+        return (f"the database holds {users} non-demo accounts (more than {MAX_NON_DEMO_USERS}); "
+                "this looks like a real database")
+    return None
+
+
+def _connection_target() -> str:
+    return f"{db_connection.MYSQL_HOST}:{db_connection.MYSQL_PORT or db_connection.DEFAULT_MYSQL_PORT}"
+
+
+def preflight(env: dict) -> tuple[int, Optional[str]]:
+    """Run every check that must pass before the first write.
+
+    Args:
+        env: The process environment.
+
+    Returns:
+        `(EXIT_OK, None)` when the seed may write, otherwise the exit code and the reason.
+    """
+    reason = guard(env, db_connection.MYSQL_HOST, db_connection.AWS_MYSQL_SECRET_NAME)
+    if reason:
+        return EXIT_REFUSED, f"refused: {reason}"
+    try:
+        db_connection.get_db_connection().close()
+    except mysql.connector.Error as exc:
+        return EXIT_NO_CONNECTION, (
+            f"could not connect to MySQL at {_connection_target()} "
+            f"(errno {getattr(exc, 'errno', None)}: {exc}); nothing was written")
+    # The real control. The checks above are name-based and the production DB is reachable as
+    # 127.0.0.1 from the VPS; only the CONTENTS of the database can tell the two apart. Fail closed:
+    # a fingerprint that cannot be read is a refusal, never an empty local database.
+    try:
+        fingerprint = get_demo_db_fingerprint()
+    except mysql.connector.Error as exc:
+        return EXIT_REFUSED, f"refused: the database fingerprint could not be read ({exc})"
+    reason = fingerprint_refusal(fingerprint)
+    if reason:
+        return EXIT_REFUSED, f"refused: {reason}"
+    return EXIT_OK, None
+
+
 # --------------------------------------------------------------------------- scenes
 
 
@@ -483,7 +558,10 @@ def _default_anchor() -> date:
 def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
     """Parse the command line."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
-    parser.add_argument("--scene", required=True, choices=SCENES)
+    action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument("--scene", choices=SCENES)
+    action.add_argument("--teardown", action="store_true",
+                        help="remove the demo account and every row it owns")
     parser.add_argument("--anchor-date", type=date.fromisoformat, default=None,
                         help="the recording day (YYYY-MM-DD); defaults to today in "
                              f"{DEMO_TIMEZONE}. Same scene + same day = same rows.")
@@ -491,22 +569,35 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
 
 
 def main(argv: Optional[list] = None) -> int:
-    """Guard, then seed. Exit 0 when seeded, 2 when refused, 1 when a write failed."""
+    """Check, then seed or tear down.
+
+    Returns:
+        0 done, 1 a write failed, 2 refused (nothing written), 3 could not connect (nothing written).
+    """
     args = parse_args(argv)
-    reason = guard(dict(os.environ), db_connection.MYSQL_HOST, db_connection.AWS_MYSQL_SECRET_NAME)
-    if reason:
-        sys.stderr.write(f"seed_demo_account: refused: {reason}\n")
-        return 2
+    code, reason = preflight(dict(os.environ))
+    if code != EXIT_OK:
+        sys.stderr.write(f"seed_demo_account: {reason}\n")
+        return code
+
+    if args.teardown:
+        counts = teardown_demo_user(DEMO_EMAIL)
+        if counts is None:
+            sys.stderr.write("seed_demo_account: database write failed: tear down the demo account\n")
+            return EXIT_WRITE_FAILED
+        sys.stdout.write(f"Removed the demo account {DEMO_EMAIL}: {counts}\n")
+        return EXIT_OK
+
     scene = build_scene(args.scene, args.anchor_date or _default_anchor())
     try:
         summary = apply_scene(scene)
     except SeedFailed as exc:
-        sys.stderr.write(f"seed_demo_account: {exc}\n")
-        return 1
+        sys.stderr.write(f"seed_demo_account: {exc}; the scene may be half-written, run it again\n")
+        return EXIT_WRITE_FAILED
     sys.stdout.write(
         f"Seeded {summary['scene']} for {DEMO_NAME} ({DEMO_EMAIL}, user {summary['user_id']}): "
         f"{summary['posts']} written posts, {summary['plan_slots']} plan slots.\n")
-    return 0
+    return EXIT_OK
 
 
 if __name__ == "__main__":

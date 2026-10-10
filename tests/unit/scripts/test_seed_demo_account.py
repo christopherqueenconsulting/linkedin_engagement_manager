@@ -5,6 +5,9 @@ Three acceptance criteria, each asserted here against a mocked database:
 * it refuses unless the database host is local or a docker-compose service in this repository;
 * it makes no LinkedIn (or any network) call;
 * each scene is idempotent: running it twice leaves the same rows, and no other account's.
+
+Plus the fail-closed database fingerprint (production MySQL answers on 127.0.0.1 on the VPS, so the
+host check alone cannot tell them apart), the connect-specific exit, and `--teardown`.
 """
 
 import importlib.util
@@ -17,6 +20,7 @@ import sys
 from datetime import date, datetime, timezone
 from unittest.mock import MagicMock
 
+import mysql.connector
 import pytest
 
 from cqc_lem.platform.db.enums import PostStatus, PostType
@@ -44,10 +48,10 @@ def tool(monkeypatch):
 class FakeDb:
     """An in-memory stand-in for the repository functions the seed calls, with another user's rows."""
 
-    def __init__(self):
+    def __init__(self, other_status=PostStatus.PENDING):
         self.users = {_OTHER_USER: {"email": "someone@real-company.test"}}
-        self.posts = {1: {"user_id": _OTHER_USER, "content": "a real person's post",
-                          "status": PostStatus.POSTED.value, "scheduled_time": None,
+        self.posts = {1: {"user_id": _OTHER_USER, "content": "a local test user's draft",
+                          "status": other_status.value, "scheduled_time": None,
                           "authenticity_score": None, "gate_reason": None,
                           "rejection_reason": None, "buyer_stage": None, "content_mix": None}}
         self.prefs = {_OTHER_USER: {"tone": "theirs"}}
@@ -115,12 +119,28 @@ class FakeDb:
     def mark_email_verified(self, user_id):
         return True
 
+    def get_demo_db_fingerprint(self):
+        demo = {uid for uid, u in self.users.items() if u["email"].endswith("@example.com")}
+        return {"non_demo_users": len(self.users) - len(demo),
+                "non_demo_posted_posts": sum(1 for p in self.posts.values()
+                                             if p["status"] == PostStatus.POSTED.value
+                                             and p["user_id"] not in demo)}
+
+    def teardown_demo_user(self, email):
+        uid = next((u for u, row in self.users.items() if row["email"] == email), None)
+        if uid is None:
+            return {"users": 0}
+        self.reset_demo_user_rows(uid, email)
+        del self.users[uid]
+        return {"users": 1}
+
     def install(self, module, monkeypatch):
         for name in ("ensure_demo_user", "reset_demo_user_rows", "insert_demo_post",
                      "insert_planned_post", "update_db_post_authenticity_score",
                      "update_db_post_gate_reason", "soft_delete_posts",
                      "update_engagement_preferences", "update_user_linkedin_display_name",
-                     "update_user_timezone", "mark_email_verified"):
+                     "update_user_timezone", "mark_email_verified", "get_demo_db_fingerprint",
+                     "teardown_demo_user"):
             monkeypatch.setattr(module, name, getattr(self, name))
         return self
 
@@ -135,6 +155,31 @@ class FakeDb:
 @pytest.fixture
 def db(tool, monkeypatch):
     return FakeDb().install(tool, monkeypatch)
+
+
+@pytest.fixture
+def local_target(tool, monkeypatch):
+    """127.0.0.1 with no production marker and a connection that opens.
+
+    Every NAME check passes, which is exactly the production VPS's position, so only the
+    fingerprint is left to decide.
+    """
+    for var in ("ENVIRONMENT", "APP_ENV", "ENV", "ENCRYPTION_REQUIRED"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(tool.db_connection, "MYSQL_HOST", "127.0.0.1")
+    monkeypatch.setattr(tool.db_connection, "AWS_MYSQL_SECRET_NAME", None)
+    connect = MagicMock()
+    monkeypatch.setattr(tool.db_connection, "get_db_connection", connect)
+    return connect
+
+
+def _spy_writes(tool, monkeypatch):
+    spies = {name: MagicMock(side_effect=AssertionError(f"{name} ran")) for name in
+             ("ensure_demo_user", "reset_demo_user_rows", "insert_demo_post", "teardown_demo_user",
+              "insert_planned_post", "update_engagement_preferences")}
+    for name, spy in spies.items():
+        monkeypatch.setattr(tool, name, spy)
+    return spies
 
 
 def _run(tool, scene):
@@ -207,6 +252,107 @@ class TestHostGuard:
         assert "refused" in capsys.readouterr().err
 
 
+# --------------------------------------------------------------------------- fingerprint + connect
+
+
+class TestDatabaseFingerprint:
+    """The real control: on the VPS, 127.0.0.1 is production, and every name-based check passes."""
+
+    def test_non_demo_posted_rows_refuse_before_any_write(self, tool, local_target, monkeypatch,
+                                                           capsys):
+        spies = _spy_writes(tool, monkeypatch)
+        monkeypatch.setattr(tool, "get_demo_db_fingerprint",
+                            lambda: {"non_demo_users": 1, "non_demo_posted_posts": 5})
+        assert tool.main(["--scene", "demo1"]) == 2
+        for spy in spies.values():
+            spy.assert_not_called()
+        assert "POSTED" in capsys.readouterr().err
+
+    def test_many_non_demo_accounts_refuse(self, tool, local_target, monkeypatch):
+        spies = _spy_writes(tool, monkeypatch)
+        monkeypatch.setattr(tool, "get_demo_db_fingerprint",
+                            lambda: {"non_demo_users": 4, "non_demo_posted_posts": 0})
+        assert tool.main(["--scene", "demo2"]) == 2
+        assert not any(spy.called for spy in spies.values())
+
+    def test_an_unreadable_fingerprint_refuses(self, tool, local_target, monkeypatch, capsys):
+        spies = _spy_writes(tool, monkeypatch)
+
+        def _boom():
+            raise mysql.connector.Error("1146: Table 'posts' doesn't exist")
+
+        monkeypatch.setattr(tool, "get_demo_db_fingerprint", _boom)
+        assert tool.main(["--scene", "demo3"]) == 2
+        assert not any(spy.called for spy in spies.values())
+        assert "fingerprint could not be read" in capsys.readouterr().err
+
+    def test_teardown_is_behind_the_same_fingerprint(self, tool, local_target, monkeypatch):
+        spies = _spy_writes(tool, monkeypatch)
+        monkeypatch.setattr(tool, "get_demo_db_fingerprint",
+                            lambda: {"non_demo_users": 0, "non_demo_posted_posts": 1})
+        assert tool.main(["--teardown"]) == 2
+        spies["teardown_demo_user"].assert_not_called()
+
+    def test_a_clean_or_empty_database_proceeds(self, tool, db, local_target):
+        assert tool.main(["--scene", "demo1", "--anchor-date", "2026-10-10"]) == 0
+        assert len(_demo_posts(db, PostStatus.PENDING.value)) == 3
+
+    def test_a_real_posted_post_in_the_fake_db_refuses(self, tool, local_target, monkeypatch):
+        fake = FakeDb(other_status=PostStatus.POSTED).install(tool, monkeypatch)
+        before = dict(fake.posts)
+        assert tool.main(["--scene", "demo1"]) == 2
+        assert fake.posts == before and 7 not in fake.users
+
+    @pytest.mark.parametrize("fingerprint, refused", [
+        ({"non_demo_users": 0, "non_demo_posted_posts": 0}, False),
+        ({"non_demo_users": 3, "non_demo_posted_posts": 0}, False),
+        ({"non_demo_users": 4, "non_demo_posted_posts": 0}, True),
+        ({"non_demo_users": 0, "non_demo_posted_posts": 1}, True),
+    ])
+    def test_the_thresholds(self, tool, fingerprint, refused):
+        assert bool(tool.fingerprint_refusal(fingerprint)) is refused
+
+
+class TestConnectionProbe:
+    def test_connection_refused_has_its_own_message_and_exit_code(self, tool, local_target,
+                                                                   monkeypatch, capsys):
+        spies = _spy_writes(tool, monkeypatch)
+        fingerprint = MagicMock()
+        monkeypatch.setattr(tool, "get_demo_db_fingerprint", fingerprint)
+        local_target.side_effect = mysql.connector.errors.InterfaceError(
+            msg="Can't connect to MySQL server on '127.0.0.1:3306' (111)", errno=2003)
+        assert tool.main(["--scene", "demo1"]) == 3
+        err = capsys.readouterr().err
+        assert "could not connect to MySQL at 127.0.0.1" in err and "errno 2003" in err
+        assert "nothing was written" in err and "run it again" not in err
+        fingerprint.assert_not_called()
+        assert not any(spy.called for spy in spies.values())
+
+
+# --------------------------------------------------------------------------- teardown
+
+
+class TestTeardown:
+    def test_teardown_leaves_no_demo_rows_and_touches_nothing_else(self, tool, db, local_target):
+        other = db.snapshot(_OTHER_USER), db.posts[1].copy(), dict(db.users[_OTHER_USER])
+        assert tool.main(["--scene", "demo2", "--anchor-date", "2026-10-10"]) == 0
+        assert _demo_posts(db)
+        assert tool.main(["--teardown"]) == 0
+        assert 7 not in db.users and not _demo_posts(db) and 7 not in db.prefs
+        assert (db.snapshot(_OTHER_USER), db.posts[1], db.users[_OTHER_USER]) == other
+
+    def test_teardown_with_no_demo_account_is_a_clean_no_op(self, tool, db, local_target):
+        assert tool.main(["--teardown"]) == 0
+
+    def test_a_failed_teardown_exits_one(self, tool, db, local_target, monkeypatch):
+        monkeypatch.setattr(tool, "teardown_demo_user", lambda email: None)
+        assert tool.main(["--teardown"]) == 1
+
+    def test_scene_and_teardown_are_exclusive(self, tool):
+        with pytest.raises(SystemExit):
+            tool.parse_args(["--scene", "demo1", "--teardown"])
+
+
 # --------------------------------------------------------------------------- scenes
 
 
@@ -274,9 +420,7 @@ class TestScenes:
         with pytest.raises(ValueError):
             tool.build_scene("demo4", _ANCHOR)
 
-    def test_a_failed_write_exits_nonzero(self, tool, db, monkeypatch):
-        monkeypatch.setattr(tool.db_connection, "MYSQL_HOST", "localhost")
-        monkeypatch.setattr(tool.db_connection, "AWS_MYSQL_SECRET_NAME", None)
+    def test_a_failed_write_exits_nonzero(self, tool, db, local_target, monkeypatch):
         monkeypatch.setattr(tool, "update_db_post_gate_reason", lambda *a: False)
         assert tool.main(["--scene", "demo2", "--anchor-date", "2026-10-10"]) == 1
 
@@ -310,7 +454,7 @@ class TestIdempotency:
 
 
 class TestNoLinkedInCalls:
-    def test_a_full_run_opens_no_socket_and_no_browser(self, tool, db, monkeypatch):
+    def test_a_full_run_opens_no_socket_and_no_browser(self, tool, db, local_target, monkeypatch):
         """Every socket is blocked and the browser/LinkedIn entry points raise if touched."""
         from cqc_lem.utilities import selenium_util
 
@@ -321,11 +465,10 @@ class TestNoLinkedInCalls:
         monkeypatch.setattr(socket, "create_connection", _no_network)
         driver = MagicMock(side_effect=AssertionError("get_docker_driver was called"))
         monkeypatch.setattr(selenium_util, "get_docker_driver", driver)
-        monkeypatch.setattr(tool.db_connection, "MYSQL_HOST", "localhost")
-        monkeypatch.setattr(tool.db_connection, "AWS_MYSQL_SECRET_NAME", None)
 
         for scene in tool.SCENES:
             assert tool.main(["--scene", scene, "--anchor-date", "2026-10-10"]) == 0
+        assert tool.main(["--teardown"]) == 0
         driver.assert_not_called()
 
     def test_importing_the_script_loads_no_browser_or_linkedin_client(self):

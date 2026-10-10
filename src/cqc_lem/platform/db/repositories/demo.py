@@ -7,6 +7,10 @@ a wrong `user_id` matches nothing rather than another person's rows. Everything 
 (drafts, gate findings, rejection reasons, preferences) goes through the same repository functions
 the app uses, so the SPA renders the seeded rows exactly as it renders real ones.
 
+One reader here breaks the fail-soft contract on purpose: `get_demo_db_fingerprint` RAISES on a
+database error instead of answering an empty fingerprint, because its caller uses that answer to
+decide whether it may write. An unreadable database must never read as an empty local one.
+
 `cqc_lem.utilities.db` re-exports every public name below.
 """
 
@@ -39,6 +43,40 @@ def _require_demo_email(email: str) -> str:
     if not normalised.endswith(DEMO_EMAIL_DOMAINS) or normalised.startswith("@"):
         raise NotADemoAccount(f"refusing a demo write for a non-demo email: {email!r}")
     return normalised
+
+
+def _non_demo_email_sql(column: str) -> tuple[str, list]:
+    """SQL true for a NULL email or one on none of the demo domains, with its LIKE parameters."""
+    likes = " OR ".join(f"LOWER({column}) LIKE %s" for _ in DEMO_EMAIL_DOMAINS)
+    return f"({column} IS NULL OR NOT ({likes}))", [f"%{d}" for d in DEMO_EMAIL_DOMAINS]
+
+
+def get_demo_db_fingerprint() -> dict:
+    """Count what in this database belongs to someone other than a demo account. Read-only.
+
+    The seed runs this before its first write. A local development database holds the demo account
+    and perhaps a few test sign-ups; a production database holds real people and posts that were
+    really published. A post with no owner counts as a non-demo post.
+
+    Returns:
+        `non_demo_users`: users whose email is NULL or not on `DEMO_EMAIL_DOMAINS`.
+        `non_demo_posted_posts`: POSTED posts whose owner is missing or not a demo account.
+
+    Raises:
+        mysql.connector.Error: The database could not be read. Deliberately NOT swallowed: the
+            caller must refuse, never treat an unreadable database as an empty one.
+    """
+    users_where, users_params = _non_demo_email_sql("email")
+    posts_where, posts_params = _non_demo_email_sql("u.email")
+    with db_cursor() as cursor:
+        cursor.execute(f"SELECT COUNT(*) FROM users WHERE {users_where}", users_params)
+        non_demo_users = int(cursor.fetchone()[0])
+        cursor.execute(
+            "SELECT COUNT(*) FROM posts p LEFT JOIN users u ON u.id = p.user_id "
+            f"WHERE p.status = %s AND (u.id IS NULL OR {posts_where})",
+            [PostStatus.POSTED.value, *posts_params])
+        non_demo_posted = int(cursor.fetchone()[0])
+    return {"non_demo_users": non_demo_users, "non_demo_posted_posts": non_demo_posted}
 
 
 def ensure_demo_user(email: str, trial_days: int = 14) -> Optional[int]:
@@ -151,4 +189,48 @@ def insert_demo_post(user_id: int, email: str, content: str, status: PostStatus,
             return int(cursor.lastrowid) if cursor.rowcount == 1 else None
     except mysql.connector.Error as err:
         log_error("Could not insert a demo post", exc=err, user_id=user_id)
+        return None
+
+
+#: Tables that key on `user_id` WITHOUT a foreign key to `users`, and that a demo sign-in writes
+#: (the login audit row and any auth challenge). Every other per-user table cascades from `users`.
+_DEMO_UNKEYED_TABLES = ("auth_audit_log", "auth_challenges")
+
+
+def teardown_demo_user(email: str) -> Optional[dict]:
+    """Delete the demo account and every row it owns. Nothing else.
+
+    The `users` DELETE matches on the demo email, and every per-user table with a foreign key to
+    `users` cascades from it (posts, and through posts their logs, approvals and shipped variants;
+    engagement preferences, sessions, profiles, cookies, onboarding state and the rest).
+    `cost_ledger` is SET NULL, not cascaded. The two unkeyed auth tables are cleared by the
+    account's id, which was read from the same email first.
+
+    Args:
+        email: The demo address; must be on a reserved example domain.
+
+    Returns:
+        Rows deleted per table (`users` is 0 when there was no demo account), or None when the
+        database could not be written.
+
+    Raises:
+        NotADemoAccount: The email could belong to a real person.
+    """
+    email = _require_demo_email(email)
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("SELECT id FROM users WHERE email = %s", (email,))
+            row = cursor.fetchone()
+            if not row:
+                return {"users": 0}
+            user_id = int(row[0])
+            counts = {}
+            for table in _DEMO_UNKEYED_TABLES:
+                cursor.execute(f"DELETE FROM {table} WHERE user_id = %s", (user_id,))
+                counts[table] = cursor.rowcount
+            cursor.execute("DELETE FROM users WHERE id = %s AND email = %s", (user_id, email))
+            counts["users"] = cursor.rowcount
+            return counts
+    except mysql.connector.Error as err:
+        log_error("Could not tear down the demo account", exc=err)
         return None

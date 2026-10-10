@@ -204,8 +204,10 @@ from cqc_lem.platform.db.repositories.demo import (
     DEMO_EMAIL_DOMAINS,
     NotADemoAccount,
     ensure_demo_user,
+    get_demo_db_fingerprint,
     insert_demo_post,
     reset_demo_user_rows,
+    teardown_demo_user,
 )
 from cqc_lem.platform.db.repositories.engagement import (
     CLAIM_STALE_MINUTES,
@@ -1031,6 +1033,7 @@ __all__ = [
     "get_curated_source",
     "get_curated_sources",
     "get_curated_summaries",
+    "get_demo_db_fingerprint",
     "get_draftable_curated_sources",
     "get_recent_curated_publishers",
     "get_post_curated_context",
@@ -1424,6 +1427,7 @@ __all__ = [
     "store_cookies",
     "store_linkedin_li_at",
     "suggest_engagement_targets",
+    "teardown_demo_user",
     "to_naive_utc",
     "touch_auth_factor",
     "update_avatar_attributes",
