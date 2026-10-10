@@ -33,8 +33,7 @@ cd src/cqc_lem/ui && npm ci && npm run build
 
 ## 2. Run the seed
 
-`scripts/` is not mounted into any dev container (only `./src`, `./tests` and `./logs` are), so run
-the script on the host. Export the connection settings in that shell first: `connection.py` reads
+No dev service mounts `./scripts`, so run the script on the host. Export the connection settings in that shell first: `connection.py` reads
 `MYSQL_*` at import, before it calls `load_dotenv()`, so values that are only in `.env` are not
 used. The dev `mysql` service publishes `${MYSQL_PORT}` on the host, so from the host the target is
 `127.0.0.1` on that port:
@@ -62,7 +61,7 @@ recorded on different days without it show different dates.
 ## 3. Sign in as Dana
 
 Sign in without any mail being sent by using the app's existing no-mail-provider path. When neither
-SendGrid nor SMTP is configured, `POST /auth/email/init` signs the address in directly, with no PIN
+SendGrid nor SMTP is configured, `POST /api/auth/email/init` signs the address in directly, with no PIN
 step (`send_pin_email` reports a bypass). In the `.env` that `web_app` reads, set these to empty:
 
 ```
@@ -72,7 +71,8 @@ SMTP_PASSWORD=
 REQUIRE_STRONG_FACTOR_AFTER=
 ```
 
-The `.env.example` placeholders are NOT empty, and a non-empty value makes the app try to send. An
+In `.env.example`, `SENDGRID_API_KEY`, `SMTP_USER` and `SMTP_PASSWORD` hold non-empty placeholders, and
+a non-empty value makes the app try to send. An
 empty `REQUIRE_STRONG_FACTOR_AFTER` keeps the session from being held at the passkey enrolment
 screen. Restart `web_app` after editing (`docker compose up -d web_app`). Then open
 `http://localhost:8000` (your `API_PORT`), sign in with `dana.reyes@example.com`, and go to
@@ -134,7 +134,8 @@ These run in order, before anything is written:
    secret is refused. This rules out a remote server by name, but **not** the production database:
    on the VPS, or through a tunnel to it, production answers on `127.0.0.1:3306`, and the
    production stack's own host is the same compose name.
-3. **Connection.** One connect attempt. A failure exits 3 with the connector's error.
+3. **Connection.** Up to `MYSQL_CONNECT_RETRY_ATTEMPTS` connect attempts (default 3, backing off
+   2 s then 4 s, only while the server is unreachable); a failure exits 3 with the connector's error.
 4. **Database fingerprint: the real control.** A read-only count (`get_demo_db_fingerprint`) of
    what belongs to anyone other than a demo account. Any POSTED post owned by a non-demo or missing
    account, or more than 3 non-demo accounts, refuses (exit 2). A local database holds the demo
