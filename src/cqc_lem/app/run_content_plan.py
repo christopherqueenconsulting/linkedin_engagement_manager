@@ -2732,7 +2732,7 @@ def _heal_errored_post(user_id: Optional[int], post_id: int, content: Optional[s
     findings = _gate_findings_for_post(user_id, post_id, content or "", post_type,
                                        get_post_video_url(post_id))
     _persist_gate_findings(user_id, post_id, findings)
-    auto_schedule = bool((get_user_preferences(user_id) or {}).get("auto_schedule_posts", True))
+    auto_schedule = bool((get_user_preferences(user_id) or {}).get("auto_schedule_posts", False))
     new_status = (PostStatus.APPROVED
                   if _may_auto_approve(user_id, post_id, auto_schedule, findings)
                   else PostStatus.PENDING)
@@ -3576,7 +3576,7 @@ def rescore_post(post_id: int) -> dict:
     status = get_post_status(post_id)
     detail = "Still held for review" if not passed else "Passed every quality gate"
     if passed and status == PostStatus.PENDING.value:
-        auto_schedule = bool((get_user_preferences(user_id) or {}).get("auto_schedule_posts", True))
+        auto_schedule = bool((get_user_preferences(user_id) or {}).get("auto_schedule_posts", False))
         # Same helper as the generation-time decision (issue #1134), so a repaired post cannot be
         # promoted here by a re-score that the author never actually read. `_persist_gate_findings`
         # above is a PRE-EXISTING caller and stays at `mark_repaired=False`: re-scoring grades the
@@ -5920,7 +5920,7 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
 
         # Respect the user's auto_schedule_posts preference (fetched once per user by the caller):
         # True → APPROVED (Celery will pick it up); False → PENDING (manual review required)
-        auto_schedule = bool((prefs or {}).get("auto_schedule_posts", True))
+        auto_schedule = bool((prefs or {}).get("auto_schedule_posts", False))
 
         # Quality gates (issues #382 / #421): a video/carousel post whose media failed to generate,
         # or a draft the authenticity judge scored below the user's minimum, is held PENDING for

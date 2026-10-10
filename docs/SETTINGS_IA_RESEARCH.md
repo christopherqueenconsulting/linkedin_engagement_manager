@@ -96,7 +96,7 @@ Read-only fields the GET adds for the UI: `reply_inbound_address`, `gmail_forwar
 | `timezone` | Timezone | `America/New_York` | Golden/peak-hour post scheduling and the newsletter publish hour are all resolved in this zone. |
 | Login Location (city/state/country → lat/lng) | Login Location | none | Per-user proxy/session geo consistency; also the source of `effective_content_language`. |
 | `last_login_inactivate_delay` | Preferences | `NULL` (never) — **the UI form initialises to 90** | If the user hasn't logged in within the window, **all** automation pauses (`db.py:2200`). |
-| `auto_schedule_posts` | Preferences | `true` — **the UI form initialises to `false`** | Off = every generated post waits for manual approval. |
+| `auto_schedule_posts` | Preferences | `false` for accounts created after #2366 (older accounts keep their stored value) | Off = every generated post waits for manual approval. |
 | `content_language` | Preferences | `NULL` (auto) | Language of generated content incl. premium video audio. |
 | `blog_url` / `sitemap_url` | Content & Profile | `NULL` | Blog-summary posts and newsletter blog alignment. |
 | `company_linked_in_url` | Company Page | `NULL` | Enables the daily company-page invite drip. |

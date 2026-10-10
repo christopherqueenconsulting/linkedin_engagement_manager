@@ -151,7 +151,8 @@ class TestPassword:
         cur.lastrowid = 11
         add_user("new@example.com", "plain-pw")
         statements = _executed(cur)
-        assert "INSERT INTO users (email) VALUES" in statements[0][0]
+        assert statements[0][0].startswith("INSERT INTO users (email")
+        assert "password" not in statements[0][0]
         sealed = statements[1][1][0]
         assert decrypt_secret(sealed, 11, SECRET_FIELD_PASSWORD) == "plain-pw"
 

@@ -95,7 +95,7 @@ export const SETTINGS: SettingDescriptor[] = [
     recommended: 'Mon-Fri. Add Saturday or Sunday only if your audience is genuinely active then.' }),
   D({ key: 'auto_schedule_posts', section: 'content', label: 'Auto-schedule AI posts',
     what: 'Whether an approved-quality draft schedules itself.',
-    why: 'Off means nothing ever publishes until you review it — the plan quietly stalls.',
+    why: 'Off means no AI-generated feed post publishes until you review it — the plan quietly stalls.',
     recommended: 'On once you trust the output. Drafts that fail the review thresholds are still held.' }),
   D({ key: 'hold_repaired_posts_for_review', section: 'content', label: 'Hold repaired drafts for review',
     what: 'A draft that failed a quality check and was fixed by the editor pass waits for you, even when it now passes everything.',

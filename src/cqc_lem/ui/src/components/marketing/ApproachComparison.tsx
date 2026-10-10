@@ -22,7 +22,7 @@ const ROWS: { capability: string; cells: [Cell, Cell, Cell] }[] = [
   { capability: 'Follows up on DMs on a schedule', cells: ['If you remember', false, true] },
   { capability: 'Per-day caps and human pacing', cells: ['Whatever you feel like', false, true] },
   { capability: 'Stops on a rate limit automatically', cells: [false, false, true] },
-  { capability: 'Approval before anything is published', cells: [true, true, true] },
+  { capability: 'Approval before a feed post is published', cells: [true, true, true] },
   { capability: 'Measures what each comment earned', cells: [false, false, true] },
 ]
 

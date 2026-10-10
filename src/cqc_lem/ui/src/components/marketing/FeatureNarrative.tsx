@@ -49,7 +49,7 @@ const BEATS: {
     points: [
       'Feed commenting against your topics, keywords, authors and minimum-reaction rules',
       'Replies on your own posts, plus a first comment under what you publish',
-      'Appreciation and outreach DMs with multi-step follow-ups, each one approval-gated',
+      'Appreciation and outreach DMs with multi-step follow-ups',
       'A weekly group post, roster targets and a paced company-page invite drip',
     ],
     panel: 'engagement',
@@ -57,7 +57,7 @@ const BEATS: {
   {
     key: 'measurement',
     eyebrow: 'Measurement',
-    title: 'You approve; then it measures what happened',
+    title: 'You approve feed posts; then it measures what happened',
     body: 'Nothing here is a vanity chart. Each measure exists because something downstream reads it and changes behaviour.',
     points: [
       'Comment outcomes swept at T+24h, one row per comment',

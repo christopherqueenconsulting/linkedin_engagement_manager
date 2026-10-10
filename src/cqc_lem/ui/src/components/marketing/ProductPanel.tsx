@@ -81,7 +81,7 @@ export default function ProductPanel({ variant }: { variant: PanelVariant }) {
 
   if (variant === 'engagement') {
     return (
-      <Panel label="Diagram of a LEM feed comment: a draft reply waiting under a targeted post, with the day's comment cap shown beside it.">
+      <Panel label="Diagram of a LEM feed comment: a reply posted under a targeted post, with the day's comment cap shown beside it.">
         <div className="rounded-lg border border-line-200 p-3">
           <div className="h-2 w-1/3 rounded bg-surface-100" />
           <div className="mt-2 space-y-1.5">
@@ -130,7 +130,7 @@ export default function ProductPanel({ variant }: { variant: PanelVariant }) {
       <Row title="A 3-slide breakdown of the offer" status="Scheduled" meta="Carousel · decision" />
       <div className="flex items-center gap-2 rounded-lg bg-surface-50 px-3 py-2 text-xs text-ink-700">
         <Icon name="shield" className="h-4 w-4 text-brand-600" />
-        Nothing publishes until you approve it
+        Generated feed posts wait for your approval
       </div>
     </Panel>
   )
