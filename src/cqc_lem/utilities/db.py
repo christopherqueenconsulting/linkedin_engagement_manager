@@ -200,6 +200,13 @@ from cqc_lem.platform.db.repositories.curated_sources import (
     update_curated_source_status,
 )
 from cqc_lem.platform.db.repositories.dashboard import get_planned_tasks
+from cqc_lem.platform.db.repositories.demo import (
+    DEMO_EMAIL_DOMAINS,
+    NotADemoAccount,
+    ensure_demo_user,
+    insert_demo_post,
+    reset_demo_user_rows,
+)
 from cqc_lem.platform.db.repositories.engagement import (
     CLAIM_STALE_MINUTES,
     COMPANY_PAGE_INVITE_SENT_MESSAGE,
@@ -808,6 +815,7 @@ __all__ = [
     "ConnectionRequestStatus",
     "CostCategory",
     "DEFAULT_CATCHUP_EVENT_TYPES",
+    "DEMO_EMAIL_DOMAINS",
     "DEFAULT_CONTENT_BUFFER_DAYS",
     "DEFAULT_CONTENT_BUFFER_MAX_POSTS",
     "DEFAULT_POSTING_DAYS",
@@ -861,6 +869,7 @@ __all__ = [
     "OnboardingStep",
     "OutreachStage",
     "OutreachStatus",
+    "NotADemoAccount",
     "OwnershipUnprovable",
     "POSTING_DAY_MAX",
     "POSTING_DAY_MIN",
@@ -1048,6 +1057,7 @@ __all__ = [
     "engagement_week_start",
     "enqueue_followup",
     "ensure_affiliate_enrollment",
+    "ensure_demo_user",
     "ensure_onboarding_state",
     "extend_trial_for_user",
     "finish_auth_challenge",
@@ -1306,6 +1316,7 @@ __all__ = [
     "insert_catchup_touch",
     "insert_connection_request",
     "insert_cost_ledger_entry",
+    "insert_demo_post",
     "insert_feedback",
     "insert_lead_signal",
     "insert_new_log",
@@ -1380,6 +1391,7 @@ __all__ = [
     "replace_recovery_codes",
     "replace_video_url_base",
     "reset_connection_pool",
+    "reset_demo_user_rows",
     "reset_lead_scores",
     "reset_unreadable_reads",
     "resolve_session",
