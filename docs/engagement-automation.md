@@ -85,6 +85,66 @@ suggestion and never a COMMENT log row (it would otherwise re-find the post on e
 and there is no daily database-cleanup beat to hang an age-based purge on, so nothing removes them
 by age. The SPA only ever shows the newest 50.
 
+### Before the first deploy
+
+The trial rule takes the browser away from every account that is on a trial, including accounts
+that are automating today. That set may be larger than expected: migration `V22` marked every
+account that was connected when it ran as `subscription_status='trial'`,
+`subscription_tier='free_trial'`, and nothing since has necessarily moved those accounts off it.
+`get_active_user_ids` accepts a trial with `trial_ends_at IS NULL`, so an account still running its
+lanes today is no evidence that it is paid.
+
+1. **List the accounts that would lose their browser.** Run this from `/opt/lem` through the
+   production `mysql` service (credentials from the container's own environment, as below):
+
+   ```bash
+   cd /opt/lem
+   docker compose -f docker-compose.yml -f docker-compose.prod.yml exec mysql \
+     sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysql -u"$MYSQL_USER" "$MYSQL_DATABASE" -e "SELECT id, engagement_mode, subscription_status, subscription_tier, trial_ends_at FROM users WHERE engagement_mode='"'"'automate'"'"' AND (subscription_status='"'"'trial'"'"' OR subscription_tier='"'"'free_trial'"'"');"'
+   ```
+
+   That query needs the `engagement_mode` column, so it runs once the migration has applied. To
+   check before the deploy, run the same query without the column. The migration gives every
+   pre-existing row `automate` (`NOT NULL DEFAULT 'automate'`, never NULL), so both forms list
+   exactly the rows the resolver will move to `suggest`:
+
+   ```sql
+   SELECT id, subscription_status, subscription_tier, trial_ends_at FROM users
+   WHERE subscription_status='trial' OR subscription_tier='free_trial';
+   ```
+2. **The owner decides, per listed account,** whether it should keep automating.
+3. **Moving an account off trial.**
+   - *The sanctioned path is Stripe.* A paid Stripe subscription moves the account: the billing
+     webhook (`customer.subscription.*`, `invoice.payment_succeeded`) and the daily (06:00)
+     `sync_stripe_subscriptions` beat write `subscription_status` and `subscription_tier` through
+     `update_subscription_from_stripe` (Stripe `active` → `active`, `trialing` → `trial`). The admin
+     `subscription-grant` route does NOT move an account: it only extends
+     `subscription_current_period_end`, and leaves status and tier as they are.
+   - *For an account with no Stripe subscription*, the only
+     path is an owner-authorized UPDATE, through the same `mysql` service. Values must come from the
+     ENUMs: status `active | inactive | trial | cancelled | past_due` (V24), tier
+     `free_trial | starter | professional | enterprise` (V22):
+
+     ```sql
+     UPDATE users SET subscription_status='active', subscription_tier='enterprise' WHERE id=<id>;
+     SELECT id, subscription_status, subscription_tier FROM users WHERE id=<id>;
+     ```
+
+     This changes more than engagement mode: `active` also takes the account out of trial expiry
+     in `get_active_user_ids`, and the tier is what billing reports read. If the account has a
+     Stripe customer, a later webhook or the daily sync can overwrite these values. A webhook that
+     carries no recognised price leaves the tier as it is, so `free_trial` can survive a Stripe
+     `active` status, and the account then stays suggest-only.
+   - *Any listed account the owner does not move* becomes suggest-only on the first lane run after
+     the deploy. That is the design.
+4. **Hold the merge until the check is done.** This migration is additive, so the release
+   train's migration gate does not hold it (that gate holds only non-additive migrations,
+   `docs/DEPLOYMENT.md` § "Deploy hold & drift alerts"). It ships on the first release after the
+   merge. Merge this change only after steps 1–3 are complete, and do not apply `release:now`
+   before then (`docs/release-fast-lane.md`). The only hold in place is the issue's
+   `risk:migration` + `needs-human` labels, which park the PR for the owner. `risk:*` on its own is
+   advisory (`docs/contribution-security.md`).
+
 ### Operating it
 
 **Switching an account to `automate`.** Only the owner may authorize this, and never for a trial
@@ -127,7 +187,8 @@ WHERE engagement_mode <> 'automate'
 - A read fault is a WARNING, and escalates on repeat like any other: the reader logs
   `Could not read engagement mode` (a MySQL error), and the resolver logs
   `Engagement mode unreadable — treating the account as suggest-only` (anything else the reader
-  raised). Either way the account is treated as `suggest` for that run.
+  raised). Either way the account is treated as `suggest` for that run. A repeated one escalates to
+  a grouped `$exception`, which goes to the owner as the alert.
 - A backstop hit — a lane that reached `get_docker_driver` without its own check — raises
   `SuggestOnlyEngagement` (`Browser session '<session>' refused — the account is suggest-only`).
   It surfaces as that lane's task failure (its error log or failed result, with
