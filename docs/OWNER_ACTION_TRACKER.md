@@ -35,8 +35,8 @@ ls -lht /opt/lem/backups | head -3
 `BACKUP_REMOTE` is unset and `rclone` is not installed, so `scripts/backup.sh:42` skips the remote
 copy. Combined with 1.1 and 1.3, one disk loss is total loss.
 
-**Your action:** pick a destination (S3/B2/Drive), `rclone config`, then set `BACKUP_REMOTE` in
-`/opt/lem/.env`. Documented at `docs/DEPLOYMENT.md:202-207` — currently marked "(Optional)", which
+**Your action:** follow `docs/offsite-backups.md` § Install: pick a destination, set up an encrypted
+rclone remote as `deploy`, then set `BACKUP_REMOTE` in `/opt/lem/.env`. Documented at `docs/DEPLOYMENT.md:202-207` — currently marked "(Optional)", which
 under `ENCRYPTION_REQUIRED=true` it no longer is.
 
 ### 1.3 The master key backup still lives on the box it protects · issue #1095

@@ -118,6 +118,7 @@ index and the `CLAUDE.md` row that points at it, or the pointer becomes a dead e
 
 ## Infrastructure, deploy & scaling
 
+- [Off-host DB backups](offsite-backups.md) — the encrypted off-host copy of the nightly dump: design, one-time install, restore drill, watchdog alert
 - ★ [VPS deployment runbook](DEPLOYMENT.md) — compose layering, image refs, the local-hotfix fallback, and the deploy-hold / drift alerts (additive migrations auto-deploy)
 - ★ [Zero-downtime deploys & batched releases](zero-downtime-deploys.md) — the blue/green colour flip and the 4×-daily release windows
 - ★ [The `release:now` fast lane](release-fast-lane.md) — shipping a PR at merge instead of the next window

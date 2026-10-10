@@ -107,12 +107,37 @@ backup() {
   log "pruning backups older than ${RETAIN_DAYS} days"
   find "$BACKUP_DIR" -name '*.gz' -mtime "+${RETAIN_DAYS}" -delete
 
-  # Optional: push to Cloudflare R2 / S3 if rclone is configured.
-  if command -v rclone >/dev/null 2>&1 && [[ -n "${BACKUP_REMOTE:-}" ]]; then
-    log "syncing to ${BACKUP_REMOTE}"
-    rclone copy "$BACKUP_DIR" "$BACKUP_REMOTE" --max-age "${RETAIN_DAYS}d"
-  fi
+  offsite_copy "$DB_FILE" || exit 1
   log "done"
+}
+
+# Off-host copy of tonight's DB dump (docs/offsite-backups.md). Until it succeeds the dump lives
+# only on this disk, so every outcome is logged: an unset remote says so on every run, and a set
+# remote that rclone cannot use fails the run. Only the new file is sent, with --immutable, so the
+# box never overwrites or deletes anything off-host; remote retention is the bucket's own rule.
+offsite_copy() {  # $1 = the dump this run wrote
+  local name dest
+  if [[ -z "${BACKUP_REMOTE:-}" ]]; then
+    log "off-host copy: not configured (BACKUP_REMOTE unset); this dump exists only on this disk"
+    return 0
+  fi
+  if ! command -v rclone >/dev/null 2>&1; then
+    error "off-host copy: BACKUP_REMOTE is set but rclone is not installed"
+    return 1
+  fi
+  name="$(basename "$1")"
+  # "remote:" names the remote's root; "remote:path" gets a separator. Never "remote:/name".
+  dest="${BACKUP_REMOTE%/}"
+  if [[ "$dest" == *: ]]; then dest="${dest}${name}"; else dest="${dest}/${name}"; fi
+  log "off-host copy: ${name} -> ${dest}"
+  if ! rclone copyto --immutable "$1" "$dest"; then
+    error "off-host copy failed: ${name} -> ${BACKUP_REMOTE}"
+    return 1
+  fi
+  # The watchdog reads this marker's age (stack_watchdog.sh check_backup_freshness).
+  printf '%s\n' "$name" > "$(dirname "$1")/.offsite-last-ok" \
+    || { error "off-host copy landed but the watchdog marker could not be written"; return 1; }
+  log "off-host copy OK: ${name}"
 }
 
 # Only execute the backup when the script is run directly; sourcing it loads the

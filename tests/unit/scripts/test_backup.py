@@ -1,6 +1,7 @@
 """Regression tests for scripts/backup.sh (issue #1090)."""
 
 import os
+import shutil
 import subprocess
 import textwrap
 from pathlib import Path
@@ -275,3 +276,108 @@ class TestBackupRun:
         )
         assert result.returncode != 0, result.stdout
         assert "ERROR: MYSQL_DATABASE not set" in (result.stdout + result.stderr)
+
+
+_FAKE_RCLONE = textwrap.dedent(
+    """\
+    #!/bin/sh
+    # Fake rclone: records its argv, exits with FAKE_RCLONE_RC.
+    printf '%s\\n' "$*" >> "$FAKE_RCLONE_LOG"
+    exit "${FAKE_RCLONE_RC:-0}"
+    """
+)
+
+
+def _install_fake_rclone(tmp_path: Path) -> Path:
+    """Put a recording fake rclone on the PATH _run builds; return the file its argv lands in."""
+    fake = tmp_path / "rclone"
+    fake.write_text(_FAKE_RCLONE, encoding="utf-8")
+    fake.chmod(0o755)
+    return tmp_path / "rclone-calls.log"
+
+
+class TestOffsiteCopy:
+    """The off-host copy of the nightly dump (docs/offsite-backups.md)."""
+
+    def test_unset_remote_says_so_and_never_calls_rclone(self, tmp_path: Path) -> None:
+        backup_dir = tmp_path / "backups"
+        env_file = _write_env(tmp_path, backup_dir=str(backup_dir))
+        calls = _install_fake_rclone(tmp_path)
+        result = _run(
+            tmp_path,
+            {"LEM_ENV_FILE": str(env_file), "BACKUP_CHROME_VOL": "0", "FAKE_RCLONE_LOG": str(calls)},
+            '"$BACKUP_SH"',
+        )
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert "off-host copy: not configured" in result.stdout
+        assert not calls.exists()
+        assert not (backup_dir / ".offsite-last-ok").exists()
+
+    def test_copies_only_the_new_dump_immutably(self, tmp_path: Path) -> None:
+        backup_dir = tmp_path / "backups"
+        env_file = _write_env(tmp_path, backup_dir=str(backup_dir), backup_remote="lem-offsite:")
+        calls = _install_fake_rclone(tmp_path)
+        result = _run(
+            tmp_path,
+            {"LEM_ENV_FILE": str(env_file), "BACKUP_CHROME_VOL": "1", "FAKE_RCLONE_LOG": str(calls)},
+            '"$BACKUP_SH"',
+        )
+        assert result.returncode == 0, result.stderr + result.stdout
+        (dump,) = backup_dir.glob("db-*.sql.gz")
+        assert calls.read_text(encoding="utf-8").splitlines() == [
+            f"copyto --immutable {dump} lem-offsite:{dump.name}"
+        ]
+        assert f"off-host copy OK: {dump.name}" in result.stdout
+        assert (backup_dir / ".offsite-last-ok").read_text(encoding="utf-8").strip() == dump.name
+
+    def test_remote_with_a_path_gets_one_separator(self, tmp_path: Path) -> None:
+        backup_dir = tmp_path / "backups"
+        env_file = _write_env(tmp_path, backup_dir=str(backup_dir), backup_remote="lem-offsite:db/")
+        calls = _install_fake_rclone(tmp_path)
+        result = _run(
+            tmp_path,
+            {"LEM_ENV_FILE": str(env_file), "BACKUP_CHROME_VOL": "0", "FAKE_RCLONE_LOG": str(calls)},
+            '"$BACKUP_SH"',
+        )
+        assert result.returncode == 0, result.stderr + result.stdout
+        (dump,) = backup_dir.glob("db-*.sql.gz")
+        assert calls.read_text(encoding="utf-8").split()[-1] == f"lem-offsite:db/{dump.name}"
+
+    def test_failed_copy_fails_the_run_and_keeps_the_local_dump(self, tmp_path: Path) -> None:
+        backup_dir = tmp_path / "backups"
+        env_file = _write_env(tmp_path, backup_dir=str(backup_dir), backup_remote="lem-offsite:")
+        calls = _install_fake_rclone(tmp_path)
+        result = _run(
+            tmp_path,
+            {
+                "LEM_ENV_FILE": str(env_file),
+                "BACKUP_CHROME_VOL": "0",
+                "FAKE_RCLONE_LOG": str(calls),
+                "FAKE_RCLONE_RC": "1",
+            },
+            '"$BACKUP_SH"',
+        )
+        assert result.returncode != 0, result.stdout
+        assert "ERROR: off-host copy failed" in result.stderr
+        assert len(list(backup_dir.glob("db-*.sql.gz"))) == 1
+        assert not (backup_dir / ".offsite-last-ok").exists()
+
+    def test_remote_set_without_rclone_fails_the_run(self, tmp_path: Path) -> None:
+        backup_dir = tmp_path / "backups"
+        env_file = _write_env(tmp_path, backup_dir=str(backup_dir), backup_remote="lem-offsite:")
+        # No fake rclone, and a PATH holding only the tools backup.sh needs, so a real rclone on
+        # the test host cannot be found either.
+        tools = tmp_path / "tools"
+        tools.mkdir()
+        for tool in ("bash", "date", "mkdir", "gzip", "stat", "tail", "awk", "head", "find",
+                     "basename", "sed", "dirname", "cat", "grep", "sh", "printf", "dd"):
+            found = shutil.which(tool)
+            if found:
+                (tools / tool).symlink_to(found)
+        result = _run(
+            tmp_path,
+            {"LEM_ENV_FILE": str(env_file), "BACKUP_CHROME_VOL": "0"},
+            f'PATH="{tmp_path}:{tools}" "$BACKUP_SH"',
+        )
+        assert result.returncode != 0, result.stdout
+        assert "ERROR: off-host copy: BACKUP_REMOTE is set but rclone is not installed" in result.stderr
