@@ -20,6 +20,7 @@ is no hold-for-review queue yet (`docs/engagement-automation.md`).
 """
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Optional
 
@@ -42,8 +43,46 @@ CHECK_PROFANITY = "profanity"
 CHECK_INSULT = "insult"
 CHECK_THREAT = "threat"
 CHECK_DISINTEREST = "disinterest"
+# Outbound only: OUR drafted reply names a contact channel or a link (`outbound_contact_or_link`).
+CHECK_OUTBOUND_CONTACT_OR_LINK = "outbound_contact_or_link"
+
+# Text past this is not read. A real comment is far shorter; the cap bounds the regex work an
+# attacker-sized comment can cost the sweep.
+MAX_CLASSIFY_CHARS = 5000
 
 _MESSENGERS = r"(?:whats\s?app|telegram|signal|wechat|kik|viber)"
+
+# A phone number: international (leading +) or the separated 3-3-4 shape. An unseparated digit run
+# is an order or ticket id far more often than a number to call.
+_PHONE_PATTERNS = (
+    r"(?<![\w+])\+\d{1,3}[\s.-]?\(?\d{1,4}\)?(?:[\s.-]?\d{2,4}){2,4}\b",
+    r"(?<!\w)\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}\b",
+)
+
+# Real top-level domains a scam link uses. Never a code suffix (`js`, `ts`, `py`), so "Node.js" and
+# "e.g." are not domains, and never a common English word beyond these few (`in`, `to`, `us`), so a
+# missing space after a full stop ("Agreed.to be fair") does not read as one either.
+_TLDS = (r"(?:com|net|org|io|co|xyz|info|biz|me|app|site|online|top|vip|live|cc|ru|cn|ly|gg|"
+         r"tk|ml|ga|cf|ws|su|icu|buzz)")
+
+# A bare domain, inbound: an ALL-LOWERCASE label so a brand named in prose ("Booking.com",
+# "ASP.NET") stays safe, while the shape a scammer types ("cryptofx-pro.io/join") fires.
+_BARE_DOMAIN_RE = re.compile(
+    rf"(?<![\w@./-])((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+{_TLDS})(?![\w-])(/\S*)?")
+# Bare mentions of these, with no path, are the platform naming itself, not a link push.
+_SAFE_BARE_DOMAINS = frozenset({"linkedin.com"})
+
+# Outbound is stricter: ANY case, any domain-shaped token, an @handle, or an obfuscated dot.
+_OUTBOUND_CONTACT_OR_LINK_RE = re.compile(
+    "|".join(f"(?:{p})" for p in (
+        r"(?<![\w.])@[a-z0-9_][\w.]*",
+        rf"(?<![\w@./-])(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+{_TLDS}(?![\w-])",
+        rf"\b\s*(?:\[\s*(?:\.|dot)\s*\]|\(\s*(?:\.|dot)\s*\)|\{{\s*(?:\.|dot)\s*\}})\s*{_TLDS}\b",
+        rf"\s+dot\s+{_TLDS}\b",
+        r"\bhttps?://|\bwww\.",
+        *_PHONE_PATTERNS,
+    )),
+    re.IGNORECASE)
 
 
 def _compile(*patterns: str) -> re.Pattern:
@@ -62,10 +101,7 @@ _SCAM_CHECKS: tuple[tuple[str, re.Pattern], ...] = (
         r"\b(?:whats\s?app|telegram|wechat|viber|kik)\s*[:\-]?\s*[+@]",
         r"\btext\s+me\b",
         r"\bdm\s+me\s+(?:on|via|at|through)\b",
-        # A phone number: international (leading +) or the separated 3-3-4 shape. An unseparated
-        # digit run is an order or ticket id far more often than a number to call.
-        r"(?<![\w+])\+\d{1,3}[\s.-]?\(?\d{1,4}\)?(?:[\s.-]?\d{2,4}){2,4}\b",
-        r"(?<!\w)\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}\b",
+        *_PHONE_PATTERNS,
     )),
     (CHECK_MONEY_FOR_NOTHING, _compile(
         # Day/week/hour only: "earn $10k a month" is how consultants describe client results.
@@ -180,10 +216,11 @@ def classify_comment(text: Optional[str]) -> CommentVerdict:
     Returns:
         A `CommentVerdict` naming every check that fired.
     """
-    body = re.sub(r"\s+", " ", str(text or "").translate(_QUOTE_FOLD)).strip()
+    body = normalize_for_matching(text)
     if not body:
         return CommentVerdict(LABEL_SAFE)
-    scam = tuple(name for name, pattern in _SCAM_CHECKS if pattern.search(body))
+    scam = tuple(name for name, pattern in _SCAM_CHECKS
+                 if pattern.search(body) or (name == CHECK_LINK_PUSH and _has_bare_domain(body)))
     hostile = []
     if profane_words(body):
         hostile.append(CHECK_PROFANITY)
@@ -193,6 +230,51 @@ def classify_comment(text: Optional[str]) -> CommentVerdict:
     if hostile:
         return CommentVerdict(LABEL_HOSTILE, tuple(hostile))
     return CommentVerdict(LABEL_SAFE)
+
+
+def normalize_for_matching(text: Optional[str]) -> str:
+    """Fold text into the plain form the patterns are written against.
+
+    Order matters: NFKC first turns math-bold and fullwidth letters into ASCII, then every format
+    character (Unicode category Cf: zero-width spaces and joiners, direction marks) is dropped so a
+    "WhatsApp" or "t.me" split by an invisible character reads as written, then curly quotes fold
+    to straight and whitespace collapses. Confusable homoglyphs (a Cyrillic "а"
+    for a Latin "a") are NOT folded — a documented v1 gap.
+
+    Args:
+        text: Any text; None reads as empty. Only the first `MAX_CLASSIFY_CHARS` are read.
+
+    Returns:
+        The folded, whitespace-collapsed, stripped text.
+    """
+    body = unicodedata.normalize("NFKC", str(text or "")[:MAX_CLASSIFY_CHARS])
+    body = "".join(ch for ch in body if unicodedata.category(ch) != "Cf")
+    return re.sub(r"\s+", " ", body.translate(_QUOTE_FOLD)).strip()
+
+
+def _has_bare_domain(body: str) -> bool:
+    for match in _BARE_DOMAIN_RE.finditer(body):
+        if match.group(2) or match.group(1) not in _SAFE_BARE_DOMAINS:
+            return True
+    return False
+
+
+def outbound_contact_or_link(text: Optional[str]) -> bool:
+    """Return True when a reply WE drafted names a contact channel or a link.
+
+    Stricter than the inbound link check on purpose: our replies on our own post have no reason to
+    carry any domain-shaped token (any case, including "linkedin.com"), an @handle, an obfuscated
+    dot ("x dot com", "x[.]io") or a phone number, and a model steered by a scam comment is exactly
+    what would put one there.
+
+    Args:
+        text: The drafted reply.
+
+    Returns:
+        Whether any of those shapes is present.
+    """
+    body = normalize_for_matching(text)
+    return bool(body) and bool(_OUTBOUND_CONTACT_OR_LINK_RE.search(body))
 
 
 def is_safe_to_engage(text: Optional[str]) -> bool:

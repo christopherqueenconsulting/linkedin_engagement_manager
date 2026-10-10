@@ -845,6 +845,7 @@ class TestReplySweepSafetyFilter:
              patch(f"{_POST}._react_to_comment_inline", return_value=True) as mocks["react"], \
              patch(f"{_POST}.log_warning") as mocks["warn"], \
              patch(f"{_POST}.log_debug") as mocks["debug"], \
+             patch(f"{_POST}.log_info") as mocks["info"], \
              patch(f"{_POST}.insert_new_log") as mocks["log"]:
             result = _reply_to_comments_on_open_post(_sweep_driver("other"), MagicMock(), 1, 9,
                                                      self._profile(), "synth")
@@ -897,3 +898,49 @@ class TestReplySweepSafetyFilter:
                     if c.kwargs.get("action_type") == LogActionType.REPLY
                     and c.kwargs.get("result") == LogResultType.FAILURE]
         assert len(failures) == 1 and failures[0].kwargs["message"] == draft
+
+    @pytest.mark.parametrize("draft", [
+        "Great point, see cryptofx-pro.io",
+        "Ping @fxqueen on Telegram",
+        "Thanks! Call +1 555 010 2000",
+    ])
+    def test_a_draft_naming_a_contact_or_link_is_refused(self, draft):
+        result, m = self._run([_FakeComment("Nice post")], reply=draft)
+        m["reply"].assert_not_called()
+        assert result["replies_sent"] == 0
+        assert m["warn"].call_args.args[0].startswith("Refusing to post an unsendable reply: ")
+        # Check names only in the (escalating) warning; the draft itself is DEBUG.
+        assert draft not in str(m["warn"].call_args)
+        assert any(c.kwargs.get("response") == draft for c in m["debug"].call_args_list)
+
+    def test_a_refused_draft_is_remembered_so_the_next_sweep_does_not_redraft_it(self):
+        with patch(f"{_POST}._record_replied_to_comment") as remember:
+            self._run([_FakeComment("Nice post")], reply="Ping @fxqueen")
+        remember.assert_called_once()
+
+    def test_our_own_link_seed_is_not_counted_as_filtered(self):
+        """`link_in_first_comment` puts a URL in our own seed; that is not a scam comment."""
+        own = _FakeComment("Full guide here: https://example.com/guide", author="Me Myself",
+                           href="https://www.linkedin.com/in/me")
+        result, m = self._run([own])
+        assert result["comments_filtered"] == 0
+        m["react"].assert_not_called()
+        m["reply"].assert_not_called()
+        assert not [c for c in m["info"].call_args_list
+                    if c.args[0] == "Comment safety filter skipped comments"]
+
+    def test_a_third_party_link_comment_is_counted(self):
+        result, _m = self._run([_FakeComment("Full guide here: https://example.com/guide")])
+        assert result["comments_filtered"] == 1
+
+    def test_one_info_roll_up_per_post_with_reason_counts(self):
+        result, m = self._run([_FakeComment("Learned so much from cryptofx-pro.io"),
+                               _FakeComment("What a load of crap", href="https://www.linkedin.com/in/b")])
+        assert result["comments_filtered"] == 2
+        roll_up = [c for c in m["info"].call_args_list
+                   if c.args[0] == "Comment safety filter skipped comments"]
+        assert len(roll_up) == 1
+        assert roll_up[0].kwargs["filtered"] == 2 and roll_up[0].kwargs["post_id"] == 9
+        assert roll_up[0].kwargs["reasons"] == "link_push:1,profanity:1"
+        assert "cryptofx" not in str(roll_up[0]) and "load of" not in str(roll_up[0])
+        m["warn"].assert_not_called()

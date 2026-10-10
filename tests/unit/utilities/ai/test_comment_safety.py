@@ -51,6 +51,9 @@ SCAM_CASES = [
     ("Join t.me/somechannel", cs.CHECK_LINK_PUSH),
     ("Chat at wa.me/15551234567", cs.CHECK_LINK_PUSH),
     ("Great post. Click the link below", cs.CHECK_LINK_PUSH),
+    ("learned so much from cryptofx-pro.io", cs.CHECK_LINK_PUSH),
+    ("details at quickreturns.xyz/join", cs.CHECK_LINK_PUSH),
+    ("my page is linkedin.com/in/fxqueen", cs.CHECK_LINK_PUSH),
     # profile redirects
     ("Check my profile for more", cs.CHECK_PROFILE_REDIRECT),
     ("Check out my bio", cs.CHECK_PROFILE_REDIRECT),
@@ -113,6 +116,13 @@ BENIGN = [
     "I won't unfollow anyone over a disagreement, good thread.",
     "Congrats on the launch! Thanks for sharing.",
     "Call volume hit 2024 levels, up 15% from 2023.",
+    # Bare-domain guards: a code suffix, an abbreviation, a capitalised brand named in prose, a
+    # missing space after a full stop on a common word.
+    "We rebuilt the API in Node.js and Next.js, e.g. the auth layer.",
+    "Booking.com and Amazon.com both did this early.",
+    "Agreed.to be fair the data was thin.",
+    # Decision: naming the platform itself, with no path, is not a link push.
+    "I found you on linkedin.com last year.",
 ]
 
 
@@ -204,6 +214,71 @@ class TestVerdictShape:
         with pytest.raises(AttributeError):
             verdict.label = LABEL_SCAM  # type: ignore[misc]
 
+    def test_plain_linkedin_mention_is_safe_but_a_linkedin_path_is_a_link(self):
+        assert classify_comment("Saw this on linkedin.com").is_safe
+        assert cs.CHECK_LINK_PUSH in classify_comment("see linkedin.com/in/someone").reasons
+
+    def test_text_past_the_cap_is_not_read(self):
+        assert classify_comment("a" * cs.MAX_CLASSIFY_CHARS + " whatsapp me").is_safe
+        assert not classify_comment("whatsapp me " + "a" * cs.MAX_CLASSIFY_CHARS).is_safe
+
     def test_deterministic(self):
         text = "Guaranteed returns, click the link"
         assert classify_comment(text) == classify_comment(text)
+
+
+def _math_bold(text: str) -> str:
+    """Map ASCII letters into the Mathematical Bold block (U+1D400) — a common filter dodge."""
+    out = []
+    for ch in text:
+        if "A" <= ch <= "Z":
+            out.append(chr(0x1D400 + ord(ch) - ord("A")))
+        elif "a" <= ch <= "z":
+            out.append(chr(0x1D41A + ord(ch) - ord("a")))
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+class TestUnicodeFolding:
+    @pytest.mark.parametrize("text", [
+        _math_bold("WhatsApp me"),
+        "ｗｈａｔｓａｐｐ ｍｅ",  # fullwidth "whatsapp me"
+        "What​sApp me",                                            # zero-width space
+        "Wh⁠ats‍App me",                                      # word joiner + ZWJ
+        "t​.me/x",
+    ])
+    def test_obfuscated_scam_is_still_caught(self, text):
+        assert classify_comment(text).label == LABEL_SCAM
+
+    def test_the_math_bold_sample_really_is_non_ascii(self):
+        assert not _math_bold("WhatsApp me").isascii()
+
+    def test_normalize_drops_format_characters(self):
+        assert cs.normalize_for_matching("a​b­c  d") == "abc d"
+
+
+class TestOutboundContactOrLink:
+    @pytest.mark.parametrize("draft", [
+        "Great point, see cryptofx-pro.io",
+        "Ping @fxqueen on Telegram",
+        "Thanks! Call +1 555 010 2000",
+        "More at Example.COM",
+        "Find it on linkedin.com",
+        "cryptofx dot com",
+        "cryptofx[.]io",
+        "cryptofx (dot) xyz",
+        "https://example.com",
+        "see www.example.org",
+    ])
+    def test_refuses_any_contact_or_link_shape(self, draft):
+        assert cs.outbound_contact_or_link(draft)
+
+    @pytest.mark.parametrize("draft", [
+        "Thanks, Jane! What part of the rollout surprised you most?",
+        "We used Node.js for this, e.g. the webhook layer, and LinkedIn's own API.",
+        "Agreed. The data was thin, but the trend held.",
+        "",
+    ])
+    def test_allows_an_ordinary_reply(self, draft):
+        assert not cs.outbound_contact_or_link(draft)

@@ -222,11 +222,19 @@ engaging a hostile one feeds the fight in public.
   upsert, the lead flag, the artifact delivery, the reaction and the LLM draft. A `scam` or
   `hostile` verdict skips the comment outright: no side effect and **no log row**, only a DEBUG
   `Skipping unsafe comment: <label> (<checks>)` line (never the comment body) and a
-  `comments_filtered` count on the sweep's `_reply_outcome` and summary. This **narrows #1899's
-  floor**: a filtered comment no longer gets the reaction every other comment gets.
+  `comments_filtered` count. This **narrows #1899's floor**: a filtered comment no longer gets the
+  reaction every other comment gets. Our OWN comments are ruled out before anything is counted —
+  `link_in_first_comment` puts a URL in our seed, which would otherwise read as `link_push` on
+  every sweep.
+- **Normalisation first.** Only the first 5,000 characters are read; the text is NFKC-folded
+  (math-bold and fullwidth letters become ASCII), format characters (Unicode category Cf: zero-width
+  spaces and joiners) are dropped, curly quotes fold and whitespace collapses — so a zero-width
+  space inside "WhatsApp", or a fullwidth or math-bold spelling, still matches.
 - **What it checks.** Scam: off-platform contact asks (a messenger named as a channel, "text me",
   a phone-number shape), money-for-nothing promises, crypto/forex "account manager" and
-  fund-recovery pitches, any raw URL or link shortener, "check my profile/bio", hacked-account
+  fund-recovery pitches, any raw URL, link shortener or bare all-lowercase domain on a scam-typical
+  TLD (`cryptofx-pro.io`; a capitalised brand such as "Booking.com" and a bare `linkedin.com` with
+  no path stay safe, `linkedin.com/in/…` does not), "check my profile/bio", hacked-account
   recovery, and prize/giveaway claims. Hostile: profanity (the shared list in
   `utilities/text_safety.py`), insults aimed at the reader, threats, and hostility to the account
   ("stop spamming", "unfollowed", "this is spam"). Each family is a named check, and the reason names
@@ -234,27 +242,55 @@ engaging a hostile one feeds the fight in public.
   "investment", "crypto", "spam filter" and "Telegram" in a news sense stay safe — the false-positive
   guards in `tests/unit/utilities/ai/test_comment_safety.py` say which shapes are deliberately left
   alone. Known trade-off: a profane word in a positive comment ("damn good point") is filtered too.
-- **Outbound.** Before a drafted reply is posted, `_outbound_reply_refusal` applies
-  `outbound_qa.refusal_reason(…, SURFACE_COMMENT)` and then `classify_comment` to OUR draft, so our
-  own reply can never read as scammy or hostile. A refusal WARNS (like the other `outbound_qa`
-  callers — an unsendable draft is a generation defect) and writes the same REPLY/FAILURE row an
-  unposted reply always wrote, so it stays visible.
+- **Outbound.** Before a drafted reply is posted, `_outbound_reply_refusal` applies three gates to
+  OUR draft: `outbound_qa.outbound_violations(…, SURFACE_COMMENT)`, `classify_comment`, and
+  `outbound_contact_or_link` (reason of the same name: any domain-shaped token in any case, an
+  @handle, an obfuscated dot such as "x dot com" or "x[.]io", a URL or a phone number). These make
+  a scammy or hostile reply of ours much less likely; they only catch what a pattern describes. A
+  refusal WARNS with **check names only** — the draft may have been steered by an attacker's
+  comment, so its excerpt goes to DEBUG and never into an escalated `$exception` or auto-filed
+  issue. In the reply sweep it writes the same REPLY/FAILURE row an unposted reply always wrote, and
+  the comment is remembered in the reply dedup (`_record_replied_to_comment`) so the next sweep
+  does not re-draft and re-warn it.
 - **Skip-only, fail-closed by construction.** No hold-for-review queue in v1 (no migration). The
   classifier is pure and deterministic — no LLM, DB or Selenium — so there is no "model down, so it
   went out" path, and the same text always gets the same verdict.
+- **Known v1 gaps.** Confusable homoglyphs (a Cyrillic "а" standing in for a Latin "a") are not
+  folded, so a lookalike spelling can slip past; and every pattern is English-only.
+
+**Operating it.**
+- *Where the counts are.* Each swept post's golden-hour report carries `comments_filtered` — in the
+  `Golden-hour reply_sweep on post N: … N filtered unsafe, …` log line and as a count on the
+  `golden_hour_report` PostHog event. When anything was filtered, ONE INFO line per post (reply
+  sweep) or per run (follow-ups) reads `Comment safety filter skipped comments` with `filtered=N`
+  and `reasons=<check>:<n>,…` as context — never comment text. These land in the persistent prod
+  log (`docs/production-logs.md`).
+- *Checking a suspected false positive.* Run `classify_comment(text)` against the comment in a
+  prod-image container with the repo's `src` mounted (the sidecar pattern in
+  `docs/error-tracking.md`); the verdict names the check that fired. Or set `LOG_LEVEL=DEBUG`
+  temporarily to see the per-comment `Skipping unsafe comment` lines.
+- *Tuning a pattern.* Edit the check in `utilities/ai/comment_safety.py` and add the misfiring text
+  as a false-positive guard in `tests/unit/utilities/ai/test_comment_safety.py` in the same change.
+- *Rollback.* Code-only, deliberately not a flag (a safety control is never a flag,
+  `docs/feature-flags.md`): revert the PR and ship through the normal release flow.
 
 ### Follow-ups on replies to OUR comments (`sweep_comment_followups`, issue #478)
 
 The follow-up sweep revisits posts we commented on, reacts to replies to our comment and answers the
 ones that ask a question. It applies the **same filter** (`_followup_on_post_comment_replies`): an
-unsafe reply is skipped before the lead flag, the reaction and the answer, counted as `filtered` in
-the sweep summary, and a drafted answer passes the same two outbound gates before it is posted.
+unsafe reply is skipped before the lead flag, the reaction and the answer, counted as `filtered`
+(with per-check `filtered_reasons`) in the sweep summary and the per-run INFO line, and a drafted
+answer passes the same three outbound gates before it is posted. A refused answer is NOT
+remembered here: the only durable record is `comment_followups.replied`, which also feeds the daily
+reply cap, so latching it would spend the cap on a reply that never went out. A refused answer is
+therefore re-drafted (and re-warned) on each follow-up sweep while the post stays in the window.
 
 ## Golden-hour presence & second wave (`utilities/golden_hour.py`, issue #622)
 
 The ONE place the first-hour amplifier's timing is decided.
 
-- ONE `golden_hour_report` per swept post (comments found, replies sent, minutes since REAL
+- ONE `golden_hour_report` per swept post (comments found, replies sent, comments the safety
+  filter skipped, minutes since REAL
   publish time from the POST log — not `scheduled_time`, or a late publish reads as a late
   sweep), INFO in-window and WARNING out, shipped via `track_golden_hour_report`.
 - Posts older than a day emit nothing.

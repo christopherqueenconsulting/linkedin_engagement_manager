@@ -1135,7 +1135,8 @@ class TestTrackGoldenHourReport:
             track_golden_hour_report(4, {"phase": "reply_sweep", "post_id": 9, "sweep_slot": 1,
                                          "status": "ok", "latency_minutes": 22.5,
                                          "within_window": True, "window_minutes": 90.0,
-                                         "comments_found": 3, "replies_sent": 2})
+                                         "comments_found": 3, "replies_sent": 2,
+                                         "comments_filtered": 1})
 
         _, kwargs = mock_ph.capture.call_args
         assert kwargs["event"] == "golden_hour_report" and kwargs["distinct_id"] == "4"
@@ -1143,6 +1144,7 @@ class TestTrackGoldenHourReport:
         assert props["phase"] == "reply_sweep" and props["post_id"] == 9
         assert props["latency_minutes"] == 22.5 and props["within_window"] is True
         assert props["comments_found"] == 3 and props["replies_sent"] == 2
+        assert props["comments_filtered"] == 1
 
     def test_unknown_latency_is_not_coerced_to_on_time(self):
         with patch(f"{_MOD}.posthog") as mock_ph:
@@ -1154,6 +1156,7 @@ class TestTrackGoldenHourReport:
         props = kwargs["properties"]
         assert props["latency_minutes"] is None and props["within_window"] is False
         assert props["comments_found"] == 0 and props["replies_sent"] == 0
+        assert props["comments_filtered"] == 0
 
     def test_tolerates_an_empty_report(self):
         with patch(f"{_MOD}.posthog") as mock_ph:

@@ -377,7 +377,7 @@ EVENTS = {spec.event: spec for spec in (
     EventSpec("golden_hour_report", (
         prop("user_id"), label("phase"), prop("post_id"), prop("sweep_slot"), label("status"),
         prop("latency_minutes"), flag("within_window"), prop("window_minutes"),
-        count("comments_found"), count("replies_sent"),
+        count("comments_found"), count("replies_sent"), count("comments_filtered"),
     )),
     EventSpec("comment_outcome", (
         prop("user_id"), prop("log_id"), label("status"), label("skip_reason"),
