@@ -215,7 +215,7 @@ class TestFollowupWorker:
             r = _followup_on_post_comment_replies(driver, MagicMock(), 1,
                     "https://www.linkedin.com/feed/update/urn:li:activity:1/",
                     "feedurn://urn:li:activity:1", prof, "voice", {}, replies_remaining=5)
-        assert r == {"reacted": 1, "replied": 1, "leads": 0}
+        assert r == {"reacted": 1, "replied": 1, "leads": 0, "filtered": 0}
 
     def test_reacts_only_when_reply_is_not_a_question(self):
         from cqc_lem.app.engagement.posting import _followup_on_post_comment_replies
@@ -231,7 +231,7 @@ class TestFollowupWorker:
             driver, prof, rec = _worker_env(es, followup_state={"reacted": 1, "replied": 1})
             r = _followup_on_post_comment_replies(driver, MagicMock(), 1, "u", "feedurn://urn:li:activity:1",
                                                   prof, "voice", {}, replies_remaining=5)
-        assert r == {"reacted": 0, "replied": 0, "leads": 0}
+        assert r == {"reacted": 0, "replied": 0, "leads": 0, "filtered": 0}
 
     def test_reply_cap_blocks_reply_but_not_react(self):
         from cqc_lem.app.engagement.posting import _followup_on_post_comment_replies
@@ -246,7 +246,7 @@ class TestFollowupWorker:
         prof = MagicMock(); prof.profile_url = "https://www.linkedin.com/"
         with patch(f"{POST}.log_warning"):
             r = _followup_on_post_comment_replies(MagicMock(), MagicMock(), 1, "u", "k", prof, "v", {}, 5)
-        assert r == {"reacted": 0, "replied": 0, "leads": 0}
+        assert r == {"reacted": 0, "replied": 0, "leads": 0, "filtered": 0}
 
 
 class TestOrchestration:
@@ -425,3 +425,86 @@ class TestDispatchBranches:
             out = dispatch_comment_followups()
         assert sweep.apply_async.called and "1/1" in out
         assert client.set.call_args.kwargs.get("nx") is True
+
+
+class TestFollowupSafetyFilter:
+    """Owner ruling: only positive, safe replies go out.
+
+    The follow-up sweep applies the same scam/hostility filter as the reply sweep, before the lead
+    flag, the reaction and the reply, and refuses a drafted answer that fails the outbound gates.
+    """
+
+    _URL = "https://www.linkedin.com/feed/update/urn:li:activity:1/"
+    _KEY = "feedurn://urn:li:activity:1"
+
+    def _run(self, es, **env):
+        from cqc_lem.app.engagement.posting import _followup_on_post_comment_replies
+        driver, prof, _rec = _worker_env(es, **env)
+        return _followup_on_post_comment_replies(driver, MagicMock(), 1, self._URL, self._KEY, prof,
+                                                 "voice", {}, replies_remaining=5)
+
+    def test_a_scam_reply_gets_no_lead_flag_reaction_draft_or_log(self):
+        import cqc_lem.app.engagement.posting as posting
+        with ExitStack() as es:
+            r = self._run(es, reply_text="Can you help? Message me on WhatsApp +1 555 123 4567")
+            # Read back the mocks `_worker_env` installed, while they are still in place.
+            for name in ("_flag_lead_signal", "_react_to_comment_inline",
+                         "generate_comment_reply_followup", "_reply_under_comment_inline",
+                         "insert_new_log", "record_comment_followup"):
+                getattr(posting, name).assert_not_called()
+        assert r == {"reacted": 0, "replied": 0, "leads": 0, "filtered": 1}
+
+    def test_a_hostile_reply_is_filtered(self):
+        import cqc_lem.app.engagement.posting as posting
+        with ExitStack() as es:
+            r = self._run(es, reply_text="Why would anyone listen? You're a clown.")
+            posting._react_to_comment_inline.assert_not_called()
+        assert r["filtered"] == 1 and r["reacted"] == 0
+
+    def test_a_safe_reply_still_proceeds(self):
+        with ExitStack() as es:
+            r = self._run(es, reply_text="Great point on investment strategy. How do you test drift?")
+        assert r == {"reacted": 1, "replied": 1, "leads": 0, "filtered": 0}
+
+    def test_a_refused_draft_is_not_posted(self):
+        """Outbound gate: an outbound_qa refusal (a leaked placeholder) never reaches the thread."""
+        with ExitStack() as es:
+            warn = _p(es, "log_warning")
+            driver, prof, _rec = _worker_env(es)
+            _p(es, "generate_comment_reply_followup", return_value="Great question, [Name]!")
+            reply = _p(es, "_reply_under_comment_inline", return_value=True)
+            from cqc_lem.app.engagement.posting import _followup_on_post_comment_replies
+            r = _followup_on_post_comment_replies(driver, MagicMock(), 1, self._URL, self._KEY, prof,
+                                                  "voice", {}, replies_remaining=5)
+        reply.assert_not_called()
+        assert r["replied"] == 0 and r["reacted"] == 1 and r["filtered"] == 0
+        assert "Refusing to post an unsendable reply" in warn.call_args.args[0]
+
+    def test_a_draft_that_reads_hostile_is_not_posted(self):
+        with ExitStack() as es:
+            warn = _p(es, "log_warning")
+            driver, prof, _rec = _worker_env(es)
+            _p(es, "generate_comment_reply_followup", return_value="Honestly, nobody cares about that.")
+            reply = _p(es, "_reply_under_comment_inline", return_value=True)
+            from cqc_lem.app.engagement.posting import _followup_on_post_comment_replies
+            r = _followup_on_post_comment_replies(driver, MagicMock(), 1, self._URL, self._KEY, prof,
+                                                  "voice", {}, replies_remaining=5)
+        reply.assert_not_called()
+        assert r["replied"] == 0
+        assert "reads hostile (insult)" in warn.call_args.args[0]
+
+    def test_the_sweep_summary_reports_filtered(self):
+        from cqc_lem.app.engagement.posting import _run_comment_followups_sweep
+        with ExitStack() as es:
+            _p(es, "get_recent_navigable_commented_posts", return_value=[{"post_key": self._KEY}])
+            _p(es, "acquire_run_lock", return_value="tok")
+            _p(es, "release_run_lock")
+            _p(es, "get_engagement_preferences", return_value={})
+            _p(es, "count_followup_replies_today", return_value=0)
+            _p(es, "get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock()))
+            _p(es, "get_or_create_profile_synthesis", return_value="s")
+            _p(es, "quit_gracefully")
+            _p(es, "_followup_on_post_comment_replies",
+               return_value={"reacted": 0, "replied": 0, "leads": 0, "filtered": 2})
+            out = _run_comment_followups_sweep(1)
+        assert "filtered 2" in out

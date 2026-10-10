@@ -332,12 +332,13 @@ def self_comment_cap() -> int:
 # `_golden.<name>` was how run_automation reached this module's own helpers, so those prefixes are
 # the one edit the move made.
 def _reply_outcome(status: str, summary: str, comments_found: int = 0,
-                   replies_sent: int = 0) -> dict:
+                   replies_sent: int = 0, comments_filtered: int = 0) -> dict:
     """One post's reply-sweep outcome. A dict, not a string, because the golden-hour report
-    (issue #622) needs the counts the old summary line only ever rendered.
+    (issue #622) needs the counts the old summary line only ever rendered. `comments_filtered`
+    counts comments the safety filter skipped as scam or hostile (`ai/comment_safety.py`).
     """
     return {"status": status, "summary": summary, "comments_found": int(comments_found),
-            "replies_sent": int(replies_sent)}
+            "replies_sent": int(replies_sent), "comments_filtered": int(comments_filtered)}
 
 
 def _record_golden_hour_report(user_id: int, post_id: int, sweep_slot: int, outcome: dict,

@@ -212,6 +212,44 @@ its exit condition, which is why both branches of that bookkeeping log at DEBUG.
 Both paths share `_reply_to_comments_on_open_post`, which is also the only writer of `post_engagers`
 (see Reciprocity capture, below).
 
+### Only positive, safe replies go out — the scam & hostility filter (`utilities/ai/comment_safety.py`)
+
+Owner ruling: keep comment auto-replies, but filter scam and hostile comments before anything is
+posted. Engaging a scam comment vouches for it in front of our audience and lifts it in the thread;
+engaging a hostile one feeds the fight in public.
+
+- **Inbound.** `classify_comment` runs on every comment the sweep reads, FIRST — before the engager
+  upsert, the lead flag, the artifact delivery, the reaction and the LLM draft. A `scam` or
+  `hostile` verdict skips the comment outright: no side effect and **no log row**, only a DEBUG
+  `Skipping unsafe comment: <label> (<checks>)` line (never the comment body) and a
+  `comments_filtered` count on the sweep's `_reply_outcome` and summary. This **narrows #1899's
+  floor**: a filtered comment no longer gets the reaction every other comment gets.
+- **What it checks.** Scam: off-platform contact asks (a messenger named as a channel, "text me",
+  a phone-number shape), money-for-nothing promises, crypto/forex "account manager" and
+  fund-recovery pitches, any raw URL or link shortener, "check my profile/bio", hacked-account
+  recovery, and prize/giveaway claims. Hostile: profanity (the shared list in
+  `utilities/text_safety.py`), insults aimed at the reader, threats, and hostility to the account
+  ("stop spamming", "unfollowed", "this is spam"). Each family is a named check, and the reason names
+  are stable. Checks key on how scam and hostile text is WRITTEN, not on topic words, so
+  "investment", "crypto", "spam filter" and "Telegram" in a news sense stay safe — the false-positive
+  guards in `tests/unit/utilities/ai/test_comment_safety.py` say which shapes are deliberately left
+  alone. Known trade-off: a profane word in a positive comment ("damn good point") is filtered too.
+- **Outbound.** Before a drafted reply is posted, `_outbound_reply_refusal` applies
+  `outbound_qa.refusal_reason(…, SURFACE_COMMENT)` and then `classify_comment` to OUR draft, so our
+  own reply can never read as scammy or hostile. A refusal WARNS (like the other `outbound_qa`
+  callers — an unsendable draft is a generation defect) and writes the same REPLY/FAILURE row an
+  unposted reply always wrote, so it stays visible.
+- **Skip-only, fail-closed by construction.** No hold-for-review queue in v1 (no migration). The
+  classifier is pure and deterministic — no LLM, DB or Selenium — so there is no "model down, so it
+  went out" path, and the same text always gets the same verdict.
+
+### Follow-ups on replies to OUR comments (`sweep_comment_followups`, issue #478)
+
+The follow-up sweep revisits posts we commented on, reacts to replies to our comment and answers the
+ones that ask a question. It applies the **same filter** (`_followup_on_post_comment_replies`): an
+unsafe reply is skipped before the lead flag, the reaction and the answer, counted as `filtered` in
+the sweep summary, and a drafted answer passes the same two outbound gates before it is posted.
+
 ## Golden-hour presence & second wave (`utilities/golden_hour.py`, issue #622)
 
 The ONE place the first-hour amplifier's timing is decided.

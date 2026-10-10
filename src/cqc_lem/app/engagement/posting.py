@@ -55,10 +55,15 @@ from cqc_lem.utilities.ai.ai_helper import (
     get_or_create_profile_synthesis,
     synthesize_profile,
 )
+from cqc_lem.utilities.ai.comment_safety import classify_comment
 from cqc_lem.utilities.ai.content_alignment import (
     ARTIFACT_KIND_LEAD_MAGNET,
     resolve_artifact_delivery,
     split_link_for_first_comment,
+)
+from cqc_lem.utilities.ai.outbound_qa import (
+    SURFACE_COMMENT as OUTBOUND_SURFACE_COMMENT,
+    refusal_reason as outbound_refusal_reason,
 )
 from cqc_lem.utilities.audience_stats import (
     parse_connection_count,
@@ -708,6 +713,63 @@ _golden_hour_sweep_countdowns = _golden.sweep_countdowns
 _MAX_LEAD_FLAGS_PER_SWEEP = 10  # volume backstop: a draft costs an LLM call, so bound them per run
 
 
+# --- comment safety filter ----------------------------------------------------------------------
+# Owner ruling: keep comment auto-replies, but only positive, safe replies go out. The INBOUND half
+# runs before any side effect of the reply flows below, so a scam or hostile comment earns no
+# reaction, reply, lead flag or log row; the OUTBOUND half refuses a drafted reply that is
+# unsendable or reads scammy/hostile itself. Posture: docs/engagement-automation.md.
+
+def _skip_unsafe_comment(text: str, user_id: int, post_id: "int | None" = None,
+                         task_name: str = "sweep_reply_comments") -> bool:
+    """Return True (and log at DEBUG) when an incoming comment must not be engaged with.
+
+    DEBUG, never a warning: filtering a scam comment is the filter working, and the logger's
+    recurrence escalation would otherwise file a defect for every spammy week.
+
+    Args:
+        text: The incoming comment or reply body.
+        user_id: The account the sweep runs for.
+        post_id: Our post's id, when the sweep has one.
+        task_name: The sweep, for the log context.
+
+    Returns:
+        True when the comment is scam or hostile and the caller must skip it.
+    """
+    verdict = classify_comment(text)
+    if verdict.is_safe:
+        return False
+    log_debug(f"Skipping unsafe comment: {verdict.label} ({', '.join(verdict.reasons)})",
+              user_id=user_id, post_id=post_id, task_name=task_name, action_type="reply")
+    return True
+
+
+def _outbound_reply_refusal(response: str, user_id: int, post_id: "int | None" = None) -> "str | None":
+    """Return why a drafted reply must not be posted, or None when it may go out.
+
+    Two gates, in order: `outbound_qa` (assistant asides, prompt leaks, placeholders — the same gate
+    `post_comment_inline` applies to feed comments) and the comment-safety classifier, so our own
+    reply can never itself read as a scam or an attack. A refusal warns, like the other
+    `outbound_qa` callers: a draft we cannot send is a generation defect, not an expected no-op.
+
+    Args:
+        response: The drafted reply.
+        user_id: The account the sweep runs for.
+        post_id: Our post's id, when the sweep has one.
+
+    Returns:
+        A log-ready reason, or None.
+    """
+    refusal = outbound_refusal_reason(response, surface=OUTBOUND_SURFACE_COMMENT)
+    if not refusal:
+        verdict = classify_comment(response)
+        if not verdict.is_safe:
+            refusal = f"reads {verdict.label} ({', '.join(verdict.reasons)})"
+    if refusal:
+        log_warning(f"Refusing to post an unsendable reply: {refusal}", user_id=user_id,
+                    post_id=post_id, action_type="reply")
+    return refusal
+
+
 def _reply_target_key(user_id: int, post_id: int, commenter_slug: str, comment_text: str) -> str:
     """Stable Redis key for a specific comment on a specific post so the reply sweep never replies
     to the SAME comment twice across golden-hour sweeps. Keyed on identity (commenter slug) + a
@@ -910,6 +972,7 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
                               comments_found=len(comments))
 
     comments_replied_count = 0
+    comments_filtered = 0
     leads_flagged = 0
     prefs = get_engagement_preferences(user_id)
     lead_magnet = get_lead_magnet_settings(user_id)
@@ -928,6 +991,11 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
         except Exception:
             continue
         short_comment_text = comment_text[:75]
+        # Safety filter FIRST: a scam or hostile comment gets nothing — no engager row, lead flag,
+        # artifact DM, reaction, LLM draft or log row (owner ruling; this narrows #1899's floor).
+        if _skip_unsafe_comment(comment_text, user_id, post_id=post_id):
+            comments_filtered += 1
+            continue
         # Reciprocity + lead-magnet: read the commenter, record them as an engager, and
         # (if enabled) DM them the resource when their comment contains the trigger keyword.
         commenter_slug = ""
@@ -1007,7 +1075,9 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
                                              profile_synthesis=profile_synthesis,
                                              user_id=user_id)
         log_debug("AI Generated Response to Comment", user_id=user_id, post_id=post_id, response=response)
-        if response and _reply_to_comment_inline(driver, wait, comment, response, user_id=user_id):
+        # A refused draft falls through to the FAILURE row below, so the refusal stays visible.
+        if (response and not _outbound_reply_refusal(response, user_id, post_id=post_id)
+                and _reply_to_comment_inline(driver, wait, comment, response, user_id=user_id)):
             insert_new_log(user_id=user_id, post_id=post_id, action_type=LogActionType.REPLY,
                            result=LogResultType.SUCCESS, post_url=post_url, message=response)
             record_action(user_id, ACTION_REPLY)  # tracked, but outside the outbound envelope (#626)
@@ -1018,8 +1088,11 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
         else:
             insert_new_log(user_id=user_id, post_id=post_id, action_type=LogActionType.REPLY,
                            result=LogResultType.FAILURE, post_url=post_url, message=response)
-    return _reply_outcome("ok", f"Replied to {comments_replied_count} comments",
-                          comments_found=len(comments), replies_sent=comments_replied_count)
+    summary = f"Replied to {comments_replied_count} comments"
+    if comments_filtered:
+        summary += f", filtered {comments_filtered} unsafe"
+    return _reply_outcome("ok", summary, comments_found=len(comments),
+                          replies_sent=comments_replied_count, comments_filtered=comments_filtered)
 
 
 def _retry_golden_hour_sweep(user_id: int, sweep_slot: int, attempt: int, status: str) -> bool:
@@ -1255,10 +1328,10 @@ def _followup_on_post_comment_replies(driver, wait, user_id: int, post_url: str,
                                       my_profile, profile_synthesis: str, prefs: dict,
                                       replies_remaining: int) -> dict:
     """Revisit ONE post we commented on: react to replies to our comment, answer question-replies,
-    and flag buying intent. Returns {'reacted': n, 'replied': n, 'leads': n}. Best-effort/non-fatal
-    (issues #478, #483).
+    and flag buying intent. Returns {'reacted': n, 'replied': n, 'leads': n, 'filtered': n}.
+    Best-effort/non-fatal (issues #478, #483).
     """
-    result = {"reacted": 0, "replied": 0, "leads": 0}
+    result = {"reacted": 0, "replied": 0, "leads": 0, "filtered": 0}
     path = urlparse(str(my_profile.profile_url)).path
     our_slug = path.split("/")[2] if len(path.split("/")) > 2 else None
     if not our_slug:
@@ -1297,6 +1370,11 @@ def _followup_on_post_comment_replies(driver, wait, user_id: int, post_url: str,
             continue
         if not reply_text:
             continue
+        # Same safety filter as the reply sweep: a scam or hostile reply to our comment gets no
+        # lead flag, no reaction and no answer.
+        if _skip_unsafe_comment(reply_text, user_id, task_name="sweep_comment_followups"):
+            result["filtered"] += 1
+            continue
         # Inbound intent (#483): a reply to our comment is a prime place for "can you help with X?".
         if result["leads"] < _MAX_LEAD_FLAGS_PER_SWEEP and _flag_lead_signal(
                 user_id, reply_text, LeadSignalSource.COMMENT_REPLY, post_key,
@@ -1320,7 +1398,8 @@ def _followup_on_post_comment_replies(driver, wait, user_id: int, post_url: str,
                 response = generate_comment_reply_followup(reply_text, my_profile, prefs=prefs,
                                                            profile_synthesis=profile_synthesis,
                                                            user_id=user_id)
-            if response and _reply_under_comment_inline(driver, wait, cont, response, user_id=user_id):
+            if (response and not _outbound_reply_refusal(response, user_id)
+                    and _reply_under_comment_inline(driver, wait, cont, response, user_id=user_id)):
                 result["replied"] += 1
                 replies_remaining -= 1
                 record_comment_followup(user_id, post_key, reply_key, reacted=did_react, replied=True)
@@ -1370,7 +1449,7 @@ def _run_comment_followups_sweep(user_id: int) -> str:
         return f"Failed to start follow-up sweep: {e}"
     try:
         synthesis = get_or_create_profile_synthesis(user_id, my_profile)
-        reacted = replied = leads = 0
+        reacted = replied = leads = filtered = 0
         for row in posts:
             key = row.get("post_key")
             url = _post_url_from_key(key)
@@ -1381,11 +1460,12 @@ def _run_comment_followups_sweep(user_id: int) -> str:
                                                       synthesis, prefs, replies_remaining)
                 reacted += r["reacted"]; replied += r["replied"]; replies_remaining -= r["replied"]
                 leads += r.get("leads", 0)
+                filtered += r.get("filtered", 0)
             except Exception as e:
                 log_warning("Follow-up: post failed", exc=e, user_id=user_id,
                             task_name="sweep_comment_followups")
-        return (f"Follow-ups: reacted {reacted}, replied {replied}, leads {leads} "
-                f"across {len(posts)} post(s)")
+        return (f"Follow-ups: reacted {reacted}, replied {replied}, leads {leads}, "
+                f"filtered {filtered} across {len(posts)} post(s)")
     finally:
         quit_gracefully(driver)
         release_run_lock(lock_name, lock_token)
@@ -1432,7 +1512,7 @@ def _run_single_post_followup(user_id: int, post_url: str) -> str:
         r = _followup_on_post_comment_replies(driver, wait, user_id, url, key, my_profile,
                                               synthesis, prefs, replies_remaining)
         return (f"Follow-up on {url}: reacted {r['reacted']}, replied {r['replied']}, "
-                f"leads {r.get('leads', 0)}")
+                f"leads {r.get('leads', 0)}, filtered {r.get('filtered', 0)}")
     finally:
         quit_gracefully(driver)
         release_run_lock(lock_name, lock_token)

@@ -83,6 +83,7 @@ from cqc_lem.utilities.feedback.issue_service import (
     similarity,
 )
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
+from cqc_lem.utilities.text_safety import profane_words
 
 DEFAULT_MODEL = "lem-medium"
 RECURRENCE_MIN_DEFAULT = 3
@@ -113,13 +114,6 @@ class FaqAction:
     HELD = 'held'              # policy/ToS/guardrail hold — a human owns it, nothing published
     ERROR = 'error'            # the entry could not be written; retried next pass
 
-
-# Mirrors the tutorial publish guardrail's list (`marketing/video_tutorials.py`). Duplicated rather
-# than imported: that module pulls Selenium in at import time, and this one must stay light.
-_PROFANITY = frozenset({
-    "shit", "shitty", "fuck", "fucking", "fucked", "bullshit", "asshole", "bastard", "bitch",
-    "dick", "damn", "goddamn", "crap", "piss", "cunt", "twat", "wanker",
-})
 
 # A claim we must not invent on a public page. Pricing/refund/legal/roadmap wording all imply a
 # commitment only the owner can make, so the answer is held even when it passed every other check.
@@ -267,8 +261,7 @@ def contains_profanity(text: Optional[str]) -> list:
     punctuation, so an innocent word that merely CONTAINS one of these never matches. A non-empty
     result is a hard hold in `check_answer` — this is public copy.
     """
-    words = {w.lower().strip(".,!?;:\"'()") for w in str(text or "").split()}
-    return sorted(words & _PROFANITY)
+    return profane_words(text)
 
 
 def looks_like_question(text: Optional[str]) -> bool:

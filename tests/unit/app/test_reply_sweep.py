@@ -351,7 +351,7 @@ class TestReplyToCommentsOnOpenPost:
         react.assert_called_once()   # the floor engagement — a reaction, in addition to the reply
         assert log.call_count == 2   # one for the reaction, one for the reply
         assert result == {"status": "ok", "summary": "Replied to 1 comments",
-                          "comments_found": 1, "replies_sent": 1}
+                          "comments_found": 1, "replies_sent": 1, "comments_filtered": 0}
 
     def test_reacts_even_when_no_reply_is_generated(self):
         """Issue #1899: a comment that doesn't warrant a full reply still gets a reaction.
@@ -704,7 +704,7 @@ class TestReplyToCommentsOnOpenPost:
         gen.assert_not_called()
         rep.assert_not_called()
         assert result == {"status": "ok", "summary": "Replied to 0 comments",
-                          "comments_found": 1, "replies_sent": 0}
+                          "comments_found": 1, "replies_sent": 0, "comments_filtered": 0}
 
     def test_redis_dedup_prevents_cross_sweep_duplicate(self):
         """Issue #775: even if the DOM no longer shows our previous reply, Redis remembers we already
@@ -727,7 +727,7 @@ class TestReplyToCommentsOnOpenPost:
         gen.assert_not_called()
         rep.assert_not_called()
         assert result == {"status": "ok", "summary": "Replied to 0 comments",
-                          "comments_found": 1, "replies_sent": 0}
+                          "comments_found": 1, "replies_sent": 0, "comments_filtered": 0}
 
     def test_records_replied_to_comment_after_successful_post(self):
         """After a reply lands, a Redis marker is written so later sweeps deduplicate the target."""
@@ -813,3 +813,87 @@ class TestFeedFunnelStorage:
         with patch(f"{_FEED}._redis_client", return_value=redis):
             from cqc_lem.app.engagement.feed import get_feed_funnel
             assert get_feed_funnel(1) is None
+
+
+class TestReplySweepSafetyFilter:
+    """Owner ruling: keep comment auto-replies, but only positive, safe replies go out.
+
+    A scam or hostile comment on our post is skipped before ANY side effect, and a drafted reply
+    that fails `outbound_qa` or reads scammy/hostile itself is never posted.
+    """
+
+    def _profile(self):
+        p = MagicMock()
+        p.profile_url = "https://www.linkedin.com/in/me"
+        p.full_name = "Me Myself"
+        return p
+
+    def _run(self, comments, reply="Thanks! What resonated most?"):
+        from cqc_lem.app.engagement.posting import _reply_to_comments_on_open_post
+        mocks = {}
+        with patch(f"{_POST}.get_post_url_from_log_for_user", return_value="https://li/feed/update/urn:li:share:1/"), \
+             patch(f"{_POST}.get_post_content", return_value="post body"), \
+             patch(f"{_POST}.click_first", return_value=None), \
+             patch(f"{_POST}._comment_items_from_thread", return_value=comments), \
+             patch(f"{_POST}.get_lead_magnet_settings", return_value={"enabled": False}), \
+             patch(f"{_POST}.upsert_engager") as mocks["engager"], \
+             patch(f"{_POST}.generate_thread_reply", return_value=reply) as mocks["gen"], \
+             patch(f"{_POST}.get_engagement_preferences", return_value={}), \
+             patch(f"{_POST}._flag_lead_signal", return_value=None) as mocks["lead"], \
+             patch(f"{_POST}._queue_artifact_delivery") as mocks["artifact"], \
+             patch(f"{_POST}._reply_to_comment_inline", return_value=True) as mocks["reply"], \
+             patch(f"{_POST}._react_to_comment_inline", return_value=True) as mocks["react"], \
+             patch(f"{_POST}.log_warning") as mocks["warn"], \
+             patch(f"{_POST}.log_debug") as mocks["debug"], \
+             patch(f"{_POST}.insert_new_log") as mocks["log"]:
+            result = _reply_to_comments_on_open_post(_sweep_driver("other"), MagicMock(), 1, 9,
+                                                     self._profile(), "synth")
+        return result, mocks
+
+    @pytest.mark.parametrize("text", [
+        "Earn $500 per day from home, DM me on Telegram",
+        "Great post! Check my profile for a crypto recovery expert",
+        "You're an idiot and this is garbage",
+        "Stop spamming my feed",
+    ])
+    def test_an_unsafe_comment_gets_no_engagement_at_all(self, text):
+        result, m = self._run([_FakeComment(text)])
+        for name in ("engager", "gen", "lead", "artifact", "reply", "react", "log"):
+            m[name].assert_not_called()
+        assert result["comments_filtered"] == 1 and result["replies_sent"] == 0
+        assert "filtered 1 unsafe" in result["summary"]
+        # The skip line names the verdict, never the comment body.
+        skip = [c for c in m["debug"].call_args_list if c.args[0].startswith("Skipping unsafe comment")]
+        assert len(skip) == 1 and text not in str(skip[0])
+
+    def test_a_safe_comment_proceeds_unchanged(self):
+        result, m = self._run([_FakeComment("Great point on investment strategy, thanks for sharing")])
+        for name in ("react", "reply", "engager"):
+            m[name].assert_called_once()
+        assert result == {"status": "ok", "summary": "Replied to 1 comments",
+                          "comments_found": 1, "replies_sent": 1, "comments_filtered": 0}
+
+    def test_only_the_unsafe_comment_in_a_thread_is_skipped(self):
+        result, m = self._run([_FakeComment("Visit https://bit.ly/x to claim"),
+                               _FakeComment("Loved this, thank you", href="https://www.linkedin.com/in/ann")])
+        assert m["reply"].call_count == 1 and m["react"].call_count == 1
+        assert result["comments_filtered"] == 1 and result["replies_sent"] == 1
+
+    @pytest.mark.parametrize("draft,reason", [
+        ("Thanks [Name], glad it helped!", "placeholder"),
+        ("Happy to help. Message me on WhatsApp to continue.", "reads scam (off_platform_contact)"),
+        ("Honestly, nobody cares about that take.", "reads hostile (insult)"),
+    ])
+    def test_a_refused_draft_is_not_posted_and_records_a_failure(self, draft, reason):
+        result, m = self._run([_FakeComment("Nice post")], reply=draft)
+        m["reply"].assert_not_called()
+        m["react"].assert_called_once()   # the comment itself was safe; only our draft was refused
+        assert result["replies_sent"] == 0 and result["comments_filtered"] == 0
+        assert "Refusing to post an unsendable reply" in m["warn"].call_args.args[0]
+        assert reason in m["warn"].call_args.args[0]
+        # The refusal stays visible as the same REPLY/FAILURE row an unposted reply always wrote.
+        from cqc_lem.utilities.db import LogActionType, LogResultType
+        failures = [c for c in m["log"].call_args_list
+                    if c.kwargs.get("action_type") == LogActionType.REPLY
+                    and c.kwargs.get("result") == LogResultType.FAILURE]
+        assert len(failures) == 1 and failures[0].kwargs["message"] == draft
