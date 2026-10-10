@@ -176,7 +176,9 @@ class TestAutoPublishOccasionPost:
             mocks = {name: stack.enter_context(patch(f"{_MOD}.{name}", **kw))
                      for name, kw in targets.items()}
             profile = stack.enter_context(patch(f"{_MOD}.get_current_profile"))
-            if session_raises:
+            if isinstance(session_raises, BaseException):
+                profile.side_effect = session_raises
+            elif session_raises:
                 profile.side_effect = RuntimeError("no chrome")
             else:
                 profile.return_value = (MagicMock(), MagicMock(), "u@example.com", MagicMock())
@@ -249,6 +251,23 @@ class TestAutoPublishOccasionPost:
 
         assert answer.startswith("Failed:")
         assert mocks["update_db_post_status"].call_args_list[-1].args == (5, PostStatus.APPROVED)
+        mocks["release_run_lock"].assert_called_once()
+
+    def test_a_demo_mode_refusal_holds_the_claim_at_error_instead_of_releasing_it(self):
+        """DEMO_MODE (#2372): a refused session holds the claim at `error`.
+
+        Released to `approved`, the dispatcher would re-run the draft every beat for a day and
+        publish it once demo mode is off. Held like an abandoned claim, the author decides.
+        """
+        from cqc_lem.utilities.db import PostStatus
+        from cqc_lem.utilities.demo_mode import DemoModeError
+
+        answer, mocks = self._run(session_raises=DemoModeError("selenium.get_docker_driver"))
+
+        assert "held at error" in answer
+        assert [c.args for c in mocks["update_db_post_status"].call_args_list] == [
+            (5, PostStatus.SCHEDULED), (5, PostStatus.ERROR)]
+        mocks["publish"].assert_not_called()
         mocks["release_run_lock"].assert_called_once()
 
     # --- the outcomes ---------------------------------------------------------------------------

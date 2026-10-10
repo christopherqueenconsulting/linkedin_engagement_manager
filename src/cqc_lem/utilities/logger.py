@@ -27,7 +27,7 @@ import time
 from logging.handlers import RotatingFileHandler
 from typing import Callable, Optional
 
-from cqc_lem.utilities.demo_mode import DemoModeError
+from cqc_lem.utilities.demo_mode import DemoModeError, is_demo_mode
 
 _LOG_LEVEL = getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO)
 # PostHog receives records at this level and above (default: ERROR)
@@ -409,6 +409,15 @@ def log_info(message: str, **context) -> None:
     logger.info(message, extra=_extra(**context))
 
 
+def _is_demo_refusal(exc: Optional[BaseException]) -> bool:
+    """A `DemoModeError` raised while DEMO_MODE is actually on.
+
+    Both halves, so a `DemoModeError` that somehow surfaces with demo mode OFF is a real defect and
+    keeps its level, escalation and `$exception`.
+    """
+    return isinstance(exc, DemoModeError) and is_demo_mode()
+
+
 def _log_demo_refusal(message: str, exc: DemoModeError, context: dict) -> None:
     """Log a DEMO_MODE refusal (#2372) at INFO, whatever level the caller asked for.
 
@@ -428,7 +437,7 @@ def log_warning(
     exception's stack trace (via exc_info) instead of passing it as a raw attribute.
     A `DemoModeError` is logged at INFO instead (`_log_demo_refusal`).
     """
-    if isinstance(exc, DemoModeError):
+    if _is_demo_refusal(exc):
         _log_demo_refusal(message, exc, context)
         return
     escalation = None
@@ -468,7 +477,7 @@ def log_error(
     """Log at ERROR level. Pass exc= to capture exception info and stack trace, and to file the
     exception as a grouped PostHog error-tracking issue. A `DemoModeError` is logged at INFO instead.
     """
-    if isinstance(exc, DemoModeError):
+    if _is_demo_refusal(exc):
         _log_demo_refusal(message, exc, context)
         return
     if exc is not None:
@@ -486,7 +495,7 @@ def log_critical(
     """Log at CRITICAL level. Pass exc= to capture exception info and stack trace, and to file the
     exception as a grouped PostHog error-tracking issue. A `DemoModeError` is logged at INFO instead.
     """
-    if isinstance(exc, DemoModeError):
+    if _is_demo_refusal(exc):
         _log_demo_refusal(message, exc, context)
         return
     if exc is not None:

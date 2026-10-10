@@ -66,6 +66,7 @@ from cqc_lem.utilities.db import (
     insert_new_log,
     set_target_connect_status,
 )
+from cqc_lem.utilities.demo_mode import DemoModeError
 from cqc_lem.utilities.human_pacing import ACTION_INVITE, record_action
 from cqc_lem.utilities.lead_scoring import profile_slug
 from cqc_lem.utilities.linkedin.company_page_inviter import (
@@ -1932,6 +1933,12 @@ def send_connection_request(self, request_id: int):
         reason = INVITE_OUTCOME_CHALLENGE if isinstance(e, LinkedInChallengeUnsolved) else "throttled"
         track_invite_outcome(user_id, INVITE_RESULT_DEFERRED, reason, attempts_before)
         return f"Connection request {request_id} deferred (LinkedIn {reason})"
+    except DemoModeError:
+        # DEMO_MODE (#2372) refused before a browser opened — no attempt is charged. Left
+        # 'sending', the orphan reaper would re-queue this on every beat and send the invite to a
+        # real person once demo mode is turned off; 'pending' needs a human to approve it again.
+        update_connection_request_status(request_id, ConnectionRequestStatus.PENDING)
+        return f"Connection request {request_id} held at pending (DEMO_MODE)"
     if sent:
         update_connection_request_status(request_id, ConnectionRequestStatus.SENT)
         track_invite_outcome(user_id, INVITE_RESULT_SENT, _invite_outcome_reason(reason),

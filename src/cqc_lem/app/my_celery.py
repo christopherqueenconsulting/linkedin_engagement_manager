@@ -28,7 +28,7 @@ from celery.signals import (
 from cqc_lem.app import celeryconfig
 from cqc_lem.app.celeryconfig import broker_url
 from cqc_lem.app.task_outcome import LaneTaskFailed
-from cqc_lem.utilities.demo_mode import DemoModeError
+from cqc_lem.utilities.demo_mode import DemoModeError, is_demo_mode
 from cqc_lem.utilities.engagement_window import STAGGER_TICK_MINUTES
 from cqc_lem.utilities.env_constants import AWS_REGION
 from cqc_lem.utilities.logger import logger
@@ -527,6 +527,14 @@ def _task_user_id(kwargs) -> Optional[int]:
         return None
 
 
+def _demo_refusal(exc: object) -> bool:
+    """A `DemoModeError` raised while DEMO_MODE is on (#2372) — expected, so never filed.
+
+    With demo mode OFF the same type is a real defect and is filed like any other failure.
+    """
+    return isinstance(exc, DemoModeError) and is_demo_mode()
+
+
 @task_failure.connect(weak=False)
 def on_task_failure(task_id: str = None, exception: BaseException = None, sender=None,
                     kwargs: dict = None, einfo=None, **_) -> None:
@@ -541,7 +549,7 @@ def on_task_failure(task_id: str = None, exception: BaseException = None, sender
     A `DemoModeError` (#2372) is not filed either: under DEMO_MODE every LinkedIn task is refused
     by design, so the refusal is the expected outcome, not a defect.
     """
-    if isinstance(exception, (LaneTaskFailed, DemoModeError)):
+    if isinstance(exception, LaneTaskFailed) or _demo_refusal(exception):
         return
     capture_exception(
         exception,
@@ -560,7 +568,7 @@ def on_task_retry(request=None, reason=None, sender=None, einfo=None, **_) -> No
     skipped rather than filed as a synthetic one. A `DemoModeError` (#2372) is expected under
     DEMO_MODE and is never filed.
     """
-    if not isinstance(reason, BaseException) or isinstance(reason, DemoModeError):
+    if not isinstance(reason, BaseException) or _demo_refusal(reason):
         return
     capture_exception(
         reason,

@@ -308,7 +308,7 @@ class TestEgressProbe:
 
 class TestRefusalIsNotADefect:
     @pytest.mark.parametrize("level", ["log_warning", "log_error", "log_critical"])
-    def test_logger_demotes_a_refusal_to_info(self, level):
+    def test_logger_demotes_a_refusal_to_info(self, demo_on, level):
         from cqc_lem.utilities import logger as lg
         with patch.object(lg, "logger") as py_logger, patch.object(lg, "_capture") as capture, \
              patch.object(lg.log_escalation, "note") as note:
@@ -322,30 +322,62 @@ class TestRefusalIsNotADefect:
         capture.assert_not_called()
         note.assert_not_called()
 
-    def test_control_a_real_error_is_still_captured(self):
+    def test_logger_does_not_demote_when_demo_mode_is_off(self, demo_off):
+        # A DemoModeError with demo mode OFF should be impossible; if one surfaces it is a defect
+        # and keeps its level and its `$exception`.
+        from cqc_lem.utilities import logger as lg
+        with patch.object(lg, "logger") as py_logger, patch.object(lg, "_capture") as capture:
+            lg.log_error("Could not publish", exc=DemoModeError("poster.share_on_linkedin"))
+        py_logger.error.assert_called_once()
+        py_logger.info.assert_not_called()
+        capture.assert_called_once()
+
+    def test_control_a_real_error_is_still_captured(self, demo_on):
         from cqc_lem.utilities import logger as lg
         with patch.object(lg, "logger") as py_logger, patch.object(lg, "_capture") as capture:
             lg.log_error("Could not publish", exc=RuntimeError("boom"))
         py_logger.error.assert_called_once()
         capture.assert_called_once()
 
-    def test_celery_failure_and_retry_hooks_do_not_file_a_refusal(self):
+    @staticmethod
+    def _fire_hooks(my_celery, exc):
         from types import SimpleNamespace
-
-        from cqc_lem.app import my_celery
         sender = SimpleNamespace(name="cqc_lem.app.run_automation.post_to_linkedin")
+        my_celery.on_task_failure(task_id="t", exception=exc, sender=sender, kwargs={"user_id": 1})
+        my_celery.on_task_retry(request=SimpleNamespace(kwargs={}, id="t", retries=0),
+                                reason=exc, sender=sender)
+
+    def test_celery_failure_and_retry_hooks_do_not_file_a_refusal(self, demo_on):
+        from cqc_lem.app import my_celery
         with patch.object(my_celery, "capture_exception") as capture:
-            my_celery.on_task_failure(task_id="t", exception=DemoModeError("x"), sender=sender,
-                                      kwargs={"user_id": 1})
-            my_celery.on_task_retry(request=SimpleNamespace(kwargs={}, id="t", retries=0),
-                                    reason=DemoModeError("x"), sender=sender)
+            self._fire_hooks(my_celery, DemoModeError("x"))
             capture.assert_not_called()
             # Control: an ordinary failure is still filed by the same hooks.
-            my_celery.on_task_failure(task_id="t", exception=RuntimeError("boom"), sender=sender,
-                                      kwargs={})
-            my_celery.on_task_retry(request=SimpleNamespace(kwargs={}, id="t", retries=0),
-                                    reason=RuntimeError("boom"), sender=sender)
+            self._fire_hooks(my_celery, RuntimeError("boom"))
         assert capture.call_count == 2
+
+    def test_celery_hooks_file_a_refusal_when_demo_mode_is_off(self, demo_off):
+        from cqc_lem.app import my_celery
+        with patch.object(my_celery, "capture_exception") as capture:
+            self._fire_hooks(my_celery, DemoModeError("x"))
+        assert capture.call_count == 2
+
+
+class TestTutorialCaptureOrigin:
+    """The tutorial recorder is the one `demo_safe` browser, so its origin may never be LinkedIn."""
+
+    @pytest.mark.parametrize("origin", ["https://www.linkedin.com", "https://LINKEDIN.com/",
+                                        "https://api.linkedin.com\\@lem.test"])
+    def test_linkedin_origin_is_refused(self, monkeypatch, origin):
+        from cqc_lem.utilities.marketing import video_tutorials as vt
+        monkeypatch.setattr(vt, "TUTORIAL_SPA_BASE_URL", origin)
+        with pytest.raises(vt.TutorialCaptureError, match="LinkedIn"):
+            vt.spa_base_url()
+
+    def test_own_spa_origin_is_returned(self, monkeypatch):
+        from cqc_lem.utilities.marketing import video_tutorials as vt
+        monkeypatch.setattr(vt, "TUTORIAL_SPA_BASE_URL", "https://lem.test/")
+        assert vt.spa_base_url() == "https://lem.test"
 
 
 class TestParserDifferential:

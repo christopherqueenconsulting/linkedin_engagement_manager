@@ -65,17 +65,32 @@ shows. The per-service check above is the real proof.
 3. Re-run the per-service check: every line must be empty or `<unset>`. Confirm
    `GET /api/app-info` answers `"demo_mode": false`.
 
-What was refused while it was on:
+What was refused while it was on. The scheduler runs five orphan reapers, and none of them has a
+limit on how old a row may be. Here is what each one finds after a refusal:
 
-- **Scheduled posts.** The scheduler moves a due post from `approved` to `scheduled` and queues
-  `post_to_linkedin`. In demo mode the publish raises, so the post **stays `scheduled`**. Nothing
-  marks it `error`, and nobody has to fix it by hand. Once its `scheduled_time` is two hours old,
-  the scheduler's orphan sweep re-queues it on every run (every 10 minutes). While demo mode is on,
-  each re-queue is refused again. **After demo mode is turned off, the next sweep publishes every
-  such post, however old.** If those rows belong to real accounts, move them out of `scheduled`
-  before turning demo mode off.
-- **Engagement lanes.** A refused run just ends. The next beat-scheduled run goes ahead normally
-  once the variable is gone. No run is replayed.
+- **Posts (`get_orphaned_scheduled_posts`).** A refused `post_to_linkedin` leaves the post at
+  `scheduled`, and the reaper re-queues it on every 10-minute run once it is two hours past its
+  slot, so **the first run after turn-off publishes it, however old**. Move such posts out of
+  `scheduled` before turning demo mode off. Posts are not held automatically, because `pending`
+  can be auto-approved again by the content re-score.
+- **Scheduled DMs (`get_orphaned_scheduled_dms`).** A refused `send_scheduled_dm` holds the DM at
+  `pending`. The reaper only reads `scheduled`, so it never re-queues it; the DM needs a human to
+  approve it again.
+- **Connection requests (`get_orphaned_connection_requests`).** A refused
+  `send_connection_request` holds the request at `pending` without charging an attempt. The reaper
+  only reads `sending`, so it never re-queues it.
+- **Catch-up touches (`get_orphaned_catchup_touches`).** A refused `send_catchup_touch` gives back
+  its send claim, holds the touch at `pending` and reports `demo_held`. The reaper only reads
+  `sending`, so it never re-queues it.
+- **Occasion posts (`get_orphaned_occasion_claims`).** A refused `auto_publish_occasion_post` holds
+  its claim at `error` instead of releasing it to `approved`. That reaper never re-queues anything
+  either: it moves an abandoned claim to `error` for the author to resolve.
+
+Beyond the reapers, the rule is that anything still approved and due keeps its schedule.
+Follow-up DMs, newsletter editions, group posts and hot-lead replies that come due while demo mode
+is on are refused, and can still go out on their normal schedule once it is off. Beat-driven lanes
+that hold no queued row (feed commenting, reply sweeps and the like) simply run again on their
+next tick. This is why a demo stack must use its own database.
 
 ## What it blocks
 
@@ -118,6 +133,9 @@ Two places make sure of that:
 - **The Celery signal hooks** (`my_celery.on_task_failure`, `on_task_retry`) skip `DemoModeError`,
   the same way they skip `LaneTaskFailed`. A refused task still ends in FAILURE, and Celery's own
   log line for that failure goes to the container log, not to PostHog.
+
+Both apply only while `DEMO_MODE` is actually on. A `DemoModeError` that surfaces with demo mode
+off should be impossible, so it is treated as a defect: it keeps its level, escalates and is filed.
 
 The guard itself logs one INFO line per refusal (`action_type="demo_mode"`).
 
@@ -170,4 +188,5 @@ loading, nothing renders.
 
 The one Selenium exemption is `get_docker_driver(..., demo_safe=True)`. The tutorial recorder
 (`utilities/marketing/video_tutorials.py`) uses it to film our own SPA. The scan pins that file as
-the only caller.
+the only caller, and `spa_base_url()` refuses a LinkedIn origin, so that browser can never be
+pointed at LinkedIn.
