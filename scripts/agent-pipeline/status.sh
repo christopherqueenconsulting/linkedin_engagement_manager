@@ -804,6 +804,40 @@ collect_stale_units() {
   STALE_UNITS="${STALE_UNITS# }"
 }
 
+# Permission-profile denials in the last 24h, from the one line per agent run that run_lane.sh
+# appends to logs/denials.jsonl. A denial is a mode that could not do a step: either the profile is
+# missing an allow the runbook needs, or the agent tried something it should not. Both want a
+# human to read the entries, so any denial raises NEEDS ATTENTION. Unparseable lines are skipped.
+collect_denials() {
+  local f="$LOGDIR/denials.jsonl"
+  DENIALS_24H=0; DENIALS_BY_MODE=""
+  [ -f "$f" ] || return 0
+  local out
+  out="$(python3 - "$f" "$NOW" <<'PY' 2>/dev/null
+import calendar, collections, json, sys, time
+path, now = sys.argv[1], int(sys.argv[2])
+by = collections.Counter()
+for line in open(path, encoding="utf-8", errors="replace"):
+    try:
+        row = json.loads(line)
+        ts = calendar.timegm(time.strptime(row["ts"], "%Y-%m-%dT%H:%M:%SZ"))
+    except Exception:
+        continue
+    n = row.get("denial_count")
+    if now - ts <= 86400 and isinstance(n, int) and n > 0:
+        by[row.get("mode") or "?"] += n
+print(sum(by.values()))
+print(" ".join(f"{m}={c}" for m, c in sorted(by.items())))
+PY
+)" || return 0
+  DENIALS_24H="$(printf '%s\n' "$out" | sed -n 1p)"
+  DENIALS_BY_MODE="$(printf '%s\n' "$out" | sed -n 2p)"
+  case "$DENIALS_24H" in ''|*[!0-9]*) DENIALS_24H=0 ;; esac
+  if [ "$DENIALS_24H" -gt 0 ]; then
+    warn "permission denials (24h): $DENIALS_24H — by mode: $DENIALS_BY_MODE. Read $f (docs/agent-pipeline-v2.md, 'Permission profile' — reviewing denials)."
+  fi
+}
+
 # ── renderers ────────────────────────────────────────────────────────────────────────────────────
 render_text() {
   local n_agents="${#AGENT_ROWS[@]}"
@@ -842,6 +876,8 @@ render_text() {
   # ask "is what I merged actually running?" — the answer this report could not give during #1412.
   [ -n "$STALE_UNITS" ] && printf '  %-14s %s%s%s — started before the newest v2/lemd change; restart to load it\n' \
     "stale units:" "$C_RED" "$STALE_UNITS" "$C_RST"
+  printf '  %-14s %s\n' "denials (24h):" \
+    "$([ "${DENIALS_24H:-0}" -gt 0 ] 2>/dev/null && printf '%s%s%s, by mode: %s' "$C_YEL" "$DENIALS_24H" "$C_RST" "$DENIALS_BY_MODE" || echo 0)"
 
   head2 "RUNNING AGENTS ($n_agents)"
   if [ "$n_agents" = 0 ]; then
@@ -1148,10 +1184,11 @@ run_once() {
   V2_ACTIVE=0; V2_CAP=""; V2_HB_AGE=-1; V2_SHADOW=""; V2_STATES=""; V2_USAGE=""; V2_USAGE_AGE=""; V2_USAGE_STALE=0
   V2_HOLD=""; V2_GH_SLOTS=""; V2_DISPATCH_AGE=-1; V2_DISPATCH_MODE=""
   V2_RUNS=""; V2_MODES=""; V2_RCS=""; V2_POOL_AGENT=-1; V2_POOL_GH=-1
-  STALE_UNITS=""; LEMD_SRC_AGE=-1
+  STALE_UNITS=""; LEMD_SRC_AGE=-1; DENIALS_24H=0; DENIALS_BY_MODE=""
   collect_pipeline_state
   collect_v2
   collect_stale_units
+  collect_denials
   collect_agents
   collect_other_claude
   collect_lanes

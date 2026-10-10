@@ -182,6 +182,10 @@ fi
 # and let a genuinely exhausted lane dispatch again on the next real tick.
 if [ "$DRY_RUN" = "1" ]; then ledger_reset() { :; }; fi
 
+# A dispatch run_lane will REFUSE (permission profile missing) must not spend a run budget. v1
+# charges before run_claude at six sites, so the guard wraps ledger_charge once (lib/run_lane.sh).
+if command -v guard_ledger_charge_with_profile >/dev/null 2>&1; then guard_ledger_charge_with_profile; fi
+
 # --- v1/v2 coexistence: the V1_RETIRED sentinel and the --failsafe role ------------------------
 # After cutover the v2 daemon is the dispatcher and this script becomes the safety net. Two files,
 # two meanings, and keeping them separate is the whole point:

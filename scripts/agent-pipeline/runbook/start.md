@@ -56,8 +56,8 @@ A fresh worktree on branch `$BRANCH` (from origin/main) is ready. Implement issu
    does this PR satisfy **every** acceptance criterion? If any remains — an unchecked box you did not
    implement, or an explicit later phase ("Phase 2", "lands in a follow-up PR", "deferred to") — do one of:
    - **(a)** File the follow-up issue now — `<original title> — Phase N (follow-up of #$ISSUE)`, quoting
-     the remaining scope, labeled topical + `agent:ready` + a `priority:` (+ `risk:*` if it needs the
-     owner at merge); check it doesn't already exist (`gh issue list --search`). Link it as
+     the remaining scope, labeled topical + a `priority:` (+ `risk:*` if it needs the owner at merge) —
+     never `agent:ready`, the owner or a trusted labeler adds that; check it doesn't already exist (`gh issue list --search`). Link it as
      `Follow-up: #<new>` in the PR body **and** comment it on #$ISSUE. Keep `Closes #$ISSUE`.
    - **(b)** Omit `Closes #$ISSUE` from the PR body, state "Remaining on #$ISSUE: …", leave it open.
 
@@ -67,9 +67,9 @@ A fresh worktree on branch `$BRANCH` (from origin/main) is ready. Implement issu
    On a `template:agent-task` issue, check its `### Phase` field first: a `phase N of M` declaration IS
    the "explicit later phase" case above, and its `### Remaining phases` text is the scope to quote into
    the follow-up issue.
-8. Open the PR:
+8. Open the PR — Write the body (what & why, testing notes, `Closes #$ISSUE`) to `tmp/pr-body.md` first:
    `gh pr create --base main --head $BRANCH --title "<type>(<scope>): <summary> (closes #$ISSUE)"
-    --body "<what & why, testing notes, 'Closes #$ISSUE'>" --label agent:working`
+    --body-file tmp/pr-body.md --label agent:working`
    End the PR body with: `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
 9. **Do NOT enable auto-merge.** Merge is controlled by the runner (`tick.sh`), which merges only after
    CI is green AND one fresh review exists (the runner's Claude adversarial review — or Copilot's,

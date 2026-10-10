@@ -18,6 +18,7 @@ The runner will NOT merge while any Copilot thread is unresolved, so you must bo
      `gh pr comment $PR --body-file tmp/review-reply.md` (an in-thread reply needs `gh api`, which
      the profile denies — the PR comment is the record).
    - Then **resolve the thread** so the merge gate can clear:
-     `/home/lem/agent-pipeline/lib/review_threads.sh resolve <thread_id>` (the `PRRT_…` id from step 1).
+     `/home/lem/agent-pipeline/lib/review_threads.sh resolve $PR <thread_id>` (the `PRRT_…` id from
+     step 1; the helper refuses a thread that is not on this PR).
 3. Commit + `git push` (re-triggers CI; Copilot re-reviews the new head and may open fresh threads —
    a later tick will loop back here until Copilot has nothing left). STOP.

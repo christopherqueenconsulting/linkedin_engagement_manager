@@ -38,14 +38,16 @@ feedback — this is distinct from Copilot's threads (that's MODE=review). Workt
        still true". Do NOT cram these into the diff. **First check whether the issue already exists**
        (`gh issue list --search`, and read the PR comments — someone may have filed it already and said so); if
        it does, link it instead of filing a duplicate. Otherwise create it with the repo's label conventions
-       (`agent:ready` + a `priority:` label, plus `risk:` if it needs the owner at merge). Either way, link it in
+       (a `priority:` label, plus `risk:` if it needs the owner at merge — never `agent:ready`, which the
+       owner or a trusted labeler adds). Either way, link it in
        your reply comment so the owner can see the ask was captured rather than dropped.
      Anything you deliberately did NOT do must be named in your reply — silence reads as "done".
 2. Implement each requested change, scoped to this PR, following `CLAUDE.md` (including its fixed-shape rule — see the preamble: EDIT a row, never ADD one). If a request is ambiguous or you
    think it's wrong, implement your best interpretation AND leave a reply explaining — never silently skip it.
 3. Add/adjust tests; run `poetry run pytest tests/unit -q` on the touched areas if feasible.
 4. Commit (Claude co-author trailer) + `git push`.
-5. Reply summarizing what you changed: `gh pr comment $PR --body "Addressed your review: …"`.
+5. Reply summarizing what you changed: Write it (starting `Addressed your review: …`) to
+   `tmp/revise-reply.md`, then `gh pr comment $PR --body-file tmp/revise-reply.md`.
 6. Hand the PR forward to merge:
    `gh pr edit $PR --add-label agent:working --remove-label agent:revise --remove-label needs-human --remove-label agent:blocked`.
    The runner then re-runs CI + Copilot review and merges it. STOP.

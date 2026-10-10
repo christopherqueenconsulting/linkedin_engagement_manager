@@ -79,7 +79,7 @@ def test_hooks_never_sit_inside_the_permission_block():
     [
         "Bash(sudo *)",
         "Bash(docker *)",
-        "Bash(*deploy.sh*)",
+        "Bash(scripts/deploy.sh*)",
         "Bash(git -C /opt/lem *)",
         "Bash(rm -rf *)",
         "Bash(curl *)",
@@ -200,21 +200,41 @@ def test_matcher_follows_the_documented_examples():
         "git rebase origin/main",
         "git rebase --continue",
         "git rebase --abort",
+        "git rm src/cqc_lem/old_module.py",
+        "git mv compose/local/database/migrations/V20260101000000__a.sql "
+        "compose/local/database/migrations/V20261010000000__a.sql",
         "git push --force-with-lease",
         "git push --force-with-lease origin feature/claude-issue-1",
         # MODE=review / revise
         f"{REVIEW_THREADS_INSTALLED} list 2338",
-        f"{REVIEW_THREADS_INSTALLED} resolve PRRT_kwDOabc123",
+        f"{REVIEW_THREADS_INSTALLED} resolve 2338 PRRT_kwDOabc123",
         "gh pr view 2338 --json reviews,comments",
         "gh pr diff 2338",
         "gh pr comment 2338 --body-file tmp/review-reply.md",
+        "gh pr comment 1 --body-file tmp/x.md",
         # MODE=start / escalation / phasefix
         "gh issue edit 41 --add-label needs-human --add-assignee gitchrisqueen --remove-label agent:ready",
-        "gh issue create --title \"x — Phase 2 (follow-up of #41)\" --label agent:ready --body-file tmp/f.md",
+        "gh issue edit 41 --remove-label agent:ready",
+        "gh issue edit 41 --add-label agent:blocked --remove-label agent:working",
+        "gh issue create --title \"x — Phase 2 (follow-up of #41)\" --label enhancement --body-file tmp/f.md",
+        "gh pr create --base main --head feature/claude-issue-41 --title \"feat: x (closes #41)\" "
+        "--body-file tmp/pr-body.md --label agent:working",
+        "gh pr edit 9 --body-file tmp/pr-body.md",
         "gh pr ready --undo 9",
+        "git commit -m \"feat: x\"",
+        "git commit -F tmp/commit-msg.txt",
+        "git push",
         "git push -u origin feature/claude-issue-41",
-        # MODE=depfix (b), MODE=docfix
+        "git push origin dependabot/pip/requests-2.33.0",
+        # a PR that touches the deploy script can still be staged and diffed
+        "git add scripts/deploy.sh",
+        "git diff scripts/deploy.sh",
+        "git add scripts/deploy.sh docs/zero-downtime-deploys.md tests/unit/test_deploy.py",
+        # MODE=depfix, MODE=docfix
         "git switch -c fix/pexels-401 origin/main",
+        "git push -u origin fix/pexels-401",
+        "poetry lock",
+        "poetry lock --no-update",
         "git diff --name-only origin/main...HEAD -- '*.py'",
         "poetry run ruff check src/a.py tests/b.py",
         # the preamble's venv trap
@@ -228,22 +248,81 @@ def test_every_documented_runbook_command_is_allowed(command):
 @pytest.mark.parametrize(
     "command",
     [
+        # force, main, deletes, mirror — including trailing-argument forms
         "git push --force",
         "git push --force origin feature/x",
         "git push origin feature/x --force",
         "git push -f",
         "git push -f origin feature/x",
+        "git push -fu origin x",
+        "git push -u origin feature/x -f",
         "git push origin +feature/x",
         "git push origin main",
         "git push --force-with-lease origin main",
         "git push --force-with-lease origin feature/x:main",
         "git push origin feature/x:refs/heads/main",
+        "git push origin HEAD:main --no-verify",
+        "git push --force-with-lease origin x:refs/heads/main -q",
+        "git push -u origin feature/x:main -q",
+        "git push --mirror",
+        "git push origin --delete fix/y",
+        "git push origin fix/y --delete",
+        "git push origin -d fix/y",
+        "git push origin :fix/y",
+        "git push -u origin feature/x --repo=https://example.com/other.git",
+        "git push --all",
+        "git push origin some-other-branch",
+        # rebase
         "git rebase --exec 'make' origin/main",
         "git rebase --exe=make origin/main",
         "git rebase -x make origin/main",
         "git rebase origin/main --exec make",
         "git rebase -i origin/main",
         "git rebase origin/feature",
+        "git rm -r src",
+        "git rm src -r",
+        "git mv src/a.py src/b.py",
+        # file arguments outside the worktree
+        "git log -1 --format=x --output=/home/lem/agent-pipeline/config.env",
+        "git diff --no-index /home/lem/agent-pipeline/config.env /dev/null",
+        "git show HEAD --output-file=/tmp/x",
+        "gh issue comment 1 --body-file /home/lem/agent-pipeline/state/gh-app-token",
+        "gh pr comment 1 --body-file ../../../agent-pipeline/config.env",
+        "gh pr comment 1 --body-file=/home/lem/agent-pipeline/config.env",
+        "gh pr comment 1 --body-file ~/.config/gh/hosts.yml",
+        "gh pr comment 1 --body-file \"$HOME/.ssh/id_rsa\"",
+        "gh pr comment 1 -F /etc/passwd",
+        "gh pr create --title x -F ../x.md",
+        "git commit -F /etc/passwd",
+        "git commit -m x --file=/etc/passwd",
+        "git commit -F ../../secrets.env",
+        "git commit -t /etc/passwd",
+        # gh issue edit is labels/assignees only, and never ADDS agent:ready
+        "gh issue edit 1 --body \"x\"",
+        "gh issue edit 1 --body-file tmp/x.md",
+        "gh issue edit 1 -b x",
+        "gh issue edit 1 -F tmp/x.md",
+        "gh issue edit 1 --title x",
+        "gh issue edit 1 -t x",
+        "gh issue edit 1 --add-label agent:ready",
+        "gh issue edit 1 --add-label=agent:ready",
+        "gh issue edit 1 --add-label \"agent:ready\"",
+        "gh issue edit 1 --add-label 'agent:ready'",
+        "gh issue edit 1 --add-label bug,agent:ready",
+        "gh issue edit 1 --add-label \"bug, agent:ready\"",
+        "gh issue edit 1 --add-label=bug,agent:ready",
+        "gh issue create --title x --label agent:ready --body-file tmp/a.md",
+        "gh issue create --title x -l agent:ready --body-file tmp/a.md",
+        "gh issue create --title x --label bug,agent:ready --body-file tmp/a.md",
+        # executing the deploy script, however spelled
+        "scripts/deploy.sh v1.2.3",
+        "./scripts/deploy.sh",
+        "/opt/lem/scripts/deploy.sh v1.2.3",
+        "bash scripts/deploy.sh",
+        "bash -n scripts/deploy.sh",
+        "sh scripts/deploy.sh",
+        ". scripts/deploy.sh",
+        # GraphQL, env prefixes, owner-only tools
         "gh api graphql -f query='mutation{x}'",
         "gh api repos/christopherqueenconsulting/linkedin_engagement_manager/pulls/1/comments",
         "env -u GH_TOKEN gh pr view 1 --json title",
@@ -253,6 +332,8 @@ def test_every_documented_runbook_command_is_allowed(command):
         "git switch main",
         "git checkout main",
         "bash -c 'gh api graphql'",
+        "PYTHONPATH=src poetry run python -c 'import x'",
+        "mv src/cqc_lem/ui/dist /tmp/dist",
     ],
 )
 def test_the_bounding_rules_hold(command):
@@ -263,39 +344,63 @@ def test_the_bounding_rules_hold(command):
 
 
 #: A line that names a command in order to forbid it is not an instruction to run it.
-_FORBIDS = re.compile(r"\bden(y|ies|ied)\b|\bDo not prefix\b")
+_FORBIDS = re.compile(r"\bden(y|ies|ied)\b|\bDo not prefix\b|\bnot available\b|\bowner-run\b|\bnever `")
 
 
-def _runbook_offenders(texts: dict[str, str], needle: str) -> list[str]:
+def _runbook_offenders(texts: dict[str, str], pattern: str) -> list[str]:
+    rx = re.compile(pattern)
     return [
         f"{name}:{i}" for name, text in sorted(texts.items())
         for i, line in enumerate(text.splitlines(), 1)
-        if needle in line and not _FORBIDS.search(line)
+        if rx.search(line) and not _FORBIDS.search(line)
     ]
 
 
-_DENIED_IN_RUNBOOKS = ["gh api graphql", "gh api repos/", "sudo docker", "| xargs", "env -u GH_TOKEN"]
+#: Regexes for runbook text that tells an agent to run something the profile denies.
+_DENIED_IN_RUNBOOKS = [
+    r"gh api graphql",
+    r"gh api repos/",
+    r"sudo docker",
+    r"\| xargs",
+    r"env -u GH_TOKEN",
+    r"`[A-Z][A-Z0-9_]*=[^`\s]+ [a-z]",             # an env-assignment prefix: `PYTHONPATH=src poetry …`
+    r"poetry run python\b",                       # standalone scripts (pytest is `poetry run pytest`)
+    r"\bmove any built\b|`mv ",                   # relocating files: no `mv` in the profile
+    r"--add-label agent:ready|\+ `agent:ready`|`agent:ready` \+",  # agents never ADD agent:ready
+    r"--body \"[^\"]*$",                          # a --body whose text runs onto the next line
+    r"review_threads\.sh resolve <",              # resolve without the PR argument
+    r"Tick the acceptance boxes",                 # needs `gh issue edit --body`
+]
 
 
-@pytest.mark.parametrize("needle", _DENIED_IN_RUNBOOKS)
-def test_no_runbook_instructs_a_denied_command(needle):
+@pytest.mark.parametrize("pattern", _DENIED_IN_RUNBOOKS)
+def test_no_runbook_instructs_a_denied_command(pattern):
     """A runbook step the profile denies is a mode that cannot do its job — and reads as a stuck PR."""
     texts = {p.name: p.read_text(encoding="utf-8") for p in RUNBOOK_DIR.glob("*.md")}
     assert len(texts) == len(MODES) + 1  # every mode file + the preamble
-    assert not _runbook_offenders(texts, needle)
+    assert not _runbook_offenders(texts, pattern)
 
 
-def test_runbook_scan_catches_the_commands_it_exists_for():
-    """Guard the guard: the steps this change rewrote must register as offenders."""
-    old = {
-        "review.md": "   `gh api graphql -f query='mutation($t:ID!){resolveReviewThread(...)}' -f t=x`",
-        "revise.md": "   - Inline review comments: `gh api repos/o/n/pulls/$PR/comments`",
-        "_preamble.md": "  `sudo docker exec -i celery_worker_selenium python - --require-debug-node`",
-        "docfix.md": "   `git diff --name-only origin/main...HEAD -- '*.py' | xargs -r poetry run ruff check`",
-        "start.md": "   `env -u GH_TOKEN gh pr view 1`",
-    }
-    for needle in _DENIED_IN_RUNBOOKS:
-        assert _runbook_offenders(old, needle), needle
+#: Lines from the runbooks as they stood before this change, one per pattern.
+_OLD_RUNBOOK_LINES = {
+    "review.md": "   `gh api graphql -f query='mutation($t:ID!){resolveReviewThread(...)}' -f t=x`",
+    "revise.md": "   - Inline review comments: `gh api repos/o/n/pulls/$PR/comments`",
+    "_preamble.md": "  `sudo docker exec -i celery_worker_selenium python - --require-debug-node`",
+    "docfix.md": "   `git diff --name-only origin/main...HEAD -- '*.py' | xargs -r poetry run ruff check`",
+    "start.md": "   `env -u GH_TOKEN gh pr view 1`",
+    "_preamble2.md": "  `PYTHONPATH=src poetry run python -c \"import cqc_lem.api.main as m\"` must be",
+    "_preamble3.md": "  reproduce CI exactly, drop an empty `.env` into your worktree and move any built `dist` aside.",
+    "start2.md": "     the remaining scope, labeled topical + `agent:ready` + a `priority:` (+ `risk:*` if",
+    "selfreview.md": "   `gh pr comment $PR --body \"$MARKER — <PASS|FIXED n findings>",
+    "review2.md": "     `/home/lem/agent-pipeline/lib/review_threads.sh resolve <thread_id>` (the `PRRT_…` id).",
+    "_preamble4.md": "2. If **nothing** remains → normal `Closes #N`. Tick the acceptance boxes in the issue body",
+}
+
+
+@pytest.mark.parametrize("pattern", _DENIED_IN_RUNBOOKS)
+def test_runbook_scan_catches_the_commands_it_exists_for(pattern):
+    """Guard the guard: every pattern must flag at least one line of the pre-change runbook text."""
+    assert _runbook_offenders(_OLD_RUNBOOK_LINES, pattern), pattern
 
 
 def test_preamble_tells_agents_about_the_profile_and_the_env_prefix():
@@ -307,18 +412,24 @@ def test_preamble_tells_agents_about_the_profile_and_the_env_prefix():
 
 # ---------------------------------------------------------------- review_threads.sh
 
+FAKE_GH = """#!/bin/sh
+printf '%s\\n' "$@" >> "$GH_ARGV"
+echo '--' >> "$GH_ARGV"
+case "$*" in
+  *resolveReviewThread*) echo MUTATION >> "$GH_ARGV"; echo '{"data":{}}' ;;
+  *"node(id"*) [ -n "$FAKE_OWNER" ] && echo "$FAKE_OWNER" || exit 1 ;;
+  *) echo '{"data":{}}' ;;
+esac
+"""
 
-def _fake_gh(tmp_path: Path) -> dict[str, str]:
+
+def _threads(tmp_path: Path, *args: str, owner: str = "") -> tuple[subprocess.CompletedProcess, list[str]]:
     binf = tmp_path / "ghbin"
-    binf.mkdir()
+    binf.mkdir(exist_ok=True)
     gh = binf / "gh"
-    gh.write_text('#!/bin/sh\nprintf \'%s\\n\' "$@" > "$GH_ARGV"\necho \'{"data":{}}\'\n', encoding="utf-8")
+    gh.write_text(FAKE_GH, encoding="utf-8")
     gh.chmod(0o755)
-    return {"PATH": f"{binf}:/usr/bin:/bin", "GH_ARGV": str(tmp_path / "gh-argv")}
-
-
-def _threads(tmp_path: Path, *args: str) -> tuple[subprocess.CompletedProcess, list[str]]:
-    env = _fake_gh(tmp_path)
+    env = {"PATH": f"{binf}:/usr/bin:/bin", "GH_ARGV": str(tmp_path / "gh-argv"), "FAKE_OWNER": owner}
     r = subprocess.run(["bash", str(REVIEW_THREADS), *args], capture_output=True, text=True, env=env, timeout=30)
     argv_file = tmp_path / "gh-argv"
     return r, (argv_file.read_text(encoding="utf-8").splitlines() if argv_file.exists() else [])
@@ -334,12 +445,33 @@ def test_review_threads_list_runs_the_fixed_query_for_this_repo(tmp_path):
     assert "p=2338" in argv
 
 
-def test_review_threads_resolve_runs_only_the_resolve_mutation(tmp_path):
-    r, argv = _threads(tmp_path, "resolve", "PRRT_kwDOabc-12_3")
+def test_review_threads_resolve_checks_the_thread_is_on_the_pr_then_resolves(tmp_path):
+    r, argv = _threads(tmp_path, "resolve", "2338", "PRRT_kwDOabc-12_3",
+                       owner="christopherqueenconsulting/linkedin_engagement_manager 2338")
     assert r.returncode == 0, r.stderr
     queries = [a for a in argv if a.startswith("query=")]
-    assert queries == ["query=mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{id isResolved}}}"]
-    assert "t=PRRT_kwDOabc-12_3" in argv
+    assert len(queries) == 2
+    assert "node(id:$t)" in queries[0] and "pullRequest{number}" in queries[0] and "mutation" not in queries[0]
+    assert queries[1] == "query=mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{id isResolved}}}"
+    assert "MUTATION" in argv
+    assert argv.count("t=PRRT_kwDOabc-12_3") == 2
+
+
+@pytest.mark.parametrize(
+    "owner",
+    [
+        "christopherqueenconsulting/linkedin_engagement_manager 2339",   # another PR's thread
+        "someone/else 2338",                                             # another repo
+        "christopherqueenconsulting/linkedin_engagement_manager 23380",  # prefix is not equality
+        "",                                                              # unreadable
+    ],
+)
+def test_review_threads_refuses_to_resolve_a_thread_on_another_pr(tmp_path, owner):
+    """One PR's run must not clear another PR's merge gate — and unreadable is a refusal."""
+    r, argv = _threads(tmp_path, "resolve", "2338", "PRRT_kwDOabc", owner=owner)
+    assert r.returncode == 3, (r.stdout, r.stderr)
+    assert "REFUSING" in r.stderr
+    assert "MUTATION" not in argv
 
 
 @pytest.mark.parametrize(
@@ -348,9 +480,11 @@ def test_review_threads_resolve_runs_only_the_resolve_mutation(tmp_path):
         ("list", "12; rm -rf /"),
         ("list", "abc"),
         ("list", "0"),
-        ("resolve", "MDEyOlB1bGxSZXF1ZXN0"),
-        ("resolve", "PRRT_x -f query=mutation{deleteRef}"),
-        ("resolve", "PRRT_x", "-f", "query=mutation{x}"),
+        ("resolve", "PRRT_kwDOabc"),                       # the old one-argument form
+        ("resolve", "2338", "MDEyOlB1bGxSZXF1ZXN0"),
+        ("resolve", "2338", "PRRT_x -f query=mutation{deleteRef}"),
+        ("resolve", "abc", "PRRT_x"),
+        ("resolve", "2338", "PRRT_x", "-f", "query=mutation{x}"),
         ("list",),
         ("delete", "PRRT_x"),
         (),
@@ -360,6 +494,12 @@ def test_review_threads_refuses_anything_else_before_gh_runs(tmp_path, args):
     r, argv = _threads(tmp_path, *args)
     assert r.returncode == 2, (r.stdout, r.stderr)
     assert argv == [], "gh must not run on a refused argument"
+
+
+def test_review_threads_does_not_claim_to_be_a_boundary():
+    text = REVIEW_THREADS.read_text(encoding="utf-8")
+    assert "no way to edit" not in text
+    assert "guard rail, NOT a boundary" in text
 
 
 # ---------------------------------------------------------------- run_lane, for real
@@ -484,7 +624,7 @@ def test_missing_default_profile_refuses_instead_of_falling_back(tmp_path):
     """A box whose installer never shipped config/ must stop, not run every lane unrestricted."""
     fx = _fixture(tmp_path, "never printed\n", ship_profile=False)
     r = _run(fx, None)
-    assert "run_lane_rc=1" in r.stdout, r.stdout + r.stderr
+    assert "run_lane_rc=73" in r.stdout, r.stdout + r.stderr  # EX_SETUP
     assert "REFUSING to dispatch" in r.stdout
     assert _argv(fx) == [], "the agent must not run at all"
 
@@ -571,7 +711,7 @@ def test_profile_run_with_no_denials_still_logs_a_line(tmp_path):
 def test_missing_explicit_profile_refuses_instead_of_falling_back(tmp_path):
     fx = _fixture(tmp_path, "never printed\n")
     r = _run(fx, str(tmp_path / "absent.json"))
-    assert "run_lane_rc=1" in r.stdout, r.stdout + r.stderr
+    assert "run_lane_rc=73" in r.stdout, r.stdout + r.stderr  # EX_SETUP
     assert "REFUSING to dispatch" in r.stdout
     assert _argv(fx) == [], "the agent must not run at all"
 
@@ -659,3 +799,136 @@ def test_spend_usage_probe_runs_under_dont_ask(monkeypatch):
     assert usage.readable and usage.session_pct == 19  # parsing unchanged
     assert seen == [["claude", "-p", "/usage", "--output-format", "json", "--permission-mode", "dontAsk"]]
     assert "--dangerously-skip-permissions" not in seen[0]
+
+
+# ---------------------------------------------------------------- a refusal never spends budget
+
+AGENT_RUN = PIPELINE / "v2" / "actions" / "agent_run.sh"
+LEDGER = PIPELINE / "lib" / "ledger.sh"
+
+#: Stands in for v2/actions/common.sh: everything agent_run.sh needs up to the launch, with the REAL
+#: ledger and run_lane libraries — the trust walk and gh calls are what is stubbed, not the budget.
+STUB_COMMON = """
+BASE="$TEST_BASE"; LOGDIR="$BASE/logs"; mkdir -p "$LOGDIR"; LOG="$LOGDIR/actions.log"
+log() { echo "LOG: $*"; }
+EX_TRUST=70; EX_BUDGET=71; EX_BUSY=72; EX_SETUP=73
+DRY_RUN="${DRY_RUN:-0}"; RUNBOOK="$BASE/RUNBOOK.md"; V2_DIR="$BASE/v2"; SLUG=o/r; ASSIGNEE=o
+. "$BASE/lib/ledger.sh"
+. "$BASE/lib/run_lane.sh"
+v2_paused() { return 1; }; v2_hold_present() { return 1; }; v2_trust_ok() { return 0; }
+issue_for_pr() { :; }; claim_branch() { return 0; }
+"""
+
+
+def _agent_run(tmp_path: Path, ship_profile: bool, dry_run: str = "0") -> tuple[subprocess.CompletedProcess, Path]:
+    fx = _fixture(tmp_path, "never printed\n", ship_profile=ship_profile)
+    actions = tmp_path / "actions"
+    actions.mkdir()
+    (actions / "agent_run.sh").write_text(AGENT_RUN.read_text(encoding="utf-8"), encoding="utf-8")
+    (actions / "common.sh").write_text(STUB_COMMON, encoding="utf-8")
+    env = {**fx["env"], "TEST_BASE": str(tmp_path), "DRY_RUN": dry_run}
+    r = subprocess.run(["bash", str(actions / "agent_run.sh"), "fix", "pr", "4242", "feature/claude-issue-1"],
+                       capture_output=True, text=True, env=env, timeout=60)
+    return r, tmp_path / "state" / "ledger" / "pr-4242.tsv"
+
+
+def test_v2_profile_refusal_exits_ex_setup_without_charging_budget(tmp_path):
+    r, ledger = _agent_run(tmp_path, ship_profile=False)
+    assert r.returncode == 73, r.stdout + r.stderr
+    assert "before charging budget" in r.stdout
+    assert not ledger.exists(), "a refused dispatch must not consume a run"
+    assert _argv({"base": tmp_path}) == [], "the agent must not run"
+
+
+def test_v2_harness_does_charge_when_the_profile_is_present(tmp_path):
+    """Guard the guard: the same harness charges the budget once the profile exists."""
+    r, ledger = _agent_run(tmp_path, ship_profile=True, dry_run="1")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert ledger.read_text(encoding="utf-8").split("\t")[:2] == ["fix", "1"]
+
+
+def _v1_ledger(tmp_path: Path, ship_profile: bool, mode: str, modes: str = "") -> subprocess.CompletedProcess:
+    _fixture(tmp_path, "", ship_profile=ship_profile)
+    (tmp_path / "lib" / "ledger.sh").write_text(LEDGER.read_text(encoding="utf-8"), encoding="utf-8")
+    script = textwrap.dedent(f"""
+        BASE="{tmp_path}"; LOGDIR="$BASE/logs"; mkdir -p "$LOGDIR"
+        log() {{ echo "LOG: $*"; }}
+        . "$BASE/lib/ledger.sh"; . "$BASE/lib/run_lane.sh"
+        guard_ledger_charge_with_profile
+        guard_ledger_charge_with_profile   # idempotent: a second call must not wrap the wrapper
+        echo "attempt=$(ledger_charge pr 77 {mode})"
+        echo "count=$(ledger_count pr 77 {mode})"
+    """)
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "LEM_PERMISSION_PROFILE_MODES": modes}
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env, timeout=60)
+
+
+def test_v1_charge_is_skipped_for_a_mode_run_lane_would_refuse(tmp_path):
+    r = _v1_ledger(tmp_path, ship_profile=False, mode="depfix")
+    assert "attempt=0" in r.stdout and "count=0" in r.stdout, r.stdout + r.stderr
+    assert "not charging" in r.stderr
+
+
+def test_v1_charge_still_counts_when_the_profile_is_present(tmp_path):
+    r = _v1_ledger(tmp_path, ship_profile=True, mode="depfix")
+    assert "attempt=1" in r.stdout and "count=1" in r.stdout, r.stdout + r.stderr
+
+
+def test_v1_non_agent_ledgers_pass_straight_through(tmp_path):
+    """merge/disarm ledgers have nothing to do with the profile."""
+    r = _v1_ledger(tmp_path, ship_profile=False, mode="merge")
+    assert "attempt=1" in r.stdout and "count=1" in r.stdout, r.stdout + r.stderr
+
+
+def test_v1_mode_excluded_by_the_restriction_still_charges(tmp_path):
+    """A MODE the restriction leaves on the old flag WILL run, so it is charged like before."""
+    r = _v1_ledger(tmp_path, ship_profile=False, mode="depfix", modes="selfreview")
+    assert "attempt=1" in r.stdout, r.stdout + r.stderr
+
+
+def test_tick_sh_installs_the_v1_guard_after_the_ledger_fallback():
+    tick = (PIPELINE / "tick.sh").read_text(encoding="utf-8")
+    assert tick.index("ledger_charge() { echo 1; }") < tick.index("guard_ledger_charge_with_profile;")
+
+
+# ---------------------------------------------------------------- status.sh surfaces denials
+
+STATUS = PIPELINE / "status.sh"
+
+
+def _status_text(tmp_path: Path, rows: list[dict]) -> str:
+    for sub in ("state", "logs", "locks"):
+        (tmp_path / sub).mkdir(parents=True, exist_ok=True)
+    (tmp_path / "config.env").write_text("", encoding="utf-8")
+    (tmp_path / "logs" / "denials.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in rows) + "not json\n", encoding="utf-8")
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "BASE": str(tmp_path), "REPO": str(tmp_path),
+           "CLAUDE_PROJECTS_DIR": str(tmp_path / "projects"), "NO_COLOR": "1",
+           "OUTCOMES": str(tmp_path / "logs" / "tick-outcomes.ndjson")}
+    r = subprocess.run(["bash", str(STATUS), "--no-gh"], capture_output=True, text=True, env=env, timeout=60)
+    assert r.returncode == 0, r.stderr
+    return r.stdout
+
+
+def _ts(seconds_ago: int) -> str:
+    import time
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - seconds_ago))
+
+
+def test_status_raises_recent_denials_by_mode(tmp_path):
+    text = _status_text(tmp_path, [
+        {"ts": _ts(60), "mode": "rebase", "denial_count": 2},
+        {"ts": _ts(3600), "mode": "review", "denial_count": 1},
+        {"ts": _ts(120), "mode": "fix", "denial_count": 0},
+        {"ts": _ts(3 * 86400), "mode": "start", "denial_count": 9},     # outside the window
+        {"ts": _ts(30), "mode": "docfix", "denial_count": None},        # unparsed run
+    ])
+    assert "denials (24h): 3, by mode: rebase=2 review=1" in text
+    attention = text[text.index("NEEDS ATTENTION"):]
+    assert "permission denials (24h): 3" in attention
+
+
+def test_status_reports_zero_denials_without_raising_them(tmp_path):
+    text = _status_text(tmp_path, [{"ts": _ts(60), "mode": "fix", "denial_count": 0}])
+    assert "denials (24h): 0" in text
+    assert "permission denials" not in text

@@ -9,10 +9,8 @@
 # allowlist.
 #
 # ── KEY CUSTODY (the part that is not obvious) ────────────────────────────────────────────────
-# Agent runs execute as the SAME uid as this runner. The dontAsk permission profile is guard rails,
-# not a sandbox (an allowed `pytest` runs arbitrary code, and LEM_PERMISSION_PROFILE=off restores
-# `--dangerously-skip-permissions`): Claude Code's `--add-dir` scopes the FILE tools, but a process
-# the Bash tool starts can read anything the uid can read —
+# Agent runs execute as the SAME uid as this runner, with `--dangerously-skip-permissions`. Claude
+# Code's `--add-dir` scopes the FILE tools, but the Bash tool can read anything the uid can read —
 # so file modes on a key owned by that uid protect nothing at all. The threat is explicit in the
 # RUNBOOK's own prompt-injection section: issue text is written by strangers.
 #

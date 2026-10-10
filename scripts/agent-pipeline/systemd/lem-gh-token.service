@@ -7,8 +7,8 @@ Type=oneshot
 User=root
 
 # The whole point of this unit: the App private key is root-owned in /etc/lem and the pipeline
-# runner never reads it. Agent runs execute as the runner's uid; their dontAsk profile is guard
-# rails, not a sandbox, so anything that uid can read is reachable from a prompt-injected run. Root mints; `lem` consumes
+# runner never reads it. Agent runs execute as the runner's uid with --dangerously-skip-permissions,
+# so anything that uid can read is reachable from a prompt-injected run. Root mints; `lem` consumes
 # a token that expires in ~1h.
 Environment=GH_APP_KEY=/etc/lem/github-app.pem
 Environment=BASE=/home/lem/agent-pipeline

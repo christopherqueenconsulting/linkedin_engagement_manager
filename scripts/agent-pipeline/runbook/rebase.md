@@ -12,8 +12,12 @@ Rebase it cleanly onto current `main`:
    **integrate** with it — do not clobber what's on main, and don't duplicate it. Edit the conflicted
    files, `git add` them, then `git rebase --continue` (no editor opens; `--skip` / `--abort` also work).
    Those four `git rebase` forms are the only ones your permission profile allows — no `-i`, no `--exec`.
+   A modify/delete conflict whose right answer is the deletion: `git rm <path>` (single files; a
+   recursive `git rm -r` is denied).
 3. **Migrations:** timestamp versions per the **db-migration** skill. If a rebase surfaces a duplicate version,
-   rename the migration THIS PR adds (never one already on `main`) to a fresh timestamp.
+   rename the migration THIS PR adds (never one already on `main`) to a fresh timestamp:
+   `git mv compose/local/database/migrations/<old>.sql compose/local/database/migrations/<new>.sql`
+   (the profile allows `git mv` only under that directory).
 4. Run `poetry run pytest tests/unit -q` on the touched areas if feasible.
 5. `git push --force-with-lease` (re-triggers CI + a fresh Copilot review). STOP. Never a plain
    `--force` / `-f` — the profile denies it, and the lease is what stops you overwriting a push you

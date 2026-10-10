@@ -10,7 +10,8 @@ do NOT blindly patch the branch:
 1. Read the failing CI logs: `gh pr checks $PR` then `gh run view <run-id> --log-failed`. Identify the exact failure.
 2. Decide the root cause and act accordingly:
    - **(a) The dependency bump broke it** (compat break, changed API, lockfile/type mismatch introduced by the
-     bumped versions) → fix it **on this Dependabot branch**: make the minimal compat change, commit
+     bumped versions) → fix it **on this Dependabot branch**: make the minimal compat change (a stale
+     lockfile: `poetry lock` — the only `poetry lock` forms allowed are that and `--no-update`), commit
      (with the Claude co-author trailer), `git push`. Note: pushing makes Dependabot stop managing the branch —
      acceptable to land the fix.
    - **(b) NOT the bump's fault** (a flaky test, a live-API/secret issue like a 401 in a keyless CI context, or a
