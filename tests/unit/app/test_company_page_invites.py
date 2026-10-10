@@ -537,6 +537,73 @@ class TestInviteTask:
         assert track.call_args[0][1]["status"] == INVITE_STATUS_SESSION_FAILED
         assert track.call_args[0][1]["cap"] == 5
 
+    def _run_raising(self, *, session_exc=None, batch_exc=None):
+        from cqc_lem.app.engagement.invites import automate_invites_to_company_page_for_user
+        with patch(f"{_INV}.is_automation_paused", return_value=False), \
+             patch(f"{_INV}.plan_daily_invites",
+                   return_value={"allowance": 5, "status": "sent", "cap": 5, "sent_today": 1}), \
+             patch(f"{_INV}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock()),
+                   side_effect=session_exc), \
+             patch(f"{_INV}.quit_gracefully") as quit_driver, \
+             patch(f"{_INV}.automate_invitations", side_effect=batch_exc) as run, \
+             patch(f"{_INV}.log_error") as err, \
+             patch(f"{_INV}.log_warning") as warn, \
+             patch(f"{_INV}.track_company_page_invite_run") as track:
+            result = automate_invites_to_company_page_for_user.run(user_id=1)
+        return result, quit_driver, run, err, warn, track
+
+    def test_a_back_off_during_the_batch_is_rate_limited_not_failed(self):
+        """A LinkedIn back-off is a WARNING stand-down, never an ERROR or `failed` (issue #2353).
+
+        Logged at ERROR it filed an $exception, and reported `failed` it read as a broken lane.
+        """
+        from cqc_lem.utilities.linkedin.company_page_inviter import INVITE_STATUS_RATE_LIMITED
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
+        _, quit_driver, _, err, warn, track = self._run_raising(
+            batch_exc=LinkedInRateLimited("Base page did not load on LinkedIn"))
+        err.assert_not_called()
+        warn.assert_called_once()
+        assert "rate-limited" in warn.call_args[0][0]
+        quit_driver.assert_called_once()
+        report = track.call_args[0][1]
+        assert report["status"] == INVITE_STATUS_RATE_LIMITED != "failed"
+        assert report["cap"] == 5 and report["sent_today"] == 1
+
+    def test_a_back_off_opening_the_session_is_rate_limited_not_session_failed(self):
+        from cqc_lem.utilities.linkedin.company_page_inviter import INVITE_STATUS_RATE_LIMITED
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
+        result, quit_driver, run, err, warn, track = self._run_raising(
+            session_exc=LinkedInRateLimited("breaker open"))
+        err.assert_not_called()
+        warn.assert_called_once()
+        run.assert_not_called()
+        quit_driver.assert_not_called()
+        assert track.call_args[0][1]["status"] == INVITE_STATUS_RATE_LIMITED
+        assert "rate-limited" in result
+
+    def test_a_challenge_cooldown_is_a_back_off_too(self):
+        from cqc_lem.utilities.linkedin.company_page_inviter import INVITE_STATUS_RATE_LIMITED
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInChallengeUnsolved
+        _, _, _, err, warn, track = self._run_raising(
+            session_exc=LinkedInChallengeUnsolved("checkpoint"))
+        err.assert_not_called()
+        warn.assert_called_once()
+        assert track.call_args[0][1]["status"] == INVITE_STATUS_RATE_LIMITED
+
+    def test_any_other_batch_failure_is_still_an_error_and_failed(self):
+        from cqc_lem.utilities.linkedin.company_page_inviter import INVITE_STATUS_FAILED
+        _, _, _, err, warn, track = self._run_raising(batch_exc=RuntimeError("boom"))
+        err.assert_called_once()
+        warn.assert_not_called()
+        assert track.call_args[0][1]["status"] == INVITE_STATUS_FAILED
+
+    def test_any_other_session_failure_is_still_an_error_and_session_failed(self):
+        from cqc_lem.utilities.linkedin.company_page_inviter import INVITE_STATUS_SESSION_FAILED
+        _, _, _, err, warn, track = self._run_raising(session_exc=RuntimeError("grid full"))
+        err.assert_called_once()
+        warn.assert_not_called()
+        assert track.call_args[0][1]["status"] == INVITE_STATUS_SESSION_FAILED
+
 
 class TestDailyBeat:
     def test_the_beat_dispatches_only_users_whose_slot_is_due(self):

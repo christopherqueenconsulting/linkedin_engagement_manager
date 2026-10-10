@@ -719,6 +719,8 @@ A paced DAILY drip, not the once-a-month blast it used to be.
   (`count_company_page_invites_sent_today` — one batched row carries a count).
 - Every run emits `company_page_invite_run` — including the ones that send nothing, since a
   series carrying only sends can't tell "paced to zero" from "silently broken".
+- A `LinkedInRateLimited` back-off (from the session or the batch) is `rate_limited` at WARNING,
+  never `failed`/`session_failed` at ERROR — it self-clears, like every sibling lane's (#2353).
 
 ## Groups sync — and reconciling the rows it already wrote (issues #1316, #1487)
 
