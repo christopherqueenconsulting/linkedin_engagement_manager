@@ -66,6 +66,7 @@ def _hosts(url: str) -> set:
     try:
         hosts.add(urlparse(url).hostname or "")
     except ValueError:
+        # An unparseable URL contributes no host from this parser; the urllib3 read below still runs.
         pass
     try:
         from urllib3.util import parse_url
