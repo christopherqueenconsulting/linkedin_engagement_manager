@@ -72,6 +72,7 @@ from cqc_lem.utilities.linkedin.company_page_inviter import (
     INVITE_STATUS_DISABLED,
     INVITE_STATUS_FAILED,
     INVITE_STATUS_PAUSED,
+    INVITE_STATUS_RATE_LIMITED,
     INVITE_STATUS_SESSION_FAILED,
     automate_invitations,
     plan_daily_invites,
@@ -2025,6 +2026,13 @@ def automate_invites_to_company_page_for_user(self, user_id: int):
         # counter — the lane read 0/0 on 15 of 15 runs while the probe read 50/50 the same days.
         driver, wait = get_driver_wait_pair(session_name='Company Page Invites', user_id=user_id,
                                             needs_images=True)
+    except LinkedInRateLimited as e:
+        # The expected back-off (#2353), as every sibling lane treats it: WARNING, not an $exception.
+        log_warning("Company page invites skipped — LinkedIn rate-limited or cooling down", exc=e,
+                    user_id=user_id, task_name=task_name, action_type="company_invite")
+        track_company_page_invite_run(user_id, {"status": INVITE_STATUS_RATE_LIMITED,
+                                                "cap": plan["cap"], "sent_today": plan["sent_today"]})
+        return "Company page invites skipped — LinkedIn rate-limited or cooling down"
     except Exception as e:
         log_error("Could not start a browser session for company page invites", exc=e,
                   user_id=user_id, task_name=task_name, action_type="company_invite")
@@ -2034,6 +2042,11 @@ def automate_invites_to_company_page_for_user(self, user_id: int):
 
     try:
         report = automate_invitations(driver, wait, user_id, plan=plan)
+    except LinkedInRateLimited as e:
+        log_warning("Company page invites skipped — LinkedIn rate-limited or cooling down", exc=e,
+                    user_id=user_id, task_name=task_name, action_type="company_invite")
+        report = {"status": INVITE_STATUS_RATE_LIMITED, "cap": plan["cap"],
+                  "sent_today": plan["sent_today"]}
     except Exception as e:
         log_error("Error while inviting to company page", exc=e, user_id=user_id,
                   task_name=task_name, action_type="company_invite")

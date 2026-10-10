@@ -93,6 +93,10 @@ INVITE_STATUS_UNCONFIRMED = "unconfirmed"
 # same reason the golden-hour sweep does it: "the browser never came up" and "LinkedIn's UI moved"
 # need different fixes, and a run that emitted nothing at all would read as paced-to-zero.
 INVITE_STATUS_SESSION_FAILED = "session_failed"
+# LinkedIn told us to back off (429 breaker open, automation paused, a transient base-page/login
+# failure) — `LinkedInRateLimited`. A self-clearing stand-down, not a broken lane, so it is reported
+# apart from `failed`/`session_failed` and never files an `$exception` (issue #2353).
+INVITE_STATUS_RATE_LIMITED = "rate_limited"
 
 # Hand-selecting invitees is not instant. A short randomized pause between checkbox clicks keeps a
 # batch from being N identical machine-timed clicks; the budget is single digits, so the total added
