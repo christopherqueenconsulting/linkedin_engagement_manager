@@ -41,12 +41,12 @@ off-host copy existed.
    provider or of the bucket. It does **not** protect against compromise of this host, which
    already holds the plaintext database.
 4. **What must exist off the box for a restore.** Keep these in the password manager: both crypt
-   passwords, the provider account login, and the bucket name and endpoint. Without the crypt
+   passwords, the provider account login, the bucket name and endpoint, and the rest of
+   `/opt/lem/.env`, which a replacement host needs to bring up `mysql_db` at all. Without the crypt
    passwords, every off-host copy is unreadable. **`LEM_SECRET_KEY`** is also needed: the encrypted
    columns decrypt only with it. #1095
    ("move the LEM_SECRET_KEY backup off the VPS") was closed as completed on 2026-08-10. Before
-   relying on an off-host restore, confirm the off-box key copy is where you expect and that its
-   fingerprint matches (`docs/secrets-at-rest.md`). A dump restored without the key restores
+   relying on an off-host restore, confirm the off-box key copy is where you expect. A dump restored without the key restores
    everything except stored LinkedIn sessions and tokens.
 5. **Retention lives in the bucket, not on the box.** Set a lifecycle rule that expires objects
    after **35 days**. The local 7 days stay as they are. If the provider offers object or bucket
@@ -136,7 +136,7 @@ A copy is a backup only once a restore from it has worked. As the deploy user:
 ```sh
 umask 077
 d=$(mktemp -d)                                   # mode 700; only the deploy user can read it
-trap 'docker rm -f restore-drill >/dev/null 2>&1; rm -rf "$d"' EXIT
+trap 'docker rm -fv restore-drill >/dev/null 2>&1; rm -rf "$d"' EXIT
 name=$(rclone lsf lem-offsite: | grep '^db-' | sort | tail -1)
 rclone copyto "lem-offsite:$name" "$d/$name"
 gzip -t "$d/$name" && echo gzip-ok
@@ -151,8 +151,16 @@ docker exec mysql_db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -N -e 
 ```
 
 - The two counts must match.
-- Pass or fail, the `EXIT` trap removes the throwaway container and the private directory. Exit
-  the shell to fire it.
+- Pass or fail, the `EXIT` trap removes the throwaway container, **its data volume** and the
+  private directory. Exit the shell to fire it. The `mysql:8.0` image keeps its data in an
+  anonymous volume, which holds a decrypted copy of member data. `docker rm` leaves that volume
+  behind unless it is given `-v`.
+- Once, before the first drill, check for volumes left by any earlier manual restore test:
+  `docker volume ls -qf dangling=true`. Inspect each one (`docker volume inspect <name>`) before
+  removing it.
+- The production count is read live, while the drill restores last night's dump. If a release
+  that added tables shipped in between, the counts differ for that reason alone. Check
+  `/api/app-info` and the release notes before treating a mismatch as a failed restore.
 - The drill uses `mysql:8.0`, the image `mysql_db` runs (`docker-compose.yml`). If that ever
   changes, change this line with it.
 - The production count is a read-only query. The password stays inside the container's own
@@ -181,6 +189,8 @@ This works from the password manager alone: nothing below reads `/opt/lem/backup
    gunzip -c "$d/$name" | docker exec -i mysql_db sh -c \
      'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot linkedin_manager'
    ```
+   Do this before the first `scripts/deploy.sh` run on the new host. The dump carries Flyway's
+   history table, so the deploy then applies only migrations newer than the dump.
 7. Put `LEM_SECRET_KEY` (and `LEM_SECRET_KEY_VERSION`) back in `/opt/lem/.env` from its off-box
    copy (#1095).
 8. Re-apply account deletions completed after the dump's `<stamp>` (see Personal data, retention
