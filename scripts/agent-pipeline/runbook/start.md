@@ -50,7 +50,7 @@ A fresh worktree on branch `$BRANCH` (from origin/main) is ready. Implement issu
 3. Implement the smallest correct change that satisfies the acceptance criteria, following `CLAUDE.md` (including its fixed-shape rule — see the preamble: EDIT a row, never ADD one).
    Reuse existing utilities named in the issue; don't invent parallel helpers.
 4. Add/extend tests. Run unit tests locally if you can.
-5. Commit atomically with a clear conventional-commit message.
+5. Commit atomically with a clear conventional-commit message: `/home/lem/agent-pipeline/lib/git_commit.sh -m "…"` (or `-F tmp/<name>`).
 6. `/home/lem/agent-pipeline/lib/git_push.sh` (pushes your branch and sets its upstream).
 7. **Scope check BEFORE you claim the close** (see the preamble's "Phased work"). Re-read issue #$ISSUE:
    does this PR satisfy **every** acceptance criterion? If any remains — an unchecked box you did not
@@ -69,9 +69,8 @@ A fresh worktree on branch `$BRANCH` (from origin/main) is ready. Implement issu
    the "explicit later phase" case above, and its `### Remaining phases` text is the scope to quote into
    the follow-up issue.
 8. Open the PR — Write the body (what & why, testing notes, `Closes #$ISSUE`) to `tmp/pr-body.md` first:
-   `gh pr create --base main --head $BRANCH --title "<type>(<scope>): <summary> (closes #$ISSUE)"
-    --body-file tmp/pr-body.md`, then label it with the number it printed:
-   `/home/lem/agent-pipeline/lib/gh_safe.sh pr-edit <pr> --add-label agent:working`
+   `/home/lem/agent-pipeline/lib/gh_safe.sh pr-create --title "<type>(<scope>): <summary> (closes #$ISSUE)"
+    --body-file tmp/pr-body.md --label agent:working` (base `main`, head = your branch).
    End the PR body with: `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
 9. **Do NOT enable auto-merge.** Merge is controlled by the runner (`tick.sh`), which merges only after
    CI is green AND one fresh review exists (the runner's Claude adversarial review — or Copilot's,

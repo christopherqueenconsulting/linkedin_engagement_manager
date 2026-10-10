@@ -809,7 +809,8 @@ would be refused. `run_lane` itself also returns 73 on the refusal.
    its summary to report **0 refused**. A refused file stays the box's old copy.
 2. Before touching `config.env`, prove the installed launcher is the new one: the installed
    `lib/run_lane.sh` must contain the string `PERMISSION PROFILE OFF`, and `config/claude-headless.json`
-   `lib/review_threads.sh`, `lib/gh_safe.sh` and `lib/git_push.sh` must exist under `$BASE`.
+   `lib/review_threads.sh`, `lib/gh_safe.sh`, `lib/git_commit.sh` and `lib/git_push.sh` must exist
+   under `$BASE`.
 3. Only then remove `LEM_PERMISSION_PROFILE_MODES=selfreview` (and the old
    `LEM_PERMISSION_PROFILE=<path>`) from `$BASE/config.env`. ⚠️ **Under the OLD `run_lane.sh`,
    removing those lines drops EVERY mode to the unrestricted flag** — the old default was the flag,
@@ -840,69 +841,90 @@ What the profile allows each mode, and the calls that are narrower than they loo
   execution; the exact allow list is the control, and the `--ex*` / `-x*` / `-i*` / `--interactive*`
   denies are belt-and-braces against a broader allow merged from another settings source.
   `run_lane.sh` sets `GIT_EDITOR=true` on the launch so `--continue` never waits on an editor.
-  `git rm <path>` resolves a modify/delete conflict; any `git rm` carrying a flag with an `r` in it
-  (`-r`, `-rf`, `--cached … router.py` included — conservative on purpose), `--recursive`, or a
-  path under `.claude/` or `.github/workflows/` is denied. `git mv` is allowed only with BOTH source
-  and destination under `compose/local/database/migrations/` (the duplicate-version rename), and
-  never with `..`.
-- **Pushing — `lib/git_push.sh`, and `git push` denied in every form.** Push patterns could not be
-  made safe: a branch-shaped allow's trailing `*` still admits a second refspec (`feature/x
+
+**The design rule, learned over four review rounds:** a deny pattern sees the command TEXT, and git
+and gh both accept abbreviated long options (`--fil=` is `--file=`, `--pathspec-fr` is
+`--pathspec-from-file`, `--outp` is `--output`), bundled short ones (`-aF/path`), and arguments the
+shell rewrites before they arrive (`--add-lab''el`, `--add-lab${X}el`, `--add-labe\l`, `--re''po`).
+So every command that WRITES — a commit, a push, any GitHub write — is denied in raw form and goes
+through a helper under `$BASE/lib` that receives the EXPANDED argv and allow-lists exact shapes.
+Pattern denies remain only for read-only commands and as belt-and-braces.
+
+- **Committing — `lib/git_commit.sh`, `git commit` denied in every form.** Two shapes only: one or
+  more `-m <message>`, or one `-F tmp/<name>` (regular, non-symlink, `realpath` = `./tmp/<name>`,
+  copied before use). No other flag passes through (`--amend`, `--no-verify`, `--file`, `--template`,
+  `-C`, `--pathspec-from-file` all refused). Tests commit in a real repository.
+- **Pushing — `lib/git_push.sh`, `git push` denied in every form.** Push patterns could not be made
+  safe: a branch-shaped allow's trailing `*` still admits a second refspec (`feature/x
   refs/heads/main`), ref resolution (`x:heads/main`), deletes and `--mirror`; and Claude Code reads a
   rule ending in `:*` as a trailing wildcard (the docs' `Bash(ls:*)` = `Bash(ls *)`), so "deny any
-  refspec colon" — `Bash(git push *:*)` — would actually mean `git push * *`. So `Bash(git push)` and
-  `Bash(git push *)` are denied outright, and the profile allows exactly
-  `/home/lem/agent-pipeline/lib/git_push.sh` and `… --force-with-lease`. The helper takes no other
-  argument and no refspec: it pushes `refs/heads/<current>:refs/heads/<current>` with `-u`, only when
-  the checked-out branch is this run's `$BRANCH` (or a new `fix/*` branch in MODE=depfix), and never
-  `main`/`master`. `$BRANCH`/`$MODE` come from the runner; an allow never matches past a `VAR=…`
-  prefix. Its tests push to a real local bare remote and assert `main` never moves.
-  `--force-with-lease` keeps its lease; a plain `--force` does not exist any more.
+  refspec colon" — `Bash(git push *:*)` — would actually mean `git push * *`. The profile allows
+  exactly `/home/lem/agent-pipeline/lib/git_push.sh` and `… --force-with-lease`. The helper takes no
+  other argument and no refspec: it pushes `refs/heads/<current>:refs/heads/<current>` with `-u`,
+  only when the checked-out branch is this run's `$BRANCH`, never `main`/`master`. A lease rewrites
+  history, so `--force-with-lease` is accepted only in MODE=rebase on `$BRANCH`. MODE=depfix may also
+  push a NEW `fix/*` branch: the helper asks `git ls-remote --exit-code` first and refuses if origin
+  already has it, or if origin cannot be read (fail closed); never with a lease. Tests push to a real
+  local bare remote and assert `main`, and an existing `fix/x`, never move.
+- **The helpers' inputs cannot be forged from the command line.** `$BRANCH`, `$MODE`, `$ISSUE` and
+  `$PR` are exported by the runner. Claude Code strips only a fixed set of known-safe variable
+  assignments before matching, none of these, so `BRANCH=main …/git_push.sh` does not match the
+  helper's allow rule and is denied; `export MODE=depfix && …` is a compound whose first part is not
+  allowed. The test matcher splits compounds and does not strip assignments, and pins these cases.
 - **Fetching** is exact: `git fetch origin` and `git fetch origin main` only, because
   `git fetch origin x:refs/heads/main` rewrites local `main`; the refspec forms (`refs/`, `heads/`,
   `:main`) are denied as well against a broader allow merged from another settings source.
   `tests/unit/test_agent_pipeline_permission_profile.py` asserts no rule in the profile ends in `:*`.
-- **File arguments.** Allowed commands that read or write a named file are fenced to the worktree:
-  `git *--output*`, `git *--no-index*`, `*--output-file*`, `git *--pathspec-from-file*`, and
-  `--body-file` / `-F` on `gh`, `-F` / `--file` / `-t` / `--template` on `git commit` are denied when
-  the path is absolute, `~`, a `$VAR` or contains `..` (quoted or not). `git diff` with such a path
-  is denied as well, because a path outside the repository makes `git diff` switch to `--no-index`
-  on its own and print the file. `git show` / `git log` / `git blame` refuse an outside path
-  ("outside repository"), so they need no rule. Agents write such files under the gitignored `tmp/`.
-  **Limit:** a path INSIDE the worktree that is a committed symlink to an outside file is not caught
-  by any pattern — the rules see text, not the filesystem. `gh_safe.sh issue-create` checks its body
-  file with `realpath` and refuses symlinks; the other `--body-file` users do not.
+- **File arguments on the read-only and staging commands.** Denied by shortest-prefix so abbreviation
+  cannot pass: `git *--out*` (`--output`), `git *--pathspec*` (`--pathspec-from-file`),
+  `git *--no-in*` (`--no-index`), `*--output-file*`. `git diff`, `git add` and `git rm` arguments
+  that are absolute, `~`, a `$VAR` (quoted or not) or contain `..` are denied: a path outside the
+  repository makes `git diff` switch to `--no-index` on its own and print the file. `git show` /
+  `git log` / `git blame` refuse an outside path ("outside repository"), so they need no rule.
+  **Symlinks:** every body or message FILE a helper reads (`gh_safe.sh`'s `--body-file`,
+  `git_commit.sh -F`) is checked with `realpath`, must not be a symlink, and is copied before use,
+  so a committed `tmp/x.md -> config.env` is refused. A tracked symlink elsewhere can still be
+  `git add`ed — git stores the link text, not the target's content.
 - **GitHub GraphQL** — `gh api *` stays denied. Any allow pattern with a wildcard also admits a
   second `-f query=…` (gh keeps the last), `--input <file>` or `-X`, i.e. any call with the
   pipeline's token. MODE=review must still resolve Copilot threads (the merge gate holds on an open
   one) and MODE=revise must read inline review comments, so the profile allows ONE path:
   `/home/lem/agent-pipeline/lib/review_threads.sh`, which runs fixed queries against this repo with
   validated arguments: `list <PR>`, and `resolve <PR> <PRRT_id>`, which first reads the thread's PR
-  and refuses one that is not `<PR>` here — one PR's run cannot clear another PR's merge gate. An
-  in-thread reply needs `gh api` too, so the review runbook replies with one `gh pr comment`.
-- **Labels, assignees and new issues — `lib/gh_safe.sh`.** Provenance-gated labels can be spelled
-  past any glob (`Agent:Ready`, `agent\:ready`, `agent:read''y`, `-l AGENT:READY` all reach GitHub
-  as one label: the shell expands quotes and escapes, GitHub matches names case-insensitively), so
-  the profile denies `gh issue edit`, `gh issue create`, `gh pr edit … --add-label` and
-  `gh pr create … --label/-l`, and allows `/home/lem/agent-pipeline/lib/gh_safe.sh` instead. It sees
-  the EXPANDED arguments and:
+  and refuses one that is not `<PR>` here — one PR's run cannot clear another PR's merge gate.
+- **Every GitHub write — `lib/gh_safe.sh`.** Raw `gh pr create|edit|comment|ready|close|reopen` and
+  `gh issue create|edit|comment|close` are denied; the remaining raw gh allows are read-only
+  (`gh pr view|diff|checks`, `gh issue view|list`, `gh run view|list`). The helper pins the repo
+  (never passes `--repo`/`-R` through), sees the expanded argv, and:
   - `issue-edit <N>` / `pr-edit <N>`: only `--add-label`, `--remove-label`, `--add-assignee`,
-    `--remove-assignee`; labels are trimmed, lower-cased and limited to `[a-z0-9:_./ -]`; it refuses
-    to ADD `agent:ready`, `release:now`, `agent:revise`, `agent:depfix` or `agent:docfix` (removing
-    is allowed — escalation removes `agent:ready`); and the target must be this run's `$ISSUE` or
-    `$PR`, or a PR whose head is `$BRANCH` (MODE=start labels the PR it opened). The runner exports
-    those three, and an allow rule never matches past a `VAR=…` prefix, so one run cannot lift
-    another item's `needs-human` hold.
-  - `issue-create --title T --body-file tmp/<name> [--label L]`: the same label rules; the body file
-    must be a regular, non-symlink file whose `realpath` is `./tmp/<name>` in the worktree. (gh
-    refuses `--template` with `--body-file`, so the old `--template agent-task.yml` allow could never
-    file an issue headlessly — and filing the follow-up is MODE=phasefix's whole job.)
+    `--remove-assignee` (plus `--body-file tmp/<name>` on `pr-edit`, which MODE=phasefix uses);
+    labels are trimmed, lower-cased, limited to `[a-z0-9:_./ -]` and may not contain a newline; it
+    refuses to ADD `agent:ready`, `release:now` or any lane label v2 maps to a mode (`agent:revise`,
+    `agent:phasefix`, `agent:depfix`, `agent:docfix` — a test checks the list against
+    `observe.LANE_LABEL_MODES`). Removing one is allowed (escalation removes `agent:ready`).
+  - `issue-create` / `pr-create --title T --body-file tmp/<name> [--label L]`; `pr-create` also takes
+    `--base main` (nothing else), `--head` (this run's `$BRANCH`, or a new `fix/*` in MODE=depfix —
+    the same rule as `git_push.sh`; default: the checked-out branch) and `--draft`.
+  - `pr-comment <PR>` / `issue-comment <ISSUE>` with `--body-file tmp/<name>` or `--body "<one line>"`,
+    and `pr-ready <PR> [--undo]`.
+  - Every write targets this run's `$ISSUE` or `$PR`, or a SAME-REPO PR (`isCrossRepository == false`
+    in the same `gh pr view`) whose head is `$BRANCH` — so one run cannot lift another item's
+    `needs-human` hold, and a fork PR that reuses the branch name is not "ours".
+  - **`--re''po` residual, documented and tested:** the plain `--repo`/`-R` spellings are denied on raw
+    gh, but a quoted spelling defeats that text match — and reaches only a READ of another (public)
+    repository, because no raw gh write is allowed at all.
   - **Behaviour change:** agents no longer apply `agent:ready` to follow-ups or `release:now` to PRs.
     Follow-ups wait for the owner or a trusted labeler; a fast-lane candidate carries a
     `Requesting release:now: <why>` line in its PR body for the owner (`docs/release-fast-lane.md`).
-  - `gh * -R*` / `gh * --repo*` are denied: the agent runs in the repo, and the helpers pin it.
+    (gh refuses `--template` with `--body-file`, so the old `--template agent-task.yml` allow could
+    never file an issue headlessly — and filing the follow-up is MODE=phasefix's whole job.)
 - **`git switch -c fix/* origin/main`** — MODE=depfix's "not the bump's fault" path opens a fix PR
   to `main` from a fresh branch; `poetry lock` fixes a stale lockfile (the repo is on Poetry 2.x —
   `poetry.lock` is generated by 2.5 — where `lock` never updates and `--no-update` no longer exists).
+- **`git rm` / `git mv`** — `git rm <path>` resolves a modify/delete conflict; `-*r*`, `* -*r*`,
+  `--recursive` and paths under `.claude/` or `.github/workflows/` are denied (coarse on purpose:
+  most flagged forms trip it). `git mv` needs BOTH paths under `compose/local/database/migrations/`
+  and never `..`.
 - **`poetry install --with test`** — the preamble's documented fix for a venv with no test plugins.
 - **`scripts/deploy.sh`** — executing it is denied (`scripts/deploy.sh*`, `./scripts/…`, an absolute
   path, `bash`/`sh`/`source`/`.`); naming it in `git add` / `git diff` is not, so a PR touching it
@@ -919,8 +941,9 @@ What the profile allows each mode, and the calls that are narrower than they loo
 
 **A guard rail, not a boundary.** The profile constrains the commands an agent writes. Code an
 allowed command runs — `poetry run pytest` executes the worktree's own tests — runs as the runner's
-uid, and that uid can rewrite `lib/review_threads.sh`, `lib/gh_safe.sh`, `lib/git_push.sh`, `config/claude-headless.json`
-and `$BASE/config.env`. So the helpers' installed paths are guard rails, and such code could persist
+uid, and that uid can rewrite the four helpers (`lib/review_threads.sh`, `lib/gh_safe.sh`,
+`lib/git_commit.sh`, `lib/git_push.sh`), `config/claude-headless.json` and `$BASE/config.env`. So
+the helpers' installed paths are guard rails, and such code could persist
 `LEM_PERMISSION_PROFILE=off` into `config.env`; the per-dispatch `PERMISSION PROFILE OFF` line and
 `status.sh`'s `permission profile: off` are its only detection. The real fix is root custody of
 `$BASE/lib`, `$BASE/config` and `config.env` (an owner action, not in this change). The control for

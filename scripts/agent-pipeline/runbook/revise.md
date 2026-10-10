@@ -45,9 +45,9 @@ feedback — this is distinct from Copilot's threads (that's MODE=review). Workt
 2. Implement each requested change, scoped to this PR, following `CLAUDE.md` (including its fixed-shape rule — see the preamble: EDIT a row, never ADD one). If a request is ambiguous or you
    think it's wrong, implement your best interpretation AND leave a reply explaining — never silently skip it.
 3. Add/adjust tests; run `poetry run pytest tests/unit -q` on the touched areas if feasible.
-4. Commit (Claude co-author trailer) + `/home/lem/agent-pipeline/lib/git_push.sh`.
+4. Commit (`/home/lem/agent-pipeline/lib/git_commit.sh -m "…"`, Claude co-author trailer) + `/home/lem/agent-pipeline/lib/git_push.sh`.
 5. Reply summarizing what you changed: Write it (starting `Addressed your review: …`) to
-   `tmp/revise-reply.md`, then `gh pr comment $PR --body-file tmp/revise-reply.md`.
+   `tmp/revise-reply.md`, then `/home/lem/agent-pipeline/lib/gh_safe.sh pr-comment $PR --body-file tmp/revise-reply.md`.
 6. Hand the PR forward to merge:
    `/home/lem/agent-pipeline/lib/gh_safe.sh pr-edit $PR --add-label agent:working --remove-label agent:revise --remove-label needs-human --remove-label agent:blocked`.
    The runner then re-runs CI + Copilot review and merges it. STOP.

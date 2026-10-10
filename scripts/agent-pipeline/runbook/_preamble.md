@@ -42,20 +42,24 @@ Repo: `christopherqueenconsulting/linkedin_engagement_manager`. Owner/escalation
     exports the token `gh` should use, and the prefixed form is denied.
   - **Multi-line text goes in a file, never in `--body "…"`.** Write it with the Write tool to
     `tmp/<name>.md` in your worktree (`tmp/*` is gitignored) and pass `--body-file tmp/<name>.md` to
-    `gh pr create` / `gh pr comment` / `gh pr edit` / `gh issue comment` / the helper's `issue-create`.
-    A multi-line commit message is `git commit -F tmp/<name>.txt`. A file argument outside your
-    worktree (absolute, `~`, `$VAR` or `..`) is denied. Never `--repo` / `-R`: you are in the repo.
+    the `gh_safe.sh` subcommands below. A body file must be a real file in `tmp/` — not a symlink,
+    not outside the worktree. Never `--repo` / `-R`: you are in the repo.
+  - **Commit only with `/home/lem/agent-pipeline/lib/git_commit.sh`**: `-m "<subject>" [-m "<paragraph>"]…` or
+    `-F tmp/<name>.txt`. Raw `git commit` is denied in every form.
   - **Push only with `/home/lem/agent-pipeline/lib/git_push.sh`** (or `… --force-with-lease` after a
     rebase). `git push` is denied in every form; the helper pushes exactly your checked-out run
     branch to itself — never `main`, never another branch, no refspecs.
-  - **Labels, assignees and new issues go through ONE helper**, `/home/lem/agent-pipeline/lib/gh_safe.sh`
-    (`gh issue edit`, `gh issue create` and label-adding `gh pr edit` / `gh pr create` are denied):
+  - **Every GitHub write goes through ONE helper**, `/home/lem/agent-pipeline/lib/gh_safe.sh` — raw `gh` is
+    read-only for you (`view`, `diff`, `checks`, `list`, `run view`); its write forms are denied:
     - `gh_safe.sh issue-edit <ISSUE> --add-label L --remove-label L --add-assignee U …`
-    - `gh_safe.sh pr-edit <PR> --add-label L --remove-label L --add-assignee U …`
+    - `gh_safe.sh pr-edit <PR> --add-label L --remove-label L --add-assignee U … [--body-file tmp/<name>.md]`
     - `gh_safe.sh issue-create --title "…" --body-file tmp/<name>.md [--label L]`
-    It edits only THIS run's issue/PR (or the PR on your branch), and it refuses to ADD the
-    provenance-gated labels — `agent:ready`, `release:now`, `agent:revise`, `agent:depfix`,
-    `agent:docfix` — in any spelling. Removing one is fine. Leave a follow-up issue without
+    - `gh_safe.sh pr-create --title "…" --body-file tmp/<name>.md [--label L] [--draft]`
+    - `gh_safe.sh pr-comment <PR>` / `issue-comment <ISSUE>` with `--body-file tmp/<name>.md` or `--body "<one line>"`
+    - `gh_safe.sh pr-ready <PR> [--undo]`
+    It writes only to THIS run's issue/PR (or the PR on your branch), and it refuses to ADD the
+    provenance-gated labels — `agent:ready`, `release:now`, `agent:revise`, `agent:phasefix`,
+    `agent:depfix`, `agent:docfix` — in any spelling. Removing one is fine. Leave a follow-up issue without
     `agent:ready`; the owner or a trusted labeler decides when it is ready.
   - `gh api` is denied. Review threads are read and resolved through
     `/home/lem/agent-pipeline/lib/review_threads.sh` (`list <PR>` / `resolve <PR> <thread-id>`);
@@ -162,7 +166,7 @@ nothing held.
 
 To escalate: `/home/lem/agent-pipeline/lib/gh_safe.sh issue-edit <ISSUE> --add-label needs-human
 --add-assignee gitchrisqueen --remove-label agent:ready`, **post a Decision Comment (see below)**, and if
-a PR exists convert it to draft (`gh pr ready --undo <PR>`) and label it `agent:blocked`
+a PR exists convert it to draft (`gh_safe.sh pr-ready <PR> --undo`) and label it `agent:blocked`
 (`gh_safe.sh pr-edit <PR> --add-label agent:blocked`). Then STOP.
 
 ## Decision Comment — REQUIRED whenever you hand anything to a human

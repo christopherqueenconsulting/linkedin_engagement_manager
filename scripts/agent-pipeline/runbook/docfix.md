@@ -35,6 +35,6 @@ being swept separately. A tree-wide pass here will exhaust your three attempts a
 4. `poetry run pytest tests/unit -q` — the fixes must not change behaviour.
    If your work took the total BELOW `.ruff-baseline`, lower that file to the new count in this same
    commit — the gate's job summary prints the number. Never raise it.
-5. Commit (Claude co-author trailer) + `/home/lem/agent-pipeline/lib/git_push.sh`, then **clear the flag**:
-   `gh pr edit $PR --remove-label agent:docfix`. If the gate fails again the router re-labels it;
+5. Commit (`/home/lem/agent-pipeline/lib/git_commit.sh -m "…" -m "<Claude co-author trailer>"`) + `/home/lem/agent-pipeline/lib/git_push.sh`, then **clear the flag**:
+   `/home/lem/agent-pipeline/lib/gh_safe.sh pr-edit $PR --remove-label agent:docfix`. If the gate fails again the router re-labels it;
    the runner caps at ~3 attempts per branch, then escalates to a human automatically. STOP.

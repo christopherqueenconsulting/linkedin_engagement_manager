@@ -33,9 +33,17 @@ case "$current" in
   main|master|HEAD|-*|*..*|*:*|*' '*) die "REFUSING to push '$current'" ;;
 esac
 if [ "$current" = "${BRANCH:-}" ]; then
-  :
+  # A lease rewrites history, which only MODE=rebase does (on its own branch).
+  if [ "${#lease[@]}" -gt 0 ] && [ "${MODE:-}" != rebase ]; then
+    die "REFUSING --force-with-lease outside MODE=rebase (MODE=${MODE:-unset})"
+  fi
 elif [ "${MODE:-}" = depfix ] && [[ "$current" =~ ^fix/[A-Za-z0-9._/-]+$ ]]; then
-  :
+  # depfix may open a NEW fix/* branch, never overwrite or extend someone else's.
+  [ "${#lease[@]}" -eq 0 ] || die "REFUSING --force-with-lease on a depfix fix/* branch"
+  # --exit-code: 2 = no such ref (the only answer that lets this through); 0 = it exists; anything
+  # else = origin unreadable, which fails CLOSED.
+  rc=0; git ls-remote --exit-code --heads origin "refs/heads/$current" >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq 2 ] || die "REFUSING — origin already has '$current' (or could not be read, rc=$rc); depfix may only push a NEW fix/* branch"
 else
   die "REFUSING — '$current' is not this run's branch (BRANCH=${BRANCH:-unset}, MODE=${MODE:-unset})"
 fi

@@ -42,6 +42,8 @@ GH_SAFE = PIPELINE / "lib" / "gh_safe.sh"
 GH_SAFE_INSTALLED = "/home/lem/agent-pipeline/lib/gh_safe.sh"
 GIT_PUSH = PIPELINE / "lib" / "git_push.sh"
 GIT_PUSH_INSTALLED = "/home/lem/agent-pipeline/lib/git_push.sh"
+GIT_COMMIT = PIPELINE / "lib" / "git_commit.sh"
+GIT_COMMIT_INSTALLED = "/home/lem/agent-pipeline/lib/git_commit.sh"
 
 #: Every MODE agent_run.sh / tick.sh dispatches through run_lane.
 MODES = ["start", "fix", "review", "selfreview", "rebase", "revise", "depfix", "docfix", "phasefix"]
@@ -122,7 +124,13 @@ def test_no_blanket_shell_grant():
     assert not [r for r in allow if r in {"Bash(*)", "Bash(:*)"}]
 
 
-@pytest.mark.parametrize("prefix", ["Bash(gh api", "Bash(sudo", "Bash(env", "Bash(docker", "Bash(bash"])
+@pytest.mark.parametrize("prefix", [
+    "Bash(gh api", "Bash(sudo", "Bash(env", "Bash(docker", "Bash(bash",
+    # every GitHub write and every commit/push goes through a helper that sees expanded argv
+    "Bash(gh pr edit", "Bash(gh pr create", "Bash(gh pr comment", "Bash(gh pr ready", "Bash(gh pr close",
+    "Bash(gh issue edit", "Bash(gh issue create", "Bash(gh issue comment", "Bash(gh issue close",
+    "Bash(git commit", "Bash(git push",
+])
 def test_no_allow_rule_opens_a_denied_surface(prefix):
     """No allow rule may open a surface the profile exists to keep shut.
 
@@ -183,12 +191,25 @@ def _matches(rule: str, command: str) -> bool:
     return rule.count("*") == 1 and rule.endswith(" *") and command == rule[:-2]
 
 
-def _decide(command: str) -> str:
+def _decide_one(command: str) -> str:
     if any(_matches(r, command) for r in _bash_rules("deny")):
         return "deny"
     if any(_matches(r, command) for r in _bash_rules("allow")):
         return "allow"
     return "deny"
+
+
+def _decide(command: str) -> str:
+    """Documented compound rule: split on shell separators; every part must be allowed.
+
+    The split is deliberately naive (it ignores quoting), which only ever produces MORE parts — so it
+    can turn an allow into a deny, never a deny into an allow. Env-var prefixes are NOT stripped:
+    Claude Code strips only a fixed set of known-safe variables, and none of the runner's
+    (BRANCH, MODE, ISSUE, PR) are in it, so a prefixed helper call must not match its allow rule.
+    """
+    parts = [p.strip() for p in re.split(r"&&|\|\||;|\||\n", command) if p.strip()]
+    verdicts = [_decide_one(p) for p in parts] or ["deny"]
+    return "allow" if all(v == "allow" for v in verdicts) else "deny"
 
 
 def test_no_rule_ends_in_a_colon_wildcard():
@@ -233,8 +254,13 @@ def test_matcher_follows_the_documented_examples():
         f"{REVIEW_THREADS_INSTALLED} resolve 2338 PRRT_kwDOabc123",
         "gh pr view 2338 --json reviews,comments",
         "gh pr diff 2338",
-        "gh pr comment 2338 --body-file tmp/review-reply.md",
-        "gh pr comment 1 --body-file tmp/x.md",
+        f"{GH_SAFE_INSTALLED} pr-comment 2338 --body-file tmp/review-reply.md",
+        f"{GH_SAFE_INSTALLED} pr-comment 9 --body \"@dependabot rebase\"",
+        f"{GH_SAFE_INSTALLED} issue-comment 41 --body-file tmp/x.md",
+        "gh pr checks 9",
+        "gh run view 123 --log-failed",
+        "gh issue view 41 --comments",
+        "gh issue list --search \"phase 2\"",
         # MODE=start / escalation / phasefix
         f"{GH_SAFE_INSTALLED} issue-edit 41 --add-label needs-human --add-assignee gitchrisqueen "
         "--remove-label agent:ready",
@@ -243,12 +269,13 @@ def test_matcher_follows_the_documented_examples():
         "--remove-label needs-human",
         f"{GH_SAFE_INSTALLED} issue-create --title \"x — Phase 2 (follow-up of #41)\" "
         "--body-file tmp/f.md --label enhancement",
-        "gh pr create --base main --head feature/claude-issue-41 --title \"feat: x (closes #41)\" "
-        "--body-file tmp/pr-body.md",
-        "gh pr edit 9 --body-file tmp/pr-body.md",
-        "gh pr ready --undo 9",
-        "git commit -m \"feat: x\"",
-        "git commit -F tmp/commit-msg.txt",
+        f"{GH_SAFE_INSTALLED} pr-create --title \"feat: x (closes #41)\" --body-file tmp/pr-body.md "
+        "--label agent:working",
+        f"{GH_SAFE_INSTALLED} pr-edit 9 --body-file tmp/pr-body.md",
+        f"{GH_SAFE_INSTALLED} pr-edit 9 --remove-label agent:depfix",
+        f"{GH_SAFE_INSTALLED} pr-ready 9 --undo",
+        f"{GIT_COMMIT_INSTALLED} -m \"feat: x\" -m \"Co-Authored-By: Claude <noreply@anthropic.com>\"",
+        f"{GIT_COMMIT_INSTALLED} -F tmp/commit-msg.txt",
         GIT_PUSH_INSTALLED,
         # a PR that touches the deploy script can still be staged and diffed
         "git add scripts/deploy.sh",
@@ -381,6 +408,39 @@ def test_every_documented_runbook_command_is_allowed(command):
         "git mv compose/local/database/migrations/V1__a.sql src/x.sql",
         "git mv compose/local/database/migrations/V1__a.sql compose/local/database/migrations/../../x.sql",
         "poetry lock --no-update",
+        # round 4: raw commits, abbreviated / bundled file flags
+        "git commit -m x",
+        "git commit --fil=/home/lem/agent-pipeline/state/gh-app-token",
+        "git commit --fil /home/lem/.config/gh/hosts.yml",
+        "git commit -aF/home/lem/agent-pipeline/config.env",
+        "git commit --templ=/etc/lem/x",
+        "git add --pathspec-fr=/home/lem/agent-pipeline/config.env",
+        "git rm --pathspec-fr=/x",
+        "git log --outp=/tmp/x",
+        "git diff --no-ind /home/lem/agent-pipeline/config.env x",
+        "git add /home/lem/agent-pipeline/config.env",
+        "git add src ~/.ssh/id_rsa",
+        "git add ../outside.txt",
+        "git rm $HOME/x",
+        # round 4: every raw gh write, however the flag is spelled
+        "gh pr edit 9 --add-lab''el release:now",
+        "gh pr edit 9 --add-lab${X}el agent:ready",
+        "gh pr edit 9 --add-labe\\l agent:ready",
+        "gh pr edit 9 --body-file tmp/x.md",
+        "gh pr create --title t --body-file tmp/b.md --lab''el release:now",
+        "gh pr create --title t --body-file tmp/b.md",
+        "gh pr comment 1 --body-file tmp/x.md",
+        "gh pr comment 1 --re''po other/repo --body x",
+        "gh issue comment 1 --body x",
+        "gh pr ready --undo 9",
+        "gh pr close 9",
+        "gh issue close 41",
+        # round 4: an env prefix or a prior export cannot steer a helper
+        f"BRANCH=main {GIT_PUSH_INSTALLED}",
+        f"MODE=depfix {GIT_PUSH_INSTALLED}",
+        f"ISSUE=1 {GH_SAFE_INSTALLED} issue-edit 1 --remove-label needs-human",
+        f"export MODE=depfix && {GIT_PUSH_INSTALLED}",
+        f"PR=5; {GH_SAFE_INSTALLED} pr-edit 5 --remove-label needs-human",
         # executing the deploy script, however spelled
         "scripts/deploy.sh v1.2.3",
         "./scripts/deploy.sh",
@@ -405,6 +465,20 @@ def test_every_documented_runbook_command_is_allowed(command):
 )
 def test_the_bounding_rules_hold(command):
     assert _decide(command) == "deny", command
+
+
+def test_a_quoted_repo_flag_only_reaches_read_only_gh():
+    """Documents the residual: `--re''po` defeats the `--repo` deny TEXT, so raw gh must be read-only.
+
+    The plain spelling is denied; the quoted one slips past the pattern — and lands only on a READ
+    (`gh pr view` of another public repo). Every gh write goes through gh_safe.sh, which pins the repo,
+    so the same trick on a write has no raw command to ride on.
+    """
+    assert _decide("gh pr view 1 --repo other/repo --json body") == "deny"
+    assert _decide("gh pr view 1 --re''po other/repo --json body") == "allow"
+    raw_gh = [r for r in _bash_rules("allow") if r.startswith("gh ")]
+    assert raw_gh and all(r.split()[2] in {"view", "diff", "checks", "list"} for r in raw_gh), raw_gh
+    assert _decide("gh pr comment 1 --re''po other/repo --body x") == "deny"
 
 
 # ---------------------------------------------------------------- runbooks match the profile
@@ -439,6 +513,8 @@ _DENIED_IN_RUNBOOKS = [
     r"Tick the acceptance boxes",                 # needs `gh issue edit --body`
     r"`git push",                                 # pushes go through lib/git_push.sh
     r"`gh issue (edit|create)|`gh pr edit [^`]*--add-label|--repo \"\$SLUG\"",  # labels via gh_safe.sh
+    r"`git commit",                               # commits go through lib/git_commit.sh
+    r"`gh (pr|issue) comment|`gh pr (create|edit|ready)",  # every gh write via gh_safe.sh
 ]
 
 
@@ -465,6 +541,8 @@ _OLD_RUNBOOK_LINES = {
     "_preamble4.md": "2. If **nothing** remains → normal `Closes #N`. Tick the acceptance boxes in the issue body",
     "fix.md": "4. Commit + `git push`. The push re-triggers CI. STOP.",
     "revise2.md": "   `gh pr edit $PR --add-label agent:working --remove-label agent:revise`.",
+    "_preamble5.md": "    A multi-line commit message is `git commit -F tmp/<name>.txt`. A file argument outside your",
+    "depfix2.md": "3. **Clear the flag**: `gh pr edit $PR --remove-label agent:depfix`.",
 }
 
 
@@ -1043,6 +1121,8 @@ REPO_SLUG = "christopherqueenconsulting/linkedin_engagement_manager"
 
 FAKE_GH_SAFE = """#!/bin/sh
 printf '%s\\037' "$@" >> "$GH_LOG"; echo >> "$GH_LOG"
+prev=""
+for a in "$@"; do [ "$prev" = "--body-file" ] && cat "$a" >> "$GH_BODY"; prev="$a"; done
 case "$1 $2" in
   "pr view") echo "$FAKE_HEAD" ;;
 esac
@@ -1058,7 +1138,8 @@ def _gh_safe(tmp_path: Path, *args: str, shell: str | None = None, env_extra: di
     gh.chmod(0o755)
     wt = cwd or tmp_path / "wt"
     wt.mkdir(exist_ok=True)
-    env = {"PATH": f"{binf}:/usr/bin:/bin", "GH_LOG": str(tmp_path / "gh-log"),
+    env = {"PATH": f"{binf}:/usr/bin:/bin", "GH_LOG": str(tmp_path / "gh-log"), "GH_BODY": str(tmp_path / "gh-body"),
+           "TMPDIR": str(tmp_path),
            "ISSUE": "41", "PR": "9", "BRANCH": "feature/claude-issue-41", "FAKE_HEAD": "",
            **(env_extra or {})}
     cmd = ["bash", "-c", shell.replace("HELPER", str(GH_SAFE))] if shell else ["bash", str(GH_SAFE), *args]
@@ -1069,7 +1150,18 @@ def _gh_safe(tmp_path: Path, *args: str, shell: str | None = None, env_extra: di
 
 
 def _writes(calls: list[list[str]]) -> list[list[str]]:
-    return [c for c in calls if c[:2] != ["pr", "view"]]
+    """The write calls, with the helper's private body-file copy path replaced by `<copy>`."""
+    out = []
+    for c in calls:
+        if c[:2] == ["pr", "view"]:
+            continue
+        out.append(["<copy>" if i and c[i - 1] == "--body-file" else a for i, a in enumerate(c)])
+    return out
+
+
+def _bodies(tmp_path: Path) -> str:
+    f = tmp_path / "gh-body"
+    return f.read_text(encoding="utf-8") if f.exists() else ""
 
 
 @pytest.mark.parametrize(
@@ -1108,7 +1200,7 @@ def test_gh_safe_runs_every_runbook_label_edit(tmp_path, args, expected):
 def test_gh_safe_labels_the_pr_mode_start_just_opened(tmp_path):
     """MODE=start has no $PR yet: the PR on its own branch is a valid target."""
     r, calls = _gh_safe(tmp_path, "pr-edit", "120", "--add-label", "agent:working",
-                        env_extra={"PR": "", "FAKE_HEAD": "feature/claude-issue-41"})
+                        env_extra={"PR": "", "FAKE_HEAD": "feature/claude-issue-41 false"})
     assert r.returncode == 0, r.stderr
     assert _writes(calls) == [["pr", "edit", "120", "--repo", REPO_SLUG, "--add-label", "agent:working"]]
 
@@ -1117,8 +1209,13 @@ def test_gh_safe_labels_the_pr_mode_start_just_opened(tmp_path):
     ("args", "env_extra"),
     [
         (("issue-edit", "42", "--remove-label", "needs-human"), {}),          # another issue's hold
-        (("pr-edit", "10", "--remove-label", "needs-human"), {"FAKE_HEAD": "feature/someone-else"}),
+        (("pr-edit", "10", "--remove-label", "needs-human"), {"FAKE_HEAD": "feature/someone-else false"}),
         (("pr-edit", "10", "--remove-label", "needs-human"), {"FAKE_HEAD": ""}),  # unreadable head
+        # a fork PR can carry the same head branch name: same-repo only
+        (("pr-edit", "10", "--remove-label", "needs-human"), {"FAKE_HEAD": "feature/claude-issue-41 true"}),
+        (("pr-comment", "10", "--body", "x"), {"FAKE_HEAD": "feature/claude-issue-41 true"}),
+        (("issue-comment", "42", "--body", "x"), {}),
+        (("pr-ready", "10", "--undo"), {"FAKE_HEAD": "feature/someone-else false"}),
         (("issue-edit", "41", "--add-label", "x"), {"ISSUE": "", "PR": "", "BRANCH": ""}),
     ],
 )
@@ -1146,6 +1243,24 @@ def test_gh_safe_only_edits_this_runs_item(tmp_path, args, env_extra):
         ("pr-edit", "9", "--add-label", "agent:revise"),
         ("pr-edit", "9", "--add-label", "agent:depfix"),
         ("pr-edit", "9", "--add-label", "AGENT:DOCFIX"),
+        ("pr-edit", "9", "--add-label", "agent:phasefix"),
+        ("pr-edit", "9", "--add-label", "needs-human\n"),                  # newline in a label
+        ("pr-edit", "9", "--add-label", "x\nagent:ready"),
+        ("pr-edit", "9", "--body-file", "/etc/passwd"),
+        ("pr-edit", "9", "--body-file", "tmp/link.md"),
+        ("pr-create", "--title", "x", "--body-file", "tmp/f.md", "--label", "release:now"),
+        ("pr-create", "--title", "x", "--body-file", "tmp/f.md", "--base", "release"),
+        ("pr-create", "--title", "x", "--body-file", "tmp/f.md", "--head", "main"),
+        ("pr-create", "--title", "x", "--body-file", "tmp/f.md", "--head", "feature/other"),
+        ("pr-create", "--title", "x", "--body-file", "tmp/f.md", "--repo", "a/b"),
+        ("pr-create", "--title", "x", "--body-file", "tmp/link.md"),
+        ("pr-comment", "9", "--body", "two\nlines"),
+        ("pr-comment", "9", "--body-file", "tmp/link.md"),
+        ("pr-comment", "9", "--body-file", "../x"),
+        ("pr-comment", "9", "--body", "x", "--repo", "a/b"),
+        ("pr-comment", "9", "-R", "a/b"),
+        ("issue-comment", "41", "--body-file", "/home/lem/agent-pipeline/config.env"),
+        ("pr-ready", "9", "--repo"),
         ("pr-edit", "9", "--body", "x"),
         ("pr-edit", "9", "--title", "x"),
         ("pr-edit", "9", "--repo", "someone/else"),
@@ -1210,8 +1325,72 @@ def test_gh_safe_creates_an_issue_from_a_tmp_body(tmp_path):
                         "--body-file", "tmp/followup.md", "--label", "enhancement,priority:medium", cwd=wt)
     assert r.returncode == 0, r.stderr
     assert _writes(calls) == [["issue", "create", "--repo", REPO_SLUG, "--title", "x — Phase 2 (follow-up of #41)",
-                               "--body-file", "tmp/followup.md", "--label", "enhancement",
+                               "--body-file", "<copy>", "--label", "enhancement",
                                "--label", "priority:medium"]]
+    assert _bodies(tmp_path) == "## Why\n", "gh reads a private COPY of the checked file"
+
+
+def _wt_with_body(tmp_path: Path, name: str = "b.md", text: str = "body\n") -> Path:
+    wt = tmp_path / "wt"
+    (wt / "tmp").mkdir(parents=True, exist_ok=True)
+    (wt / "tmp" / name).write_text(text, encoding="utf-8")
+    return wt
+
+
+def test_gh_safe_opens_the_run_branch_pr_against_main(tmp_path):
+    wt = _wt_with_body(tmp_path, "pr-body.md", "Closes #41\n")
+    subprocess.run(["git", "init", "-q", "-b", "feature/claude-issue-41", str(wt)], check=True,
+                   env={**_GIT_ENV, "HOME": str(tmp_path)})
+    r, calls = _gh_safe(tmp_path, "pr-create", "--title", "feat: x (closes #41)", "--body-file", "tmp/pr-body.md",
+                        "--label", "agent:working", cwd=wt)
+    assert r.returncode == 0, r.stderr
+    assert _writes(calls) == [["pr", "create", "--repo", REPO_SLUG, "--base", "main", "--head",
+                               "feature/claude-issue-41", "--title", "feat: x (closes #41)",
+                               "--body-file", "<copy>", "--label", "agent:working"]]
+    assert _bodies(tmp_path) == "Closes #41\n"
+
+
+def test_gh_safe_lets_depfix_open_a_fix_pr(tmp_path):
+    wt = _wt_with_body(tmp_path)
+    r, calls = _gh_safe(tmp_path, "pr-create", "--title", "fix: x", "--body-file", "tmp/b.md",
+                        "--head", "fix/pexels-401", "--draft", cwd=wt,
+                        env_extra={"MODE": "depfix", "BRANCH": "dependabot/pip/x"})
+    assert r.returncode == 0, r.stderr
+    assert _writes(calls)[0][:7] == ["pr", "create", "--repo", REPO_SLUG, "--base", "main", "--head"]
+    assert "--draft" in _writes(calls)[0]
+
+
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        (("pr-comment", "9", "--body", "@dependabot rebase"),
+         ["pr", "comment", "9", "--repo", REPO_SLUG, "--body", "@dependabot rebase"]),
+        (("pr-comment", "9", "--body-file", "tmp/b.md"),
+         ["pr", "comment", "9", "--repo", REPO_SLUG, "--body-file", "<copy>"]),
+        (("issue-comment", "41", "--body-file", "tmp/b.md"),
+         ["issue", "comment", "41", "--repo", REPO_SLUG, "--body-file", "<copy>"]),
+        (("pr-ready", "9", "--undo"), ["pr", "ready", "9", "--repo", REPO_SLUG, "--undo"]),
+        (("pr-ready", "9"), ["pr", "ready", "9", "--repo", REPO_SLUG]),
+        (("pr-edit", "9", "--body-file", "tmp/b.md"),
+         ["pr", "edit", "9", "--repo", REPO_SLUG, "--body-file", "<copy>"]),
+    ],
+)
+def test_gh_safe_comments_and_drafts_on_this_runs_item(tmp_path, args, expected):
+    wt = _wt_with_body(tmp_path)
+    r, calls = _gh_safe(tmp_path, *args, cwd=wt)
+    assert r.returncode == 0, r.stderr
+    assert _writes(calls) == [expected]
+
+
+def test_gh_safe_protects_every_lane_label_v2_maps_to_a_mode():
+    """observe.LANE_LABEL_MODES is the list of labels that start a lane; all must be un-addable."""
+    sys.path.insert(0, str(PIPELINE / "v2"))
+    from lemd import observe
+
+    text = GH_SAFE.read_text(encoding="utf-8")
+    protected = re.search(r"^PROTECTED=\(([^)]*)\)", text, re.M).group(1).split()
+    assert set(observe.LANE_LABEL_MODES) <= set(protected)
+    assert {"agent:ready", "release:now"} <= set(protected)
 
 
 def test_the_label_helper_is_the_only_issue_write_path():
@@ -1226,7 +1405,7 @@ def test_the_label_helper_is_the_only_issue_write_path():
 _GIT_ENV = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1", "PATH": "/usr/bin:/bin"}
 
 
-def _push_repo(tmp_path: Path, branch: str) -> tuple[Path, Path]:
+def _push_repo(tmp_path: Path, branch: str, remote_has: str = "") -> tuple[Path, Path]:
     remote = tmp_path / "remote.git"
     wt = tmp_path / "wt"
     env = {**_GIT_ENV, "HOME": str(tmp_path)}
@@ -1240,14 +1419,17 @@ def _push_repo(tmp_path: Path, branch: str) -> tuple[Path, Path]:
     run("git", *ident, "commit", "-q", "--allow-empty", "-m", "base", cwd=wt)
     run("git", "remote", "add", "origin", str(remote), cwd=wt)
     run("git", "push", "-q", "origin", "main", cwd=wt)
+    if remote_has:  # a branch someone else already pushed
+        run("git", "push", "-q", "origin", f"main:refs/heads/{remote_has}", cwd=wt)
     if branch != "main":
         run("git", "checkout", "-q", "-b", branch, cwd=wt)
     run("git", *ident, "commit", "-q", "--allow-empty", "-m", "work", cwd=wt)
     return remote, wt
 
 
-def _git_push(tmp_path: Path, branch: str, *args: str, env: dict) -> tuple[subprocess.CompletedProcess, dict]:
-    remote, wt = _push_repo(tmp_path, branch)
+def _git_push(tmp_path: Path, branch: str, *args: str, env: dict,
+              remote_has: str = "") -> tuple[subprocess.CompletedProcess, dict]:
+    remote, wt = _push_repo(tmp_path, branch, remote_has)
     full = {**_GIT_ENV, "HOME": str(tmp_path), **env}
     before = subprocess.run(["git", "rev-parse", "refs/heads/main"], cwd=remote, env=full,
                             capture_output=True, text=True).stdout.strip()
@@ -1259,10 +1441,10 @@ def _git_push(tmp_path: Path, branch: str, *args: str, env: dict) -> tuple[subpr
     return r, heads
 
 
-@pytest.mark.parametrize("args", [(), ("--force-with-lease",)])
-def test_git_push_pushes_only_the_run_branch_to_itself(tmp_path, args):
+@pytest.mark.parametrize(("args", "mode"), [((), "fix"), (("--force-with-lease",), "rebase")])
+def test_git_push_pushes_only_the_run_branch_to_itself(tmp_path, args, mode):
     r, heads = _git_push(tmp_path, "feature/claude-issue-41", *args,
-                         env={"BRANCH": "feature/claude-issue-41", "MODE": "fix"})
+                         env={"BRANCH": "feature/claude-issue-41", "MODE": mode})
     assert r.returncode == 0, r.stderr
     assert set(heads) == {"main", "feature/claude-issue-41", "_main_moved"}
     assert heads["_main_moved"] is False
@@ -1285,9 +1467,94 @@ def test_git_push_lets_depfix_push_its_new_fix_branch(tmp_path):
         ("feature/claude-issue-41", ("--force",), {"BRANCH": "feature/claude-issue-41"}),
         ("feature/claude-issue-41", ("--force-with-lease", "origin"), {"BRANCH": "feature/claude-issue-41"}),
         ("feature/claude-issue-41", ("--mirror",), {"BRANCH": "feature/claude-issue-41"}),
+        # a lease rewrites history: MODE=rebase only
+        ("feature/claude-issue-41", ("--force-with-lease",), {"BRANCH": "feature/claude-issue-41", "MODE": "fix"}),
+        ("feature/claude-issue-41", ("--force-with-lease",), {"BRANCH": "feature/claude-issue-41"}),
+        ("fix/new", ("--force-with-lease",), {"BRANCH": "dependabot/pip/x", "MODE": "depfix"}),
     ],
 )
 def test_git_push_refuses_everything_else(tmp_path, branch, args, env):
     r, heads = _git_push(tmp_path, branch, *args, env=env)
     assert r.returncode == 2, (r.stdout, r.stderr)
     assert set(heads) == {"main", "_main_moved"} and heads["_main_moved"] is False, "nothing may reach the remote"
+
+
+@pytest.mark.parametrize("args", [(), ("--force-with-lease",)])
+def test_git_push_depfix_never_touches_an_existing_fix_branch(tmp_path, args):
+    """MODE=depfix may open a NEW fix/* branch; one already on origin belongs to someone else."""
+    r, heads = _git_push(tmp_path, "fix/x", *args, env={"BRANCH": "dependabot/pip/x", "MODE": "depfix"},
+                         remote_has="fix/x")
+    assert r.returncode == 2, (r.stdout, r.stderr)
+    remote_before = heads["main"]                 # fix/x was created at main's commit
+    assert heads["fix/x"] == remote_before, "the existing ref must be unchanged"
+    assert heads["_main_moved"] is False
+
+
+# ---------------------------------------------------------------- git_commit.sh (real git)
+
+
+def _commit_repo(tmp_path: Path) -> tuple[Path, dict]:
+    wt = tmp_path / "wt"
+    env = {**_GIT_ENV, "HOME": str(tmp_path), "TMPDIR": str(tmp_path),
+           "GIT_AUTHOR_NAME": "a", "GIT_AUTHOR_EMAIL": "a@b", "GIT_COMMITTER_NAME": "a", "GIT_COMMITTER_EMAIL": "a@b"}
+    subprocess.run(["git", "init", "-q", "-b", "feature/x", str(wt)], check=True, env=env, capture_output=True)
+    (wt / "f.txt").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "add", "f.txt"], cwd=wt, check=True, env=env, capture_output=True)
+    (wt / "tmp").mkdir()
+    return wt, env
+
+
+def _commit(tmp_path: Path, *args: str, setup=None) -> tuple[subprocess.CompletedProcess, str]:
+    wt, env = _commit_repo(tmp_path)
+    if setup:
+        setup(wt)
+    r = subprocess.run(["bash", str(GIT_COMMIT), *args], cwd=wt, env=env, capture_output=True, text=True, timeout=60)
+    log = subprocess.run(["git", "log", "-1", "--format=%B"], cwd=wt, env=env, capture_output=True, text=True)
+    return r, (log.stdout if log.returncode == 0 else "")
+
+
+def test_git_commit_takes_messages(tmp_path):
+    r, msg = _commit(tmp_path, "-m", "feat: x", "-m", "Co-Authored-By: Claude <noreply@anthropic.com>")
+    assert r.returncode == 0, r.stderr
+    assert msg.startswith("feat: x\n\nCo-Authored-By: Claude")
+
+
+def test_git_commit_takes_a_tmp_message_file(tmp_path):
+    r, msg = _commit(tmp_path, "-F", "tmp/msg.txt",
+                     setup=lambda wt: (wt / "tmp" / "msg.txt").write_text("fix: y\n\nbody\n", encoding="utf-8"))
+    assert r.returncode == 0, r.stderr
+    assert msg.startswith("fix: y\n\nbody")
+
+
+def _secret_link(wt: Path) -> None:
+    secret = wt.parent / "config.env"
+    secret.write_text("TOKEN=s3cret\n", encoding="utf-8")
+    (wt / "tmp" / "link.txt").symlink_to(secret)
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("-F", "/etc/passwd"),
+        ("-F", "../config.env"),
+        ("-F", "tmp/../../config.env"),
+        ("-F", "tmp/link.txt"),                      # a symlink out of tmp/
+        ("-F", "tmp/missing.txt"),
+        ("--file=/etc/passwd",),
+        ("--fil", "/etc/passwd"),
+        ("-aF/etc/passwd",),
+        ("--templ=/etc/passwd", "-m", "x"),
+        ("--pathspec-fr=/etc/passwd", "-m", "x"),
+        ("-m", "x", "--amend"),
+        ("-m", "x", "--no-verify"),
+        ("-m", "x", "-F", "tmp/link.txt"),
+        ("-m", ""),
+        ("-m",),
+        (),
+    ],
+)
+def test_git_commit_refuses_every_other_shape(tmp_path, args):
+    r, msg = _commit(tmp_path, *args, setup=_secret_link)
+    assert r.returncode == 2, (r.stdout, r.stderr)
+    assert msg == "", "nothing may be committed"
+    assert "s3cret" not in r.stdout + r.stderr

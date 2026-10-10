@@ -15,10 +15,10 @@ The runner will NOT merge while any Copilot thread is unresolved, so you must bo
 2. For each unresolved thread whose comment author is Copilot:
    - If actionable → make the code change.
    - If wrong/not applicable → explain why in ONE PR comment that quotes the thread's file/line:
-     `gh pr comment $PR --body-file tmp/review-reply.md` (an in-thread reply needs `gh api`, which
+     `/home/lem/agent-pipeline/lib/gh_safe.sh pr-comment $PR --body-file tmp/review-reply.md` (an in-thread reply needs `gh api`, which
      the profile denies — the PR comment is the record).
    - Then **resolve the thread** so the merge gate can clear:
      `/home/lem/agent-pipeline/lib/review_threads.sh resolve $PR <thread_id>` (the `PRRT_…` id from
      step 1; the helper refuses a thread that is not on this PR).
-3. Commit + `/home/lem/agent-pipeline/lib/git_push.sh` (re-triggers CI; Copilot re-reviews the new head and may open fresh threads —
+3. Commit (`/home/lem/agent-pipeline/lib/git_commit.sh -m "…"`) + `/home/lem/agent-pipeline/lib/git_push.sh` (re-triggers CI; Copilot re-reviews the new head and may open fresh threads —
    a later tick will loop back here until Copilot has nothing left). STOP.

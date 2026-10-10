@@ -44,11 +44,11 @@ Your review is only worth running if it would catch what the author missed — h
    fix nor declare merges and the remaining scope is lost. Do **not** write that line when the close is
    honest: an undeclared PR merges normally, which is the intended default.
 3. For each REAL finding: FIX IT in the worktree (you are on $BRANCH), with tests where behavior changed.
-   Run the relevant unit tests locally. Commit (Claude co-author trailer) + `/home/lem/agent-pipeline/lib/git_push.sh`.
+   Run the relevant unit tests locally. Commit (`/home/lem/agent-pipeline/lib/git_commit.sh -m "…"`, Claude co-author trailer) + `/home/lem/agent-pipeline/lib/git_push.sh`.
 4. Post the verdict comment — the merge gate looks for the marker, so the comment MUST START with the
    exact MARKER text, then one line per finding (or "no findings"). It is multi-line, so write it
    with the Write tool to `tmp/selfreview-$PR.md` in your worktree and post it with
-   `gh pr comment $PR --body-file tmp/selfreview-$PR.md`. Write the MARKER's literal text from your
+   `/home/lem/agent-pipeline/lib/gh_safe.sh pr-comment $PR --body-file tmp/selfreview-$PR.md`. Write the MARKER's literal text from your
    prompt — the Write tool expands no variables:
    ```
    $MARKER — <PASS|FIXED n findings>

@@ -12,16 +12,17 @@ do NOT blindly patch the branch:
    - **(a) The dependency bump broke it** (compat break, changed API, lockfile/type mismatch introduced by the
      bumped versions) → fix it **on this Dependabot branch**: make the minimal compat change (a stale
      lockfile: `poetry lock` — the only `poetry lock` form allowed; Poetry 2 never updates on it), commit
-     (with the Claude co-author trailer), `/home/lem/agent-pipeline/lib/git_push.sh`. Note: pushing makes Dependabot stop managing the branch —
+     (`/home/lem/agent-pipeline/lib/git_commit.sh -m "…"`, with the Claude co-author trailer), `/home/lem/agent-pipeline/lib/git_push.sh`. Note: pushing makes Dependabot stop managing the branch —
      acceptable to land the fix.
    - **(b) NOT the bump's fault** (a flaky test, a live-API/secret issue like a 401 in a keyless CI context, or a
      pre-existing failure also present on `main`) → do NOT hack the Dependabot branch. Instead open a small fix PR
      to `main` (`git fetch origin main`, then `git switch -c fix/<slug> origin/main` — the one branch switch
      your permission profile allows; mirror the pexels 401-skip fix; push it with
-     `/home/lem/agent-pipeline/lib/git_push.sh` and open the PR), then `gh pr comment $PR --body "@dependabot rebase"`
+     `/home/lem/agent-pipeline/lib/git_push.sh` and open the PR with `/home/lem/agent-pipeline/lib/gh_safe.sh pr-create --title "…" --body-file tmp/pr-body.md`), then
+     `/home/lem/agent-pipeline/lib/gh_safe.sh pr-comment $PR --body "@dependabot rebase"`
      so this PR re-runs on the fixed `main`.
    - **(c) Unclear / you can't safely fix it** → escalate: `/home/lem/agent-pipeline/lib/gh_safe.sh pr-edit $PR --add-label needs-human --add-assignee gitchrisqueen --remove-label agent:depfix`, comment what's needed, STOP.
-3. **Clear the flag** so this failure isn't reprocessed: `gh pr edit $PR --remove-label agent:depfix`.
+3. **Clear the flag** so this failure isn't reprocessed: `/home/lem/agent-pipeline/lib/gh_safe.sh pr-edit $PR --remove-label agent:depfix`.
    (If CI fails again later, the router workflow re-labels it and you'll get another pass; the runner caps at
    ~3 Claude attempts per branch, then escalates automatically.) STOP.
    Once the Dependabot PR is green, the existing `dependabot-auto-merge` workflow enqueues it — you do NOT merge it.
