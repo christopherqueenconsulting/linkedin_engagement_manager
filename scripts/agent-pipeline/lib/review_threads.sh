@@ -5,8 +5,8 @@
 #                                               isOutdated, path, line, and its comments (author,
 #                                               body, databaseId, url)
 #   review_threads.sh resolve <PR> <THREAD_ID>  resolve one review thread (a `PRRT_…` node id) —
-#                                               only after confirming it belongs to PR <PR> in
-#                                               this repo
+#                                               only when <PR> is the run's exported $PR and the
+#                                               thread belongs to it in this repo
 #
 # Why this exists: MODE=review must RESOLVE Copilot's threads (the merge gate holds while one is
 # open) and MODE=revise must read the owner's inline review comments. Neither is reachable through
@@ -46,6 +46,12 @@ case "${1:-}" in
     [ "$#" -eq 3 ] || usage
     pr_ok "$2"
     [[ "$3" =~ ^PRRT_[A-Za-z0-9_-]{1,128}$ ]] || { echo "review_threads: thread id must be a PRRT_ node id, got '$3'" >&2; exit 2; }
+    # The PR must be the one the runner dispatched this run for (it exports $PR). Without that, the
+    # ownership check below only proves the thread is on WHATEVER PR the agent named. Unset refuses.
+    if [ -z "${PR:-}" ] || [ "$2" != "$PR" ]; then
+      echo "review_threads: REFUSING — PR #$2 is not this run's PR (PR=${PR:-unset})" >&2
+      exit 3
+    fi
     # Ownership first. Unreadable is a refusal: a thread we cannot place is never resolved.
     owner_of="$(gh api graphql \
       -f query='query($t:ID!){node(id:$t){... on PullRequestReviewThread{pullRequest{number} repository{nameWithOwner}}}}' \

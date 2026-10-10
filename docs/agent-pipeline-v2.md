@@ -890,8 +890,9 @@ Pattern denies remain only for read-only commands and as belt-and-braces.
   pipeline's token. MODE=review must still resolve Copilot threads (the merge gate holds on an open
   one) and MODE=revise must read inline review comments, so the profile allows ONE path:
   `/home/lem/agent-pipeline/lib/review_threads.sh`, which runs fixed queries against this repo with
-  validated arguments: `list <PR>`, and `resolve <PR> <PRRT_id>`, which first reads the thread's PR
-  and refuses one that is not `<PR>` here — one PR's run cannot clear another PR's merge gate.
+  validated arguments: `list <PR>`, and `resolve <PR> <PRRT_id>`, which refuses unless `<PR>` is the
+  run's exported `$PR` (unset refuses), then reads the thread's PR and refuses one that is not `<PR>`
+  here — one PR's run cannot clear another PR's merge gate. `list` stays unscoped.
 - **Every GitHub write — `lib/gh_safe.sh`.** Raw `gh pr create|edit|comment|ready|close|reopen` and
   `gh issue create|edit|comment|close` are denied; the remaining raw gh allows are read-only
   (`gh pr view|diff|checks`, `gh issue view|list`, `gh run view|list`). The helper pins the repo

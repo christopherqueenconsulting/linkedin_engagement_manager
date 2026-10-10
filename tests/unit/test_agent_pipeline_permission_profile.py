@@ -572,13 +572,16 @@ esac
 """
 
 
-def _threads(tmp_path: Path, *args: str, owner: str = "") -> tuple[subprocess.CompletedProcess, list[str]]:
+def _threads(tmp_path: Path, *args: str, owner: str = "",
+             pr: str | None = "2338") -> tuple[subprocess.CompletedProcess, list[str]]:
     binf = tmp_path / "ghbin"
     binf.mkdir(exist_ok=True)
     gh = binf / "gh"
     gh.write_text(FAKE_GH, encoding="utf-8")
     gh.chmod(0o755)
     env = {"PATH": f"{binf}:/usr/bin:/bin", "GH_ARGV": str(tmp_path / "gh-argv"), "FAKE_OWNER": owner}
+    if pr is not None:
+        env["PR"] = pr  # the runner exports the PR it dispatched the run for
     r = subprocess.run(["bash", str(REVIEW_THREADS), *args], capture_output=True, text=True, env=env, timeout=30)
     argv_file = tmp_path / "gh-argv"
     return r, (argv_file.read_text(encoding="utf-8").splitlines() if argv_file.exists() else [])
@@ -621,6 +624,32 @@ def test_review_threads_refuses_to_resolve_a_thread_on_another_pr(tmp_path, owne
     assert r.returncode == 3, (r.stdout, r.stderr)
     assert "REFUSING" in r.stderr
     assert "MUTATION" not in argv
+
+
+@pytest.mark.parametrize("pr", ["2339", "23380", ""])
+def test_review_threads_refuses_to_resolve_on_a_pr_other_than_the_runs(tmp_path, pr):
+    """Naming another PR, even with a thread that really is on it, is refused before gh runs."""
+    r, argv = _threads(tmp_path, "resolve", "2338", "PRRT_kwDOabc",
+                       owner="christopherqueenconsulting/linkedin_engagement_manager 2338", pr=pr)
+    assert r.returncode == 3, (r.stdout, r.stderr)
+    assert "not this run's PR" in r.stderr
+    assert argv == [], "gh must not run when the PR is not the run's"
+
+
+def test_review_threads_refuses_to_resolve_when_the_run_exported_no_pr(tmp_path):
+    """Fail closed: with no $PR there is no run to scope the resolve to."""
+    r, argv = _threads(tmp_path, "resolve", "2338", "PRRT_kwDOabc",
+                       owner="christopherqueenconsulting/linkedin_engagement_manager 2338", pr=None)
+    assert r.returncode == 3, (r.stdout, r.stderr)
+    assert "PR=unset" in r.stderr
+    assert argv == []
+
+
+def test_review_threads_list_needs_no_run_pr(tmp_path):
+    """Listing stays unscoped: MODE=revise reads threads without a resolve."""
+    r, argv = _threads(tmp_path, "list", "2338", pr=None)
+    assert r.returncode == 0, r.stderr
+    assert "p=2338" in argv
 
 
 @pytest.mark.parametrize(
