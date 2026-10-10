@@ -312,8 +312,10 @@ Cron on the VPS:
 ```
 
 Dumps `linkedin_manager` (gzipped) + the `chrome-profile` volume to
-`/opt/lem/backups`, retains `RETAIN_DAYS` (default 7), and optionally `rclone`s
-to `BACKUP_REMOTE` (e.g. Cloudflare R2). Restore:
+`/opt/lem/backups`, retains `RETAIN_DAYS` (default 7), and copies each night's DB dump off the
+host to `BACKUP_REMOTE` (an encrypted rclone remote) once that is configured. Until then it logs
+`off-host copy: not configured` every run. Design, install and restore drill:
+`docs/offsite-backups.md`. Restore:
 
 ```bash
 gunzip -c backups/db-<stamp>.sql.gz | docker exec -i mysql_db \

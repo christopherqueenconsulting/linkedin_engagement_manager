@@ -5,6 +5,8 @@ import subprocess
 import time
 from pathlib import Path
 
+import pytest
+
 WATCHDOG_SH = Path(__file__).resolve().parents[3] / "scripts" / "stack_watchdog.sh"
 
 
@@ -354,3 +356,50 @@ class TestAlertEmailResolution:
             extra_env={"WATCHDOG_ALERT_EMAIL": "fromenv@realcompany.com"},
         )
         assert result.stdout.strip().splitlines()[-1] == "fromenv@realcompany.com"
+
+
+class TestOffsiteBackupFreshness:
+    """The off-host copy alerts only once BACKUP_REMOTE is set (docs/offsite-backups.md)."""
+
+    _CHECK = (
+        'printf "%s\\n" "$ENV_LINE" > "$LEM_ENV_FILE"; source "$WATCHDOG_SH"; '
+        'check_backup_freshness; echo "down=${#down[@]}"; printf "%s\\n" "${down[@]}"'
+    )
+
+    def _check(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, env_line: str
+    ) -> subprocess.CompletedProcess[str]:
+        backups = tmp_path / "backups"
+        backups.mkdir(exist_ok=True)
+        _touch(backups, "db-20261010-030001.sql.gz", age_hours=12)
+        # _run rewrites the .env, so the line under test is written from inside the bash run.
+        monkeypatch.setenv("ENV_LINE", env_line)
+        return _run(tmp_path, self._CHECK)
+
+    def test_unset_remote_never_alerts_without_a_marker(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        result = self._check(tmp_path, monkeypatch, "POSTHOG_API_KEY=")
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert "down=0" in result.stdout
+
+    def test_set_remote_with_no_marker_is_reported_down(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        result = self._check(tmp_path, monkeypatch, "BACKUP_REMOTE=lem-offsite:")
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert "down=1" in result.stdout
+        assert "backup:offsite:missing" in result.stdout
+
+    def test_set_remote_with_a_fresh_marker_is_not_down(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        (tmp_path / "backups").mkdir()
+        _touch(tmp_path / "backups", ".offsite-last-ok", age_hours=12)
+        result = self._check(tmp_path, monkeypatch, "BACKUP_REMOTE=lem-offsite:")
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert "down=0" in result.stdout
+
+    def test_set_remote_with_a_stale_marker_is_reported_down(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (tmp_path / "backups").mkdir()
+        _touch(tmp_path / "backups", ".offsite-last-ok", age_hours=50)
+        result = self._check(tmp_path, monkeypatch, "BACKUP_REMOTE=lem-offsite:")
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert "down=1" in result.stdout
+        assert "backup:offsite:stale:50h" in result.stdout

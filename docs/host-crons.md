@@ -65,7 +65,7 @@ its line keeps the `cd` and the wrapper keeps the caller's cwd.
 
 | Schedule (UTC) | Job | Revision |
 |---|---|---|
-| `0 3 * * *` | `cd /opt/lem && ./scripts/backup.sh >> logs/backup.log` | deployed tag — `/opt/lem` **is** the checkout `deploy.sh` moves to each release tag |
+| `0 3 * * *` | `cd /opt/lem && ./scripts/backup.sh >> logs/backup.log 2>&1` | deployed tag — `/opt/lem` **is** the checkout `deploy.sh` moves to each release tag |
 
 ## Install (owner, once)
 

@@ -45,6 +45,9 @@ compares against `docker compose config --services`, and flags anything not `run
   encrypted in the database now, `backup.sh` already exits non-zero when it cannot write the
   archive, and a decommissioned chrome-profile volume would otherwise leave the last archive
   permanently stale: an email every 5 minutes that no operator action could clear.
+  Once `BACKUP_REMOTE` is set in `.env`, the off-host copy is checked too:
+  `backup:offsite:missing` (no `.offsite-last-ok` marker) and `backup:offsite:stale:<N>h` (the
+  marker is older than `WATCHDOG_BACKUP_AGE_HOURS`). See `docs/offsite-backups.md`.
 - **Tunnel origin reachability** — "cloudflared is up" and "cloudflared can reach anything" are
   different facts, and only the first was ever checked. cloudflared is a compose service, so the
   service check above already catches the container being gone; this catches the strictly worse

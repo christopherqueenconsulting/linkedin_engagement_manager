@@ -196,6 +196,7 @@ check_services() {
 # stale — an email every 5 minutes that no operator action can ever clear.
 check_backup_freshness() {
   local backup_dir db_file chrome_file db_age chrome_age db_size chrome_size now_epoch
+  local offsite_marker offsite_age
   backup_dir="$(env_value BACKUP_DIR "${LEM_DIR}/backups")"
   if [[ ! -d "$backup_dir" ]]; then
     log "WARN: backup directory ${backup_dir} does not exist"
@@ -218,6 +219,22 @@ check_backup_freshness() {
     fi
   else
     down+=("backup:db:missing")
+  fi
+
+  # The off-host copy (docs/offsite-backups.md) alerts only once BACKUP_REMOTE is set: unset is the
+  # owner's choice, and backup.sh says so in its log every night. Set, a copy that stopped landing
+  # is the same fault as no dump at all, because the local one dies with the disk. backup.sh touches
+  # the marker only after rclone confirms the upload.
+  if [[ -n "$(env_value BACKUP_REMOTE)" ]]; then
+    offsite_marker="${backup_dir}/.offsite-last-ok"
+    if [[ -f "$offsite_marker" ]]; then
+      offsite_age=$(( (now_epoch - $(stat -c %Y "$offsite_marker" 2>/dev/null || echo 0)) / 3600 ))
+      if (( offsite_age >= BACKUP_AGE_HOURS )); then
+        down+=("backup:offsite:stale:${offsite_age}h")
+      fi
+    else
+      down+=("backup:offsite:missing")
+    fi
   fi
 
   chrome_file="$(find "$backup_dir" -maxdepth 1 -name 'chrome-profile-*.tar.gz' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)"
