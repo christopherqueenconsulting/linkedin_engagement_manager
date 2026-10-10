@@ -316,7 +316,7 @@ deployed fallback that misses is reported as `fails-on-fallback`.
 python scripts/benchmark_prompts.py --plan                     # work list + priced plan, no calls
 python scripts/benchmark_prompts.py --dry-run --out-dir /tmp/x # grade canned outputs, no network, no state
 PROMPT_EVALS_ENABLED=1 OPENROUTER_API_KEY=… python scripts/benchmark_prompts.py --run \
-    --max-spend-usd 15 --outputs-out outputs.json --artifact-ref <run-id> [--prompt-ids a,b] [--force-full]
+    --max-spend-usd 1 --outputs-out outputs.json --artifact-ref <run-id> [--prompt-ids a,b] [--force-full]
 ```
 
 `build_work_list` compares the tree with `eval_state.json`, so each prompt@version × model is measured
@@ -335,7 +335,10 @@ once:
 
 1. **Prices** every call as a worst-case ceiling (`plan_spend`). This covers generation at the wire
    model's price, and judge, pairwise and calibration calls at the judge's own price. A plan over
-   `--max-spend-usd` (default `PROMPT_EVAL_MAX_SPEND_USD` or $15) or with an unpriced id is refused.
+   `--max-spend-usd` (default `PROMPT_EVAL_MAX_SPEND_USD` or $1) or with an unpriced id is refused.
+   Whatever cap is passed, the run uses at most `MAX_SPEND_CEILING_USD` ($1.00, the eval cap on
+   #2257): a larger request is cut to $1.00 and the run says so on stderr. The scheduled run passes
+   15 (the workflow's `max_spend` default) and is held to $1.00 here, not in the workflow.
    `routed.SpendMeter` caps the real spend again, call by call.
 2. **Renders** each suite through the real builders (`prompt_capture.render_suite`).
 3. **Generates** with the champion first, so candidates can be compared against it. It uses
@@ -366,7 +369,8 @@ missing a floor is a finding about the model, not the prompt.
   - **Who lands it:** the owner copies the file into `.github/workflows/` and commits it, because the
     pipeline credential has no `workflows` scope.
   - **Triggers:** cron, Monday 04:00 UTC, and `workflow_dispatch`. The dispatch inputs are
-    `prompt_ids`, `models`, `max_spend` (default 15) and `force_full`.
+    `prompt_ids`, `models`, `max_spend` (default 15) and `force_full`. The runner holds any
+    `max_spend` above $1.00 to $1.00 (see *What a run does*), so the default only reads as 15.
   - **Concurrency:** `concurrency: prompt-evals`. A run that has already spent is never cancelled.
   - **Steps:**
     1. Download the previous successful run's `prompt-eval-outputs` artifact (`gh run download`), so a
@@ -393,7 +397,11 @@ missing a floor is a finding about the model, not the prompt.
     - `RELEASE_DISPATCH_TOKEN`: the existing secret.
   - **The baseline:** after landing the workflow, dispatch it once with `prompt_ids=classify.lead_intent`
     and `max_spend=1` as a smoke test of the key, the spend preflight, the artifact and the results PR.
-    Then dispatch `force_full=true` for the baseline.
+    Then dispatch `force_full=true` for the baseline. Under the $1.00 ceiling, a full re-baseline
+    (a five-prompt dispatch on 2026-10-09 already planned $5.99) has to be split into several dispatches by `prompt_ids`. Merge
+    each slice's `bot/prompt-evals` PR before dispatching the next one: `prompt_eval_publish.py`
+    rebuilds that branch from `main` with `checkout -B` and force-pushes it (lines 150 and 154), so an
+    unmerged slice's report and `eval_state.json` are replaced and its prompts come back as new work.
 
 ### Weekly maintenance
 
@@ -402,7 +410,8 @@ missing a floor is a finding about the model, not the prompt.
 - **Deadline:** merge it before the next scheduled run, Monday 04:00 UTC (`cron: "0 4 * * 1"`). The
   scheduled run checks out `main` and rebuilds `bot/prompt-evals` from it, so an unmerged results PR
   is replaced. Its report and `eval_state.json` are lost, and the run plans those prompts again as
-  `new prompt`, up to `max_spend`.
+  `new prompt`, up to the $1.00 ceiling. A lost backlog that plans over $1.00 makes every later
+  scheduled run refuse (a red job) until it is re-measured in `prompt_ids` slices.
 - **When a merge cannot land in time:** run `gh workflow disable prompt-evals.yml` before Monday,
   then `gh workflow enable prompt-evals.yml` after the merge.
 - **A refused run vs a missed floor:** a refused run (exit 1, for example over the spend cap) is a

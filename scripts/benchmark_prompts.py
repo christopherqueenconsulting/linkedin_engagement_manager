@@ -26,7 +26,7 @@ Usage:
     python scripts/benchmark_prompts.py --plan                    # work list + priced plan, no calls
     python scripts/benchmark_prompts.py --dry-run [--out-dir D]   # grade canned outputs, no network
     PROMPT_EVALS_ENABLED=1 OPENROUTER_API_KEY=... \\
-        python scripts/benchmark_prompts.py --run --max-spend-usd 15 [--prompt-ids a,b] [--force-full]
+        python scripts/benchmark_prompts.py --run --max-spend-usd 1 [--prompt-ids a,b] [--force-full]
 """
 
 from __future__ import annotations
@@ -85,6 +85,10 @@ ACCURACY_FLOOR = 0.90
 JUDGE_FLOOR = 0.80
 PAIRWISE_FLOOR = 0.50
 CALIBRATION_FLOOR = 0.85
+#: No run spends more than this, whatever cap it is given: the scheduled workflow passes 15 and a
+#: dispatch can pass anything, so the limit lives here rather than in a default (the $1.00 eval cap,
+#: #2257). A run that needs more is split by --prompt-ids, or this line changes in a reviewed PR.
+MAX_SPEND_CEILING_USD = 1.0
 
 DEFAULT_SAMPLES = 2            # every new/changed prompt@version is generated twice
 DEFAULT_JUDGE_SAMPLE = 5       # judged cases per prompt × model
@@ -314,6 +318,19 @@ def plan_spend(items: list[dict[str, Any]], suites: dict[str, dict[str, Any]],
     return {"items": lines, "judge": {"model": judge_model, "calls": judge_calls, "est_usd": judge_usd},
             "unpriced": sorted(set(unpriced)), "unreachable": sorted(set(unreachable)),
             "total_usd": None if unpriced else round(total, 4)}
+
+
+def spend_cap(requested: float) -> float:
+    """Return the cap a run actually uses: ``requested``, held to ``MAX_SPEND_CEILING_USD``.
+
+    A non-finite request is over the ceiling too: every spend guard downstream is a ``>``
+    comparison, and each one is False against NaN, so a NaN cap would disable them all.
+    """
+    if not math.isfinite(requested) or requested > MAX_SPEND_CEILING_USD:
+        sys.stderr.write(f"requested cap ${requested:.2f} is over the ${MAX_SPEND_CEILING_USD:.2f} "
+                         "per-run ceiling; capping at the ceiling\n")
+        return MAX_SPEND_CEILING_USD
+    return requested
 
 
 def spend_refusal(plan: dict[str, Any], cap: float) -> Optional[str]:
@@ -1075,7 +1092,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--samples", type=int, default=DEFAULT_SAMPLES)
     parser.add_argument("--judge-sample", type=int, default=DEFAULT_JUDGE_SAMPLE)
     parser.add_argument("--max-spend-usd", type=float,
-                        default=float(os.environ.get("PROMPT_EVAL_MAX_SPEND_USD") or 15))
+                        default=float(os.environ.get("PROMPT_EVAL_MAX_SPEND_USD") or MAX_SPEND_CEILING_USD))
     parser.add_argument("--state", type=pathlib.Path, default=registry.STATE_PATH)
     parser.add_argument("--outputs-in", type=pathlib.Path, default=None,
                         help="stored outputs from a prior run, for re-grades")
@@ -1089,6 +1106,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--offline", action="store_true",
                         help="price from the pinned snapshot only; never read OpenRouter's model list")
     args = parser.parse_args(argv)
+    args.max_spend_usd = spend_cap(args.max_spend_usd)
 
     evaluated = evaluated_prompts()
     lock = registry.load_json(registry.LOCK_PATH)
