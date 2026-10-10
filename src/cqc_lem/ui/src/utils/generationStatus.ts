@@ -5,7 +5,11 @@
 import { formatInTimezone } from './datetime'
 
 export type GenerationState = 'queued' | 'in_progress' | 'done' | 'failed'
-export type GenerationEmptyReason = 'buffer_full' | 'no_planned_slots' | 'already_running'
+export type GenerationEmptyReason =
+  | 'buffer_full'
+  | 'no_planned_slots'
+  | 'already_running'
+  | 'daily_ai_limit'
 
 export interface GenerationStatus {
   state: GenerationState
@@ -51,6 +55,14 @@ export function emptyRunExplanation(
   const bufferDays = d.buffer_days ?? 5
   const days = `${bufferDays} ${bufferDays === 1 ? 'day' : 'days'}`
 
+  if (s.reason === 'daily_ai_limit') {
+    return {
+      headline: 'Daily AI limit reached',
+      detail:
+        "Your free trial's AI generation for today is used up. It resumes at 00:00 UTC, and " +
+        'your planned posts are generated on the next scheduled run after that.',
+    }
+  }
   if (s.reason === 'already_running') {
     return {
       headline: 'A generation run is already in progress',

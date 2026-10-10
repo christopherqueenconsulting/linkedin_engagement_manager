@@ -312,3 +312,103 @@ over the same set. Mint a separate root-span uuid and every event still carries 
 
 The de-dupe rule above still holds inside a trace — the money number is `llm_call`, and summing the
 generations under one trace gives you the provider's charge, not LEM's ledger.
+
+
+## Free-trial daily AI cap (issue #2378)
+
+A **soft** ceiling on one `free_trial` user's AI spend per UTC day. Module:
+`utilities/ai_spend_cap.py`. The owner-set default is `FREE_TRIAL_DAILY_AI_CAP_USD` (see
+`.env.example`). **With the variable unset the default applies, so the cap is enforced from the
+first deploy that ships it.** `0` or below turns the cap off; an unparseable value keeps the default
+(a typo must not remove a cost control).
+
+**What counts as spend.** Two trackers feed one Redis counter per user per UTC day,
+`lem:ai_spend:user:<YYYY-MM-DD>:<user_id>`:
+
+- `track_llm_call`: the `llm_call` `cost_usd`, which is the proxy's own price when it reports one
+  and the estimate otherwise. A cache hit is $0;
+- `track_media_cost`: image, video and TTS renders from a provider (OpenAI, Replicate, Runway…),
+  usually the largest per-call spend. Local compute (`local-*` providers, such as the ffmpeg caption
+  burn) is an allocation, not a provider bill, and does not count.
+
+The tier is `users.subscription_tier`, cached for 5 minutes per process. A failed read is cached for
+30 seconds, so a DB fault does not add a DB read to every LLM call.
+
+**What pauses (non-essential) once the day's spend reaches the cap:**
+
+- starting any new generation for that user: the content-buffer top-up (beat and Generate button),
+  variants, comment drafting, newsletter editions, the carousel preview, and any other chat or image
+  call attributed to them;
+- **in a Celery task** the refusal ends the run as `no_op` (Celery SUCCESS, never FAILURE): a
+  daily cap is a designed stop under `app/task_outcome.py`. `DailyCapAwareTask`, the base of every
+  LEM task including `QueueOnce`, converts it at the task boundary. Nothing is retried; the next
+  scheduled run after 00:00 UTC generates again. The content top-up checks before it starts and
+  closes a requested run with the `daily_ai_limit` reason;
+- **in an API request** the caller gets **429** with `reason: "daily_ai_limit"`, a "Daily AI limit
+  reached" `detail` and a `Retry-After` to the next UTC midnight. The SPA's api client shows one
+  notice for it on every page.
+
+**What never pauses (essential):**
+
+- a pipeline **admitted under the cap** (the root `llm_trace`) runs to completion even if it
+  crosses the cap part-way, so a post never lands half-generated;
+- `lem-embedding` and `lem-vision`: dedup vectors and the quality check on a render already paid
+  for. Refusing them saves nothing and weakens a gate;
+- system work with no attributed user, and every user not on `free_trial`.
+
+**Where it is enforced.** `AttributedOpenAI.post()` checks before anything is sent; it is the ONE
+client, so no call site can skip it. `llm_trace` checks at pipeline entry. A provider render made
+outside the client (Replicate, Runway) is stopped only at pipeline entry or by the client call that
+precedes it, but its cost still counts. An API route that generates inline must attribute the
+session user (`llm_trace` / `@llm_pipeline`) and let `DailyAICapReached` propagate: a broad
+`except Exception` turns the 429 into a 500. The refusal carries `expected_refusal = True`, so
+`capture_exception` never files it, and `_call_llm` neither logs it nor counts it as a failed call.
+
+**Soft by construction.** An unreadable spend (no Redis, a Redis error) or an unreadable tier never
+blocks. An unreadable spend is warned **once per UTC day per worker process**, not per call.
+`ai_daily_cap_reached` (`user_id`, `spend_usd`, `cap_usd`, `day`, `surface` = `background` |
+`user_request`) fires on the user's **first refused request** of the day, not at the moment spend
+crosses the cap. A user who reaches the cap and asks for nothing more never emits it. It is latched
+once per user per day across processes, and later refusals are DEBUG. Because the gate only ever
+reads a `free_trial` user's spend, a PostHog alert on this event for any non-trial user would catch
+a misfire.
+
+### Operating it
+
+- **Set or change the cap:** edit `FREE_TRIAL_DAILY_AI_CAP_USD` in the stack's `.env`. Unset, it
+  is the $0.50 default; `0` turns the cap off. The value is read per call, but a container sees
+  `.env` only when it is created, so recreate every service that generates: both API colours and
+  the five Celery workers. Never `web_app` — in production that is the nginx edge, and recreating
+  it drops traffic. Use the same compose file set `scripts/deploy.sh` builds as `$COMPOSE`: add
+  `-f docker-compose.grid.yml` unless the box's `.env` sets `SELENIUM_TOPOLOGY=standalone` (grid is
+  the default). From the stack directory:
+
+  ```
+  COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.grid.yml"
+  LIVE="$(cat .active_color)"; : "${LIVE:?no .active_color — stop and check the deploy state}"
+  STANDBY="$([ "$LIVE" = blue ] && echo green || echo blue)"
+  $COMPOSE up -d --no-deps --force-recreate "web_api_$STANDBY"   # standby colour first
+  # Wait until the standby answers (the probe deploy.sh's color_healthy uses; API_PORT default 8000):
+  until docker exec "web_api_$STANDBY" curl -fsS http://localhost:8000/health >/dev/null; do sleep 2; done
+  $COMPOSE up -d --no-deps --force-recreate "web_api_$LIVE"      # then the live one
+  $COMPOSE up -d --no-deps --force-recreate celery_worker celery_worker_selenium \
+    celery_worker_selenium_prepost celery_worker_selenium_outreach celery_worker_selenium_content
+  ```
+
+- **Read one user's spend today** (USD, UTC day; no key means $0):
+
+  ```
+  docker exec redis redis-cli GET lem:ai_spend:user:$(date -u +%F):<user_id>
+  ```
+
+- **Un-pause one user mid-day:** there is no per-user override setting. Deleting the day's counter
+  restarts that user's count at $0; deleting the reached latch as well lets the event fire again
+  if they reach the cap a second time:
+
+  ```
+  docker exec redis redis-cli DEL lem:ai_spend:user:$(date -u +%F):<user_id> lem:ai_spend:reached:$(date -u +%F):<user_id>
+  ```
+
+- **Rollback:** no migration is involved. Set `FREE_TRIAL_DAILY_AI_CAP_USD=0` and recreate the
+  services above, or redeploy the prior release tag. The Redis keys expire on their own within 2
+  days.

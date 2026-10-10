@@ -18,7 +18,12 @@ back-off, a dedup skip, a daily cap, a walk's own time budget, a deploy ending t
 """
 
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
+
+from celery import Task
+
+from cqc_lem.utilities.ai_spend_cap import DailyAICapReached
+from cqc_lem.utilities.logger import log_debug
 
 
 class TaskOutcome(str, Enum):
@@ -58,3 +63,29 @@ def lane_result(outcome: TaskOutcome, message: str, cause: Optional[BaseExceptio
             raise LaneTaskFailed(message)
         raise LaneTaskFailed(message) from cause
     return message
+
+
+class DailyCapAwareTask(Task):
+    """Every LEM task's base: the free-trial daily AI cap ends a run as `no_op`, never FAILURE (#2378).
+
+    The cap is a designed stop, exactly the kind the outcome contract above calls `no_op`. Without
+    this, a refusal raised mid-task would end the task in Celery FAILURE and count against the
+    `celery_task` failure alert for working behaviour. Converted HERE, at the task boundary, because
+    a task cannot know in advance which of its calls the cap will refuse.
+
+    `app.Task` for the Celery app (`task_cls`) and mixed into `queue_once.QueueOnce`, so a
+    `QueueOnce`-based task gets it too.
+    """
+
+    abstract = True
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        """Run the task; a cap refusal returns a `no_op` result instead of raising."""
+        try:
+            return super().__call__(*args, **kwargs)
+        except DailyAICapReached as exc:
+            # DEBUG: the gate already logged the user's transition once at INFO.
+            log_debug("Task stopped by the free-trial daily AI cap", user_id=exc.user_id,
+                      task_name=getattr(self, "name", None))
+            return lane_result(TaskOutcome.NO_OP,
+                               f"Paused by the free-trial daily AI cap until {exc.resets_at.isoformat()}")

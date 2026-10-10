@@ -64,6 +64,7 @@ from cqc_lem.utilities.ai.audience_mix import parse_audience_mix
 from cqc_lem.utilities.ai.content_alignment import profile_niche_anchors
 from cqc_lem.utilities.ai.content_framework import GROUP_POST_BEST_PRACTICES
 from cqc_lem.utilities.ai.story_bank import split_forbidden_claim_terms
+from cqc_lem.utilities.ai_spend_cap import DailyAICapReached
 from cqc_lem.utilities.auth_factors import (
     METHOD_PASSKEY,
     METHOD_TOTP,
@@ -221,6 +222,7 @@ from cqc_lem.utilities.linkedin.helper import load_profile_for_user
 from cqc_lem.utilities.linkedin.login_status import get_login_status
 from cqc_lem.utilities.linkedin.token_refresh import resolve_token_status
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
+from cqc_lem.utilities.observability import FEATURE_CONTENT, llm_trace
 from cqc_lem.utilities.post_image import (
     GATE_REJECTED_REASON,
     PostImageRejected,
@@ -2463,7 +2465,12 @@ def rescore_post_endpoint(request: PostRescoreRequest) -> ResponseModel[dict[str
             detail=f"Post is '{post_status}' — only pending or approved posts can be re-scored")
     from cqc_lem.app.run_content_plan import rescore_post
     try:
-        result = rescore_post(request.post_id)
+        # Attributed to the session user and gated by the free-trial daily AI cap (issue #2378):
+        # without a scope its judge and embedding calls landed on no user.
+        with llm_trace("post_rescore", user_id=user_id, feature=FEATURE_CONTENT):
+            result = rescore_post(request.post_id)
+    except DailyAICapReached:
+        raise  # the designed 429, not a re-score failure
     except Exception as e:
         log_error("Could not re-score post", exc=e, user_id=user_id, post_id=request.post_id)
         raise HTTPException(status_code=500, detail="Could not re-score this post")
@@ -2557,12 +2564,15 @@ def generate_post_image_endpoint(request: PostImageGenerateRequest) -> ResponseM
     if not text.strip():
         raise HTTPException(status_code=400,
                             detail="Write the post content first — the image is drawn from it")
-    if not claim_manual_generation(user_id):
-        raise HTTPException(
-            status_code=429,
-            detail="You've generated a lot of images in the last hour — try again shortly.")
+    # Attributed to the session user and gated by the free-trial daily AI cap (issue #2378). The
+    # cap is checked BEFORE the hourly claim, so a capped user does not also burn a generation slot.
+    with llm_trace("post_image_generation", user_id=user_id, feature=FEATURE_CONTENT):
+        if not claim_manual_generation(user_id):
+            raise HTTPException(
+                status_code=429,
+                detail="You've generated a lot of images in the last hour — try again shortly.")
 
-    image_url, reason = generate_image_for_post(user_id, text, post_id=request.post_id)
+        image_url, reason = generate_image_for_post(user_id, text, post_id=request.post_id)
     if not image_url:
         # Never 502 (issue #2244): behind the Cloudflare tunnel an ORIGIN 502 reads as a gateway
         # failure, so the edge served its own "origin returned an invalid response" page and the

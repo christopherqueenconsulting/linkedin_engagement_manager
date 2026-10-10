@@ -91,7 +91,7 @@ index and the `CLAUDE.md` row that points at it, or the pointer becomes a dead e
 
 - ★ [Observability map](observability-map.md) — the per-surface invariants; the paragraph behind every row in `CLAUDE.md`'s observability table
 - ★ [Error tracking](error-tracking.md) — `$exception` → PostHog issues → GitHub issues, and the warning-escalation contract
-- ★ [LLM analytics](llm-analytics.md) — `llm_call` vs `$ai_generation`; never summed
+- ★ [LLM analytics](llm-analytics.md) — `llm_call` vs `$ai_generation`; never summed; the free-trial daily AI cap
 - ★ [KPI dashboards & alerts](kpi-dashboards.md) — alert tiles must be single-series `TrendsQuery` on string properties
 - ★ [Session replay](session-replay.md) — error-triggered plus sampled SPA recording; never set project sampling
 - ★ [PostHog advanced surface](posthog-advanced-surface.md) — CDP destinations, Workflows, Logs, Scouts/Inbox

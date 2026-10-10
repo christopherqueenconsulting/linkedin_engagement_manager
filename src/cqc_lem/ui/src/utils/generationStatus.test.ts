@@ -81,6 +81,12 @@ describe('emptyRunExplanation', () => {
     expect(e?.headline).toContain('already in progress')
   })
 
+  it('explains a run paused by the free-trial daily AI limit', () => {
+    const e = emptyRunExplanation(status({ reason: 'daily_ai_limit' }), TZ)
+    expect(e?.headline).toBe('Daily AI limit reached')
+    expect(e?.detail).toContain('00:00 UTC')
+  })
+
   it('stays out of the way when posts were generated', () => {
     expect(
       emptyRunExplanation(status({ total: 2, completed: 2, reason: 'buffer_full' }), TZ),

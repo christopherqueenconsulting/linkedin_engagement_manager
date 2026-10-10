@@ -10,8 +10,10 @@ from typing import Optional, Sequence
 
 from celery_once import QueueOnce as _CeleryQueueOnce
 
+from cqc_lem.app.task_outcome import DailyCapAwareTask
 
-class QueueOnce(_CeleryQueueOnce):
+
+class QueueOnce(DailyCapAwareTask, _CeleryQueueOnce):
     """celery-once, but a task's OWN parameter defaults count toward its dedup key.
 
     Upstream builds the key from `Signature.bind(...).arguments`, which never applies defaults, then

@@ -336,6 +336,10 @@ EVENTS = {spec.event: spec for spec in (
         prop("user_id"), prop("post_id"), label("feature"),
     )),
     EventSpec("cost_alert", (prop("date"),)),
+    # A free-trial user's spend reached the soft daily AI cap (#2378) — once per user per UTC day.
+    EventSpec("ai_daily_cap_reached", (
+        prop("user_id"), prop("spend_usd"), prop("cap_usd"), label("day"), label("surface"),
+    )),
     # The pipeline-trace skeleton the proxy's $ai_generation events hang off. `$ai_span_name` is
     # NOT a label(): PostHog's own trace viewer reads these `$ai_*` keys, so their shapes are its
     # contract rather than ours. Emitted under this name and as `$ai_trace` for the root.
@@ -989,7 +993,11 @@ def llm_trace(name: str, user_id: Optional[int] = None,
                 yield _llm_trace.get().get("trace_id")
         return
 
-    with llm_attribution(user_id=user_id, feature=feature):
+    # The free-trial cap gates a pipeline at its ENTRY (#2378): a refused one never starts, and an
+    # admitted one runs to completion even if it crosses the cap part-way.
+    from cqc_lem.utilities.ai_spend_cap import admit_pipeline
+    with llm_attribution(user_id=user_id, feature=feature), \
+            admit_pipeline(current_llm_attribution()[0]):
         if not llm_tracing_enabled():
             yield None
             return
@@ -1100,6 +1108,10 @@ def capture_exception(exc: Optional[BaseException] = None, user_id: Optional[int
     `scripts/` tooling that drives `posthog` directly with its own key (#1661).
     """
     if posthog.disabled or telemetry_muted():
+        return
+    # A designed refusal (the free-trial AI cap, #2378) is an answer, not a defect — the same reason
+    # an HTTPException is never captured.
+    if getattr(exc, "expected_refusal", False):
         return
     try:
         task_name, task_user_id = _current_task_context()
@@ -1298,6 +1310,12 @@ def track_media_cost(kind: str, provider: str, usd: float, user_id: Optional[int
                        provider=provider, model_tier=(model or None) and model[:64],
                        qty=qty, post_id=post_id,
                        task_name=_current_task_context()[0])
+    # A render is AI spend too, and usually the largest per call, so it counts toward the free-trial
+    # daily cap (#2378). Local compute (`local-*`, the ffmpeg caption burn) is an allocation, not a
+    # provider bill, and does not.
+    if not str(provider or "").startswith("local-"):
+        from cqc_lem.utilities.ai_spend_cap import record_user_spend
+        record_user_spend(user_id, usd)
 
 
 def track_avatar_likeness_probe(
@@ -1377,6 +1395,10 @@ def _accrue_llm_cost(usd: float, tokens: int, user_id: Optional[int], feature: O
             client.expire(f"{key}{_LLM_ROLLUP_QTY_SUFFIX}", _LLM_ROLLUP_TTL_SECONDS)
     except Exception as e:
         log_warning("Could not accrue LLM cost rollup", exc=e)
+    # The per-user-per-UTC-day total the free-trial cap reads (#2378). A separate key, because the
+    # rollup hash is keyed by user x feature x tier x task and summing it per call would be O(fields).
+    from cqc_lem.utilities.ai_spend_cap import record_user_spend
+    record_user_spend(user_id, usd, client=client)
 
 
 def _as_text(value) -> str:
@@ -1946,6 +1968,18 @@ def track_cost_alert(alert: dict, day: Optional[str] = None) -> None:
     """
     alert = dict(alert or {})
     _emit(EVENTS["cost_alert"], {"date": day, "user_id": alert.get("user_id")}, alert)
+
+
+def track_ai_daily_cap_reached(user_id: int, spend_usd: Optional[float], cap_usd: Optional[float],
+                               day: str, surface: str) -> None:
+    """Emit the moment a free-trial user's AI spend reaches the soft daily cap (issue #2378).
+
+    `surface` is `background` (a Celery task was refused) or `user_request` (an API caller was).
+    """
+    _emit(EVENTS["ai_daily_cap_reached"], {
+        "user_id": user_id, "spend_usd": spend_usd, "cap_usd": cap_usd, "day": day,
+        "surface": surface,
+    })
 
 
 def track_capacity_alert(alert: dict, generated_at: Optional[str] = None) -> None:

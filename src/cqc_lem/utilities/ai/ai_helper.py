@@ -91,6 +91,7 @@ from cqc_lem.utilities.linkedin_formatter import (
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
 from cqc_lem.utilities.observability import (
     FEATURE_COMMENT,
+    FEATURE_CONTENT,
     FEATURE_NEWSLETTER,
     current_llm_attribution,
     llm_pipeline,
@@ -240,6 +241,11 @@ def _call_llm(**kwargs):
         return response
     except Exception as exc:
         duration_ms = int((time.time() - start) * 1000)
+        if getattr(exc, "expected_refusal", False):
+            # The free-trial daily AI cap refused it before anything was sent (#2378): no spend, no
+            # failed call to count, and the gate already logged the transition once.
+            log_debug("LLM call refused by the free-trial daily AI cap", ai_model=model)
+            raise
         log_error(f"LLM call failed after {duration_ms}ms", exc=exc, ai_model=model, duration_ms=duration_ms)
         try:
             from cqc_lem.utilities.observability import track_llm_call
@@ -4028,6 +4034,9 @@ def _carousel_shape_directive(missing: list, schema_hint: str) -> str:
             "list. Return ONLY valid JSON.\n")
 
 
+# A pipeline (issue #2378): attributes every call to `user_id` whoever invokes it — the preview route
+# called it with no scope at all, so its spend landed on no user and the trial cap never saw it.
+@llm_pipeline("carousel_generation", feature=FEATURE_CONTENT)
 def generate_carousel_content(user_id: int, stage: str, prefs: dict = None,
                               profile_synthesis: str = None, blueprint: dict = None,
                               fact_anchors: list = None,

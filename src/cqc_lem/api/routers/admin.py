@@ -35,6 +35,7 @@ from cqc_lem.api.models import ResponseModel
 from cqc_lem.app.engagement.feed import automate_commenting, consolidate_duplicate_comments_for_user
 from cqc_lem.app.engagement.outreach import automate_appreciation_dms_for_user, send_private_dm
 from cqc_lem.app.engagement.posting import automate_reply_commenting
+from cqc_lem.utilities.ai_spend_cap import operator_action
 from cqc_lem.utilities.db import (
     AuthAuditEvent,
     FeedbackStatus,
@@ -70,6 +71,7 @@ from cqc_lem.utilities.env_constants import (
 )
 from cqc_lem.utilities.geocoding import GeocodeError, geocode_city
 from cqc_lem.utilities.logger import log_info
+from cqc_lem.utilities.observability import FEATURE_CONTENT, llm_attribution
 
 router = APIRouter(prefix="/api/admin")
 
@@ -323,10 +325,12 @@ def admin_regenerate_carousel(
     stage = get_post_buyer_stage(request.post_id) or "awareness"
     from cqc_lem.app.run_content_plan import create_carousel_content
     try:
-        new_content = create_carousel_content(
-            request.user_id, stage=stage, post_id=request.post_id,
-            template=request.template,
-        )
+        # An operator action: never refused by the free-trial AI cap, still counted (issue #2378).
+        with operator_action():
+            new_content = create_carousel_content(
+                request.user_id, stage=stage, post_id=request.post_id,
+                template=request.template,
+            )
         from cqc_lem.utilities.db import update_db_post_content
         update_db_post_content(request.post_id, new_content)
     except Exception as exc:
@@ -356,7 +360,9 @@ def admin_regenerate_video(
 
     from cqc_lem.app.run_content_plan import regenerate_video_for_post
     try:
-        new_url = regenerate_video_for_post(request.post_id)
+        # An operator action: never refused by the free-trial AI cap, still counted (issue #2378).
+        with operator_action():
+            new_url = regenerate_video_for_post(request.post_id)
     except Exception as exc:
         log_info(f"admin/regenerate-video: failed for post_id={request.post_id} — {exc}")
         raise HTTPException(status_code=500, detail=str(exc))
@@ -387,10 +393,13 @@ def admin_generate_media_variants(
     from cqc_lem.app.generate_variants import generate_media_variants
     combos = [c.model_dump() for c in request.combos] if request.combos else None
     try:
-        payload = generate_media_variants(
-            post_id=request.post_id, text=request.text, topic=request.topic,
-            user_id=request.user_id, combos=combos,
-        )
+        # Attributed to the user it renders for (it had no scope, so its spend landed on no user),
+        # and an operator action, so never refused by the free-trial AI cap (issue #2378).
+        with llm_attribution(user_id=request.user_id, feature=FEATURE_CONTENT), operator_action():
+            payload = generate_media_variants(
+                post_id=request.post_id, text=request.text, topic=request.topic,
+                user_id=request.user_id, combos=combos,
+            )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except Exception as exc:
@@ -677,7 +686,10 @@ def admin_feedback_review(
 
     # approve: run the classifier/filer path now, told that a human is watching (#1036) — the
     # unattended-run holds re-applied to an explicit approve are what left the row in `new`.
-    result = file_feedback_issue(row, admin_approved=True)
+    # The classifier is attributed to the SUBMITTER; an admin's approval must not be refused
+    # because that submitter is at their free-trial AI cap (issue #2378).
+    with operator_action():
+        result = file_feedback_issue(row, admin_approved=True)
     # Stamp the reviewer even when the filer itself dropped/FAQ'd/human-routed the row.
     record_feedback_review(feedback_id, reviewer_user_id)
     log_info("Feedback approved by admin", feedback_id=feedback_id,
