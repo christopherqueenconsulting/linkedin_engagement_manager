@@ -335,7 +335,10 @@ once:
 
 1. **Prices** every call as a worst-case ceiling (`plan_spend`). This covers generation at the wire
    model's price, and judge, pairwise and calibration calls at the judge's own price. A plan over
-   `--max-spend-usd` (default `PROMPT_EVAL_MAX_SPEND_USD` or $15) or with an unpriced id is refused.
+   `--max-spend-usd` (default `PROMPT_EVAL_MAX_SPEND_USD` or $1) or with an unpriced id is refused.
+   Whatever cap is passed, the run uses at most `MAX_SPEND_CEILING_USD` ($1.00, the eval cap on
+   #2257): a larger request is cut to $1.00 and the run says so on stderr. The scheduled run passes
+   15 (the workflow's `max_spend` default) and is held to $1.00 here, not in the workflow.
    `routed.SpendMeter` caps the real spend again, call by call.
 2. **Renders** each suite through the real builders (`prompt_capture.render_suite`).
 3. **Generates** with the champion first, so candidates can be compared against it. It uses
@@ -366,7 +369,8 @@ missing a floor is a finding about the model, not the prompt.
   - **Who lands it:** the owner copies the file into `.github/workflows/` and commits it, because the
     pipeline credential has no `workflows` scope.
   - **Triggers:** cron, Monday 04:00 UTC, and `workflow_dispatch`. The dispatch inputs are
-    `prompt_ids`, `models`, `max_spend` (default 15) and `force_full`.
+    `prompt_ids`, `models`, `max_spend` (default 15) and `force_full`. The runner holds any
+    `max_spend` above $1.00 to $1.00 (see *What a run does*), so the default only reads as 15.
   - **Concurrency:** `concurrency: prompt-evals`. A run that has already spent is never cancelled.
   - **Steps:**
     1. Download the previous successful run's `prompt-eval-outputs` artifact (`gh run download`), so a
@@ -393,7 +397,8 @@ missing a floor is a finding about the model, not the prompt.
     - `RELEASE_DISPATCH_TOKEN`: the existing secret.
   - **The baseline:** after landing the workflow, dispatch it once with `prompt_ids=classify.lead_intent`
     and `max_spend=1` as a smoke test of the key, the spend preflight, the artifact and the results PR.
-    Then dispatch `force_full=true` for the baseline.
+    Then dispatch `force_full=true` for the baseline. Under the $1.00 ceiling, a full re-baseline
+    (the 2026-10-08 one planned $5.99) has to be split into several dispatches by `prompt_ids`.
 
 ### Weekly maintenance
 

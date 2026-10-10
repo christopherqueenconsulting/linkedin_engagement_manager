@@ -733,6 +733,26 @@ class TestCli:
         assert bp.main(["--run", "--state", str(state), *self.ARGS]) == 1
         assert "refused: no price" in capsys.readouterr().err
 
+    def test_a_cap_over_the_ceiling_is_held_to_it(self, isolated, capsys):
+        """The scheduled workflow passes 15; the runner still plans against $1.00."""
+        _, state = isolated
+        assert bp.main(["--plan", "--state", str(state), "--max-spend-usd", "15", *self.ARGS]) == 0
+        captured = capsys.readouterr()
+        assert "cap $1.00" in captured.out and "cap $15.00" not in captured.out
+        assert "capping at the ceiling" in captured.err
+
+    def test_a_run_planned_over_the_ceiling_is_refused_before_any_call(self, isolated, capsys,
+                                                                        monkeypatch):
+        _, state = isolated
+        monkeypatch.setenv("PROMPT_EVALS_ENABLED", "1")
+        real_plan = bp.plan_spend
+        monkeypatch.setattr(bp, "plan_spend", lambda *a, **k: {
+            **real_plan(*a, **k), "unpriced": [], "total_usd": 1.5})
+        monkeypatch.setattr(bp.routed, "build_routed_client",
+                            lambda *a, **k: pytest.fail("a refused run must not build a client"))
+        assert bp.main(["--run", "--state", str(state), "--max-spend-usd", "15", *self.ARGS]) == 1
+        assert "refused: planned $1.50 exceeds the $1.00 cap" in capsys.readouterr().err
+
     def test_a_paid_run_needs_the_key(self, isolated, capsys, monkeypatch):
         _, state = isolated
         monkeypatch.setenv("PROMPT_EVALS_ENABLED", "1")
@@ -874,3 +894,24 @@ def test_leaderboard_cells_show_no_output_and_never_print_none():
     assert first["judge"] == first["latency"] == second["deterministic"] == "—"
     assert second["contract"] == "0.975" and second["judge"] == 0.9
     assert "None" not in bm.update_leaderboard("", [first, second])
+
+
+class TestSpendCap:
+    def test_a_request_at_or_under_the_ceiling_is_kept(self, capsys):
+        assert bp.spend_cap(0.5) == 0.5
+        assert bp.spend_cap(bp.MAX_SPEND_CEILING_USD) == bp.MAX_SPEND_CEILING_USD
+        assert capsys.readouterr().err == ""
+
+    def test_a_request_over_the_ceiling_is_capped_and_said(self, capsys):
+        assert bp.spend_cap(15) == bp.MAX_SPEND_CEILING_USD == 1.0
+        assert "requested cap $15.00 is over the $1.00 per-run ceiling" in capsys.readouterr().err
+
+    def test_the_default_cap_is_the_ceiling(self, monkeypatch):
+        monkeypatch.delenv("PROMPT_EVAL_MAX_SPEND_USD", raising=False)
+        seen = {}
+        monkeypatch.setattr(bp, "evaluated_prompts", lambda: (_ for _ in ()).throw(
+            RuntimeError("stop after argument parsing")))
+        monkeypatch.setattr(bp, "spend_cap", lambda requested: seen.setdefault("cap", requested))
+        with pytest.raises(RuntimeError):
+            bp.main(["--plan"])
+        assert seen["cap"] == 1.0
