@@ -226,7 +226,8 @@ def add_user(email: str, password: str):
         with db_cursor(commit=True) as cursor:
         # The row has to exist before the password can be encrypted — the ciphertext is bound to
         # users.id (AAD), which auto-increment only hands out on INSERT.
-            cursor.execute("INSERT INTO users (email) VALUES (%s)", (email,))
+            # auto_schedule_posts=0 (#2366): a new account's generated posts wait for approval.
+            cursor.execute("INSERT INTO users (email, auto_schedule_posts) VALUES (%s, 0)", (email,))
             user_id = cursor.lastrowid
             cursor.execute("UPDATE users SET password = %s WHERE id = %s",
                            (encrypt_secret(password, user_id, SECRET_FIELD_PASSWORD), user_id))
@@ -270,8 +271,11 @@ def add_user_with_access_token(email: str, linked_sub_id: str, access_token: str
         # value that was allocated and burned by the failed insert. Sealing the tokens against that
         # id would bind them to a row that does not exist (silently storing no token at all), so
         # the id is pinned explicitly here and still cross-checked by email below.
-        cursor.execute("""INSERT INTO users (email, linked_sub_id, last_login, linkedin_connection_status)
-        VALUES (%s, %s, %s, 'connected')
+        # auto_schedule_posts=0 lives in the INSERT half only (#2366): a new account starts with
+        # approval-before-publish, and the ON DUPLICATE KEY branch leaves an existing user's choice alone.
+        cursor.execute("""INSERT INTO users (email, linked_sub_id, last_login, linkedin_connection_status,
+                                            auto_schedule_posts)
+        VALUES (%s, %s, %s, 'connected', 0)
         ON DUPLICATE KEY UPDATE
                 id = LAST_INSERT_ID(id),
                 linked_sub_id = VALUES(linked_sub_id),

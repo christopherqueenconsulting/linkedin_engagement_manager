@@ -52,6 +52,31 @@ class TestTrialInsert:
         assert columns["auto_schedule_posts"] == "0"
 
 
+class TestEveryAccountCreationPathWritesZero:
+    """The password signup and the OAuth upsert write 0 themselves, not via the column DEFAULT."""
+
+    def test_password_signup_inserts_auto_scheduling_off(self, fake_cursor):
+        from cqc_lem.utilities.db import add_user
+        conn, cur = fake_cursor(rowcount=1, lastrowid=8)
+        with patch(_CONN, return_value=conn):
+            add_user("new@example.com", "secret")
+        assert _inserted_columns(cur.execute.call_args_list[0][0][0])["auto_schedule_posts"] == "0"
+
+    def test_oauth_upsert_writes_zero_on_insert_only(self, fake_cursor):
+        from cqc_lem.utilities.db import add_user_with_access_token
+        conn, cur = fake_cursor(rowcount=1, lastrowid=9)
+        with patch(_CONN, return_value=conn):
+            add_user_with_access_token("oauth@example.com", "sub_1", "tok", "3600")
+        sql = cur.execute.call_args_list[0][0][0]
+        insert_half, update_half = re.split(r"ON\s+DUPLICATE\s+KEY\s+UPDATE", sql,
+                                            flags=re.IGNORECASE)
+        assert _inserted_columns(insert_half)["auto_schedule_posts"] == "0"
+        # A returning user hits the UPDATE branch: their stored choice must survive the login.
+        assert "auto_schedule_posts" not in update_half
+        later = [c[0][0] for c in cur.execute.call_args_list[1:]]
+        assert later and not any("auto_schedule_posts" in s for s in later)
+
+
 class TestPreferencesFallback:
     def test_a_missing_users_row_reads_as_auto_scheduling_off(self, fake_cursor):
         from cqc_lem.utilities.db import get_user_preferences

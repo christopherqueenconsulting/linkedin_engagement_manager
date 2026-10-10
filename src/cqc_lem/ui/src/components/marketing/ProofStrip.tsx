@@ -12,7 +12,7 @@ const PROOF: { icon: IconName; title: string; body: string }[] = [
   {
     icon: 'shield',
     title: 'Posts wait for your approval',
-    body: 'A generated post is not scheduled until you approve it, unless you turn on auto-scheduling.',
+    body: 'You approve each generated post before it is scheduled. Auto-scheduling is opt-in.',
   },
   {
     icon: 'gauge',

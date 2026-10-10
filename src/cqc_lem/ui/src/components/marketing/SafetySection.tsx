@@ -33,9 +33,9 @@ const CLAIMS: { icon: IconName; title: string; body: string }[] = [
     body: 'Automation runs from your own logged-in session through an egress proxy matched to your country, not a raw shared datacenter pool — a dedicated per-user proxy is available as a paid upgrade.',
   },
   {
-    icon: 'chat',
-    title: 'Posts wait for your approval',
-    body: 'A generated post is not scheduled until you approve it. Auto-scheduling is off for new accounts until you turn it on. Comments and replies are not queued for approval.',
+    icon: 'check',
+    title: 'No post is scheduled without your sign-off',
+    body: 'New accounts start with auto-scheduling off. Comments, replies and appreciation DMs go out without an approval step, inside the caps you set.',
   },
   {
     icon: 'pen',
@@ -83,7 +83,7 @@ export default function SafetySection() {
         <span>
           <strong className="font-semibold">And the limit:</strong> no tool can guarantee a LinkedIn
           account, and anyone who tells you otherwise is selling. What you control here is the whole
-          surface — pause it, lower the caps, or approve nothing. You remain responsible for your own
+          surface — pause it, lower the caps, or approve no posts. You remain responsible for your own
           account.
         </span>
       </p>
