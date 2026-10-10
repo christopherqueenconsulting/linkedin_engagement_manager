@@ -126,7 +126,7 @@ lanes today is no evidence that it is paid.
      `free_trial | starter | professional | enterprise` (V22):
 
      ```sql
-     UPDATE users SET subscription_status='active', subscription_tier='enterprise' WHERE id=<id>;
+     UPDATE users SET subscription_status='active', subscription_tier='<starter|professional|enterprise>' WHERE id=<id>;
      SELECT id, subscription_status, subscription_tier FROM users WHERE id=<id>;
      ```
 
