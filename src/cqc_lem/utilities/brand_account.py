@@ -6,7 +6,9 @@ invites all reach it through the same per-active-user beat tasks a paying custom
 its volume is enforced by the same `engagement_preferences` caps, 429 backoff (`rate_limit.py`) and
 per-user proxy. So this module owns no outreach primitives at all — it only decides WHO the brand
 user is, and WHAT its caps and focus topics should be for the current `LAUNCH_PHASE`, so
-self-marketing can never quietly run hotter than the owner signed off on.
+self-marketing can never quietly run hotter than the owner signed off on. Since the 2026-10-10
+owner ruling (issue #2376) that is zero automated outbound in every phase: agents draft, the owner
+sends.
 """
 
 from typing import Any, Optional
@@ -34,30 +36,29 @@ BRAND_FOCUS_TOPICS = (
     "AI content that sounds like you",
 )
 
-# Hard ceilings: the brand is NEVER special-cased to go faster than a paying user, so no phase may
-# raise a cap above the product's own out-of-the-box defaults (see _ENGAGEMENT_DEFAULTS in db.py).
-BRAND_CAP_CEILINGS = {"max_comments_per_day": 20, "max_dms_per_day": 20, "max_invites_per_day": 10}
-
-# Outbound volume + approval posture per phase. Volume ramps only as the account warms and the
-# ToS-safety signals hold; P0 additionally keeps a human on every connect (`pre_review`) and files
-# sourced targets as drafts only (`suggest`).
-PHASE_OUTBOUND_POLICY = {
-    "P0": {"max_comments_per_day": 8, "max_dms_per_day": 5, "max_invites_per_day": 5,
-           "connection_request_mode": "pre_review", "connection_targeting_mode": "suggest"},
-    "P1": {"max_comments_per_day": 15, "max_dms_per_day": 10, "max_invites_per_day": 8,
-           "connection_request_mode": "auto_approve", "connection_targeting_mode": "auto_queue"},
-    "P2": {"max_comments_per_day": 20, "max_dms_per_day": 15, "max_invites_per_day": 10,
-           "connection_request_mode": "auto_approve", "connection_targeting_mode": "auto_queue"},
-}
-
-# The volume + posture fields the phase owns. Since the brand user is also the owner's ORDINARY
-# account (#736), the phase SEEDS an account that has never saved its own engagement preferences —
-# it is not re-asserted over one that has. Issue #952: re-asserting it nightly pulled the owner's own
-# Settings choice back down before morning (the SPA recommends the "Balanced" preset, 15/10/8 — the
-# P1 numbers — while prod runs LAUNCH_PHASE=P0, so every night put it back to 8/5/5 with nothing in
-# the UI to say why). Saved settings ARE the sign-off; an env var nobody touched is not.
-CAP_FIELDS = ("max_comments_per_day", "max_dms_per_day", "max_invites_per_day")
+# Owner ruling 2026-10-10 (issue #2376): the brand account sends NO automated outbound for
+# marketing — agents draft, the owner sends. Every outbound cap below is therefore 0 in EVERY phase,
+# and the ceiling is 0 too, so neither a phase entry nor a saved setting can lift one. Advancing
+# LAUNCH_PHASE no longer changes outbound volume; reversing the ruling means editing these numbers.
+CAP_FIELDS = ("max_comments_per_day", "max_dms_per_day", "max_invites_per_day",
+              "max_company_page_invites_per_day", "max_follows_per_day",
+              "max_catchup_touches_per_day")
 MODE_FIELDS = ("connection_request_mode", "connection_targeting_mode")
+
+# Hard ceilings, applied after the phase entry and over any saved value. All 0 under the ruling.
+BRAND_CAP_CEILINGS = {cap: 0 for cap in CAP_FIELDS}
+
+# Outbound volume + approval posture per phase. All caps 0 (the ruling above); the connect posture
+# keeps a human on every connect (`pre_review`) and files sourced targets as drafts only (`suggest`)
+# in every phase, because nothing the brand sends is automated any more.
+_NO_OUTBOUND = {**{cap: 0 for cap in CAP_FIELDS},
+                "connection_request_mode": "pre_review", "connection_targeting_mode": "suggest"}
+PHASE_OUTBOUND_POLICY = {phase: dict(_NO_OUTBOUND) for phase in LAUNCH_PHASES}
+
+# The phase SEEDS an account that has never saved its own engagement preferences — it is not
+# re-asserted over one that has (issue #952: the brand user is also the owner's ORDINARY account,
+# #736, and saved settings are the sign-off). The CAPS are the exception since #2376: the ceiling
+# binds a saved row too, and `outbound_ruling_applied` zeroes them on every read.
 
 
 def current_launch_phase() -> str:
@@ -112,6 +113,28 @@ def is_brand_user(user_id: Any) -> bool:
         return False
 
 
+def outbound_ruling_applied(user_id: Any, prefs: dict) -> dict:
+    """`prefs` with every outbound cap forced to 0 when `user_id` is the brand account.
+
+    The owner ruling of 2026-10-10 (issue #2376) holds the brand at zero automated outbound, and a
+    nightly seed alone cannot hold it: the code defaults a missing or unreadable row answers with,
+    and a cap saved in Settings since the last sync, would both read above 0. So
+    `get_engagement_preferences` passes every answer through here. There is no environment override
+    for these caps; if one is ever added, this read is what keeps it at 0 for the brand account.
+    Any other user's prefs come back unchanged.
+
+    Args:
+        user_id: Whose preferences these are.
+        prefs: The preferences as read (saved row or code defaults).
+
+    Returns:
+        A copy with the caps zeroed for the brand account, otherwise `prefs` itself.
+    """
+    if not is_brand_user(user_id):
+        return prefs
+    return {**prefs, **{cap: 0 for cap in CAP_FIELDS}}
+
+
 def _over_ceiling(current: Any, ceiling: int) -> Optional[int]:
     """`current` pulled back under `ceiling`, or None when there is nothing to change.
 
@@ -137,7 +160,8 @@ def brand_preference_overrides(existing: Optional[dict] = None, phase: Optional[
     * **Not configured** — the phase seeds the caps and the connect posture, exactly as before.
     * **Configured** — those values are the OWNER's (the brand user is also his ordinary account,
       issue #736), so the phase is not re-asserted over them and only `BRAND_CAP_CEILINGS` still
-      binds: a cap above the shipped per-user default is pulled back, everything else is left alone.
+      binds: a cap above it (0 for every cap since #2376) is pulled back, everything else is left
+      alone.
       Re-asserting the phase every night is issue #952 — the product recommended a volume it then
       silently refused to keep.
 
@@ -217,7 +241,9 @@ def sync_brand_preferences(phase: Optional[str] = None) -> Optional[dict]:
         # warning. The caller reports the skipped sync in its own return line.
         log_debug("Brand account preferences unreadable — skipping this sync", user_id=user_id)
         return None
-    existing = get_engagement_preferences(user_id) or {}
+    # The RAW row: the read-time ruling would report every saved cap as 0, and the sync could then
+    # never see (or log) the stale value it is here to write back down.
+    existing = get_engagement_preferences(user_id, outbound_ruling=False) or {}
     overrides = brand_preference_overrides(existing, resolved_phase, configured=configured)
     if not overrides:
         log_debug(f"Brand account within phase {resolved_phase} — nothing to apply", user_id=user_id)

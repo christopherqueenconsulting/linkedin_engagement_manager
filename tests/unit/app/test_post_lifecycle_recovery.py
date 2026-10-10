@@ -83,7 +83,8 @@ class TestThePrePostWarmUpKeepsItsLane:
              patch(f"{_FEED}.claim_pre_post_lane", return_value=True), \
              patch(f"{_FEED}.quit_gracefully"), \
              patch.object(mod.automate_commenting, "apply_async") as requeue:
-            mod.automate_commenting.run(user_id=1, loop_for_duration=900, future_forward=60,
+            # Not user 1: the brand account's comment cap reads 0 (#2376) and would skip the run.
+            mod.automate_commenting.run(user_id=2, loop_for_duration=900, future_forward=60,
                                         post_id=post_id)
         return requeue
 

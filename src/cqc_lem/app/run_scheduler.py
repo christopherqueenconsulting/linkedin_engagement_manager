@@ -2028,7 +2028,8 @@ def auto_sync_brand_account():
     through the same per-active-user beats as any paying customer, under the same caps, 429 backoff
     and per-user proxy. So this task adds no outreach of its own: it only seeds the phase's caps and
     connect posture onto a brand account that has never saved engagement preferences of its own, and
-    holds every account under the shipped per-user ceilings.
+    holds its saved caps under `BRAND_CAP_CEILINGS` — 0 for every outbound cap since the 2026-10-10
+    owner ruling (issue #2376).
 
     It deliberately does NOT re-assert the phase over settings the owner saved (issue #952): user 1
     is his ordinary account too, so the Settings hub is the sign-off, and a nightly re-assertion just
@@ -2053,7 +2054,9 @@ def auto_sync_brand_account():
                     user_id=user_id, task_name="auto_sync_brand_account")
 
     labels = {"max_comments_per_day": "comments/day", "max_dms_per_day": "DMs/day",
-              "max_invites_per_day": "invites/day"}
+              "max_invites_per_day": "invites/day",
+              "max_company_page_invites_per_day": "company-page invites/day",
+              "max_follows_per_day": "follows/day", "max_catchup_touches_per_day": "catch-ups/day"}
     # Only the caps this run actually wrote — an account whose own saved caps are already within
     # policy has none, and reporting the phase's numbers there would read as an edit that never
     # happened.

@@ -81,6 +81,34 @@ class TestCommentAllowanceToday:
 
         assert remaining.call_args.args[2] == 20
 
+    @pytest.mark.parametrize("saved,expected", [(0, 0), ("0", 0), (-3, 0), (5, 5),
+                                                (None, 20), ("many", 20)])
+    def test_a_saved_zero_is_zero_not_the_fallback(self, saved, expected):
+        """Issue #2376: `or 20` read a cap of 0 (the brand account's) as 20 comments a day."""
+        from cqc_lem.app.engagement import feed as mod
+
+        with patch(f"{_FEED}.get_engagement_preferences",
+                   return_value={"max_comments_per_day": saved}), \
+             patch(f"{_FEED}.count_comments_today", return_value=0), \
+             patch(f"{_FEED}.engagement_caps_from_prefs", return_value={}), \
+             patch(f"{_FEED}.remaining_actions", return_value=0) as remaining:
+            mod._comment_allowance_today(1)
+
+        assert remaining.call_args.args[2] == expected
+
+    def test_the_feed_walk_stops_at_a_zero_cap(self):
+        """The walk itself, not only the pre-check, must honour 0 before any card is touched."""
+        from cqc_lem.app.engagement import feed as mod
+
+        with patch(f"{_FEED}.count_comments_today", return_value=0), \
+             patch(f"{_FEED}.engagement_caps_from_prefs", return_value={}), \
+             patch(f"{_FEED}.remaining_actions", return_value=0) as remaining:
+            assert mod.comment_on_feed_inline(None, None, None, 1,
+                                              prefs={"max_comments_per_day": 0},
+                                              engagers=set()) == 0
+
+        assert remaining.call_args.args[2] == 0
+
     def test_a_read_fault_returns_none(self):
         from cqc_lem.app.engagement import feed as mod
 

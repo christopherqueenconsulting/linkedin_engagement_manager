@@ -154,7 +154,9 @@ class TestMysqlErrorFallbacks:
     def test_get_engagement_preferences_error_returns_defaults(self, fake_cursor):
         import cqc_lem.utilities.db as db
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=_err_conn(fake_cursor)):
-            assert db.get_engagement_preferences(1) == dict(db._ENGAGEMENT_DEFAULTS)
+            # User 2, not 1: user 1 is the brand account, whose caps read 0 on every path (#2376,
+            # covered in test_brand_account.py).
+            assert db.get_engagement_preferences(2) == dict(db._ENGAGEMENT_DEFAULTS)
 
     def test_get_lead_magnet_settings_error_returns_defaults(self, fake_cursor):
         import cqc_lem.utilities.db as db

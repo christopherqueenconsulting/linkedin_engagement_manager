@@ -82,12 +82,17 @@ class TestInviteCap:
                                     "max_invites_per_day": 10}) == 5
         assert invite_cap_for_user(None) == 0  # no prefs -> no account-wide cap -> nothing sends
 
-    def test_the_brand_accounts_p0_phase_ceiling_is_respected(self):
+    @pytest.mark.parametrize("phase", ["P0", "P1", "P2"])
+    def test_the_brand_accounts_phase_ceiling_is_respected(self, phase):
+        """The account-wide invite cap (0 since #2376) holds the brand, not the page cap.
+
+        The page cap is set AFTER the policy so it cannot be what holds it.
+        """
         from cqc_lem.utilities.brand_account import brand_outbound_policy
         from cqc_lem.utilities.linkedin.company_page_inviter import invite_cap_for_user
-        policy = brand_outbound_policy("P0")
-        assert invite_cap_for_user({"max_company_page_invites_per_day": 50, **policy}) == \
-            policy["max_invites_per_day"]
+        policy = brand_outbound_policy(phase)
+        assert invite_cap_for_user({**policy, "max_company_page_invites_per_day": 50}) == \
+            policy["max_invites_per_day"] == 0
 
 
 class TestPlanDailyInvites:

@@ -61,16 +61,31 @@ class TestCurrentLaunchPhase:
         warn.assert_not_called()
 
 
-class TestBrandOutboundPolicy:
-    def test_volume_ramps_with_the_phase(self):
-        from cqc_lem.utilities.brand_account import brand_outbound_policy
-        p0, p1, p2 = (brand_outbound_policy(p) for p in ("P0", "P1", "P2"))
-        for cap in ("max_comments_per_day", "max_dms_per_day", "max_invites_per_day"):
-            assert p0[cap] < p1[cap] <= p2[cap]
+_OUTBOUND_CAPS = ("max_comments_per_day", "max_dms_per_day", "max_invites_per_day",
+                  "max_company_page_invites_per_day", "max_follows_per_day",
+                  "max_catchup_touches_per_day")
 
-    def test_p0_keeps_a_human_on_every_connect(self):
+
+class TestBrandOutboundPolicy:
+    @pytest.mark.parametrize("phase", ["P0", "P1", "P2"])
+    def test_every_phase_has_zero_outbound_caps(self, phase):
+        """Owner ruling 2026-10-10 (#2376): no automated brand outbound in ANY phase."""
         from cqc_lem.utilities.brand_account import brand_outbound_policy
-        policy = brand_outbound_policy("P0")
+        policy = brand_outbound_policy(phase)
+        assert {cap: policy[cap] for cap in _OUTBOUND_CAPS} == {cap: 0 for cap in _OUTBOUND_CAPS}
+
+    def test_the_policy_owns_every_outbound_cap_the_prefs_have(self):
+        """A cap the policy does not name is a cap the ruling cannot hold at 0."""
+        from cqc_lem.utilities.brand_account import CAP_FIELDS
+        from cqc_lem.utilities.db import _ENGAGEMENT_DEFAULTS
+        caps_in_prefs = {k for k in _ENGAGEMENT_DEFAULTS
+                         if k.startswith("max_") and k.endswith("_per_day")}
+        assert caps_in_prefs == set(CAP_FIELDS) == set(_OUTBOUND_CAPS)
+
+    @pytest.mark.parametrize("phase", ["P0", "P1", "P2"])
+    def test_every_phase_keeps_a_human_on_every_connect(self, phase):
+        from cqc_lem.utilities.brand_account import brand_outbound_policy
+        policy = brand_outbound_policy(phase)
         assert policy["connection_request_mode"] == "pre_review"
         assert policy["connection_targeting_mode"] == "suggest"
 
@@ -87,10 +102,11 @@ class TestBrandOutboundPolicy:
                       "max_invites_per_day": 500, "connection_request_mode": "auto_approve",
                       "connection_targeting_mode": "auto_queue"}}
         with patch(f"{_BA}.PHASE_OUTBOUND_POLICY", hot):
-            assert brand_outbound_policy("P2") == {
-                "max_comments_per_day": 20, "max_dms_per_day": 20, "max_invites_per_day": 10,
-                "connection_request_mode": "auto_approve",
-                "connection_targeting_mode": "auto_queue"}
+            policy = brand_outbound_policy("P2")
+        assert policy["max_comments_per_day"] == 0
+        assert policy["max_dms_per_day"] == 0
+        assert policy["max_invites_per_day"] == 0
+        assert policy["connection_request_mode"] == "auto_approve"
 
     def test_defaults_to_the_active_phase(self):
         from cqc_lem.utilities.brand_account import brand_outbound_policy
@@ -173,14 +189,14 @@ class TestBrandPreferenceOverrides:
         with patch(f"{_ATTR}.BRAND_SIGNUP_URL", "https://lem.test/trial"):
             assert "business_goals" not in brand_preference_overrides({"business_goals": "mine"}, "P0")
 
-    def test_an_unconfigured_account_is_seeded_from_the_phase(self):
+    @pytest.mark.parametrize("phase", ["P0", "P1", "P2"])
+    def test_an_unconfigured_account_is_seeded_from_the_phase(self, phase):
         from cqc_lem.utilities.brand_account import brand_preference_overrides
-        overrides = brand_preference_overrides({}, "P1")
-        assert overrides["max_comments_per_day"] == 15
-        assert overrides["max_dms_per_day"] == 10
-        assert overrides["max_invites_per_day"] == 8
-        assert overrides["connection_request_mode"] == "auto_approve"
-        assert overrides["connection_targeting_mode"] == "auto_queue"
+        overrides = brand_preference_overrides({}, phase)
+        for cap in _OUTBOUND_CAPS:
+            assert overrides[cap] == 0
+        assert overrides["connection_request_mode"] == "pre_review"
+        assert overrides["connection_targeting_mode"] == "suggest"
 
     def test_the_seed_ignores_whatever_the_unconfigured_read_handed_back(self):
         """With no saved row `get_engagement_preferences` returns code DEFAULTS (20/20/10) — those
@@ -188,10 +204,10 @@ class TestBrandPreferenceOverrides:
         """
         from cqc_lem.utilities.brand_account import brand_preference_overrides
         overrides = brand_preference_overrides(
-            {"max_comments_per_day": 20, "max_dms_per_day": 20, "max_invites_per_day": 10}, "P0")
-        assert overrides["max_comments_per_day"] == 8
-        assert overrides["max_dms_per_day"] == 5
-        assert overrides["max_invites_per_day"] == 5
+            {"max_comments_per_day": 20, "max_dms_per_day": 20, "max_invites_per_day": 10}, "P2")
+        assert overrides["max_comments_per_day"] == 0
+        assert overrides["max_dms_per_day"] == 0
+        assert overrides["max_invites_per_day"] == 0
 
 
 def _volume_fields(overrides: dict) -> dict:
@@ -203,24 +219,25 @@ def _volume_fields(overrides: dict) -> dict:
 class TestOwnerTunedSettingsSurvive:
     """Issue #952 — the brand user is ALSO the owner's ordinary account (#736), so once he has saved
     engagement preferences the phase seeds nothing: the Settings hub is the sign-off, not an env var
-    nobody has touched. Only BRAND_CAP_CEILINGS still binds.
+    nobody has touched. Only BRAND_CAP_CEILINGS still binds — and since the #2376 ruling every
+    ceiling is 0, so a saved CAP above 0 is pulled back while the connect posture is left alone.
     """
 
-    def test_the_recommended_preset_is_not_pulled_back_to_the_phase(self):
-        """The reported bug: the SPA recommends "Balanced" (15/10/8 — the P1 numbers) while prod runs
-        LAUNCH_PHASE=P0, and this sync put it back to 8/5/5 every night.
-        """
+    def test_a_saved_preset_is_pulled_to_zero_but_its_posture_is_kept(self):
+        """The SPA's "Balanced" preset (15/10/8) is a saved choice; the ruling still zeroes its caps."""
         from cqc_lem.utilities.brand_account import brand_preference_overrides
         balanced = {"max_comments_per_day": 15, "max_dms_per_day": 10, "max_invites_per_day": 8,
                     "connection_request_mode": "auto_approve",
                     "connection_targeting_mode": "auto_queue"}
         overrides = brand_preference_overrides(balanced, "P0", configured=True)
-        assert _volume_fields(overrides) == {}                # nothing to write at all
+        assert _volume_fields(overrides) == {"max_comments_per_day": 0, "max_dms_per_day": 0,
+                                             "max_invites_per_day": 0}
 
-    def test_a_hand_tuned_lower_cap_is_still_kept(self):
+    @pytest.mark.parametrize("phase", ["P0", "P1", "P2"])
+    def test_a_hand_tuned_lower_cap_is_still_pulled_to_zero(self, phase):
         from cqc_lem.utilities.brand_account import brand_preference_overrides
-        overrides = brand_preference_overrides({"max_comments_per_day": 3}, "P1", configured=True)
-        assert _volume_fields(overrides) == {}
+        overrides = brand_preference_overrides({"max_comments_per_day": 3}, phase, configured=True)
+        assert _volume_fields(overrides) == {"max_comments_per_day": 0}
 
     def test_a_cap_of_zero_is_a_real_choice_not_an_unset_value(self):
         from cqc_lem.utilities.brand_account import brand_preference_overrides
@@ -261,6 +278,107 @@ class TestOwnerTunedSettingsSurvive:
         overrides = brand_preference_overrides({"max_comments_per_day": 15, "focus_topics": []},
                                                "P0", configured=True)
         assert overrides["focus_topics"] == list(BRAND_FOCUS_TOPICS)
+
+
+_USERS = "cqc_lem.platform.db.repositories.users"
+
+
+def _hot_prefs() -> dict:
+    """A saved row with every outbound cap well above 0 — what a Settings save could store."""
+    return {**{cap: 25 for cap in _OUTBOUND_CAPS}, "tone": "warm"}
+
+
+class TestOutboundRulingOnRead:
+    """Issue #2376: the ruling holds on EVERY read of the brand account's prefs.
+
+    Not only after the nightly sync — a saved cap, the code defaults and a failed read all answer 0
+    for the brand.
+    """
+
+    @pytest.mark.parametrize("phase", ["P0", "P1", "P2", "GA", ""])
+    def test_a_saved_hot_row_reads_zero_for_the_brand_in_every_phase(self, phase):
+        from cqc_lem.utilities.db import get_engagement_preferences
+        with _Patched(_enabled(phase=phase)), \
+             patch(f"{_USERS}._select_engagement_row", return_value=_hot_prefs()):
+            prefs = get_engagement_preferences(1)
+        assert {cap: prefs[cap] for cap in _OUTBOUND_CAPS} == {cap: 0 for cap in _OUTBOUND_CAPS}
+        assert prefs["tone"] == "warm"                        # nothing but the caps is touched
+
+    def test_code_defaults_read_zero_for_the_brand(self):
+        """No saved row: the 20/20/10 code defaults are not a sign-off either."""
+        from cqc_lem.utilities.db import get_engagement_preferences
+        with _Patched(_enabled()), \
+             patch(f"{_USERS}._select_engagement_row", return_value=None), \
+             patch(f"{_USERS}._code_engagement_defaults", return_value=_hot_prefs()):
+            prefs = get_engagement_preferences(1)
+        assert all(prefs[cap] == 0 for cap in _OUTBOUND_CAPS)
+
+    def test_a_failed_read_reads_zero_for_the_brand(self):
+        import mysql.connector
+
+        from cqc_lem.utilities.db import get_engagement_preferences
+        with _Patched(_enabled()), \
+             patch(f"{_USERS}._select_engagement_row",
+                   side_effect=mysql.connector.Error("down")), \
+             patch(f"{_USERS}._code_engagement_defaults", return_value=_hot_prefs()), \
+             patch(f"{_USERS}.log_error"):
+            prefs = get_engagement_preferences(1)
+        assert all(prefs[cap] == 0 for cap in _OUTBOUND_CAPS)
+
+    def test_an_overridden_brand_user_id_moves_the_ruling_with_it(self):
+        """BRAND_USER_ID is the one env knob here; it picks WHICH account is held, never lifts it."""
+        from cqc_lem.utilities.db import get_engagement_preferences
+        with _Patched(_enabled(brand_user_id="7", phase="P2")), \
+             patch(f"{_USERS}._select_engagement_row", side_effect=lambda uid: _hot_prefs()):
+            brand, owner_default = get_engagement_preferences(7), get_engagement_preferences(1)
+        assert all(brand[cap] == 0 for cap in _OUTBOUND_CAPS)
+        assert all(owner_default[cap] == 25 for cap in _OUTBOUND_CAPS)
+
+    def test_a_hot_phase_entry_cannot_lift_the_brand(self):
+        """Even a phase table edited to 500 is held by the 0 ceiling."""
+        from cqc_lem.utilities.brand_account import brand_outbound_policy
+        hot = {phase: {cap: 500 for cap in _OUTBOUND_CAPS} for phase in ("P0", "P1", "P2")}
+        with patch(f"{_BA}.PHASE_OUTBOUND_POLICY", hot):
+            for phase in ("P0", "P1", "P2"):
+                policy = brand_outbound_policy(phase)
+                assert all(policy[cap] == 0 for cap in _OUTBOUND_CAPS)
+
+    @pytest.mark.parametrize("user_id", [2, 8, 1234])
+    def test_other_users_are_unaffected(self, user_id):
+        from cqc_lem.utilities.db import get_engagement_preferences
+        with _Patched(_enabled(phase="P0")), \
+             patch(f"{_USERS}._select_engagement_row", return_value=_hot_prefs()):
+            prefs = get_engagement_preferences(user_id)
+        assert prefs == _hot_prefs()
+
+    def test_the_sync_reads_the_raw_row(self):
+        """The one opt-out: the sync must see the saved value it is writing back down."""
+        from cqc_lem.utilities.db import get_engagement_preferences
+        with _Patched(_enabled()), \
+             patch(f"{_USERS}._select_engagement_row", return_value=_hot_prefs()):
+            prefs = get_engagement_preferences(1, outbound_ruling=False)
+        assert prefs == _hot_prefs()
+
+    def test_sync_asks_for_the_raw_row(self):
+        from cqc_lem.utilities.brand_account import sync_brand_preferences
+        with _Patched(_enabled()), \
+             patch(f"{_DB}.engagement_preferences_are_configured", return_value=True), \
+             patch(f"{_DB}.get_engagement_preferences", return_value=_hot_prefs()) as read, \
+             patch(f"{_DB}.update_engagement_preferences", return_value=True) as upsert:
+            sync_brand_preferences("P2")
+        assert read.call_args.kwargs == {"outbound_ruling": False}
+        saved = upsert.call_args.args[1]
+        assert {cap: saved[cap] for cap in _OUTBOUND_CAPS} == {cap: 0 for cap in _OUTBOUND_CAPS}
+
+    def test_outbound_ruling_applied_leaves_non_brand_prefs_as_is(self):
+        from cqc_lem.utilities.brand_account import outbound_ruling_applied
+        hot = _hot_prefs()
+        with _Patched(_enabled()):
+            assert outbound_ruling_applied(2, hot) is hot
+            assert outbound_ruling_applied(None, hot) is hot
+            zeroed = outbound_ruling_applied(1, hot)
+        assert all(zeroed[cap] == 0 for cap in _OUTBOUND_CAPS)
+        assert hot["max_comments_per_day"] == 25              # the caller's dict is not mutated
 
 
 class TestPreferenceChanges:
@@ -315,8 +433,8 @@ class TestSyncBrandPreferences:
         assert upsert.call_args.args[0] == 1
         assert "tone" not in saved                            # voice the owner set is never rewritten
         assert "focus_topics" not in saved                    # nor their non-empty focus topics
-        assert saved["max_comments_per_day"] == 15            # but the phase seeds an unset account
-        assert applied["max_dms_per_day"] == 10
+        assert saved["max_comments_per_day"] == 0             # but the phase seeds an unset account
+        assert applied["max_dms_per_day"] == 0
 
     def test_unreadable_prefs_cannot_reset_the_whole_row(self):
         """A failed read makes `get_engagement_preferences` return code DEFAULTS. Those must never
@@ -331,9 +449,8 @@ class TestSyncBrandPreferences:
              patch(f"{_DB}.update_engagement_preferences", return_value=True) as upsert:
             sync_brand_preferences()
         saved = upsert.call_args.args[1]
-        assert set(saved) <= {"max_comments_per_day", "max_dms_per_day", "max_invites_per_day",
-                              "connection_request_mode", "connection_targeting_mode",
-                              "focus_topics", "business_goals"}
+        assert set(saved) <= {*_OUTBOUND_CAPS, "connection_request_mode",
+                              "connection_targeting_mode", "focus_topics", "business_goals"}
         assert "tone" not in saved and "reply_check_mode" not in saved
 
     def test_an_unreadable_row_skips_the_sync_entirely(self):
@@ -354,7 +471,7 @@ class TestSyncBrandPreferences:
              patch(f"{_DB}.get_engagement_preferences", return_value={}), \
              patch(f"{_DB}.update_engagement_preferences", return_value=True) as upsert:
             sync_brand_preferences("p2")
-        assert upsert.call_args.args[1]["max_comments_per_day"] == 20
+        assert upsert.call_args.args[1]["max_comments_per_day"] == 0
 
     def test_returns_none_when_the_upsert_fails(self):
         from cqc_lem.utilities.brand_account import sync_brand_preferences
@@ -364,12 +481,13 @@ class TestSyncBrandPreferences:
              patch(f"{_DB}.update_engagement_preferences", return_value=False):
             assert sync_brand_preferences() is None
 
-    def test_does_not_clobber_the_owners_saved_caps(self):
+    def test_does_not_clobber_the_owners_saved_settings(self):
         """The collision this convention introduces (#736): user 1 is the owner's own account, so
-        once he has saved settings the sync writes no cap or posture at all (#952).
+        once he has saved settings the sync writes no posture or content at all (#952) — and, under
+        the #2376 ruling, a set of caps already at 0 needs no write either.
         """
         from cqc_lem.utilities.brand_account import sync_brand_preferences
-        existing = {"max_comments_per_day": 15, "max_dms_per_day": 10, "max_invites_per_day": 8,
+        existing = {**{cap: 0 for cap in _OUTBOUND_CAPS},
                     "connection_request_mode": "auto_approve",
                     "connection_targeting_mode": "auto_queue",
                     "tone": "warm", "focus_topics": ["agency growth"],
@@ -390,7 +508,7 @@ class TestSyncBrandPreferences:
              patch(f"{_BA}.log_info") as info:
             sync_brand_preferences()
         message = info.call_args.args[0]
-        assert "max_dms_per_day: 20 -> 5" in message
+        assert "max_dms_per_day: 20 -> 0" in message
         assert info.call_args.kwargs["user_id"] == 1
 
     def test_a_clamped_configured_cap_is_still_logged(self):
@@ -404,8 +522,8 @@ class TestSyncBrandPreferences:
              patch(f"{_DB}.update_engagement_preferences", return_value=True) as upsert, \
              patch(f"{_BA}.log_info") as info:
             sync_brand_preferences()
-        assert upsert.call_args.args[1] == {"max_comments_per_day": 20}
-        assert "max_comments_per_day: 99 -> 20" in info.call_args.args[0]
+        assert upsert.call_args.args[1] == {"max_comments_per_day": 0}
+        assert "max_comments_per_day: 99 -> 0" in info.call_args.args[0]
 
     def test_an_unchanged_account_logs_no_edit(self):
         """A nightly INFO line that fires whether or not anything moved is not a change log."""

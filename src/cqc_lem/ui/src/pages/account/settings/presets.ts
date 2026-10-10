@@ -1,10 +1,9 @@
 import type { EngPrefs } from '../types'
 
-// Guided volume presets (issue #558 §7). These are NOT a second volume policy: they are exactly the
-// outbound ramp already signed off for the brand account (utilities/brand_account.py
-// PHASE_OUTBOUND_POLICY P0/P1/P2), so what we recommend to a customer is what we run ourselves. No
-// preset may exceed the shipped per-user defaults (20 comments / 20 DMs / 10 invites) — the same
-// ceiling rule BRAND_CAP_CEILINGS enforces server-side.
+// Guided volume presets (issue #558 §7). These carry the outbound ramp the brand account's
+// PHASE_OUTBOUND_POLICY P0/P1/P2 held until the 2026-10-10 owner ruling (issue #2376) set the
+// brand's own caps to 0; the customer presets are unchanged by that ruling. No preset may exceed the
+// shipped per-user defaults (20 comments / 20 DMs / 10 invites).
 export type PresetKey = 'conservative' | 'balanced' | 'aggressive'
 
 // The fields a preset owns. Anything not listed here is never touched by picking a preset.

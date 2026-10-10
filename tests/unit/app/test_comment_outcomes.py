@@ -853,7 +853,8 @@ class TestCommentingHoldGate:
             _pf(es, "navigate_to_feed")
             _pf(es, "comment_on_feed_inline", return_value=2)
             _pf(es, "quit_gracefully")
-            result = automate_commenting.run(user_id=1)
+            # Not user 1: the brand account's comment cap reads 0 (#2376) and would skip the run.
+            result = automate_commenting.run(user_id=2)
         assert "Commented on 2 posts" in result
 
 

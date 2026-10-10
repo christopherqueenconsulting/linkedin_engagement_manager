@@ -19,7 +19,7 @@
 | **Stripe billing + 14-day trial** | `src/cqc_lem/utilities/stripe_util.py` (`create_checkout_session`, `upgrade_subscription`, `fetch_subscription`), `FREE_TRIAL_DAYS` (default 14) in `src/cqc_lem/utilities/env_constants.py`, trial row created in `src/cqc_lem/utilities/db.py` (`subscription_status='trial'`, `subscription_tier='free_trial'`, `trial_ends_at`) | Extended-trial cohort program grants a longer `trial_ends_at` + Stripe coupon. Tiers: `starter` / `professional` / `enterprise` (`STRIPE_PRICE_ID_*` in `env_constants.py`). |
 | **PostHog analytics** | `src/cqc_lem/utilities/observability.py` (`track_llm_call`, `track_task`, `track_api_call`) | Extended with signup/activation/funnel events → CAC, activation rate, retention, channel ROI. |
 | **Content generation engine** | `src/cqc_lem/app/run_content_plan.py` (`auto_generate_content`, `plan_content_for_user`, `create_content`), unified core `src/cqc_lem/utilities/ai/content_framework.py` / `content_research.py` / `content_alignment.py` | Dogfooding: the LEM company account runs the same 30-day content plan to market LEM. |
-| **Feed engagement + outreach** | `src/cqc_lem/app/engagement/feed.py` — `automate_commenting`, `comment_on_feed_inline`; `src/cqc_lem/app/engagement/outreach.py` — `build_dm_from_template`, `automate_appreciation_dms_for_user`, `process_user_followups`; `src/cqc_lem/app/engagement/invites.py` — `invite_to_connect`, `automate_invites_to_company_page_for_user` | Dogfooding: comment→connect→DM funnel run **as** the LEM brand account to acquire users. |
+| **Feed engagement + outreach** | `src/cqc_lem/app/engagement/feed.py` — `automate_commenting`, `comment_on_feed_inline`; `src/cqc_lem/app/engagement/outreach.py` — `build_dm_from_template`, `automate_appreciation_dms_for_user`, `process_user_followups`; `src/cqc_lem/app/engagement/invites.py` — `invite_to_connect`, `automate_invites_to_company_page_for_user` | ~~Dogfooding: comment→connect→DM funnel run **as** the LEM brand account to acquire users.~~ *Superseded 2026-10-10 by owner ruling (issue #2376): the brand account's outbound caps are 0 for marketing; agents draft, the owner sends. See § C.2.* |
 | **Newsletter engine** | `src/cqc_lem/app/run_scheduler.py` (`auto_generate_newsletter_drafts`, `auto_publish_scheduled_editions`), `newsletter_editions` table | LEM publishes a LinkedIn newsletter about LinkedIn growth → top-of-funnel awareness. |
 | **Lead-gen (in-flight)** | Issues #482–#486 (inbound-intent detection, lead scoring/CRM-lite, catch-up/trigger outreach, smart connection targeting) | These same features power LEM's **self**-lead-gen once shipped — the marketing engine is a first customer of the lead-gen roadmap. |
 | **Celery beat scheduler** | `src/cqc_lem/app/my_celery.py` `beat_schedule` | All marketing/feedback agents are new beat entries (content 01:00, engagement 13:00, newsletter 10:00, etc. already exist as the pattern). |
@@ -277,12 +277,22 @@ failed closed, and kept this whole engine dormant in prod because two env vars w
 `BRAND_USER_ID` seats the brand elsewhere; blank or invalid falls back to user 1 rather than switching
 self-marketing off. What the brand does:
 
+> **Owner ruling, 2026-10-10 (issue #2376): no automated brand outbound for marketing — agents draft, the
+> owner sends.** Every outbound cap the brand account has (comments, DMs, connection invites, company-page
+> invites, follows, catch-up touches) is 0 in every `LAUNCH_PHASE` (`brand_account.PHASE_OUTBOUND_POLICY`,
+> ceilings in `BRAND_CAP_CEILINGS`), and `get_engagement_preferences` reads those caps as 0 for the brand on every
+> path — saved row, code defaults, failed read — so neither a Settings save nor a phase change lifts them. No
+> environment variable sets these caps. Items 2 and 5 below are **superseded**; item 4 is affected because its
+> page invites are an outbound cap too. The original text is kept for the record.
+
 1. **Content about the problem LEM solves.** The brand account's `focus_topics` are set to the ICP's pains
    ("consistent LinkedIn presence without the grind", "solo-founder pipeline", "AI content that sounds like
    you"). `plan_content_for_user` + `auto_generate_content` produce the 30-day mix (thought-leadership,
    industry-news commentary, personal-story, engagement prompts, carousels, video). Every post is a live demo of
    LEM's output quality — the product *is* the ad.
-2. **Feed commenting → connect → DM funnel, run as the brand.** `automate_commenting` /
+2. *[Superseded 2026-10-10 by the owner ruling above (issue #2376): the brand runs no automated comment,
+   connect or DM outbound; agents draft and the owner sends.]* ~~**Feed commenting → connect → DM funnel, run
+   as the brand.**~~ `automate_commenting` /
    `comment_on_feed_inline` add value on ICP posts (founders, consultants, coaches); the smart-connection-
    targeting feature (#486/#398) turns engagers into connection requests via `invite_to_connect`; appreciation +
    outreach DMs (`build_dm_from_template`, `automate_appreciation_dms_for_user`, `process_user_followups`) run a
@@ -291,8 +301,10 @@ self-marketing off. What the brand does:
 3. **Newsletter.** The brand runs `auto_generate_newsletter_drafts` / `auto_publish_scheduled_editions` to publish
    a LinkedIn newsletter on LinkedIn-growth tactics → recurring top-of-funnel with a subscribe CTA to the trial.
 4. **Company-page invitations.** Monthly `automate_invites_to_company_page_for_user` grows the LEM company page
-   audience.
-5. **Self-lead-gen.** Once #482–#486 ship, the brand account's inbound-intent detection + lead scoring surface
+   audience. *[Affected by the 2026-10-10 ruling (issue #2376): the brand's page-invite cap is 0, so this lane
+   sends nothing for the brand account.]*
+5. *[Superseded 2026-10-10 by the owner ruling above (issue #2376): no DM agent nurtures prospects as the
+   brand; agents draft and the owner sends.]* ~~**Self-lead-gen.**~~ Once #482–#486 ship, the brand account's inbound-intent detection + lead scoring surface
    warm prospects (people who commented "how does this work?") into a hot-lead list that the DM agent nurtures to
    signup — LEM eats its own lead-gen dog food.
 
@@ -310,7 +322,9 @@ configured" and an unreadable row skips the sync outright:
   `max_invites_per_day` and `connection_request_mode` / `connection_targeting_mode` outright.
 - **A saved row** → those are the owner's own Settings choices and the phase is not applied to them at all.
   Only `BRAND_CAP_CEILINGS` still binds: a cap above the shipped per-user default (20 / 20 / 10) is pulled back,
-  so the brand can still never run hotter than a paying user out of the box.
+  so the brand can still never run hotter than a paying user out of the box. *[Since 2026-10-10 (issue #2376)
+  every ceiling is 0, so a saved cap above 0 is written back to 0 by this sync; the connect posture and content
+  fields keep the seed-only rule. The sync reads the raw row for this, because every other reader sees 0.]*
 
 The re-assertion this replaces was the reported bug: the Settings hub recommends the **Balanced** preset
 (15 / 10 / 8 — the P1 numbers) while prod runs `LAUNCH_PHASE=P0`, so the caps the owner picked in the UI were

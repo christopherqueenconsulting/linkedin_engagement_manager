@@ -7,6 +7,8 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
+# Reads use user 2: user 1 is the brand account, whose outbound caps read 0 on every path (#2376),
+# which would make a cap assertion here pass or fail for the wrong reason.
 
 
 class TestGetEngagementPreferences:
@@ -14,7 +16,7 @@ class TestGetEngagementPreferences:
         conn, _ = fake_cursor(fetch_one=None)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_preferences
-            prefs = get_engagement_preferences(1)
+            prefs = get_engagement_preferences(2)
         assert prefs["comment_length"] == "medium"
         assert prefs["include_topics"] == [] and prefs["max_comments_per_day"] == 20
         assert prefs["reply_to_own_comments"] is True
@@ -29,7 +31,7 @@ class TestGetEngagementPreferences:
         })
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_preferences
-            prefs = get_engagement_preferences(1)
+            prefs = get_engagement_preferences(2)
         assert prefs["focus_topics"] == ["B2B sales", "leadership"]
         assert prefs["business_goals"] == "Book discovery calls"
         assert prefs["personal_goals"] == "Grow authority"
@@ -47,7 +49,7 @@ class TestGetEngagementPreferences:
         conn, _ = fake_cursor(fetch_one=row)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_preferences
-            prefs = get_engagement_preferences(1)
+            prefs = get_engagement_preferences(2)
         assert prefs["include_topics"] == ["AI", "SaaS"]
         assert prefs["use_emojis"] is True and prefs["use_hashtags"] is False
         assert prefs["reply_to_own_comments"] is False and prefs["min_reactions"] == 5
@@ -101,16 +103,16 @@ class TestForbiddenClaimTerms:
         conn, _ = fake_cursor(fetch_one=None)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_preferences
-            assert get_engagement_preferences(1)["forbidden_claim_terms"] == []
+            assert get_engagement_preferences(2)["forbidden_claim_terms"] == []
 
     def test_a_null_column_reads_as_an_empty_list_and_a_saved_one_decodes(self, fake_cursor):
         from cqc_lem.utilities.db import get_engagement_preferences
         conn, _ = fake_cursor(fetch_one={"forbidden_claim_terms": None})
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            assert get_engagement_preferences(1)["forbidden_claim_terms"] == []
+            assert get_engagement_preferences(2)["forbidden_claim_terms"] == []
         conn, _ = fake_cursor(fetch_one={"forbidden_claim_terms": json.dumps(["complexity router"])})
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            assert get_engagement_preferences(1)["forbidden_claim_terms"] == ["complexity router"]
+            assert get_engagement_preferences(2)["forbidden_claim_terms"] == ["complexity router"]
 
     def test_the_upsert_json_encodes_the_tidied_list(self, fake_cursor):
         saved = self._saved(fake_cursor, {"forbidden_claim_terms": [
@@ -145,7 +147,7 @@ class TestForbiddenClaimTerms:
             with pytest.raises(mysql.connector.Error):
                 get_engagement_preferences(1, raise_on_error=True)
             # The default posture is unchanged: a fault reads as the code defaults.
-            assert get_engagement_preferences(1)["forbidden_claim_terms"] == []
+            assert get_engagement_preferences(2)["forbidden_claim_terms"] == []
         conn, _ = fake_cursor(fetch_one=None)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             # A MISSING row is not a fault — still the defaults, even when asked to raise.
@@ -319,7 +321,7 @@ class TestReplyCheckConfig:
         conn, _ = fake_cursor(fetch_one=None)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_preferences
-            prefs = get_engagement_preferences(1)
+            prefs = get_engagement_preferences(2)
         assert prefs["reply_check_mode"] == "event"
         assert prefs["reply_sweeps_per_day"] == 2
         assert prefs["reply_max_post_age_days"] == 2
@@ -352,7 +354,7 @@ class TestReplyCheckConfig:
         conn, _ = fake_cursor(fetch_one=None)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_preferences
-            assert get_engagement_preferences(1)["connection_request_mode"] == "auto_approve"
+            assert get_engagement_preferences(2)["connection_request_mode"] == "auto_approve"
         conn, cursor = fake_cursor(rowcount=1)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import update_engagement_preferences
@@ -376,13 +378,13 @@ class TestFeedFallbackPref:
         conn, _ = fake_cursor(fetch_one=None)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_preferences
-            assert get_engagement_preferences(1)["feed_fallback_when_empty"] is True
+            assert get_engagement_preferences(2)["feed_fallback_when_empty"] is True
 
     def test_decodes_as_bool(self, fake_cursor):
         conn, _ = fake_cursor(fetch_one={"feed_fallback_when_empty": 0})
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_preferences
-            assert get_engagement_preferences(1)["feed_fallback_when_empty"] is False
+            assert get_engagement_preferences(2)["feed_fallback_when_empty"] is False
 
     def test_persists_as_int(self, fake_cursor):
         conn, cursor = fake_cursor(rowcount=1)
@@ -405,13 +407,13 @@ class TestPostsPerWeekPref:
         conn, _ = fake_cursor(fetch_one=None)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import DEFAULT_POSTS_PER_WEEK, get_engagement_preferences
-            assert get_engagement_preferences(1)["posts_per_week"] == DEFAULT_POSTS_PER_WEEK == 3
+            assert get_engagement_preferences(2)["posts_per_week"] == DEFAULT_POSTS_PER_WEEK == 3
 
     def test_null_column_reads_as_the_default(self, fake_cursor):
         conn, _ = fake_cursor(fetch_one={"posts_per_week": None})
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_preferences
-            assert get_engagement_preferences(1)["posts_per_week"] == 3
+            assert get_engagement_preferences(2)["posts_per_week"] == 3
 
     def test_saved_value_is_preserved(self, fake_cursor):
         conn, cursor = fake_cursor(rowcount=1)
@@ -444,19 +446,19 @@ class TestPostingDays:
         conn, _ = fake_cursor(fetch_one=None)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import DEFAULT_POSTING_DAYS, get_engagement_preferences
-            assert get_engagement_preferences(1)["posting_days"] == DEFAULT_POSTING_DAYS == [0, 1, 2, 3, 4]
+            assert get_engagement_preferences(2)["posting_days"] == DEFAULT_POSTING_DAYS == [0, 1, 2, 3, 4]
 
     def test_null_column_reads_as_monday_to_friday(self, fake_cursor):
         conn, _ = fake_cursor(fetch_one={"posting_days": None})
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_preferences
-            assert get_engagement_preferences(1)["posting_days"] == [0, 1, 2, 3, 4]
+            assert get_engagement_preferences(2)["posting_days"] == [0, 1, 2, 3, 4]
 
     def test_saved_row_decodes_its_own_days(self, fake_cursor):
         conn, _ = fake_cursor(fetch_one={"posting_days": "[5, 6]"})
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_preferences
-            assert get_engagement_preferences(1)["posting_days"] == [5, 6]
+            assert get_engagement_preferences(2)["posting_days"] == [5, 6]
 
     def test_all_seven_days_stay_selectable(self, fake_cursor):
         conn, cursor = fake_cursor(rowcount=1)
@@ -543,7 +545,7 @@ class TestRosterAutoFollowPrefs:
         conn, _ = fake_cursor(fetch_one=None)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_preferences
-            prefs = get_engagement_preferences(1)
+            prefs = get_engagement_preferences(2)
         assert prefs["roster_auto_follow"] is False
         assert prefs["max_follows_per_day"] == ROSTER_FOLLOWS_PER_DAY_DEFAULT
 
@@ -561,14 +563,14 @@ class TestRosterAutoFollowPrefs:
         conn, _ = fake_cursor(fetch_one=self._row(max_follows_per_day=None))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_preferences
-            assert get_engagement_preferences(1)["max_follows_per_day"] == \
+            assert get_engagement_preferences(2)["max_follows_per_day"] == \
                 ROSTER_FOLLOWS_PER_DAY_DEFAULT
 
     def test_an_explicit_zero_cap_is_preserved(self, fake_cursor):
         conn, _ = fake_cursor(fetch_one=self._row(max_follows_per_day=0))
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import get_engagement_preferences
-            assert get_engagement_preferences(1)["max_follows_per_day"] == 0
+            assert get_engagement_preferences(2)["max_follows_per_day"] == 0
 
     def _saved(self, fake_cursor, prefs):
         from cqc_lem.utilities.db import _ENGAGEMENT_COLS, update_engagement_preferences

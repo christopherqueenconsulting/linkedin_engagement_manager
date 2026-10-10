@@ -2390,7 +2390,8 @@ def _code_engagement_defaults(user_id: int) -> dict:
     defaults = dict(_ENGAGEMENT_DEFAULTS)
     defaults["feed_fallback_when_empty"] = flag_enabled(FEED_FALLBACK_DEFAULT, user_id=user_id)
     return defaults
-def get_engagement_preferences(user_id: int, *, raise_on_error: bool = False) -> dict:
+def get_engagement_preferences(user_id: int, *, raise_on_error: bool = False,
+                               outbound_ruling: bool = True) -> dict:
     """Return the user's engagement preferences (voice/targeting/caps) with code-level
     defaults when no row exists — so behaviour is unchanged until the user customizes.
 
@@ -2401,6 +2402,9 @@ def get_engagement_preferences(user_id: int, *, raise_on_error: bool = False) ->
             fine for a comment cap, not for a gate that would release a hold it can no longer see
             (issue #2047: a re-score during a DB fault must carry a forbidden-claim hold forward,
             not clear it). A missing row still returns the defaults either way.
+        outbound_ruling: Hold the brand account's outbound caps at 0 (owner ruling, issue #2376) on
+            every path, defaults included. Off ONLY for the brand sync, which has to see the saved
+            value it is writing back down.
 
     Returns:
         The saved row, decoded, or the code defaults.
@@ -2411,8 +2415,12 @@ def get_engagement_preferences(user_id: int, *, raise_on_error: bool = False) ->
         if raise_on_error:
             raise
         log_error("Could not get engagement prefs", exc=err, user_id=user_id)
-        return _code_engagement_defaults(user_id)
-    return _code_engagement_defaults(user_id) if row is None else row
+        row = None
+    prefs = _code_engagement_defaults(user_id) if row is None else row
+    if not outbound_ruling:
+        return prefs
+    from cqc_lem.utilities.brand_account import outbound_ruling_applied
+    return outbound_ruling_applied(user_id, prefs)
 def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
     """Upsert the user's engagement preferences (INSERT ... ON DUPLICATE KEY UPDATE)."""
     # The upsert writes EVERY column, so a partial `prefs` dict must merge over the user's own

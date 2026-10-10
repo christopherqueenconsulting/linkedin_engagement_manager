@@ -43,13 +43,15 @@ def _timeout_error() -> TimeoutException:
 # ---------------------------------------------------------------------------
 
 class TestAutomateCommentingLoginError:
+    # user_id=2: user 1 is the brand account, whose comment cap reads 0 (#2376), so its run is
+    # skipped before the login these tests exercise.
     def test_returns_error_string_on_runtime_error(self):
         """automate_commenting returns a failure string (not raise) when login challenge occurs."""
         with patch(_FEED_GET_PROFILE, side_effect=_linkedin_challenge_error()), \
              patch(_FEED_LOG_ERROR) as mock_log:
             from cqc_lem.app.engagement.feed import automate_commenting
 
-            result = automate_commenting.run(user_id=1)
+            result = automate_commenting.run(user_id=2)
 
         assert "Failed to start auto commenting" in result
         mock_log.assert_called_once()
@@ -60,7 +62,7 @@ class TestAutomateCommentingLoginError:
              patch(_FEED_LOG_ERROR) as mock_log:
             from cqc_lem.app.engagement.feed import automate_commenting
 
-            result = automate_commenting.run(user_id=1)
+            result = automate_commenting.run(user_id=2)
 
         assert "Failed to start auto commenting" in result
         mock_log.assert_called_once()
@@ -72,7 +74,7 @@ class TestAutomateCommentingLoginError:
              patch(f"{_FEED}.quit_gracefully") as mock_quit:
             from cqc_lem.app.engagement.feed import automate_commenting
 
-            automate_commenting.run(user_id=1)
+            automate_commenting.run(user_id=2)
 
         mock_quit.assert_not_called()
 
@@ -92,7 +94,7 @@ class TestAutomateCommentingLoginError:
         with patch(_FEED_GET_PROFILE, side_effect=breaker), \
              patch(f"{_FEED}.log_warning") as warn, \
              patch(_FEED_LOG_ERROR) as err:
-            result = automate_commenting.run(user_id=1)
+            result = automate_commenting.run(user_id=2)
 
         assert "Skipped" in result
         warn.assert_called_once()
@@ -107,7 +109,7 @@ class TestAutomateCommentingLoginError:
         with patch(_FEED_GET_PROFILE, side_effect=breaker), \
              patch(f"{_FEED}.log_warning"), \
              patch(f"{_FEED}.release_run_lock") as mock_release:
-            automate_commenting.run(user_id=1)
+            automate_commenting.run(user_id=2)
 
         mock_release.assert_called_once()
 
