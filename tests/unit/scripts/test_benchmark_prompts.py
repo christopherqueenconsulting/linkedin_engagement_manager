@@ -753,6 +753,24 @@ class TestCli:
         assert bp.main(["--run", "--state", str(state), "--max-spend-usd", "15", *self.ARGS]) == 1
         assert "refused: planned $1.50 exceeds the $1.00 cap" in capsys.readouterr().err
 
+    @pytest.mark.parametrize("env_cap", [None, "nan"])
+    def test_a_nan_cap_cannot_lift_the_ceiling(self, isolated, capsys, monkeypatch, env_cap):
+        """`--max-spend-usd nan` (or the env default) must not disable the `>` spend guards."""
+        _, state = isolated
+        monkeypatch.setenv("PROMPT_EVALS_ENABLED", "1")
+        argv = ["--run", "--state", str(state), *self.ARGS]
+        if env_cap:
+            monkeypatch.setenv("PROMPT_EVAL_MAX_SPEND_USD", env_cap)
+        else:
+            argv[1:1] = ["--max-spend-usd", "nan"]
+        real_plan = bp.plan_spend
+        monkeypatch.setattr(bp, "plan_spend", lambda *a, **k: {
+            **real_plan(*a, **k), "unpriced": [], "total_usd": 1.5})
+        monkeypatch.setattr(bp.routed, "build_routed_client",
+                            lambda *a, **k: pytest.fail("a refused run must not build a client"))
+        assert bp.main(argv) == 1
+        assert "refused: planned $1.50 exceeds the $1.00 cap" in capsys.readouterr().err
+
     def test_a_paid_run_needs_the_key(self, isolated, capsys, monkeypatch):
         _, state = isolated
         monkeypatch.setenv("PROMPT_EVALS_ENABLED", "1")
@@ -905,6 +923,11 @@ class TestSpendCap:
     def test_a_request_over_the_ceiling_is_capped_and_said(self, capsys):
         assert bp.spend_cap(15) == bp.MAX_SPEND_CEILING_USD == 1.0
         assert "requested cap $15.00 is over the $1.00 per-run ceiling" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("requested", [float("nan"), float("inf")])
+    def test_a_non_finite_request_is_capped(self, requested, capsys):
+        assert bp.spend_cap(requested) == bp.MAX_SPEND_CEILING_USD
+        assert "capping at the ceiling" in capsys.readouterr().err
 
     def test_the_default_cap_is_the_ceiling(self, monkeypatch):
         monkeypatch.delenv("PROMPT_EVAL_MAX_SPEND_USD", raising=False)

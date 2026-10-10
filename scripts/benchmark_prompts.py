@@ -321,8 +321,12 @@ def plan_spend(items: list[dict[str, Any]], suites: dict[str, dict[str, Any]],
 
 
 def spend_cap(requested: float) -> float:
-    """Return the cap a run actually uses: ``requested``, held to ``MAX_SPEND_CEILING_USD``."""
-    if requested > MAX_SPEND_CEILING_USD:
+    """Return the cap a run actually uses: ``requested``, held to ``MAX_SPEND_CEILING_USD``.
+
+    A non-finite request is over the ceiling too: every spend guard downstream is a ``>``
+    comparison, and each one is False against NaN, so a NaN cap would disable them all.
+    """
+    if not math.isfinite(requested) or requested > MAX_SPEND_CEILING_USD:
         sys.stderr.write(f"requested cap ${requested:.2f} is over the ${MAX_SPEND_CEILING_USD:.2f} "
                          "per-run ceiling; capping at the ceiling\n")
         return MAX_SPEND_CEILING_USD
