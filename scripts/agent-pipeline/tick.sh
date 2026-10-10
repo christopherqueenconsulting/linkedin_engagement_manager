@@ -1577,7 +1577,8 @@ for RJSON in $(gh pr list --repo "$SLUG" --state open --label "agent:revise" \
   ledger_charge pr "$RPR" revise >/dev/null
   WT="$(add_worktree "$RBR" origin/main)"
   export MODE=revise PR="$RPR" BRANCH="$RBR" WORKTREE="$WT"
-  run_claude "$WT" "Read $RUNBOOK and follow MODE=revise. PR=$RPR BRANCH=$RBR OWNER=$ASSIGNEE."
+  # The Decision-Comment context the RUNNER verified (`decision_prompt_args`, lib/guards.sh).
+  run_claude "$WT" "Read $RUNBOOK and follow MODE=revise. PR=$RPR BRANCH=$RBR OWNER=$ASSIGNEE. $(decision_prompt_args "$RPR" "$(issue_for_pr "$RPR" 2>/dev/null)")"
   exit 0
 done
 
@@ -1830,5 +1831,5 @@ if [ -z "$WT" ] || [ ! -d "$WT" ]; then
   exit 1
 fi
 export MODE=start ISSUE WORKTREE="$WT" BRANCH RISK
-run_claude "$WT" "Read $RUNBOOK and follow MODE=start. ISSUE=$ISSUE BRANCH=$BRANCH RISK=$RISK WORKTREE=$WT." "$MODEL"
+run_claude "$WT" "Read $RUNBOOK and follow MODE=start. ISSUE=$ISSUE BRANCH=$BRANCH RISK=$RISK WORKTREE=$WT. $(decision_prompt_args "" "$ISSUE")" "$MODEL"
 exit 0

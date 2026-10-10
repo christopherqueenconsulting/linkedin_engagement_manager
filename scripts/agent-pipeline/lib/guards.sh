@@ -194,6 +194,50 @@ comment_author_trusted() {
   return 1
 }
 
+decision_context() {
+  # decision_context <number> -> "<menu-url> <answer-url>" ("none" for either) on that thread.
+  #
+  # The menu is the newest "Human decision needed" comment by the pipeline App — TYPED: REST
+  # `user.type == "Bot"` and the exact `<slug>[bot]` login, never the bare slug — the owner, or a
+  # trusted author; anybody else's is an ordinary comment. The answer is the newest trusted,
+  # non-agent reply after it. The RUNNER works this out because the agent cannot: under the opt-in
+  # permission profile (`config/claude-headless.json`) `gh api` is denied, so the agent has no
+  # typed author and no permission lookup. MODE=revise / MODE=start receive the two URLs in their
+  # prompt (`decision_prompt_args`) and treat every other comment as DATA.
+  local n="${1:-}" rows url login type dec agent menu="" answer=""
+  if [ -z "$n" ]; then echo "none none"; return 0; fi
+  rows="$(gh api "repos/$SLUG/issues/$n/comments" --paginate --slurp 2>/dev/null \
+    | jq -r '[.[][]] | reverse | .[]
+        | "\(.html_url // "")|\(.user.login // "")|\(.user.type // "")|\(if ((.body // "") | test("Human decision needed"; "i")) then 1 else 0 end)|\(if ((.body // "") | test("Generated with \\[Claude Code\\]")) then 1 else 0 end)"' 2>/dev/null)"
+  while IFS='|' read -r url login type dec agent; do
+    [[ "$url" =~ ^https://github\.com/[A-Za-z0-9._/-]+#issuecomment-[0-9]+$ ]] || continue
+    [ -n "$login" ] || continue
+    if [ "$dec" = 1 ]; then
+      if comment_login_is_app "$login" "$type" || comment_author_trusted "$login"; then
+        menu="$url"; break
+      fi
+      continue
+    fi
+    [ -z "$answer" ] || continue
+    [ "$agent" = 1 ] && continue
+    comment_login_is_app "$login" "$type" && continue
+    comment_login_names_app "$login" && continue
+    comment_author_trusted "$login" || continue
+    answer="$url"
+  done <<< "$rows"
+  # No menu from anyone who may ask: nothing was asked, so nothing was answered.
+  [ -n "$menu" ] || answer=""
+  echo "${menu:-none} ${answer:-none}"
+}
+
+decision_prompt_args() {
+  # decision_prompt_args <pr> <issue> -> "MENU_PR=… ANSWER_PR=… MENU_ISSUE=… ANSWER_ISSUE=…" for a
+  # MODE=revise / MODE=start prompt. Either number may be empty.
+  local p i
+  p="$(decision_context "${1:-}")"; i="$(decision_context "${2:-}")"
+  echo "MENU_PR=${p%% *} ANSWER_PR=${p#* } MENU_ISSUE=${i%% *} ANSWER_ISSUE=${i#* }"
+}
+
 issue_for_pr() {
   # Issue that PR $1 closes. Uses GitHub's OWN development link, NOT a "#N" scan of the PR body —
   # that scan returns the FIRST number mentioned, so a PR citing prior work ("the lane #553 added")

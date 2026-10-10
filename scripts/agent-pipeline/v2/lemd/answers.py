@@ -131,26 +131,22 @@ def verdict_for(body: str) -> str | None:
     return shape
 
 
-def _last_decision_index(comments: list[dict[str, Any]]) -> int:
-    """Index of the newest Decision Comment in `comments`, or -1 when there is none."""
-    last_decision = -1
-    for i, c in enumerate(comments):
-        if _DECISION.search(c.get("body") or ""):
-            last_decision = i
-    return last_decision
-
-
-def menu_posted(comments: list[dict[str, Any]]) -> bool:
+def menu_posted(comments: list[dict[str, Any]], owner: str = "",
+                trusted: Callable[[str], bool] | None = None) -> bool:
     """Does this thread carry a Decision Comment — has a question ever been put to the owner?
 
-    Pure. Recognised by BODY, the same marker `parse` and `common.sh`'s `v2_owner_answered` key
-    on, and deliberately not by author: the pipeline has posted under two logins (the owner's own
-    PAT identity, then the App bot), and a menu the PAT era posted is still the question the answer
-    lane reads. Requiring today's login would read that thread as unasked and post a second menu —
-    the one outcome #1736 names as worse than the silence it fixes. The only misread this shape
-    allows is an owner comment that quotes the phrase, and that fails toward NOT asking.
+    Recognised by BODY, the same marker `parse` and `common.sh`'s `v2_owner_answered` key on, from
+    an author who may ask (`_may_ask`): the App's slug, the owner, or a trusted author. Both logins
+    the pipeline has posted under qualify — the owner's own PAT identity and the App bot — so a
+    PAT-era menu is still the question the answer lane reads, and #1736's double menu cannot come
+    back. What no longer qualifies is anybody else quoting the phrase: an outsider's "Human
+    decision needed" would otherwise read as "already asked" and suppress the real menu for good.
+    Lookups are lazy, newest first, and only for decision-text comments from neither the owner
+    nor the App's slug.
     """
-    return _last_decision_index(comments) >= 0
+    return any(_DECISION.search(c.get("body") or "")
+               and _may_ask(c.get("author") or {}, owner, trusted)
+               for c in reversed(comments))
 
 
 def _may_ask(author: dict[str, Any], owner: str, trusted: Callable[[str], bool] | None) -> bool:
@@ -243,7 +239,8 @@ def read_thread(slug: str, kind: str, number: int, owner: str, *,
     def trusted(login: str) -> bool:
         return github.comment_author_trusted(slug, login, owner, timeout=timeout)
 
-    return Thread(answer=parse(comments, owner, trusted), menu_posted=menu_posted(comments))
+    return Thread(answer=parse(comments, owner, trusted),
+                  menu_posted=menu_posted(comments, owner, trusted))
 
 
 def newest(slug: str, kind: str, number: int, owner: str, *,

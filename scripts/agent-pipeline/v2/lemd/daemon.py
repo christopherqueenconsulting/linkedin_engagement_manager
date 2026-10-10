@@ -115,10 +115,6 @@ class Daemon:
         #: not an event — same rule as `_refused` — so the row is re-written only when the count,
         #: the cap or the set of excluded PRs actually changes.
         self._wip_gate_note: tuple[Any, ...] | None = None
-        #: (kind, number) -> the answer id an in-flight un-park is spending. Written to
-        #: `items.last_comment_id` only when that action succeeds, so a failed un-park retries on
-        #: the next observation instead of consuming the owner's reply.
-        self._answer_ids: dict[tuple[str, int], str] = {}
         #: Undelivered changes the last reconcile found. The evidence half of the staleness
         #: detector — webhook silence on its own cannot tell a quiet repo from a broken event path.
         self._reconcile_drift = 0
@@ -470,7 +466,7 @@ class Daemon:
             # routed" marker, and writing it before the action runs would burn the owner's reply on
             # an un-park that failed. `collect` records it only on rc=0.
             if snap.answer is not None:
-                self._answer_ids[(kind, number)] = snap.answer.comment_id
+                self._hold_answer(kind, number, snap.answer.comment_id)
             db.upsert_item(
                 self.conn, kind=kind, number=number, state=db.STATE_READY, dirty=0, wake_at=None,
                 pending_mode="unpark",
@@ -787,7 +783,7 @@ class Daemon:
         if mode == "unpark":
             return self.sup.dispatch_gh(
                 action="unpark", kind=kind, number=number,
-                args=[kind, str(number), self._answer_ids.get((kind, number), ""),
+                args=[kind, str(number), self._held_answer(kind, number) or "",
                       row["parked_reason"] or ""],
                 item_id=row["id"])
         return self.sup.dispatch_agent(mode=mode, kind=kind, number=number,
@@ -867,15 +863,28 @@ class Daemon:
                 # not six hours — decided `owner_answered` again: 39 one-minute gh-pool runs on
                 # #2268 before the issue closed itself. Recording it as routed makes that reply
                 # attempted ONCE; a different, later owner comment is still read.
+                #
+                # A refused un-park whose answer WAS recorded is re-observed at once (dirty=1), not
+                # at the 6h TTL: the spent reply now reads as already routed (row 9, no loop), but a
+                # NEWER trusted reply — the case `v2_owner_answered` refuses when the routed comment
+                # is no longer the newest — is picked up immediately instead of hours later. With
+                # no answer id held there is nothing to spend, so the TTL stands and the reply is
+                # re-decided then.
                 fields: dict[str, Any] = {}
+                dirty = 0
                 if child.mode == "unpark":
-                    answer_id = self._answer_ids.pop((child.kind, child.number), None)
+                    answer_id = self._pop_answer(child.kind, child.number)
                     if answer_id is not None:
                         fields["last_comment_id"] = answer_id
-                    LOG.warning("unpark of %s #%s refused at the TRUST gate — answer %s spent; "
-                                "the item stays parked for a human", child.kind, child.number,
-                                answer_id or "unknown")
-                db.force_state(self.conn, item["id"], db.STATE_PARKED, dirty=0,
+                        dirty = 1
+                        LOG.warning("unpark of %s #%s refused at the TRUST gate — answer %s spent; "
+                                    "the item stays parked unless a newer trusted reply exists",
+                                    child.kind, child.number, answer_id)
+                    else:
+                        LOG.warning("unpark of %s #%s refused at the TRUST gate with no answer id "
+                                    "held (daemon restarted?) — nothing spent; re-decided at TTL",
+                                    child.kind, child.number)
+                db.force_state(self.conn, item["id"], db.STATE_PARKED, dirty=dirty,
                                pending_mode=None, parked_reason="trust_refused",
                                wake_at=int(time.time()) + self.cfg.ttl_parked, **fields)
             elif rc == dispatch.EX_BUSY:
@@ -898,7 +907,7 @@ class Daemon:
                     self.conn, child.kind, child.number, unpark_reason,
                     db.lap_key(self.conn, child.kind, child.number, unpark_reason,
                                item["head_sha"]))
-                answer_id = self._answer_ids.pop((child.kind, child.number), None)
+                answer_id = self._pop_answer(child.kind, child.number)
                 db.force_state(self.conn, item["id"], db.STATE_READY, dirty=1,
                                pending_mode=None, parked_reason=None, wake_at=None,
                                last_comment_id=answer_id)
@@ -918,6 +927,32 @@ class Daemon:
                                pending_mode=None, wake_at=None)
             self._emit_run(child, rc)
         return len(finished)
+
+    # ---- the answer an un-park is spending ------------------------------------------------------
+    # Persisted in `kv`, not held in memory: a daemon restart between the un-park DECISION and its
+    # dispatch used to hand `unpark.sh` an empty id, which the action must refuse (EX_TRUST) — so
+    # the item parked as `trust_refused` for up to `ttl_parked` with the owner's reply unspent.
+    # Written to `items.last_comment_id` only when the action succeeds or is trust-refused, so a
+    # failed un-park retries on the next observation instead of consuming the reply.
+
+    @staticmethod
+    def _answer_key(kind: str, number: int) -> str:
+        """The `kv` key holding the reply a pending un-park of this item is spending."""
+        return f"unpark_answer:{kind}:{number}"
+
+    def _hold_answer(self, kind: str, number: int, comment_id: str) -> None:
+        """Remember which reply the pending un-park of this item is spending."""
+        db.kv_set(self.conn, self._answer_key(kind, number), comment_id)
+
+    def _held_answer(self, kind: str, number: int) -> str | None:
+        """The reply the pending un-park of this item is spending, if one is held."""
+        return db.kv_get(self.conn, self._answer_key(kind, number))
+
+    def _pop_answer(self, kind: str, number: int) -> str | None:
+        """Take (and forget) the held reply for this item."""
+        held = self._held_answer(kind, number)
+        db.kv_delete(self.conn, self._answer_key(kind, number))
+        return held
 
     def _emit_run(self, child, rc: int) -> None:
         """One structured line per finished action."""

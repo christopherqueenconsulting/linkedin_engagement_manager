@@ -627,7 +627,7 @@ meter by pushing a commit — is real and correct; the wiring is not.
 
 | Code | Means | Daemon does |
 |---|---|---|
-| `EX_TRUST` 70 | provenance refused or unreadable | park, 6h TTL — answered by a human, not a timer. A refused `unpark` also records its answer as routed (one WARNING), so that reply is attempted ONCE (#2331) |
+| `EX_TRUST` 70 | provenance refused or unreadable | park, 6h TTL — answered by a human, not a timer. A refused `unpark` records the answer it was spending as routed (one WARNING), so that reply is attempted ONCE (#2331), and is re-observed at once so a NEWER trusted reply routes without waiting the TTL. The answer id is persisted in `kv` with the decision, so a daemon restart before dispatch no longer refuses for want of it; if none is held anyway, nothing is spent and the reply is re-decided at the TTL |
 | `EX_BUDGET` 71 | this (item, mode) is spent | park `{mode}_exhausted` |
 | `EX_BUSY` 72 | another claimant holds the branch | retry in 120s |
 | `EX_SETUP` 73 | environment not preparable | ⚠️ treated as a plain failure — no backoff |
@@ -653,7 +653,8 @@ Comment, its author passing a FRESH permission lookup. An empty id, a deleted co
 trusted reply all refuse. When that re-check refuses a reply the daemon had trusted (a failed
 lookup, or access revoked inside the daemon's 15-minute permission cache), the un-park exits
 `EX_TRUST`, the reply is recorded as routed (`last_comment_id`) and is never retried; the way out is
-a NEW reply from the owner or a write+ collaborator. Otherwise an answer is spent once
+a NEW reply from the owner or a write+ collaborator (a newer trusted reply that already exists is
+picked up on the immediate re-observation). Otherwise an answer is spent once
 (`items.last_comment_id`), written only after the un-park succeeds so a failed action retries.
 
 Un-parking **resets the ledger** — the owner's answer is the statement "the world changed, try

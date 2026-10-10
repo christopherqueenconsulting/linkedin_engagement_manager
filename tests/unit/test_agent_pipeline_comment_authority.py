@@ -146,7 +146,9 @@ def c(body: str, login: str, at: str = "2026-10-01T00:00:00Z", user_type: str | 
     if user_type is None:
         user_type = "Bot" if login.endswith("[bot]") else "User"
     bare = login[:-5] if login.endswith("[bot]") else login
-    return {"id": f"IC_{next(_IDS)}", "body": body, "author": {"login": bare}, "createdAt": at,
+    n = next(_IDS)
+    return {"id": f"IC_{n}", "body": body, "author": {"login": bare}, "createdAt": at,
+            "html_url": f"https://github.com/acme/widget/issues/7#issuecomment-{n}",
             "user": {"login": login, "type": user_type}, "created_at": at}
 
 
@@ -443,6 +445,46 @@ class TestPipelineNoticePosted:
         assert not re.search(r"--json comments --jq '\(\(\.comments // \[\]\)\[\]\.body\)'", TICK)
         assert TICK.count('pipeline_notice_posted "$P"') == 3
         assert 'pipeline_notice_posted "$1" "🚧 Auto-fix gave up"' in TICK
+
+
+DECISION_CTX = _fn(GUARDS, "decision_context") + _fn(GUARDS, "decision_prompt_args")
+
+
+def _ctx(tmp_path, comments) -> list[str]:
+    r = _run(tmp_path, DECISION_CTX + 'decision_context 7', comments)
+    return [ln for ln in r.stdout.splitlines() if not ln.startswith("LOG:")][-1].split()
+
+
+class TestDecisionContext:
+    """What MODE=revise / MODE=start are told the menu and the answer are (the agent cannot check)."""
+
+    def test_the_apps_menu_and_the_owners_answer(self, tmp_path):
+        menu, answer = c(DECISION, APP), c("1B", OWNER)
+        assert _ctx(tmp_path, [menu, answer]) == [menu["html_url"], answer["html_url"]]
+
+    def test_a_write_collaborators_answer_is_named(self, tmp_path):
+        menu, answer = c(DECISION, APP), c("1B", "writer")
+        assert _ctx(tmp_path, [menu, answer]) == [menu["html_url"], answer["html_url"]]
+
+    @pytest.mark.parametrize("login,user_type", [("outsider", "User"), (SPOOF, "User"),
+                                                 (SPOOF, ""), ("reader", "User")])
+    def test_a_fake_menu_is_never_the_menu(self, tmp_path, login, user_type):
+        """An outsider's or a slug-squatter's menu: the answer stays mapped to the REAL one."""
+        menu, answer = c(DECISION, APP), c("1B", OWNER)
+        fake = c(DECISION, login, user_type=user_type)
+        assert _ctx(tmp_path, [menu, answer, fake]) == [menu["html_url"], answer["html_url"]]
+
+    def test_only_a_fake_menu_means_none(self, tmp_path):
+        assert _ctx(tmp_path, [c(DECISION, SPOOF), c("1B", OWNER)]) == ["none", "none"]
+
+    def test_an_untrusted_reply_is_never_the_answer(self, tmp_path):
+        menu = c(DECISION, APP)
+        assert _ctx(tmp_path, [menu, c("1B", "reader"), c("ok", APP)]) == [menu["html_url"], "none"]
+
+    def test_the_prompt_args_carry_both_threads(self, tmp_path):
+        r = _run(tmp_path, DECISION_CTX + 'decision_prompt_args "" ""', [])
+        assert r.stdout.strip().splitlines()[-1] == \
+            "MENU_PR=none ANSWER_PR=none MENU_ISSUE=none ANSWER_ISSUE=none"
 
 
 # ------------------------------------------------------------------ daemon and action agree

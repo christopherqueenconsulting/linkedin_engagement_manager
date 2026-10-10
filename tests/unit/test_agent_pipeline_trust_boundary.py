@@ -200,6 +200,43 @@ class TestCommentAuthority:
         assert "authorAssociation" not in _comment_helpers()
 
 
+class TestRunbooksNameTheMenu:
+    """Whose Decision Comment is the menu — the agent must not map letters onto a fake one.
+
+    Under the opt-in permission profile `gh api` is denied, so the agent cannot type an author or
+    look up a permission; the runner names the menu and the verified answer in the prompt.
+    """
+
+    RUNBOOK = TICK_SH.parent / "runbook"
+
+    @pytest.mark.parametrize("name", ["revise.md", "start.md"])
+    def test_both_runbooks_carry_the_rule(self, name):
+        text = " ".join((self.RUNBOOK / name).read_text(encoding="utf-8").split())
+        for needle in ("MENU_ISSUE", "ANSWER_ISSUE", "never the menu", "`Bot`", "<slug>[bot]",
+                       "bare slug", "`gh api` is denied", "pipeline App, the owner or a"):
+            assert needle in text, (name, needle)
+        if name == "revise.md":
+            assert "MENU_PR" in text and "ANSWER_PR" in text
+
+    def test_no_runbook_tells_the_agent_to_look_up_permissions(self):
+        for md in self.RUNBOOK.glob("*.md"):
+            assert "/permission" not in md.read_text(encoding="utf-8"), md.name
+
+    def test_the_profile_really_denies_gh_api(self):
+        profile = json.loads((TICK_SH.parent / "config" / "claude-headless.json").read_text())
+        assert "Bash(gh api *)" in json.dumps(profile.get("permissions", {}).get("deny", []))
+
+    def test_every_revise_and_start_prompt_carries_the_context(self):
+        agent_run = (TICK_SH.parent / "v2" / "actions" / "agent_run.sh").read_text(encoding="utf-8")
+        for mode in ("start", "revise"):
+            line = next(ln for ln in agent_run.splitlines()
+                        if ln.strip().startswith(f"{mode})") and "PROMPT=" in ln)
+            assert "decision_prompt_args" in line, mode
+        for mode in ("start", "revise"):
+            line = next(ln for ln in SOURCE.splitlines() if f"follow MODE={mode}." in ln)
+            assert "decision_prompt_args" in line, mode
+
+
 class TestPrIsUpstream:
     def test_a_branch_in_this_repo_is_workable(self, tmp_path):
         r = _run(tmp_path, 'pr_is_upstream 12 && echo YES || echo NO', 'echo "${HEAD_OWNER:-}"',
