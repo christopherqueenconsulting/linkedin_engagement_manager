@@ -321,11 +321,17 @@
     "version": 1
   },
   "post.carousel": {
-    "changed_in": null,
+    "changed_in": "issue #2367",
     "content_hash": null,
-    "history": [],
-    "source_hash": "sha256:8e3fa8ff74e6143ae195906bf32a307891eae9cdad202662ecf6a2400b12dc6c",
-    "version": 1
+    "history": [
+      {
+        "hash": "sha256:8e3fa8ff74e6143ae195906bf32a307891eae9cdad202662ecf6a2400b12dc6c",
+        "retired": "2026-10-10",
+        "version": 1
+      }
+    ],
+    "source_hash": "sha256:3205d85d58b6f60d392da0b7faf2629d0d2a54b877fefbb8f255b18d79b88e38",
+    "version": 2
   },
   "post.engagement_prompt": {
     "changed_in": null,

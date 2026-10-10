@@ -4063,7 +4063,12 @@ def generate_carousel_content(user_id: int, stage: str, prefs: dict = None,
     schema_hint = carousel_schema_hint(model_cls)
 
     # Attempt to load user profile for personalisation; fall back gracefully
+    from cqc_lem.utilities.engagement_mode import SuggestOnlyEngagement, browser_automation_allowed
     try:
+        if not browser_automation_allowed(user_id):
+            # A suggest-only account never gets a browser (issue #2367) — straight to the cached
+            # profile, quietly: this is the mode working, not a failed scrape.
+            raise SuggestOnlyEngagement("suggest-only account — cached profile only")
         user_email, user_password = get_user_password_pair_by_id(user_id)
         driver, wait = get_driver_wait_pair(session_name="Carousel AI", user_id=user_id)
         try:
@@ -4071,7 +4076,12 @@ def generate_carousel_content(user_id: int, stage: str, prefs: dict = None,
         finally:
             quit_gracefully(driver)
     except Exception as exc:
-        log_warning("Could not load user profile for carousel generation; trying cached profile", exc=exc)
+        if isinstance(exc, SuggestOnlyEngagement):
+            log_debug("Live profile scrape skipped for carousel generation — suggest-only account",
+                      user_id=user_id)
+        else:
+            log_warning("Could not load user profile for carousel generation; trying cached profile",
+                        exc=exc)
         # Prefer the user's cached DB profile (no Selenium) over a generic persona — a hardcoded
         # persona misaligns the carousel's industry/role framing.
         profile = None

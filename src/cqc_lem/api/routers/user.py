@@ -45,6 +45,7 @@ from cqc_lem.api.response_schemas import (
     CatchupContactIntervalBounds,
     CatchupPerContactCapBounds,
     DmTemplate,
+    EngagementSuggestionsDetail,
     EngagementTargetsDetail,
     FeedReach,
     GateDefaults,
@@ -146,6 +147,7 @@ from cqc_lem.utilities.db import (
     get_daily_action_counts,
     get_dm_templates,
     get_engagement_preferences,
+    get_engagement_suggestions,
     get_engagement_targets,
     get_follower_stats,
     get_latest_edition_scheduled_for,
@@ -215,6 +217,7 @@ from cqc_lem.utilities.db import (
     verify_pin_for_email,
 )
 from cqc_lem.utilities.email import generate_pin, hash_pin, send_pin_email
+from cqc_lem.utilities.engagement_mode import resolve_engagement_mode
 from cqc_lem.utilities.geocoding import GeocodeError, geocode_city
 from cqc_lem.utilities.group_post_slot import group_skip_undo_open, skip_undo_deadline
 from cqc_lem.utilities.linkedin.helper import load_profile_for_user
@@ -1850,6 +1853,37 @@ def get_user_settings(session_token: str) -> ResponseModel[dict[str, Any]]:
         "blog_url": blog_url,
         "sitemap_url": sitemap_url,
         "company_linked_in_url": company_linked_in_url,
+        # Read-only (#2367): the account's engagement mode, read fail-closed exactly as the lanes
+        # read it, so the SPA never shows "automate" for an account the lanes treat as suggest.
+        "engagement_mode": resolve_engagement_mode(user_id).value,
+    })
+
+
+#: How many suggestions the Suggested list shows — newest first.
+ENGAGEMENT_SUGGESTIONS_LIMIT = 50
+
+
+@router.get("/engagement-suggestions",
+            responses={200: {"model": ResponseModel[EngagementSuggestionsDetail]}})
+def get_engagement_suggestions_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
+    """The caller's newest engagement suggestions — drafts to copy and post by hand (#2367).
+
+    A suggest-only account runs no browser automation; the comment and DM drafts its lanes wrote
+    are stored instead and listed here. A failed read is 503, never an empty list — "you have no
+    suggestions" is an answer this endpoint only gives when it is true.
+    """
+    user_id = _main.get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    rows = get_engagement_suggestions(user_id, limit=ENGAGEMENT_SUGGESTIONS_LIMIT)
+    if rows is None:
+        raise HTTPException(status_code=503, detail="Suggestions are temporarily unavailable")
+    return ResponseModel(status_code=200, detail={
+        "engagement_mode": resolve_engagement_mode(user_id).value,
+        "suggestions": [
+            {**row, "created_at": row["created_at"].isoformat() if row.get("created_at") else None}
+            for row in rows
+        ],
     })
 
 

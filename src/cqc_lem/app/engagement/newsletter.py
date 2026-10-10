@@ -43,6 +43,7 @@ from cqc_lem.utilities.db import (
     mark_newsletter_published,
     record_newsletter_subscriber_stat,
 )
+from cqc_lem.utilities.engagement_mode import SUGGEST_ONLY_SKIP_MESSAGE, skip_browser_lane
 from cqc_lem.utilities.linkedin.article_editor import fill_article_editor
 from cqc_lem.utilities.linkedin.rate_limit import LinkedInRateLimited
 from cqc_lem.utilities.linkedin.session import get_current_profile
@@ -170,6 +171,8 @@ def auto_publish_newsletter_edition(self, user_id: int):
     Best-effort — the article publish flow is multi-step; the first real publish should be
     supervised. Repurposes the user's blog when align_with_blog is set.
     """
+    if skip_browser_lane(user_id, "auto_publish_newsletter_edition"):
+        return SUGGEST_ONLY_SKIP_MESSAGE
     settings = get_newsletter_settings(user_id)
     if not settings.get("enabled"):
         return lane_result(TaskOutcome.NO_OP, "Newsletter not enabled")
@@ -235,6 +238,8 @@ def auto_publish_edition(self, edition_id: int):
     if not edition or edition.get("status") not in ("draft", "approved"):
         return lane_result(TaskOutcome.NO_OP, f"Edition {edition_id} not publishable")
     user_id = edition["user_id"]
+    if skip_browser_lane(user_id, "auto_publish_edition"):
+        return SUGGEST_ONLY_SKIP_MESSAGE
     if edition.get("status") == "draft" and not get_newsletter_settings(user_id).get("auto_publish_newsletters"):
         log_debug(f"Newsletter edition {edition_id} is unapproved and auto-publish is off — holding",
                   user_id=user_id, task_name="auto_publish_edition", edition_id=edition_id)
@@ -382,6 +387,8 @@ def track_newsletter_subscribers(self, user_id: int):
     invite_connections_enabled is set and stops at max_invites_per_run. Best-effort Selenium —
     the first real run should be supervised.
     """
+    if skip_browser_lane(user_id, "track_newsletter_subscribers"):
+        return SUGGEST_ONLY_SKIP_MESSAGE
     settings = get_newsletter_settings(user_id)
     if not settings.get("enabled"):
         return "Newsletter not enabled"

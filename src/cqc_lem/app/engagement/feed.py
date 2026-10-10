@@ -99,6 +99,8 @@ from cqc_lem.utilities.db import (
     ENGAGEMENT_TARGET_FOLLOW_TERMINAL,
     ROSTER_FOLLOWS_PER_DAY_DEFAULT,
     ConnectStatus,
+    EngagementMode,
+    EngagementSuggestionKind,
     FollowStatus,
     GroupPostDraftStatus,
     GroupPostMediaType,
@@ -147,6 +149,16 @@ from cqc_lem.utilities.db import (
     upsert_user_group,
 )
 from cqc_lem.utilities.dm_templates import _draft_connect_note
+from cqc_lem.utilities.engagement_mode import (
+    ENGAGEMENT_MODE_UNREADABLE_MESSAGE,
+    SUGGEST_ONLY_SKIP_MESSAGE,
+    SUGGESTION_SAVED_MESSAGE,
+    comment_suggestion_key,
+    read_engagement_mode,
+    save_suggestion,
+    skip_browser_lane,
+    suggestion_exists,
+)
 from cqc_lem.utilities.engagement_window import (
     PRE_POST_TASK_COMMENTING,
     claim_pre_post_lane,
@@ -314,7 +326,14 @@ def comment_on_post(self, user_id: int, post_link: str, comment_text: str):
     A comment that does not land is a FAILURE log row and a RELEASED claim, never a SUCCESS row —
     `post_comment_inline` returns True only once the comment is verifiably posted, so the task no
     longer reports a typed-but-unsubmitted comment as a comment.
+
+    A suggest-only account (issue #2367) gets the drafted comment stored as a suggestion instead —
+    no claim, no log row, no browser.
     """
+    if skip_browser_lane(user_id, "comment_on_post"):
+        save_suggestion(user_id, EngagementSuggestionKind.COMMENT, "comment_on_post", comment_text,
+                        dedup_key=comment_suggestion_key(post_link), target_url=post_link)
+        return SUGGESTION_SAVED_MESSAGE
     # Check the database logs / claim ledger to make sure user hasn't already commented here.
     if has_user_commented_on_post_url(user_id, post_link) or has_commented_post(user_id, post_link):
         # DEBUG on both guards below: the claim ledger exists BECAUSE this task is re-dispatched
@@ -3353,6 +3372,8 @@ def consolidate_duplicate_comments_for_user(self, user_id: int, dry_run: bool = 
     actually delete. Only real post URLs are actionable; feed comments logged under a synthetic key
     (no navigable URL) are reported as skipped.
     """
+    if skip_browser_lane(user_id, "consolidate_duplicate_comments_for_user"):
+        return SUGGEST_ONLY_SKIP_MESSAGE
     dupes = get_duplicate_comment_posts(user_id, hours)
     if not dupes:
         return "No duplicate-commented posts found"
@@ -3413,10 +3434,26 @@ def auto_seed_comment_on_post(self, user_id: int, post_id: int):
 
     When the publish step held an external link back (issue #392 — C3), that link is appended to the
     comment: this is the delivery half of the link-in-first-comment mechanic.
+
+    A suggest-only account (issue #2367) gets the finished seed — link included — stored as a
+    suggestion for the author to post, and nothing is published. Only a mode that was actually READ
+    as suggest diverts it: an unreadable mode defers the seed (nothing generated, nothing posted)
+    and the `auto_check_scheduled_posts` reconciler re-arms it, so a transient fault can never turn
+    an automate account's live comment into a stored suggestion.
     """
     post_url = get_post_url_from_log_for_user(user_id, post_id)
     if not post_url:
         return "No post URL yet for seed comment"
+    mode = read_engagement_mode(user_id)
+    if mode is None:
+        # read_engagement_mode / the reader already warned where the fault was detected.
+        log_debug("Seed comment deferred — engagement mode unreadable", user_id=user_id,
+                  post_id=post_id, task_name="auto_seed_comment_on_post")
+        return ENGAGEMENT_MODE_UNREADABLE_MESSAGE
+    suggest_key = f"seed:{post_id}"
+    suggest_only = mode is EngagementMode.SUGGEST
+    if suggest_only and suggestion_exists(user_id, suggest_key):
+        return "Seed comment already suggested for this post"
     object_urn = object_urn_from_post_url(post_url)
     if not object_urn:
         return f"Could not derive object URN from {post_url}"
@@ -3444,6 +3481,10 @@ def auto_seed_comment_on_post(self, user_id: int, post_id: int):
         seed = append_link_to_comment(seed, held_links, post_id=post_id)
         if not seed:
             return "No seed comment generated"
+        if suggest_only:
+            save_suggestion(user_id, EngagementSuggestionKind.COMMENT, "auto_seed_comment_on_post",
+                            seed, dedup_key=suggest_key, target_url=post_url)
+            return SUGGESTION_SAVED_MESSAGE
         comment_urn = comment_on_linkedin_post(user_id, object_urn, seed)
         if comment_urn:
             insert_new_log(user_id=user_id, post_id=post_id, action_type=LogActionType.COMMENT,
@@ -3494,6 +3535,10 @@ def auto_second_wave_comment(self, user_id: int, post_id: int):
     redelivers any message left unacked past `visibility_timeout` (~75 min), so a single 8-hour
     countdown would be handed to another worker every 75 minutes and post the comment several times
     over. Each run re-checks the post's real age and re-arms itself until the post is due.
+
+    A suggest-only account (issue #2367) gets the draft stored as a suggestion; nothing publishes.
+    An unreadable mode skips the wave (nothing generated, nothing posted) rather than guessing: the
+    second wave is discretionary amplification, so a missed one costs less than a wrong one.
     """
     if not _golden.second_wave_enabled():
         return "Second-wave comment disabled"
@@ -3517,6 +3562,15 @@ def auto_second_wave_comment(self, user_id: int, post_id: int):
     object_urn = object_urn_from_post_url(post_url)
     if not object_urn:
         return f"Could not derive object URN from {post_url}"
+    mode = read_engagement_mode(user_id)
+    if mode is None:
+        log_debug("Second-wave comment skipped — engagement mode unreadable", user_id=user_id,
+                  post_id=post_id, task_name="auto_second_wave_comment")
+        return ENGAGEMENT_MODE_UNREADABLE_MESSAGE
+    suggest_key = f"second_wave:{post_id}"
+    suggest_only = mode is EngagementMode.SUGGEST
+    if suggest_only and suggestion_exists(user_id, suggest_key):
+        return "Second-wave comment already suggested for this post"
     cap = _golden.self_comment_cap()
     already = count_user_comments_on_post_url(user_id, post_url)
     if already >= cap:
@@ -3544,6 +3598,12 @@ def auto_second_wave_comment(self, user_id: int, post_id: int):
                                        _reply_outcome("gate_failed", "no draft passed the gate"),
                                        phase=_golden.PHASE_SECOND_WAVE)
             return "No second-wave comment passed the quality gate"
+        if suggest_only:
+            # Stored for the author to post (issue #2367) — no golden-hour report: nothing was
+            # published, so there is no presence to measure.
+            save_suggestion(user_id, EngagementSuggestionKind.COMMENT, "auto_second_wave_comment",
+                            comment, dedup_key=suggest_key, target_url=post_url)
+            return SUGGESTION_SAVED_MESSAGE
         comment_urn = comment_on_linkedin_post(user_id, object_urn, comment)
         if not comment_urn:
             _record_golden_hour_report(user_id, post_id, 0,
@@ -3885,6 +3945,8 @@ def auto_sync_user_groups(self, user_id: int):
     New groups default to enabled; a stored group this walk PROVED is not a membership is switched
     off (never deleted).
     """
+    if skip_browser_lane(user_id, "auto_sync_user_groups"):
+        return SUGGEST_ONLY_SKIP_MESSAGE
     try:
         # needs_images=True (issue #1778): /groups/ is fastboot the same way /messaging/* is
         # (#1774) — its `<img>` load events drive the client boot, so a bandwidth-saver session
@@ -3988,6 +4050,8 @@ def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
     run`, moving it to the back of the line for next time. A run only sets out for the groups its
     budget fits (`_plan_group_walk`, issue #2134), and each gets an even share of what is left.
     """
+    if skip_browser_lane(user_id, "auto_comment_in_groups"):
+        return SUGGEST_ONLY_SKIP_MESSAGE
     started_ts = time.time()
     enabled = get_enabled_group_ids(user_id)
     if not enabled:
@@ -4450,6 +4514,8 @@ def auto_post_to_group(self, user_id: int, group_id: str, group_name: str = None
     un-previewed generation. Best-effort — the group composer selectors are validated in the live
     pass.
     """
+    if skip_browser_lane(user_id, "auto_post_to_group"):
+        return SUGGEST_ONLY_SKIP_MESSAGE
     draft = get_group_post_draft(draft_id) if draft_id else None
     if (draft is None or draft.get("user_id") != user_id
             or str(draft.get("status")) != str(GroupPostDraftStatus.READY)):
@@ -4585,6 +4651,8 @@ def automate_commenting(self, user_id: int, loop_for_duration: int = None, futur
     that post actually happened (issue #547). A window run is ONE pass: it claims its lane for the
     post and never self-requeues, so a second dispatch for the same post is a no-op (issue #2093).
     """
+    if skip_browser_lane(user_id, "automate_commenting"):
+        return SUGGEST_ONLY_SKIP_MESSAGE
     log_info("Starting Automate Commenting Thread...")
 
     # Comment-quality hold (issue #628): when the weekly outcome report finds our comments are being

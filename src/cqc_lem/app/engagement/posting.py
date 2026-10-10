@@ -134,6 +134,7 @@ from cqc_lem.utilities.db import (
     upsert_engager,
 )
 from cqc_lem.utilities.dm_templates import render_dm_placeholders
+from cqc_lem.utilities.engagement_mode import SUGGEST_ONLY_SKIP_MESSAGE, skip_browser_lane
 from cqc_lem.utilities.flags import OCCASION_NATIVE_PUBLISH, flag_enabled
 from cqc_lem.utilities.golden_hour import _record_golden_hour_report, _reply_outcome
 from cqc_lem.utilities.human_pacing import (
@@ -512,6 +513,8 @@ def auto_scrape_post_stats(self, user_id: int):
     social-count extraction on each post's detail page, then on its analytics page for the
     signals the detail page never renders (saves, impressions).
     """
+    if skip_browser_lane(user_id, "auto_scrape_post_stats"):
+        return SUGGEST_ONLY_SKIP_MESSAGE
     post_ids = get_recent_posted_post_ids(user_id)
     # The analytics dashboard reads a 90-day window while this sweep only walks the last few weeks,
     # so a post that missed its capture while it was fresh stayed unmeasurable forever (issue #809).
@@ -665,6 +668,8 @@ def capture_follower_stats(self, user_id: int):
     the outcome the whole system exists to produce and was previously untracked. One row per run
     feeds the growth panel's 7/30-day deltas; unreadable signals are stored as NULL.
     """
+    if skip_browser_lane(user_id, "capture_follower_stats"):
+        return SUGGEST_ONLY_SKIP_MESSAGE
     try:
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id,
                                                                   session_name="Audience Stats",
@@ -1265,6 +1270,8 @@ def sweep_reply_comments(self, user_id: int, sweep_slot: int = 0, attempt: int =
     the in-window retry counter; it is NOT part of the QueueOnce key, so a retry of the same slot
     still dedups against a concurrently-queued one.
     """
+    if skip_browser_lane(user_id, "sweep_reply_comments"):
+        return SUGGEST_ONLY_SKIP_MESSAGE
     prefs = get_engagement_preferences(user_id)
     days = int(prefs.get("reply_max_post_age_days") or 2)
     post_ids = get_recent_posted_post_ids(user_id, days=days)
@@ -1553,6 +1560,8 @@ def sweep_comment_followups(self, user_id: int):
     comment: react to each reply, and answer question-replies (issue #478). Only touches OUR
     automated comments (the commented_posts ledger). QueueOnce + single-flight lock + 429-safe.
     """
+    if skip_browser_lane(user_id, "sweep_comment_followups"):
+        return SUGGEST_ONLY_SKIP_MESSAGE
     return _run_comment_followups_sweep(user_id)
 
 
@@ -1617,6 +1626,8 @@ def process_comment_followups_for_url(self, user_id: int, post_url: str):
     verification), independent of the ledger. Reacts to replies on our comment and answers
     questions, same as the sweep (issue #478).
     """
+    if skip_browser_lane(user_id, "process_comment_followups_for_url"):
+        return SUGGEST_ONLY_SKIP_MESSAGE
     return _run_single_post_followup(user_id, post_url)
 
 
@@ -1698,6 +1709,8 @@ def reconcile_recent_comment_urns(self, user_id: int, days: int = _FOLLOWUP_WIND
     recent-activity/comments page, so pre-#474 comments become follow-up-able. Matches each activity
     comment to a ledger row by our comment text, then upgrades the key to feedurn:// (issue #478).
     """
+    if skip_browser_lane(user_id, "reconcile_recent_comment_urns"):
+        return SUGGEST_ONLY_SKIP_MESSAGE
     return _run_reconcile_comment_urns(user_id, days)
 
 
@@ -2204,6 +2217,8 @@ def sweep_comment_outcomes(self, user_id: int):
     thread replies, and whether it is still visible under LinkedIn's default 'Most relevant' sort
     (issue #628). Read-only on LinkedIn: it navigates and reads, it never comments or reacts.
     """
+    if skip_browser_lane(user_id, "sweep_comment_outcomes"):
+        return SUGGEST_ONLY_SKIP_MESSAGE
     return _run_comment_outcomes_sweep(user_id)
 
 
@@ -2276,6 +2291,8 @@ def automate_reply_commenting(self, user_id: int, post_id: int, loop_for_duratio
     back-compat; the default post-publish path now uses sweep_reply_comments (event/scheduled mode).
     429-safe: a rate-limited session returns cleanly instead of dying before the re-queue.
     """
+    if skip_browser_lane(user_id, "automate_reply_commenting"):
+        return SUGGEST_ONLY_SKIP_MESSAGE
     try:
         # needs_images=True — the fastboot exemption noted at the top of this module (#2020).
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id,
@@ -2368,6 +2385,8 @@ def update_stale_profile(self, user_id: int, force_refresh: bool = False):
 
     The synthesis refresh is best-effort and never fails a scrape that already succeeded.
     """
+    if skip_browser_lane(user_id, "update_stale_profile"):
+        return SUGGEST_ONLY_SKIP_MESSAGE
     log_info(f"Updating Stale Profile. User ID: {user_id}")
     try:
         driver, wait, user_email, my_profile = get_current_profile(
@@ -2785,6 +2804,8 @@ def auto_publish_occasion_post(self, user_id: int, post_id: int):
 
     Returns a short status string naming what happened, for the Celery result and the logs.
     """
+    if skip_browser_lane(user_id, "auto_publish_occasion_post"):
+        return SUGGEST_ONLY_SKIP_MESSAGE
     task_name = "auto_publish_occasion_post"
     if not flag_enabled(OCCASION_NATIVE_PUBLISH, user_id):
         # DEBUG: OFF is the shipped default, so this is the expected no-op, not a degraded run.

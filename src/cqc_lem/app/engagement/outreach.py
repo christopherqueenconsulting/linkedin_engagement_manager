@@ -119,6 +119,7 @@ from cqc_lem.utilities.db import (
     SCHEDULED_DM_SOURCE_PROFILE_VIEWER,
     CatchupTouchStatus,
     ConnectionRequestStatus,
+    EngagementSuggestionKind,
     FollowupStatus,
     LeadSignalChannel,
     LeadSignalSource,
@@ -183,6 +184,13 @@ from cqc_lem.utilities.db import (
     update_outreach_target_status,
 )
 from cqc_lem.utilities.dm_templates import _draft_connect_note, render_dm_placeholders
+from cqc_lem.utilities.engagement_mode import (
+    SUGGEST_ONLY_SKIP_MESSAGE,
+    SUGGESTION_SAVED_MESSAGE,
+    dm_suggestion_key,
+    save_suggestion,
+    skip_browser_lane,
+)
 from cqc_lem.utilities.engagement_window import (
     PRE_POST_TASK_VIEWER,
     claim_pre_post_lane,
@@ -1498,6 +1506,8 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
     instead of going cold, an approval-gated context-aware next message (issue #485); everyone else
     gets the next-step template rendered in the user's voice, sent, marked, and re-scheduled.
     """
+    if skip_browser_lane(user_id, "process_user_followups"):
+        return SUGGEST_ONLY_SKIP_MESSAGE
     # Aware UTC: `get_due_followups` normalizes through `to_naive_utc`, the same conversion every
     # writer of `dm_followups.due_at` applies, so the comparison cannot straddle two clocks
     # (docs/timezone-contract.md).
@@ -1801,6 +1811,8 @@ def automate_appreciation_dms_for_user(self, user_id: int, loop_for_duration: in
     tell a working lane from a dead one. `found` counts recipients the sources handed back; a source
     skipped for budget contributes nothing to it.
     """
+    if skip_browser_lane(user_id, "automate_appreciation_dms_for_user"):
+        return SUGGEST_ONLY_SKIP_MESSAGE
     user_email, user_password = get_user_password_pair_by_id(user_id)
 
     # needs_images=True (#2096, the #1774/#1778 bug): the recommendation and mention readers walk
@@ -2084,6 +2096,8 @@ def automate_profile_viewer_engagement(self, user_id: int, loop_for_duration: in
     its lane for that post and runs ONCE, never self-requeueing, so a second dispatch for the same
     post is a no-op that opens no session (issue #2093).
     """
+    if skip_browser_lane(user_id, "automate_profile_viewer_engagement"):
+        return SUGGEST_ONLY_SKIP_MESSAGE
     log_info("Starting Profile Viewer DMs")
 
     if post_id and not claim_pre_post_lane(user_id, post_id, PRE_POST_TASK_VIEWER):
@@ -2413,6 +2427,8 @@ def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
     written in `finally` whichever way it goes — a failed engagement is a recorded attempt, with
     SUCCESS/FAILURE saying which, never a gap in the record.
     """
+    if skip_browser_lane(user_id, "engage_with_profile_viewer"):
+        return SUGGEST_ONLY_SKIP_MESSAGE
     log_info("Starting Profile Viewer Engagement")
 
     result = "Profile Viewer Engagement Started"
@@ -2797,7 +2813,14 @@ def send_dm_now(user_id: int, profile_url: str, message: str, person_name: str =
                   bind=True, base=QueueOnce, once={'graceful': True}, reject_on_worker_lost=True,
                   rate_limit='2/m', queue='se_outreach')
 def send_private_dm(self, user_id: int, profile_url: str, message: str):
-    """Send dm message to a profile. Must be a 1st connection"""
+    """Send dm message to a profile. Must be a 1st connection.
+
+    A suggest-only account (issue #2367) gets the message stored as a suggestion instead.
+    """
+    if skip_browser_lane(user_id, "send_private_dm"):
+        save_suggestion(user_id, EngagementSuggestionKind.DM, "send_private_dm", message,
+                        dedup_key=dm_suggestion_key(profile_url, message), target_url=profile_url)
+        return SUGGESTION_SAVED_MESSAGE
     dm_sent = send_dm_now(user_id, profile_url, message)
     result = "DM Sent Successfully" if dm_sent else "DM Failed"
     # A task wrapper is a caller (#1038): every way send_dm_now can fail already logged itself —
@@ -2849,6 +2872,8 @@ def send_scheduled_dm(self, dm_id: int):
                            f"Scheduled DM {dm_id} not sendable (status={dm['status'] if dm else 'missing'})")
 
     user_id = dm["user_id"]
+    if skip_browser_lane(user_id, "send_scheduled_dm"):
+        return SUGGEST_ONLY_SKIP_MESSAGE
     if scheduled_dm_is_stale(dm.get("scheduled_time")):
         log_info(f"send_scheduled_dm: DM {dm_id} is over {SCHEDULED_DM_STALE_DAYS:g} day(s) past its "
                  f"slot; returning it to pending for re-approval",
@@ -2976,6 +3001,8 @@ def _send_lead_response(signal_id: int) -> str:
         return f"Lead signal {signal_id} has no draft to send"
 
     user_id = signal["user_id"]
+    if skip_browser_lane(user_id, "send_lead_response"):
+        return SUGGEST_ONLY_SKIP_MESSAGE
     if str(signal.get("channel")) == str(LeadSignalChannel.DM):
         sent = send_dm_now(user_id, signal["person_profile_url"], message)
         update_lead_signal(signal_id, status=LeadSignalStatus.SENT if sent else LeadSignalStatus.FAILED)
@@ -3129,6 +3156,8 @@ def scan_connection_candidates(self, user_id: int, max_new: int = None):
     so the existing approval gate, combined daily invite cap and 429 / kill-switch backoff all still
     apply. Nothing is sent from here.
     """
+    if skip_browser_lane(user_id, "scan_connection_candidates"):
+        return SUGGEST_ONLY_SKIP_MESSAGE
     prefs = get_engagement_preferences(user_id)
     mode = str(prefs.get("connection_targeting_mode") or "suggest")
     if mode == "off":
@@ -3329,6 +3358,8 @@ def process_outreach_funnel(self, user_id: int, max_per_run: int = 25):
     ever auto-fires at volume. Reuses comment_on_post / invite_to_connect / send_private_dm and the
     DM follow-up machinery; daily comment/DM caps defer a stage rather than fire it.
     """
+    if skip_browser_lane(user_id, "process_outreach_funnel"):
+        return SUGGEST_ONLY_SKIP_MESSAGE
     targets = get_approved_outreach_targets(user_id)
     if not targets:
         return f"No approved outreach targets for user {user_id}"
@@ -3480,6 +3511,8 @@ def scan_outreach_funnel_targets(self, user_id: int, max_new: int = None):
     user's own post engagers (issue #623). Files drafts only — the approval gate, the per-stage
     re-approval, and the daily comment/DM caps in process_outreach_funnel all still apply.
     """
+    if skip_browser_lane(user_id, "scan_outreach_funnel_targets"):
+        return SUGGEST_ONLY_SKIP_MESSAGE
     # Per-stage counts for the outreach_funnel_scan event (issue #1816) — emitted on EVERY exit
     # below, zeros included, so a healthy quiet week and a broken get_profile_recent_activity stop
     # looking identical from outside.
@@ -4156,6 +4189,8 @@ def automate_catchup_touches(self, user_id: int, max_moments: int = 40, max_draf
     EVERY run reports (issue #792) — including the ones that draft nothing — with the per-stage
     funnel counts, because a quiet lane and a broken one are otherwise the same silence.
     """
+    if skip_browser_lane(user_id, "automate_catchup_touches"):
+        return SUGGEST_ONLY_SKIP_MESSAGE
     task_name = "automate_catchup_touches"
     prefs = get_engagement_preferences(user_id)
     enabled = {str(t) for t in (prefs.get("catchup_event_types") or [])}
@@ -4302,6 +4337,8 @@ def send_catchup_touch(self, touch_id: int):
         return f"Catch-up touch {touch_id} skipped (no message)"
 
     user_id = touch["user_id"]
+    if skip_browser_lane(user_id, "send_catchup_touch"):
+        return SUGGEST_ONLY_SKIP_MESSAGE
     prefs = get_engagement_preferences(user_id)
     # The saved cap can only go as high as the user's plan allows (10/day premium, 5/day otherwise) —
     # re-checked here so a downgrade takes effect immediately, not at the next settings save.
