@@ -13,7 +13,7 @@ const STEPS = [
   },
   {
     title: 'Approve the first drafts — then it runs',
-    body: 'A 30-day plan lands for review. Approve what you like, edit what you do not, and the daily loop picks up from there while you keep the veto on every post.',
+    body: 'A 30-day plan lands for review. Approve what you like, edit what you do not, and the daily loop picks up from there while you keep the veto on every feed post.',
   },
 ]
 
@@ -23,7 +23,7 @@ export default function HowItWorks() {
       <SectionHeading
         eyebrow="How it works"
         title="Three steps, then it is a background job"
-        lede="Setup is a sitting; after that the only recurring task is approving the posts you are shown."
+        lede="Setup is a sitting; after that the only recurring task is approving the feed posts you are shown."
       />
       <ol className="grid gap-6 md:grid-cols-3">
         {STEPS.map((step, index) => (

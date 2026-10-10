@@ -11,8 +11,8 @@ import Section from './Section'
 const PROOF: { icon: IconName; title: string; body: string }[] = [
   {
     icon: 'shield',
-    title: 'Posts wait for your approval',
-    body: 'You approve each generated post before it is scheduled. Auto-scheduling is opt-in.',
+    title: 'Feed posts wait for your approval',
+    body: 'You approve each generated feed post before it is scheduled. Auto-scheduling is opt-in.',
   },
   {
     icon: 'gauge',

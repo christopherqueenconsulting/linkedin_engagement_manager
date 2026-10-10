@@ -130,7 +130,7 @@ export default function ProductPanel({ variant }: { variant: PanelVariant }) {
       <Row title="A 3-slide breakdown of the offer" status="Scheduled" meta="Carousel · decision" />
       <div className="flex items-center gap-2 rounded-lg bg-surface-50 px-3 py-2 text-xs text-ink-700">
         <Icon name="shield" className="h-4 w-4 text-brand-600" />
-        Generated posts wait for your approval
+        Generated feed posts wait for your approval
       </div>
     </Panel>
   )

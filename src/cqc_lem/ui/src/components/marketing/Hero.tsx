@@ -22,8 +22,8 @@ export default function Hero() {
             Your LinkedIn content and engagement, running every day — inside the limits you set
           </h1>
           <p className="mt-6 text-lg leading-relaxed text-ink-600">
-            LEM writes and schedules a month of posts in your voice, each one held for your approval,
-            and comments, replies and follows up for you. It works from your own session at a human
+            LEM writes and schedules a month of feed posts in your voice, each one held for your
+            approval, and comments, replies and follows up for you. It works from your own session at a human
             pace and stops at the caps you choose.
           </p>
           <div className="mt-8 flex flex-col gap-3 sm:flex-row">

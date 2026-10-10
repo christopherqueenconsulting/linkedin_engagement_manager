@@ -34,8 +34,8 @@ const CLAIMS: { icon: IconName; title: string; body: string }[] = [
   },
   {
     icon: 'check',
-    title: 'No post is scheduled without your sign-off',
-    body: 'New accounts start with auto-scheduling off. Comments, replies and appreciation DMs go out without an approval step, inside the caps you set.',
+    title: 'No feed post is scheduled without your sign-off',
+    body: 'New accounts start with auto-scheduling off. Comments, replies and appreciation DMs go out without an approval step, inside the caps you set. Weekly group posts, once your groups are synced, publish on Tuesday unless you skip the draft.',
   },
   {
     icon: 'pen',
