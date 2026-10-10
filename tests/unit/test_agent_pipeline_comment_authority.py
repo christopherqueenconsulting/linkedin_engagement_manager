@@ -17,6 +17,7 @@ halves over the same thread.
 from __future__ import annotations
 
 import base64
+import itertools
 import json
 import re
 import shutil
@@ -133,8 +134,11 @@ def _calls(tmp_path: Path) -> list[str]:
     return f.read_text().split() if f.exists() else []
 
 
+_IDS = itertools.count(1)
+
+
 def c(body: str, login: str, at: str = "2026-10-01T00:00:00Z", user_type: str | None = None) -> dict:
-    """One comment in BOTH shapes the shell reads.
+    """One comment in BOTH shapes the shell reads, with a unique node id.
 
     `login` is the REST login (`<slug>[bot]` for a bot). REST carries `user.login` + `user.type`;
     `gh --json comments` carries `author.login` with the `[bot]` dropped and no type at all.
@@ -142,7 +146,7 @@ def c(body: str, login: str, at: str = "2026-10-01T00:00:00Z", user_type: str | 
     if user_type is None:
         user_type = "Bot" if login.endswith("[bot]") else "User"
     bare = login[:-5] if login.endswith("[bot]") else login
-    return {"body": body, "author": {"login": bare}, "createdAt": at,
+    return {"id": f"IC_{next(_IDS)}", "body": body, "author": {"login": bare}, "createdAt": at,
             "user": {"login": login, "type": user_type}, "created_at": at}
 
 
@@ -232,8 +236,11 @@ class TestCommentAuthorTrusted:
 V2_OWNER_ANSWERED = _fn(COMMON, "v2_owner_answered")
 
 
-def _v2(tmp_path, comments) -> bool:
-    r = _run(tmp_path, V2_OWNER_ANSWERED + 'v2_owner_answered pr 7 && echo YES || echo NO', comments)
+def _v2(tmp_path, comments, want: str | None = None) -> bool:
+    """Run the shipped re-check; `want` is the routed answer id (default: the newest comment)."""
+    want = comments[-1]["id"] if want is None else want
+    r = _run(tmp_path, V2_OWNER_ANSWERED + f'v2_owner_answered pr 7 "{want}" && echo YES || echo NO',
+             comments)
     return r.stdout.strip().splitlines()[-1] == "YES"
 
 
@@ -244,13 +251,45 @@ class TestV2OwnerAnswered:
     def test_a_write_collaborator_answers(self, tmp_path):
         assert _v2(tmp_path, [c(DECISION, APP), c("1B", "writer")])
 
+    def test_the_recheck_is_bound_to_the_routed_comment(self, tmp_path):
+        """The daemon routed a collaborator's answer from a cached lookup; access is now `read`.
+
+        An older trusted comment (the owner's non-decision remark) must NOT vouch for it.
+        """
+        remark, answer = c("looking at this", OWNER), c("1B", "reader")
+        assert not _v2(tmp_path, [c(DECISION, APP), remark, answer], want=answer["id"])
+
+    def test_an_empty_answer_id_refuses(self, tmp_path):
+        assert not _v2(tmp_path, [c(DECISION, APP), c("1B", OWNER)], want="")
+
+    def test_a_routed_comment_that_is_gone_refuses(self, tmp_path):
+        assert not _v2(tmp_path, [c(DECISION, APP), c("1B", OWNER)], want="IC_deleted")
+
+    def test_a_newer_trusted_reply_supersedes_the_routed_one(self, tmp_path):
+        first = c("1B", OWNER)
+        assert not _v2(tmp_path, [c(DECISION, APP), first, c("1C", "writer")], want=first["id"])
+
+    def test_an_outsiders_decision_text_does_not_close_the_window(self, tmp_path):
+        """Pre-existing gap: anyone quoting "Human decision needed" used to push the answer out."""
+        answer = c("1B", OWNER)
+        assert _v2(tmp_path, [c(DECISION, APP), answer, c(DECISION, "outsider")], want=answer["id"])
+
+    def test_a_trusted_authors_decision_does_close_the_window(self, tmp_path):
+        answer = c("1B", OWNER)
+        assert not _v2(tmp_path, [c(DECISION, APP), answer, c(DECISION, "writer")],
+                       want=answer["id"])
+
+    def test_no_menu_from_anyone_who_may_ask_refuses(self, tmp_path):
+        assert not _v2(tmp_path, [c(DECISION, "outsider"), c("1B", OWNER)])
+
     @pytest.mark.parametrize("login", ["reader", "org-member", "outsider", "ghost"])
     def test_an_untrusted_reply_is_not_an_answer(self, tmp_path, login):
         assert not _v2(tmp_path, [c(DECISION, APP), c("1B", login)])
 
     def test_an_untrusted_reply_cannot_bury_a_trusted_one(self, tmp_path):
-        assert _v2(tmp_path, [c(DECISION, APP), c("1B", "writer"), c("noise", "outsider"),
-                              c("coverage", "codecov")])
+        answer = c("1B", "writer")
+        assert _v2(tmp_path, [c(DECISION, APP), answer, c("noise", "outsider"),
+                              c("coverage", "codecov")], want=answer["id"])
 
     def test_the_apps_own_comment_never_answers(self, tmp_path):
         assert not _v2(tmp_path, [c(DECISION, APP), c("ok", APP)])
@@ -293,6 +332,12 @@ class TestNewestOwnerAnswer:
 
     def test_the_app_and_the_trailer_are_never_answers(self, tmp_path):
         assert _newest(tmp_path, [c(DECISION, APP), c("ok", APP), c("1A" + TRAILER, OWNER)]) == ""
+
+    def test_an_outsiders_decision_text_does_not_close_the_window(self, tmp_path):
+        assert _newest(tmp_path, [c(DECISION, APP), c("1B", OWNER), c(DECISION, "outsider")]) == "1B"
+
+    def test_without_a_menu_from_anyone_who_may_ask_nothing_is_answered(self, tmp_path):
+        assert _newest(tmp_path, [c(DECISION, "outsider"), c("1B", OWNER)]) == ""
 
     def test_a_body_with_pipes_and_newlines_survives(self, tmp_path):
         body = "1A | 2B\nand | more"
@@ -365,6 +410,41 @@ class TestPhaseFollowupLinked:
         assert _linked(tmp_path, [], pr_body="Closes #5\n\nFollow-up: #124")
 
 
+NOTICE = _fn(TICK, "pipeline_notice_posted")
+
+
+def _posted(tmp_path, comments, text="phasefix exhausted") -> bool:
+    r = _run(tmp_path, NOTICE + f'pipeline_notice_posted 7 "{text}" && echo YES || echo NO', comments)
+    return r.stdout.strip().splitlines()[-1] == "YES"
+
+
+class TestPipelineNoticePosted:
+    """The once-only notices dedupe on their own text — only the pipeline's copy may count.
+
+    An outsider pre-posting "phasefix exhausted" / the phase-guard marker / "Auto-fix gave up"
+    would otherwise silence the owner's heads-up for good.
+    """
+
+    def test_the_apps_notice_counts(self, tmp_path):
+        assert _posted(tmp_path, [c("🧩 phase-guard — **phasefix exhausted** after 2", APP)])
+
+    def test_the_owners_notice_counts_for_the_pat_identity(self, tmp_path):
+        assert _posted(tmp_path, [c("**phasefix exhausted** after 2", OWNER)])
+
+    @pytest.mark.parametrize("login", ["outsider", "reader", "ghost", SPOOF])
+    def test_an_outsiders_copy_does_not_silence_the_notice(self, tmp_path, login):
+        assert not _posted(tmp_path, [c("phasefix exhausted lol", login)])
+
+    def test_no_notice_reads_as_not_posted(self, tmp_path):
+        assert not _posted(tmp_path, [c("unrelated", APP)])
+
+    def test_every_once_only_notice_uses_it(self):
+        """No body-only `gh pr view --json comments | grep` dedupe is left in tick.sh."""
+        assert not re.search(r"--json comments --jq '\(\(\.comments // \[\]\)\[\]\.body\)'", TICK)
+        assert TICK.count('pipeline_notice_posted "$P"') == 3
+        assert 'pipeline_notice_posted "$1" "🚧 Auto-fix gave up"' in TICK
+
+
 # ------------------------------------------------------------------ daemon and action agree
 
 
@@ -375,6 +455,9 @@ class TestPhaseFollowupLinked:
     [c(DECISION, APP), c("1B", OWNER), c("noise", "outsider")],
     [c(DECISION, APP), c("ok", APP)],
     [c(DECISION, APP), c("1A" + TRAILER, "writer")],
+    [c(DECISION, APP), c("1B", OWNER), c(DECISION, "outsider")],
+    [c(DECISION, APP), c("1B", OWNER), c(DECISION, "writer"), c("1C", "reader")],
+    [c(DECISION, "outsider"), c("1B", OWNER)],
 ])
 def test_the_daemon_never_un_parks_what_the_action_refuses(tmp_path, monkeypatch, thread):
     """`answers.parse` (Python) finding an answer implies `v2_owner_answered` (bash) accepts it.
@@ -394,4 +477,4 @@ def test_the_daemon_never_un_parks_what_the_action_refuses(tmp_path, monkeypatch
     monkeypatch.setattr(github, "gh_json", gh)
     parsed = answers.parse(thread, OWNER, lambda login: github.comment_author_trusted("a/w", login, OWNER))
     if parsed is not None:
-        assert _v2(tmp_path, thread)
+        assert _v2(tmp_path, thread, want=parsed.comment_id), "the action must accept the SAME comment"

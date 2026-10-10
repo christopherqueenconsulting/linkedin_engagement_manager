@@ -100,6 +100,7 @@ BASE="{tmp_path}"
 mkdir -p "$BASE/state"
 SLUG="o/r"
 TISS="{tiss}"
+ANSWER_ID="a1"
 PARK_REASON="{park_reason}"
 EX_TRUST=13
 log() {{ :; }}

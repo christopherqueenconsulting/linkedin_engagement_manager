@@ -175,6 +175,24 @@ def test_an_untrusted_reply_is_skipped_not_terminal():
     assert answers.parse(thread, OWNER, _trusted).comment_id == "a1"
 
 
+def test_an_outsiders_decision_text_does_not_close_the_window():
+    """Anyone can quote "Human decision needed"; only the App or a trusted author's menu counts."""
+    thread = [comment(DECISION, "cqc-lem-agent-pipeline"), comment("1B", cid="a1"),
+              comment(DECISION, "outsider", cid="x")]
+    assert answers.parse(thread, OWNER, _trusted).comment_id == "a1"
+
+
+def test_a_trusted_authors_decision_closes_the_window():
+    thread = [comment(DECISION, "cqc-lem-agent-pipeline"), comment("1B", cid="a1"),
+              comment(DECISION, "writer", cid="d2")]
+    assert answers.parse(thread, OWNER, _trusted) is None
+
+
+def test_no_menu_from_anyone_who_may_ask_means_no_answer():
+    thread = [comment(DECISION, "outsider"), comment("1B", cid="a1")]
+    assert answers.parse(thread, OWNER, _trusted) is None
+
+
 def test_without_a_predicate_only_the_owner_answers():
     """The default is the pre-ruling rule, so a caller that forgets the predicate fails closed."""
     assert answers.parse([comment(DECISION), comment("1B", "writer")], OWNER) is None
@@ -585,16 +603,24 @@ def test_the_authorship_check_cannot_be_buried_by_a_bot():
 
     Selecting the newest eligible comment and then judging its author would let any bot bury the
     answer by commenting after it — codecov posts on every push. The parser skips untrusted
-    comments rather than stopping at them, so the shell must emit EVERY eligible author and test
-    each one, never `last` first. Run for real in test_agent_pipeline_comment_authority.py.
+    comments rather than stopping at them, so the shell must walk EVERY comment and test each
+    author, never take `last` first. Run for real in test_agent_pipeline_comment_authority.py.
     """
     src = (_V2 / "actions" / "common.sh").read_text()
     body = src[src.index("v2_owner_answered()"):]
     body = body[:body.index("\n}\n")]
     assert "(last // empty)" not in body, "picking the newest comment before judging it buries answers"
     assert "| reverse | .[]" in body
-    loop = body.index("while IFS= read -r login")
+    loop = body.index("while IFS='|' read -r id login dec agent")
     assert body.index("comment_author_trusted", loop) > loop
+
+
+def test_both_unpark_paths_bind_the_recheck_to_the_routed_answer():
+    """`unpark.sh` must hand the daemon's answer id to `v2_owner_answered` on the PR and issue path."""
+    src = (_V2 / "actions" / "unpark.sh").read_text()
+    calls = [ln for ln in src.splitlines() if "v2_owner_answered" in ln and not ln.lstrip().startswith("#")]
+    assert len(calls) == 2
+    assert all('"$ANSWER_ID"' in ln for ln in calls)
 
 
 def test_the_authorship_check_refuses_an_unreadable_thread():

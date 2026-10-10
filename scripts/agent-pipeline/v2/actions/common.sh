@@ -139,40 +139,58 @@ v2_trust_ok() {
   label_actor_trusted "$n" "$label" || return 1
 }
 
-# v2_owner_answered <issue|pr> <number> -> 0 when a reply after the latest Decision Comment was
-# written by a TRUSTED author: the owner, or an account with admin/maintain/write on this repo
-# (`comment_author_trusted` in lib/guards.sh — the owner ruling on comment authority).
+# v2_owner_answered <issue|pr> <number> <answer-id> -> 0 when <answer-id> IS the newest reply from
+# a TRUSTED author after the latest Decision Comment: the owner, or an account with
+# admin/maintain/write on this repo (`comment_author_trusted` in lib/guards.sh — the owner ruling on
+# comment authority), judged on a FRESH lookup.
 #
-# This is the AUTHORSHIP half of an un-park, re-asked at execution time. The daemon classified the
-# reply (`lemd/answers.py`); what matters to the trust boundary is not what it said but WHO said
-# it, and a webhook-prompted decision can be minutes stale. Deliberately the same rules the parser
-# uses, so the two cannot disagree: only comments AFTER the newest Decision Comment count, Decision
-# Comments themselves are skipped, agent-authored comments are excluded by their trailer as well as
-# their login (under the PAT identity the agent posted AS the owner), and the pipeline App never
-# answers its own question.
+# This is the AUTHORSHIP half of an un-park, re-asked at execution time and BOUND to the comment
+# the daemon routed. The daemon classified that reply (`lemd/answers.py`) from a permission cache
+# up to 15 minutes old; finding "some" trusted reply here is not enough — if the routed author lost
+# access, an older trusted comment would otherwise vouch for their answer. Refused: an empty
+# answer id, a routed comment that is gone, or a newest trusted reply that is a different comment.
+#
+# The walk is `answers.parse`'s, newest first, so the two name the same comment:
+#   * a Decision Comment closes the window only if its author may ask — the App's slug, the owner,
+#     or a trusted author (a boundary can only NARROW the window, so the untyped slug is safe here);
+#     anyone else's is an ordinary comment;
+#   * replies carrying the agent trailer, or from the App's slug, never answer;
+#   * an untrusted reply is skipped, never terminal — a bot commenting after the answer (codecov
+#     posts on every push) cannot bury it.
 v2_owner_answered() {
-  local kind="$1" n="$2" logins login
-  # The jq emits EVERY eligible author, newest first, and the trust test runs per author below.
-  # Selecting the newest eligible comment and THEN judging its author would let any bot bury the
-  # answer simply by commenting after it — codecov posts on every push. `answers.parse` skips
-  # untrusted comments rather than stopping at them, and this must make the same choice or the
-  # daemon and the action disagree about the same thread.
-  logins="$(gh "$kind" view "$n" --repo "$SLUG" --json comments --jq '
-    def isdecision: ((.body // "") | test("Human decision needed"; "i"));
-    def isagent:    ((.body // "") | test("Generated with \\[Claude Code\\]"));
-    ((.comments // []) | to_entries) as $c
-    | (($c | map(select(.value | isdecision)) | last | .key) // -1) as $di
-    | [ $c[] | select(.key > $di) | .value
-        | select(isdecision | not) | select(isagent | not) ]
-    | reverse | .[] | (.author.login // "")' 2>/dev/null)" || logins=""
-  while IFS= read -r login; do
+  local kind="$1" n="$2" want="${3:-}" rows id login dec agent candidate="" asked=0
+  if [ -z "$want" ]; then
+    log "TRUST: #$n — no answer id routed with this un-park; refusing."
+    return 1
+  fi
+  rows="$(gh "$kind" view "$n" --repo "$SLUG" --json comments --jq '
+    (.comments // []) | reverse | .[]
+    | "\(.id // .url // "")|\(.author.login // "")|\(if ((.body // "") | test("Human decision needed"; "i")) then 1 else 0 end)|\(if ((.body // "") | test("Generated with \\[Claude Code\\]")) then 1 else 0 end)"' 2>/dev/null)" || rows=""
+  while IFS='|' read -r id login dec agent; do
+    [ -n "$id$login" ] || continue
+    if [ "$dec" = 1 ]; then
+      if [ -n "$login" ] && { comment_login_names_app "$login" || comment_author_trusted "$login"; }; then
+        asked=1; break
+      fi
+      continue
+    fi
+    [ -z "$candidate" ] || continue
+    [ "$agent" = 1 ] && continue
     [ -n "$login" ] || continue
     comment_login_names_app "$login" && continue
-    comment_author_trusted "$login" && return 0
-  done <<< "$logins"
+    comment_author_trusted "$login" || continue
+    candidate="$id"
+  done <<< "$rows"
   # Unreadable is a refusal, as everywhere else in this file — and so is an unreadable permission.
-  log "TRUST: #$n — no readable reply from a trusted author after the Decision Comment; refusing."
-  return 1
+  if [ "$asked" != 1 ] || [ -z "$candidate" ]; then
+    log "TRUST: #$n — no readable reply from a trusted author after the Decision Comment; refusing."
+    return 1
+  fi
+  if [ "$candidate" != "$want" ]; then
+    log "TRUST: #$n — the routed answer $want is not the newest trusted reply ($candidate); refusing."
+    return 1
+  fi
+  return 0
 }
 
 # v2_hold_present <kind> <number> -> 0 when a human hold is on the thread RIGHT NOW.

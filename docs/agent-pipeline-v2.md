@@ -642,12 +642,19 @@ runs closed `-9` with a ~675s mean read exactly like a timeout problem, and were
 the Decision Comment — the owner, or a collaborator with `admin`/`maintain`/`write`
 (`docs/contribution-security.md` §1, "Comment authority") — classified by `lemd/answers.py`:
 `answer`/`directive` un-park, `hold`/`question` stay parked. Anyone else's reply is not an answer
-(no new decision row: it reads as row 10's "no answer"), and `v2_owner_answered` re-checks the same
-rule at execution time. When that fresh re-check refuses a reply the daemon had trusted (a failed
+(no new decision row: it reads as row 10's "no answer"). A Decision Comment opens the answer
+window only when its author may ask (the App, the owner, a trusted author), so an outsider quoting
+the phrase cannot push a trusted answer out of it.
+
+`unpark.sh` re-checks authorship at execution time on BOTH paths (PR and issue) with
+`v2_owner_answered`, bound to the routed comment: the daemon passes the answer's comment id, and the
+action refuses unless that comment is still the newest trusted reply after the latest Decision
+Comment, its author passing a FRESH permission lookup. An empty id, a deleted comment, or a newer
+trusted reply all refuse. When that re-check refuses a reply the daemon had trusted (a failed
 lookup, or access revoked inside the daemon's 15-minute permission cache), the un-park exits
 `EX_TRUST`, the reply is recorded as routed (`last_comment_id`) and is never retried; the way out is
-a NEW reply from the owner or a write+ collaborator. An answer is spent once (`items.last_comment_id`), written only after the un-park
-succeeds so a failed action retries.
+a NEW reply from the owner or a write+ collaborator. Otherwise an answer is spent once
+(`items.last_comment_id`), written only after the un-park succeeds so a failed action retries.
 
 Un-parking **resets the ledger** — the owner's answer is the statement "the world changed, try
 again" — and routes the work back by WHY it stopped. Only a park that asked a question
@@ -684,6 +691,15 @@ install.sh --sync --force   overwrite box edits, after reading the diff
 
 sudo systemctl restart lem-agentd lem-agent-webhook   # BOTH — see below
 ```
+
+**Stop on a refusal — do not restart.** If `install.sh --sync` exits non-zero or prints `REFUSED`, a
+box-edited file was skipped while every other file was ALREADY written, so the box now holds a mix.
+Do not restart the units. Read the `diff` lines it printed, then either re-run with `--sync --force`
+(the box edit is disposable) or reconcile the box edit into the repo, and re-run `--sync` until it
+exits 0 and prints `0 refused.` — only then restart both units with the step above. This is what
+`sync.sh` does on its own ("REFUSED … Nothing restarted"). In that window `status.sh` will report
+`stale units:`; ignore that prompt until the refusal is resolved, because restarting then loads the
+mixed tree.
 
 **Restart both units, always.** They both load the `lemd` package, and only `lem-agentd` used to be
 named in this procedure — so the receiver ran 23-hour-old code through nine merged changes before
@@ -752,8 +768,10 @@ PAUSED and that would disable the failsafe too.
 The trusted-author rule for comments (`docs/contribution-security.md` §1, "Comment authority") lives
 in BOTH runners — `lemd/` and `actions/common.sh` for v2, `tick.sh` and `lib/guards.sh` for v1 — so
 `v2/rollback.sh` is **not** a rollback for it: handing dispatch to v1 keeps the same rule. To undo it,
-revert its merge commit on `main`, then deploy that revert the normal way above (`install.sh --sync`,
-then restart BOTH units).
+revert its merge commit on `main`, then deploy that revert the normal way above: `install.sh --sync`,
+and — only once it exits 0 and prints `0 refused.` — restart BOTH units with the restart step above.
+If it refuses, stop and resolve the refusal first, exactly as "Stop on a refusal" says; restarting on
+a refused sync runs a half-reverted tree.
 
 ### Opt-in permission profile
 

@@ -188,7 +188,9 @@ def test_both_answer_parsers_agree_on_the_same_thread(tmp_path, body, is_answer)
     prog = re.search(r"--jq '(.*?)' 2>/dev/null", fn, re.S).group(1)
     got = subprocess.run(["jq", "-r", prog], input=json.dumps({"comments": thread}),
                          capture_output=True, text=True, timeout=20)
-    shell_found_owner = "owner" in got.stdout.split()
+    # One row per comment, newest first: id|login|is-decision|is-agent.
+    rows = [ln.split("|") for ln in got.stdout.splitlines()]
+    shell_found_owner = any(r[1] == "owner" and r[2] == "0" and r[3] == "0" for r in rows)
 
     # The jq answers "is there an owner reply", the Python answers "is it a DECISION". The first is
     # a precondition of the second, so Python saying yes while the shell says no is the divergence

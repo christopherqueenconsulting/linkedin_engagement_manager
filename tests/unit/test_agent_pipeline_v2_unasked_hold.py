@@ -150,7 +150,8 @@ def test_read_thread_carries_both_halves_from_one_call(monkeypatch):
 
     def gh(args, **_kw):
         calls.append(args)
-        return {"comments": [comment(MENU, login="bot", cid="m"), comment("1B", cid="a1")]}
+        return {"comments": [comment(MENU, login="cqc-lem-agent-pipeline", cid="m"),
+                             comment("1B", cid="a1")]}
 
     monkeypatch.setattr(answers.github, "gh_json", gh)
     got = answers.read_thread("o/r", "issue", 1736, OWNER)

@@ -456,26 +456,33 @@ newest_owner_answer() {
   # SIGNATURE as well as author, and the pipeline App never answers its own question. Only comments
   # AFTER the latest Decision Comment count — else re-parking would instantly re-route on a stale
   # answer. Untrusted comments are skipped rather than ending the search, so a bot commenting after
-  # the owner can't bury the answer.
-  local rows login body
+  # the owner can't bury the answer. A Decision Comment closes the window only when its author may
+  # ask (the App's slug, the owner, a trusted author) — the same walk as `lemd/answers.py:parse`
+  # and `v2_owner_answered`, so an outsider's "Human decision needed" cannot push an answer out.
+  local rows login dec agent body found=""
   rows="$(gh "$1" view "$2" --repo "$SLUG" --json comments 2>/dev/null \
     | jq -r '
         def isdecision: ((.body // "") | test("Human decision needed"; "i"));
         def isagent:    ((.body // "") | test("Generated with \\[Claude Code\\]"));
-        ((.comments // []) | to_entries) as $c
-        | (($c | map(select(.value | isdecision)) | last | .key) // -1) as $di
-        | [ $c[] | select(.key > $di) | .value
-            | select(isdecision | not) | select(isagent | not) ]
-        | reverse | .[] | "\(.author.login // "")|\((.body // "") | @base64)"' 2>/dev/null)"
+        (.comments // []) | reverse | .[]
+        | "\(.author.login // "")|\(if isdecision then 1 else 0 end)|\(if isagent then 1 else 0 end)|\((.body // "") | @base64)"' 2>/dev/null)"
   # `|` and not a tab: a tab is IFS whitespace, so an empty login would collapse into the body.
-  while IFS='|' read -r login body; do
+  while IFS='|' read -r login dec agent body; do
+    if [ "$dec" = 1 ]; then
+      if [ -n "$login" ] && { comment_login_names_app "$login" || comment_author_trusted "$login"; }; then
+        [ -n "$found" ] && printf '%s\n' "$found"
+        return 0
+      fi
+      continue
+    fi
+    [ -z "$found" ] || continue
+    [ "$agent" = 1 ] && continue
     [ -n "$login" ] || continue
     comment_login_names_app "$login" && continue
     comment_author_trusted "$login" || continue
-    printf '%s\n' "$body"
-    return 0
+    found="$body"
   done <<< "$rows"
-  return 0
+  return 0   # no Decision Comment from anyone who may ask: nothing was asked, nothing answered
 }
 
 answer_verdict() {
@@ -662,11 +669,9 @@ claude_marker_fresh_p() {  # $1=pr $2=head-commit-iso-date
   return 1
 }
 
-# 0 when the auto-fix escalation comment has already been posted on this PR.
+# 0 when the auto-fix escalation comment has already been posted on this PR — by the pipeline.
 auto_fix_gave_up_p() {  # $1=pr
-  gh pr view "$1" --repo "$SLUG" --json comments 2>/dev/null \
-    | jq -r '((.comments // [])[].body // "")' 2>/dev/null \
-    | grep -qF "🚧 Auto-fix gave up"
+  pipeline_notice_posted "$1" "🚧 Auto-fix gave up"
 }
 
 # Freshest acceptable review timestamp for the merge gate: Copilot's or Claude's, whichever is newer.
@@ -780,6 +785,25 @@ trusted_comment_bodies() {  # $1=number (issue or PR) -> bodies of comments a tr
   return 0
 }
 
+pipeline_notice_posted() {  # $1=number $2=text -> 0 when the App or a trusted author already posted <text>
+  # The once-only notices (auto-fix gave up, phasefix exhausted, the phase-guard heads-up / hold)
+  # are de-duplicated by looking for their own text on the thread. Read from ANY author, an
+  # outsider who pre-posts that text silences the notice for good — it changes no label, merge or
+  # route (those run regardless), but it removes the owner's heads-up, which is exactly what a
+  # hostile comment would want. So only the App (typed: Bot + exact login) or a trusted author's
+  # copy counts; under the PAT identity the pipeline posts as the owner, who is trusted without a
+  # lookup. Unreadable reads as "not posted", so the failure mode is a duplicate notice, not none.
+  local rows login type
+  rows="$(gh api "repos/$SLUG/issues/$1/comments" --paginate --slurp 2>/dev/null \
+    | jq -r --arg t "$2" '.[][] | select((.body // "") | contains($t)) | "\(.user.login // "")|\(.user.type // "")"' 2>/dev/null)"
+  while IFS='|' read -r login type; do
+    [ -n "$login" ] || continue
+    comment_login_is_app "$login" "$type" || comment_author_trusted "$login" || continue
+    return 0
+  done <<< "$rows"
+  return 1
+}
+
 phase_followup_linked() {  # $1=pr $2=issue -> 0 when a follow-up issue is already linked
   # The PR BODY is the PR author's, and an upstream branch already needs write access. COMMENTS are
   # anybody's on a public repo, so only a trusted author's (or the App's) can clear this guard — an
@@ -813,7 +837,7 @@ phase_park_to_human() {  # $1=pr $2=issue $3=leftover $4=attempts — the agent 
   local P="$1" N="$2" leftover="$3" tries="$4"
   log "PHASE GUARD: PR #$P still fails after $tries phasefix attempt(s) — parking to human."
   if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: would park PR #$P + escalate issue #$N (phase guard, autofix exhausted)."; return 0; fi
-  if ! gh pr view "$P" --repo "$SLUG" --json comments --jq '((.comments // [])[].body)' 2>/dev/null | grep -qF "phasefix exhausted"; then
+  if ! pipeline_notice_posted "$P" "phasefix exhausted"; then
     gh pr comment "$P" --repo "$SLUG" --body "$PHASE_GUARD_MARKER — **phasefix exhausted** after $tries attempt(s); this PR closes issue #$N whose later phase ($leftover) is still untracked. To clear: file + link the follow-up as \`Follow-up: #<n>\` (or remove \`Closes #$N\`), then re-label \`agent:working\`. Assigning @$ASSIGNEE." >/dev/null 2>&1
   fi
   gh pr edit "$P" --repo "$SLUG" --add-label needs-human --add-label agent:blocked --remove-label agent:working --remove-label agent:phasefix >/dev/null 2>&1
@@ -837,7 +861,7 @@ phase_guard_ok() {  # $1=pr -> 0 when merging is safe (guard off / nothing close
   case "$leftover" in
     boxes:*)
       if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: phase guard would warn on PR #$P (issue #$N, $leftover)."; return 0; fi
-      if ! gh pr view "$P" --repo "$SLUG" --json comments --jq '((.comments // [])[].body)' 2>/dev/null | grep -qF "$PHASE_GUARD_MARKER"; then
+      if ! pipeline_notice_posted "$P" "$PHASE_GUARD_MARKER"; then
         gh pr comment "$P" --repo "$SLUG" --body "$PHASE_GUARD_MARKER — heads up: issue #$N still has **$leftover** acceptance box(es). Merging anyway (unticked boxes are common here), but if any of that scope did NOT ship, file a follow-up issue with \`agent:ready\` and link it, or drop the \`Closes #$N\` from this PR." >/dev/null 2>&1
       fi
       return 0 ;;
@@ -852,7 +876,7 @@ phase_guard_ok() {  # $1=pr -> 0 when merging is safe (guard off / nothing close
   if [ "$pf_cnt" -lt "$MAX_PHASEFIX_ATTEMPTS" ]; then
     log "PHASE GUARD: PR #$P closes issue #$N with a later phase ($leftover) untracked — queuing MODE=phasefix (attempt $((pf_cnt+1))/$MAX_PHASEFIX_ATTEMPTS) instead of parking."
     if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: would label PR #$P agent:phasefix."; return 1; fi
-    if ! gh pr view "$P" --repo "$SLUG" --json comments --jq '((.comments // [])[].body)' 2>/dev/null | grep -qF "$PHASE_GUARD_MARKER"; then
+    if ! pipeline_notice_posted "$P" "$PHASE_GUARD_MARKER"; then
       gh pr comment "$P" --repo "$SLUG" --body "$PHASE_GUARD_MARKER — **held before merge.** This PR closes issue #$N, whose body declares work beyond this PR ($leftover), and no follow-up issue is linked. Queued for **MODE=phasefix**: an agent will file + link the follow-up issue (or drop the closing keyword) and hand the PR back to the merge loop — no owner action needed unless that fails." >/dev/null 2>&1
     fi
     gh pr edit "$P" --repo "$SLUG" --add-label agent:phasefix --remove-label agent:working >/dev/null 2>&1

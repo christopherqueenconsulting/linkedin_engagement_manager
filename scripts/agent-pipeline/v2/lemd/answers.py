@@ -153,29 +153,50 @@ def menu_posted(comments: list[dict[str, Any]]) -> bool:
     return _last_decision_index(comments) >= 0
 
 
+def _may_ask(author: dict[str, Any], owner: str, trusted: Callable[[str], bool] | None) -> bool:
+    """May this author's Decision Comment open the answer window?
+
+    The pipeline (by the App's slug — this payload is untyped — or under the PAT identity, the
+    owner) or a trusted author. Anybody else's "Human decision needed" is an ordinary comment:
+    counted as a window boundary it would push a trusted answer out of the window. Matching the
+    App by its bare slug is safe HERE, unlike for review evidence: a boundary can only NARROW the
+    window, so a spoofed one can keep an item parked, never release it.
+    """
+    login = str(author.get("login") or "")
+    if not login:
+        return False
+    if login == owner or github.is_pipeline_app(author) or github.names_pipeline_app(login):
+        return True
+    return trusted is not None and trusted(login)
+
+
 def parse(comments: list[dict[str, Any]], owner: str,
           trusted: Callable[[str], bool] | None = None) -> Answer | None:
     """The newest TRUSTED reply to the LATEST Decision Comment in a thread, classified.
 
     `comments` is GitHub's list in chronological order. `trusted(login)` says whether a non-owner
-    author may answer; it is injected so this stays testable without GitHub, and `read_thread`
-    passes `github.comment_author_trusted`. Left out, only the owner answers. It is asked lazily,
-    newest comment first, and only until the first trusted reply — so a thread costs one lookup
-    per distinct untrusted commenter after the menu at most, and none when the owner replied last.
+    author may answer (and may ask: see `_may_ask`); it is injected so this stays testable without
+    GitHub, and `read_thread` passes `github.comment_author_trusted`. Left out, only the owner
+    answers. One walk, newest first: the first trusted reply is the candidate, and the first
+    Decision Comment from someone who may ask closes the window. Lookups are lazy — a thread costs
+    one per distinct untrusted commenter at most, and none when the owner replied last.
+
+    `v2_owner_answered` in `actions/common.sh` walks the same way and must name the same comment.
 
     Returns:
-        None when the thread holds no Decision Comment, no trusted reply after it, or a reply that
-        is not a decision.
+        None when the thread holds no Decision Comment from someone who may ask, no trusted reply
+        after it, or a reply that is not a decision.
     """
-    last_decision = _last_decision_index(comments)
-    if last_decision < 0:
-        return None
-
-    for c in reversed(comments[last_decision + 1:]):
+    answer: Answer | None = None
+    for c in reversed(comments):
         body = c.get("body") or ""
-        if _DECISION.search(body) or _AGENT.search(body):
-            continue
         author = c.get("author") or {}
+        if _DECISION.search(body):
+            if _may_ask(author, owner, trusted):
+                return answer
+            continue
+        if answer is not None or _AGENT.search(body):
+            continue
         login = str(author.get("login") or "")
         if not login or github.is_pipeline_app(author) or github.names_pipeline_app(login):
             continue
@@ -186,11 +207,12 @@ def parse(comments: list[dict[str, Any]], owner: str,
             # The newest trusted comment is not a decision. Stop rather than reaching further back:
             # an older answer that has since been talked past is not a live instruction.
             return None
-        return Answer(
+        answer = Answer(
             comment_id=str(c.get("id") or c.get("url") or ""),
             verdict=v,
             excerpt=" ".join(body.split())[:60],
         )
+    # No Decision Comment from anyone who may ask: nothing was asked, so nothing is answered.
     return None
 
 

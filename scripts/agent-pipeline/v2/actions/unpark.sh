@@ -83,7 +83,9 @@ if [ -n "$TPR" ]; then
   # The trust boundary, re-asked at execution time exactly as every dispatch asks it. The daemon
   # has already established that the OWNER wrote the answer — that is the authority to un-park —
   # and this is the separate question of whether the work itself may run. Unreadable refuses.
-  if ! v2_trust_ok pr "$TPR"; then
+  # The answer's authorship is re-asked here too, on the thread it was posted on and bound to the
+  # routed comment id: the daemon's verdict can be minutes stale, and its permission cache longer.
+  if ! v2_owner_answered "$KIND" "$NUMBER" "$ANSWER_ID" || ! v2_trust_ok pr "$TPR"; then
     log "TRUST refused un-park of PR #$TPR — leaving it parked."; exit "$EX_TRUST"
   fi
   log "UN-PARKING PR #$TPR (answered on $KIND #$NUMBER${TISS:+, issue #$TISS}; parked '${PARK_REASON:-unknown}') — routing to $LANE."
@@ -133,12 +135,13 @@ fi
 # the ANSWER, so ask about the answer.
 #
 # Both halves are required. `author_trusted` keeps a stranger's issue from becoming agent work, and
-# `v2_owner_answered` keeps anyone but the owner from being the one who released it.
+# `v2_owner_answered` keeps anyone but a trusted author — and anything but the very reply the daemon
+# routed — from being what released it.
 #
 # This gate MUST run before the dismiss write below (#1605 review): the dismiss file is a durable
 # mutation, and a trust-refused answer must leave no trace, or a refused un-park still permanently
 # defeats the `approach_rejected` park's protection for that PR number on the next observation.
-if ! author_trusted "$TISS" || ! v2_owner_answered issue "$TISS"; then
+if ! author_trusted "$TISS" || ! v2_owner_answered issue "$TISS" "$ANSWER_ID"; then
   log "TRUST refused un-park of issue #$TISS — leaving it parked."; exit "$EX_TRUST"
 fi
 
