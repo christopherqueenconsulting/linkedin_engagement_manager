@@ -57,7 +57,7 @@ const BEATS: {
   {
     key: 'measurement',
     eyebrow: 'Measurement',
-    title: 'You approve the feed posts; then it measures what happened',
+    title: 'You approve feed posts; then it measures what happened',
     body: 'Nothing here is a vanity chart. Each measure exists because something downstream reads it and changes behaviour.',
     points: [
       'Comment outcomes swept at T+24h, one row per comment',

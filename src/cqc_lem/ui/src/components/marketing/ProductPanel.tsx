@@ -81,7 +81,7 @@ export default function ProductPanel({ variant }: { variant: PanelVariant }) {
 
   if (variant === 'engagement') {
     return (
-      <Panel label="Diagram of a LEM feed comment: a draft reply waiting under a targeted post, with the day's comment cap shown beside it.">
+      <Panel label="Diagram of a LEM feed comment: a reply posted under a targeted post, with the day's comment cap shown beside it.">
         <div className="rounded-lg border border-line-200 p-3">
           <div className="h-2 w-1/3 rounded bg-surface-100" />
           <div className="mt-2 space-y-1.5">
