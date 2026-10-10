@@ -447,23 +447,42 @@ assert_agent_token_scoped() {
 
 
 newest_owner_answer() {
-  # newest_owner_answer pr|issue <number> -> the owner's newest reply to the LATEST Decision Comment
-  # on that thread (empty if none). Shared by the PR and ISSUE answer lanes so they can't drift.
-  # Decision Comments and agent replies are authored under the OWNER'S login (agents post with the
-  # owner's gh token), so they're excluded by BODY SIGNATURE, not author. Only comments AFTER the
-  # latest Decision Comment count — else re-parking would instantly re-route on a stale answer.
-  # Non-owner comments are skipped rather than ending the search, so a bot commenting after the
-  # owner can't bury the answer.
-  gh "$1" view "$2" --repo "$SLUG" --json comments 2>/dev/null \
-    | jq -r --arg owner "$ASSIGNEE" '
+  # newest_owner_answer pr|issue <number> -> the newest TRUSTED reply to the LATEST Decision Comment
+  # on that thread, base64 (empty if none). Shared by the PR and ISSUE answer lanes so they can't
+  # drift. Trusted = the owner, or an account with admin/maintain/write on this repo
+  # (`comment_author_trusted` in lib/guards.sh — the owner ruling on comment authority; v2's
+  # `lemd/answers.py` applies the same rule). Decision Comments and agent replies were once authored
+  # under the OWNER'S login (agents posted with the owner's gh token), so they're excluded by BODY
+  # SIGNATURE as well as author, and the pipeline App never answers its own question. Only comments
+  # AFTER the latest Decision Comment count — else re-parking would instantly re-route on a stale
+  # answer. Untrusted comments are skipped rather than ending the search, so a bot commenting after
+  # the owner can't bury the answer. A Decision Comment closes the window only when its author may
+  # ask (the App's slug, the owner, a trusted author) — the same walk as `lemd/answers.py:parse`
+  # and `v2_owner_answered`, so an outsider's "Human decision needed" cannot push an answer out.
+  local rows login dec agent body found=""
+  rows="$(gh "$1" view "$2" --repo "$SLUG" --json comments 2>/dev/null \
+    | jq -r '
         def isdecision: ((.body // "") | test("Human decision needed"; "i"));
         def isagent:    ((.body // "") | test("Generated with \\[Claude Code\\]"));
-        ((.comments // []) | to_entries) as $c
-        | (($c | map(select(.value | isdecision)) | last | .key) // -1) as $di
-        | [ $c[] | select(.key > $di) | .value
-            | select((.author.login // "") == $owner)
-            | select(isdecision | not) | select(isagent | not) ]
-        | (last // empty) | (.body // "") | @base64' 2>/dev/null
+        (.comments // []) | reverse | .[]
+        | "\(.author.login // "")|\(if isdecision then 1 else 0 end)|\(if isagent then 1 else 0 end)|\((.body // "") | @base64)"' 2>/dev/null)"
+  # `|` and not a tab: a tab is IFS whitespace, so an empty login would collapse into the body.
+  while IFS='|' read -r login dec agent body; do
+    if [ "$dec" = 1 ]; then
+      if [ -n "$login" ] && { comment_login_names_app "$login" || comment_author_trusted "$login"; }; then
+        [ -n "$found" ] && printf '%s\n' "$found"
+        return 0
+      fi
+      continue
+    fi
+    [ -z "$found" ] || continue
+    [ "$agent" = 1 ] && continue
+    [ -n "$login" ] || continue
+    comment_login_names_app "$login" && continue
+    comment_author_trusted "$login" || continue
+    found="$body"
+  done <<< "$rows"
+  return 0   # no Decision Comment from anyone who may ask: nothing was asked, nothing answered
 }
 
 answer_verdict() {
@@ -620,9 +639,24 @@ claude_reviewed_at() {  # $1=pr
   # that was never reviewed. Leading NON-LETTERS are stripped first, which is exactly the room the
   # decoration needs (`🔎`, its four U+FFFD, `#`, `**`, spaces) and no room at all for a word like
   # "the" in front of it.
-  gh pr view "$1" --repo "$SLUG" --json comments 2>/dev/null \
+  #
+  # Only the pipeline App's marker, or a trusted author's, counts (owner ruling on comment
+  # authority): the marker clears the merge gate, and on a public repo anybody can open a comment
+  # with the phrase. The jq emits every phrase-matching comment newest first; the author test below
+  # takes the first one that may speak for the pipeline. REST, not `gh --json comments`: the App is
+  # recognised by `.user.type == "Bot"` plus its exact `[bot]` login, and only REST carries the type
+  # (gh reports a bare slug a human could register). `--slurp` + external jq for the same paging
+  # reason `label_actor_trusted` gives; a PR's conversation comments are its issue comments.
+  local rows login type at
+  rows="$(gh api "repos/$SLUG/issues/$1/comments" --paginate --slurp 2>/dev/null \
     | jq -r --arg m "$CLAUDE_REVIEW_MARKER_TEXT" \
-        '[(.comments // [])[] | select(((.body // "") | sub("^[^A-Za-z]*"; "")) | startswith($m))] | last | .createdAt // empty' 2>/dev/null
+        '[.[][] | select(((.body // "") | sub("^[^A-Za-z]*"; "")) | startswith($m))] | reverse | .[] | "\(.user.login // "")|\(.user.type // "")|\(.created_at // "")"' 2>/dev/null)"
+  while IFS='|' read -r login type at; do
+    [ -n "$login" ] && [ -n "$at" ] || continue
+    comment_login_is_app "$login" "$type" || comment_author_trusted "$login" || continue
+    echo "$at"
+    return 0
+  done <<< "$rows"
 }
 
 # 0 when a Claude adversarial-review marker exists that is fresh for the current head.
@@ -635,11 +669,9 @@ claude_marker_fresh_p() {  # $1=pr $2=head-commit-iso-date
   return 1
 }
 
-# 0 when the auto-fix escalation comment has already been posted on this PR.
+# 0 when the auto-fix escalation comment has already been posted on this PR — by the pipeline.
 auto_fix_gave_up_p() {  # $1=pr
-  gh pr view "$1" --repo "$SLUG" --json comments 2>/dev/null \
-    | jq -r '((.comments // [])[].body // "")' 2>/dev/null \
-    | grep -qF "🚧 Auto-fix gave up"
+  pipeline_notice_posted "$1" "🚧 Auto-fix gave up"
 }
 
 # Freshest acceptable review timestamp for the merge gate: Copilot's or Claude's, whichever is newer.
@@ -666,7 +698,10 @@ review_wait_expired() {  # $1=head-commit-iso-date -> 0 when the no-review fallb
 #     in this repo are routinely left unticked, so parking on those alone would stall everything).
 # A "#N" sitting next to follow-up/phase wording — on the PR or in the issue's comments — counts as
 # the follow-up and clears the guard. FAIL-OPEN: any gh/jq hiccup returns "safe to merge", because
-# a broken check must never wedge the pipeline.
+# a broken check must never wedge the pipeline. The one exception is who may CLEAR it: comments
+# count only from a trusted author or the App (`trusted_comment_bodies`), and that read fails
+# closed, so during a permission-lookup outage a collaborator's follow-up link no longer clears the
+# guard (the PR body and the owner's comments still do).
 PHASE_GUARD="${PHASE_GUARD:-1}"
 PHASE_GUARD_MARKER="🧩 phase-guard"
 
@@ -734,10 +769,52 @@ phase_leftover() {  # $1=issue -> echoes "phase: <marker>" / "boxes: <n>" / noth
   return 0
 }
 
+trusted_comment_bodies() {  # $1=number (issue or PR) -> bodies of comments a trusted author or the App wrote
+  # Only comments that mention an issue number are judged at all (`#[0-9]`), which is everything
+  # phase_followup_linked can use and keeps the permission lookups to the commenters who matter.
+  # REST for the author's TYPE — see claude_reviewed_at for why the App is never matched untyped.
+  local rows login type body
+  rows="$(gh api "repos/$SLUG/issues/$1/comments" --paginate --slurp 2>/dev/null \
+    | jq -r '.[][] | select((.body // "") | test("#[0-9]")) | "\(.user.login // "")|\(.user.type // "")|\((.body // "") | @base64)"' 2>/dev/null)"
+  while IFS='|' read -r login type body; do
+    [ -n "$login" ] || continue
+    comment_login_is_app "$login" "$type" || comment_author_trusted "$login" || continue
+    printf '%s' "$body" | base64 -d 2>/dev/null
+    echo
+  done <<< "$rows"
+  return 0
+}
+
+pipeline_notice_posted() {  # $1=number $2=text -> 0 when the App or a trusted author already posted <text>
+  # The once-only notices (auto-fix gave up, phasefix exhausted, the phase-guard heads-up / hold)
+  # are de-duplicated by looking for their own text on the thread. Read from ANY author, an
+  # outsider who pre-posts that text silences the notice for good — it changes no label, merge or
+  # route (those run regardless), but it removes the owner's heads-up, which is exactly what a
+  # hostile comment would want. So only the App (typed: Bot + exact login) or a trusted author's
+  # copy counts; under the PAT identity the pipeline posts as the owner, who is trusted without a
+  # lookup. Unreadable reads as "not posted", so the failure mode is a duplicate notice, not none.
+  local rows login type
+  rows="$(gh api "repos/$SLUG/issues/$1/comments" --paginate --slurp 2>/dev/null \
+    | jq -r --arg t "$2" '.[][] | select((.body // "") | contains($t)) | "\(.user.login // "")|\(.user.type // "")"' 2>/dev/null)"
+  while IFS='|' read -r login type; do
+    [ -n "$login" ] || continue
+    comment_login_is_app "$login" "$type" || comment_author_trusted "$login" || continue
+    return 0
+  done <<< "$rows"
+  return 1
+}
+
 phase_followup_linked() {  # $1=pr $2=issue -> 0 when a follow-up issue is already linked
+  # The PR BODY is the PR author's, and an upstream branch already needs write access. COMMENTS are
+  # anybody's on a public repo, so only a trusted author's (or the App's) can clear this guard — an
+  # outsider's "follow-up: #123" would otherwise merge a PR whose remaining scope nobody tracks.
+  # Unlike the rest of this guard that read FAILS CLOSED: during a permission-lookup outage a
+  # collaborator's follow-up link stops clearing it (the PR body and the owner's comments still do),
+  # so the PR goes to MODE=phasefix rather than merging on an unverified claim.
   local P="$1" N="$2" hit
-  hit="$( { gh pr view "$P" --repo "$SLUG" --json body,comments --jq '.body, ((.comments // [])[].body)' 2>/dev/null
-            gh issue view "$N" --repo "$SLUG" --json comments --jq '((.comments // [])[].body)' 2>/dev/null ; } \
+  hit="$( { gh pr view "$P" --repo "$SLUG" --json body --jq '.body // ""' 2>/dev/null
+            trusted_comment_bodies "$P"
+            trusted_comment_bodies "$N" ; } \
           | grep -oiE '(follow-?up|phase [2-9]|part [2-9]|split out|tracked (in|as|by))[^#]{0,60}#[0-9]+' \
           | grep -vE "#$N\$" | head -1)"
   [ -n "$hit" ]
@@ -760,7 +837,7 @@ phase_park_to_human() {  # $1=pr $2=issue $3=leftover $4=attempts — the agent 
   local P="$1" N="$2" leftover="$3" tries="$4"
   log "PHASE GUARD: PR #$P still fails after $tries phasefix attempt(s) — parking to human."
   if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: would park PR #$P + escalate issue #$N (phase guard, autofix exhausted)."; return 0; fi
-  if ! gh pr view "$P" --repo "$SLUG" --json comments --jq '((.comments // [])[].body)' 2>/dev/null | grep -qF "phasefix exhausted"; then
+  if ! pipeline_notice_posted "$P" "phasefix exhausted"; then
     gh pr comment "$P" --repo "$SLUG" --body "$PHASE_GUARD_MARKER — **phasefix exhausted** after $tries attempt(s); this PR closes issue #$N whose later phase ($leftover) is still untracked. To clear: file + link the follow-up as \`Follow-up: #<n>\` (or remove \`Closes #$N\`), then re-label \`agent:working\`. Assigning @$ASSIGNEE." >/dev/null 2>&1
   fi
   gh pr edit "$P" --repo "$SLUG" --add-label needs-human --add-label agent:blocked --remove-label agent:working --remove-label agent:phasefix >/dev/null 2>&1
@@ -784,7 +861,7 @@ phase_guard_ok() {  # $1=pr -> 0 when merging is safe (guard off / nothing close
   case "$leftover" in
     boxes:*)
       if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: phase guard would warn on PR #$P (issue #$N, $leftover)."; return 0; fi
-      if ! gh pr view "$P" --repo "$SLUG" --json comments --jq '((.comments // [])[].body)' 2>/dev/null | grep -qF "$PHASE_GUARD_MARKER"; then
+      if ! pipeline_notice_posted "$P" "$PHASE_GUARD_MARKER"; then
         gh pr comment "$P" --repo "$SLUG" --body "$PHASE_GUARD_MARKER — heads up: issue #$N still has **$leftover** acceptance box(es). Merging anyway (unticked boxes are common here), but if any of that scope did NOT ship, file a follow-up issue with \`agent:ready\` and link it, or drop the \`Closes #$N\` from this PR." >/dev/null 2>&1
       fi
       return 0 ;;
@@ -799,7 +876,7 @@ phase_guard_ok() {  # $1=pr -> 0 when merging is safe (guard off / nothing close
   if [ "$pf_cnt" -lt "$MAX_PHASEFIX_ATTEMPTS" ]; then
     log "PHASE GUARD: PR #$P closes issue #$N with a later phase ($leftover) untracked — queuing MODE=phasefix (attempt $((pf_cnt+1))/$MAX_PHASEFIX_ATTEMPTS) instead of parking."
     if [ "$DRY_RUN" = "1" ]; then log "DRY_RUN: would label PR #$P agent:phasefix."; return 1; fi
-    if ! gh pr view "$P" --repo "$SLUG" --json comments --jq '((.comments // [])[].body)' 2>/dev/null | grep -qF "$PHASE_GUARD_MARKER"; then
+    if ! pipeline_notice_posted "$P" "$PHASE_GUARD_MARKER"; then
       gh pr comment "$P" --repo "$SLUG" --body "$PHASE_GUARD_MARKER — **held before merge.** This PR closes issue #$N, whose body declares work beyond this PR ($leftover), and no follow-up issue is linked. Queued for **MODE=phasefix**: an agent will file + link the follow-up issue (or drop the closing keyword) and hand the PR back to the merge loop — no owner action needed unless that fails." >/dev/null 2>&1
     fi
     gh pr edit "$P" --repo "$SLUG" --add-label agent:phasefix --remove-label agent:working >/dev/null 2>&1
@@ -1500,7 +1577,8 @@ for RJSON in $(gh pr list --repo "$SLUG" --state open --label "agent:revise" \
   ledger_charge pr "$RPR" revise >/dev/null
   WT="$(add_worktree "$RBR" origin/main)"
   export MODE=revise PR="$RPR" BRANCH="$RBR" WORKTREE="$WT"
-  run_claude "$WT" "Read $RUNBOOK and follow MODE=revise. PR=$RPR BRANCH=$RBR OWNER=$ASSIGNEE."
+  # The Decision-Comment context the RUNNER verified (`decision_prompt_args`, lib/guards.sh).
+  run_claude "$WT" "Read $RUNBOOK and follow MODE=revise. PR=$RPR BRANCH=$RBR OWNER=$ASSIGNEE. $(decision_prompt_args "$RPR" "$(issue_for_pr "$RPR" 2>/dev/null)")"
   exit 0
 done
 
@@ -1753,5 +1831,5 @@ if [ -z "$WT" ] || [ ! -d "$WT" ]; then
   exit 1
 fi
 export MODE=start ISSUE WORKTREE="$WT" BRANCH RISK
-run_claude "$WT" "Read $RUNBOOK and follow MODE=start. ISSUE=$ISSUE BRANCH=$BRANCH RISK=$RISK WORKTREE=$WT." "$MODEL"
+run_claude "$WT" "Read $RUNBOOK and follow MODE=start. ISSUE=$ISSUE BRANCH=$BRANCH RISK=$RISK WORKTREE=$WT. $(decision_prompt_args "" "$ISSUE")" "$MODEL"
 exit 0

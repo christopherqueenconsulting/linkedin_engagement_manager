@@ -145,10 +145,36 @@ def _payload(*, head="2026-08-10T10:00:00Z", comments=()):
     }}}}
 
 
-def _state(monkeypatch, *bodies) -> github.ReviewState:
-    """Run the real reader over comments posted in the given order (oldest first)."""
-    comments = [{"createdAt": f"2026-08-10T10:0{i}:00Z", "body": b} for i, b in enumerate(bodies, 1)]
-    monkeypatch.setattr(github, "gh_json", lambda *a, **k: _payload(comments=comments))
+#: The pipeline App as GraphQL reports it — the author of every line MODE=selfreview/phasefix posts.
+APP = {"login": "cqc-lem-agent-pipeline", "__typename": "Bot"}
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_identity(monkeypatch):
+    """Every test starts with no cached permission and the default App login."""
+    monkeypatch.setattr(github, "_PERMISSION_CACHE", {})
+    monkeypatch.delenv("GH_APP_BOT_LOGIN", raising=False)
+
+
+def _state(monkeypatch, *bodies, author=APP, perms=None) -> github.ReviewState:
+    """Run the real reader over comments posted in the given order (oldest first).
+
+    `author` is who posted every comment (the App unless a test says otherwise); `perms` maps a
+    login to the permission the collaborator endpoint returns — absent means the lookup fails.
+    """
+    comments = [{"createdAt": f"2026-08-10T10:0{i}:00Z", "body": b, "author": author}
+                for i, b in enumerate(bodies, 1)]
+    perms = perms or {}
+
+    def gh(args, **_kw):
+        if args[:2] == ["api", "graphql"]:
+            return _payload(comments=comments)
+        login = args[1].split("/collaborators/")[1].split("/")[0]
+        if login not in perms:
+            raise github.GitHubUnavailable("404")
+        return {"permission": perms[login], "role_name": perms[login]}
+
+    monkeypatch.setattr(github, "gh_json", gh)
     return github.review_state("o/r", 1)
 
 
@@ -234,11 +260,66 @@ def test_a_snapshot_carries_the_declaration_into_the_decision(monkeypatch):
     monkeypatch.setattr(github, "checks_for", lambda *a, **k: GREEN)
     monkeypatch.setattr(github, "merge_queue_state", lambda *a, **k: "")
     monkeypatch.setattr(github, "gh_json", lambda *a, **k: _payload(comments=[
-        {"createdAt": "2026-08-10T10:05:00Z", "body": DECLARED},
+        {"createdAt": "2026-08-10T10:05:00Z", "body": DECLARED, "author": APP},
     ]))
     snap = observe.snapshot_pr("o/r", 1)
     assert snap.phase_gap is True
     assert d(snap).mode == "phasefix"
+
+
+# ------------------------------------------------------------------ who may write the line
+
+
+OUTSIDER = {"login": "drive-by", "__typename": "User"}
+READER = {"login": "read-collab", "__typename": "User"}
+WRITER = {"login": "write-collab", "__typename": "User"}
+PERMS = {"drive-by": "read", "read-collab": "read", "write-collab": "write"}
+
+
+def test_an_outsider_cannot_open_a_gap(monkeypatch):
+    """The repo is public: a stranger's declaration must not hold a PR in the phasefix lane."""
+    assert _state(monkeypatch, DECLARED, author=OUTSIDER, perms=PERMS).phase_gap is False
+
+
+def test_an_outsider_cannot_clear_a_gap(monkeypatch):
+    """The direction that merges: a stranger's clearing line must not retire the App's declaration."""
+    comments = [
+        {"createdAt": "2026-08-10T10:01:00Z", "body": DECLARED, "author": APP},
+        {"createdAt": "2026-08-10T10:02:00Z", "body": CLEARED, "author": OUTSIDER},
+        {"createdAt": "2026-08-10T10:03:00Z", "body": CLEARED, "author": READER},
+    ]
+    monkeypatch.setattr(github, "gh_json", lambda args, **_k: (
+        _payload(comments=comments) if args[:2] == ["api", "graphql"]
+        else {"permission": "read", "role_name": "read"}))
+    assert github.review_state("o/r", 1).phase_gap is True
+
+
+def test_a_write_collaborator_may_clear_a_gap(monkeypatch):
+    """A trusted human filing the follow-up by hand is a legitimate release."""
+    comments = [
+        {"createdAt": "2026-08-10T10:01:00Z", "body": DECLARED, "author": APP},
+        {"createdAt": "2026-08-10T10:02:00Z", "body": CLEARED, "author": WRITER},
+    ]
+    monkeypatch.setattr(github, "gh_json", lambda args, **_k: (
+        _payload(comments=comments) if args[:2] == ["api", "graphql"]
+        else {"permission": "write", "role_name": "write"}))
+    assert github.review_state("o/r", 1).phase_gap is False
+
+
+def test_an_unreadable_permission_does_not_clear_a_gap(monkeypatch):
+    """Fail closed: a lookup that errors is not trust, so the hold stands."""
+    comments = [
+        {"createdAt": "2026-08-10T10:01:00Z", "body": DECLARED, "author": APP},
+        {"createdAt": "2026-08-10T10:02:00Z", "body": CLEARED, "author": WRITER},
+    ]
+
+    def gh(args, **_k):
+        if args[:2] == ["api", "graphql"]:
+            return _payload(comments=comments)
+        raise github.GitHubUnavailable("rc=1")
+
+    monkeypatch.setattr(github, "gh_json", gh)
+    assert github.review_state("o/r", 1).phase_gap is True
 
 
 # ------------------------------------------------------------------ prompt/detector agreement

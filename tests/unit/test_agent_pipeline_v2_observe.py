@@ -382,12 +382,16 @@ def _review_payload(*, head="2026-08-10T10:00:00Z", comments=(), reviews=(), thr
 
 
 def _serve(monkeypatch, payload):
+    # The markers below are the App's; pin which login that is and start with no cached permission.
+    monkeypatch.delenv("GH_APP_BOT_LOGIN", raising=False)
+    monkeypatch.setattr(github, "_PERMISSION_CACHE", {})
     monkeypatch.setattr(github, "gh_json", lambda *a, **k: payload)
 
 
 def test_marker_after_the_head_commit_is_fresh(monkeypatch):
     _serve(monkeypatch, _review_payload(comments=[
-        {"createdAt": "2026-08-10T10:05:00Z", "body": github.CLAUDE_REVIEW_MARKER + " — PASS"},
+        {"createdAt": "2026-08-10T10:05:00Z", "body": github.CLAUDE_REVIEW_MARKER + " — PASS",
+         "author": {"login": "cqc-lem-agent-pipeline", "__typename": "Bot"}},
     ]))
     assert github.review_state("o/r", 1).fresh is True
 
@@ -395,7 +399,8 @@ def test_marker_after_the_head_commit_is_fresh(monkeypatch):
 def test_marker_older_than_the_head_commit_is_stale(monkeypatch):
     """A review of the PREVIOUS head is not a review of this one — a new push must be re-reviewed."""
     _serve(monkeypatch, _review_payload(comments=[
-        {"createdAt": "2026-08-10T09:00:00Z", "body": github.CLAUDE_REVIEW_MARKER + " — PASS"},
+        {"createdAt": "2026-08-10T09:00:00Z", "body": github.CLAUDE_REVIEW_MARKER + " — PASS",
+         "author": {"login": "cqc-lem-agent-pipeline", "__typename": "Bot"}},
     ]))
     state = github.review_state("o/r", 1)
     assert state.fresh is False
@@ -432,7 +437,8 @@ def test_only_copilot_threads_count_as_unresolved(monkeypatch):
 def test_unreadable_head_date_accepts_an_existing_review(monkeypatch):
     """Refusing every PR when a commit date is unreadable would wedge the gate."""
     payload = _review_payload(head="", comments=[
-        {"createdAt": "2026-08-01T00:00:00Z", "body": github.CLAUDE_REVIEW_MARKER + " — PASS"},
+        {"createdAt": "2026-08-01T00:00:00Z", "body": github.CLAUDE_REVIEW_MARKER + " — PASS",
+         "author": {"login": "cqc-lem-agent-pipeline", "__typename": "Bot"}},
     ])
     _serve(monkeypatch, payload)
     assert github.review_state("o/r", 1).fresh is True

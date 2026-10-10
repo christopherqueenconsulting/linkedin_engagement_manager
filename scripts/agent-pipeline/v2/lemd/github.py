@@ -22,6 +22,7 @@ import logging
 import os
 import re
 import subprocess
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -416,13 +417,31 @@ _REVIEW_QUERY = (
     # 100 (the connection maximum), not a smaller window: the marker is an ISSUE comment, so on a
     # PR with a long discussion a short window scrolls the review evidence out of sight and the
     # selfreview lane re-dispatches on a PR that was already reviewed.
-    "comments(last:100){nodes{createdAt body}}"
+    # `author` + `__typename` because the marker and the phase-gap lines are EVIDENCE that moves the
+    # merge gate, and this repo is public: anyone can write "Claude adversarial review" at the head
+    # of a comment. Only the pipeline App and a trusted author's lines count (`_evidence_author`).
+    "comments(last:100){nodes{createdAt body authorAssociation author{login __typename}}}"
     "reviewThreads(first:100){nodes{isResolved comments(first:1){nodes{author{login}}}}}"
     "}}}"
 )
 
 
-def review_state(slug: str, pr: int, *, timeout: int = 30) -> ReviewState:
+def _evidence_author(slug: str, author: dict[str, Any] | None, owner: str) -> bool:
+    """May this comment's author write review evidence (the marker, a phase-gap line)?
+
+    The pipeline App — the author of every marker MODE=selfreview posts — or a trusted human
+    (`comment_author_trusted`). Anybody else's line is ignored, never counted against the PR
+    either: an outsider cannot clear a gap, open one, or fake a review.
+    """
+    if is_pipeline_app(author):
+        return True
+    author = author or {}
+    if author.get("__typename") == "Bot":
+        return False
+    return comment_author_trusted(slug, str(author.get("login") or ""), owner)
+
+
+def review_state(slug: str, pr: int, *, owner: str = "", timeout: int = 30) -> ReviewState:
     """Whether this PR carries review evidence for its current head, and its unresolved-thread count.
 
     Both facts in one GraphQL call because both are read on every observation of every open PR, and
@@ -442,11 +461,15 @@ def review_state(slug: str, pr: int, *, timeout: int = 30) -> ReviewState:
     The phase-scope declaration (#1396) is read from the SAME comment list, because it is written
     into the same comment: the self-review marker. Reading it here costs nothing extra, and putting
     it anywhere else would mean a second GraphQL call per observation of every open PR.
+
+    Both are counted only from the pipeline App or a trusted author (`_evidence_author`). The
+    author check runs only on a comment that already carries one of the phrases, so a thread of
+    ordinary discussion costs no permission lookup at all.
     """
-    owner, _, name = slug.partition("/")
+    repo_owner, _, name = slug.partition("/")
     data = gh_json(
         ["api", "graphql", "-f", _REVIEW_QUERY,
-         "-f", f"o={owner}", "-f", f"n={name}", "-F", f"p={pr}"],
+         "-f", f"o={repo_owner}", "-f", f"n={name}", "-F", f"p={pr}"],
         timeout=timeout,
     ) or {}
     node = (((data.get("data") or {}).get("repository") or {}).get("pullRequest") or {})
@@ -463,17 +486,27 @@ def review_state(slug: str, pr: int, *, timeout: int = 30) -> ReviewState:
         if COPILOT_LOGIN in login.lower() and review.get("submittedAt"):
             stamps.append(review["submittedAt"])
     for comment in ((node.get("comments") or {}).get("nodes") or []):
-        body = (comment or {}).get("body") or ""
+        comment = comment or {}
+        body = comment.get("body") or ""
         undecorated = MARKER_DECORATION_RE.sub("", body)
-        if undecorated.startswith(REVIEW_MARKER_TEXTS) and comment.get("createdAt"):
+        is_marker = undecorated.startswith(REVIEW_MARKER_TEXTS) and bool(comment.get("createdAt"))
+        clears = bool(PHASE_GAP_CLEARED_RE.search(body))
+        opens = not clears and bool(PHASE_GAP_OPEN_RE.search(body))
+        if not (is_marker or clears or opens):
+            continue
+        if not _evidence_author(slug, comment.get("author"), owner):
+            LOG.debug("PR #%s: review evidence from %r ignored — not the App or a trusted author",
+                      pr, ((comment.get("author") or {}).get("login") or ""))
+            continue
+        if is_marker:
             stamps.append(comment["createdAt"])
         # LAST declaration wins, so the walk does not break early: `comments(last:100)` arrives
         # oldest-first, and the thing being asked is "is the gap still open NOW". A `cleared` line
         # that could not overwrite an earlier `gap` line would wedge the PR in the phasefix lane
         # until its budget parked it to the owner — the failure v1's `phasefix_clear` had to have.
-        if PHASE_GAP_CLEARED_RE.search(body):
+        if clears:
             phase_gap = False
-        elif PHASE_GAP_OPEN_RE.search(body):
+        elif opens:
             phase_gap = True
     reviewed_at = max(stamps, key=_epoch) if stamps else ""
 
@@ -550,6 +583,131 @@ def author_trusted(slug: str, number: int, *, timeout: int = 30) -> bool | None:
     if author.endswith("[bot]") and not app_login:
         return None
     return False
+
+
+#: Repository permissions whose holder may INSTRUCT the pipeline through a comment (owner ruling:
+#: "accept comment instructions only from trusted authors (owner, collaborators)"). Read from
+#: `GET repos/{slug}/collaborators/{login}/permission`, never from `authorAssociation`: on an
+#: org-owned repo `MEMBER` is any member of the org and `COLLABORATOR` includes read-only
+#: collaborators, so neither says "may change what this repository's agent does".
+TRUSTED_PERMISSIONS = frozenset({"admin", "maintain", "write"})
+
+#: The pipeline App's login when `GH_APP_BOT_LOGIN` is not in this process's environment. Without a
+#: fallback the review-evidence gate below would fail CLOSED on the App's own markers and send every
+#: open PR round the selfreview lane until its budget parked it. It is only ever matched together
+#: with the author's type (`is_pipeline_app`): the App is a `Bot` with this login, never whoever
+#: holds the bare slug — that USER login is unregistered, so anybody could take it.
+PIPELINE_APP_LOGIN_DEFAULT = "cqc-lem-agent-pipeline[bot]"
+
+#: What a GitHub login can look like (an App's REST form carries `[bot]`). Anything else never
+#: reaches a URL: the login is interpolated into an API path.
+_LOGIN_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})(?:\[bot\])?$")
+
+#: Seconds a permission answer is reused. Per login, per daemon process: a held thread is re-read
+#: on every observation, and codecov/github-actions comment on every push, so an uncached lookup
+#: would cost one API call per comment per pass. A failed lookup is kept for a much shorter time —
+#: it already refuses, and a blip must not refuse for a quarter of an hour.
+PERMISSION_TTL = 900
+PERMISSION_FAILURE_TTL = 60
+_PERMISSION_CACHE: dict[tuple[str, str], tuple[float, frozenset[str] | None]] = {}
+
+
+def pipeline_app_login() -> str:
+    """The pipeline App's login in REST form (`<slug>[bot]`)."""
+    return os.environ.get("GH_APP_BOT_LOGIN") or PIPELINE_APP_LOGIN_DEFAULT
+
+
+def _bare_login(login: str) -> str:
+    """Lower-cased login without the `[bot]` suffix GraphQL drops and REST keeps."""
+    login = login.strip().lower()
+    return login[:-5] if login.endswith("[bot]") else login
+
+
+def is_pipeline_app(author: dict[str, Any] | None) -> bool:
+    """Was this comment posted by the pipeline's own App? GRANTS, so it needs a TYPED author.
+
+    GraphQL reports a bot as its bare slug (`cqc-lem-agent-pipeline`) and REST as `<slug>[bot]`,
+    so the logins are compared without the suffix — but only when `__typename` is `Bot`. A missing
+    type is NOT the App: `gh --json comments` carries none, and the bare slug is an unregistered
+    USER login anybody could take.
+    """
+    author = author or {}
+    login = str(author.get("login") or "")
+    if not login or author.get("__typename") != "Bot":
+        return False
+    return _bare_login(login) == _bare_login(pipeline_app_login())
+
+
+def names_pipeline_app(login: str) -> bool:
+    """Does an UNTYPED login read as the App's slug? EXCLUSION ONLY.
+
+    The answer lane uses it to skip the App's own comments from `gh --json comments`, where a false
+    match can only remove a comment from consideration. Never use it to grant anything.
+    """
+    return bool(login) and _bare_login(login) == _bare_login(pipeline_app_login())
+
+
+def collaborator_permission(slug: str, login: str, *, timeout: int = 30) -> frozenset[str] | None:
+    """`login`'s permission on `slug`: `{permission, role_name}`, or None when unreadable.
+
+    Cached per (slug, login) for `PERMISSION_TTL` seconds — a revoked collaborator stops counting
+    within that window, which is the trade for not calling GitHub once per comment per pass.
+
+    Two kinds of "no", deliberately logged differently. A 404 ("is not a user" — what a bot's bare
+    slug from `gh --json comments` gets, e.g. `codecov`) and a non-login are READABLE answers: an
+    empty set, cached for the full TTL, DEBUG only — they recur on every push, and the logging
+    contract says an expected no-op repeated is not a warning. Anything else that fails (network,
+    timeout, 5xx, 401/403, rate limit, unparseable JSON) is UNREADABLE: None, WARNING, and the short
+    `PERMISSION_FAILURE_TTL` so a blip does not refuse for a quarter of an hour.
+    """
+    key = (slug, login.lower())
+    now = time.monotonic()
+    hit = _PERMISSION_CACHE.get(key)
+    if hit is not None and hit[0] > now:
+        return hit[1]
+    perms: frozenset[str] | None
+    if not _LOGIN_RE.fullmatch(login):
+        perms = frozenset()
+    else:
+        try:
+            data = gh_json(["api", f"repos/{slug}/collaborators/{login}/permission"],
+                           timeout=timeout) or {}
+            perms = frozenset(
+                str(v).lower() for v in (data.get("permission"), data.get("role_name")) if v
+            )
+        except GitHubUnavailable as exc:
+            if "(HTTP 404)" in str(exc):
+                LOG.debug("permission for %s: not a user/collaborator (404) — untrusted", login)
+                perms = frozenset()
+            else:
+                # WARNING, not DEBUG: this refusal decides whether a human's answer counts, and an
+                # operator must be able to see why it did not. Bounded by PERMISSION_FAILURE_TTL.
+                LOG.warning("permission for %s unreadable — treating as untrusted: %s", login, exc)
+                perms = None
+    ttl = PERMISSION_TTL if perms is not None else PERMISSION_FAILURE_TTL
+    _PERMISSION_CACHE[key] = (now + ttl, perms)
+    return perms
+
+
+def comment_author_trusted(slug: str, login: str, owner: str = "", *, timeout: int = 30) -> bool:
+    """May a comment by `login` instruct the pipeline (answer a Decision Comment, give a directive)?
+
+    True for the configured owner without a lookup, and for an account holding `admin`, `maintain`
+    or `write` on the repository. FAILS CLOSED: an unreadable lookup, an empty login and any `[bot]`
+    login are all untrusted — the same direction as every gate in `lib/guards.sh`, whose
+    `comment_author_trusted` is this function's shell twin and must keep agreeing with it.
+
+    The pipeline App is NOT trusted here. It is trusted for the review markers it posts itself
+    (`is_pipeline_app`, used by `review_state`), never as the author of an answer to its own question.
+    """
+    if not login:
+        return False
+    if owner and login.lower() == owner.lower():
+        return True
+    if login.lower().endswith("[bot]"):
+        return False
+    perms = collaborator_permission(slug, login, timeout=timeout)
+    return bool(perms and perms & TRUSTED_PERMISSIONS)
 
 
 def label_names(obj: dict[str, Any]) -> set[str]:

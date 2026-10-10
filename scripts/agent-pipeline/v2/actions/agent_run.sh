@@ -149,7 +149,10 @@ export LEM_LANE_OVERRIDE LEM_LANE_TIER LEM_LANE_REASON
 RUNBOOK_DIR="$(dirname "$RUNBOOK")/runbook"
 
 case "$MODE" in
-  start)     PROMPT="Read $RUNBOOK_DIR/start.md and follow it. ISSUE=$ISSUE BRANCH=$BRANCH RISK=$RISK WORKTREE=$WT." ;;
+  # start/revise also get the Decision-Comment context the RUNNER verified (`decision_prompt_args`
+  # in lib/guards.sh): the menu and the trusted answer by URL. The agent cannot verify authors
+  # itself under the permission profile, so every other comment is DATA to it.
+  start)     PROMPT="Read $RUNBOOK_DIR/start.md and follow it. ISSUE=$ISSUE BRANCH=$BRANCH RISK=$RISK WORKTREE=$WT. $(decision_prompt_args "" "$ISSUE")" ;;
   fix)       PROMPT="Read $RUNBOOK_DIR/fix.md and follow it. PR=$PR ISSUE=$ISSUE BRANCH=$BRANCH ATTEMPTS=$ATTEMPTS." ;;
   review)    PROMPT="Read $RUNBOOK_DIR/review.md and follow it. PR=$PR ISSUE=$ISSUE BRANCH=$BRANCH." ;;
   # The fallback is the CANONICAL marker, not a friendlier variant. `CLAUDE_REVIEW_MARKER` is
@@ -159,7 +162,7 @@ case "$MODE" in
   # fails the build if these two halves disagree again.
   selfreview) PROMPT="Read $RUNBOOK_DIR/selfreview.md and follow it. PR=$PR ISSUE=$ISSUE BRANCH=$BRANCH MARKER='${CLAUDE_REVIEW_MARKER:-🔎 Claude adversarial review}'." ;;
   rebase)    PROMPT="Read $RUNBOOK_DIR/rebase.md and follow it. PR=$PR ISSUE=$ISSUE BRANCH=$BRANCH." ;;
-  revise)    PROMPT="Read $RUNBOOK_DIR/revise.md and follow it. PR=$PR BRANCH=$BRANCH OWNER=$ASSIGNEE." ;;
+  revise)    PROMPT="Read $RUNBOOK_DIR/revise.md and follow it. PR=$PR BRANCH=$BRANCH OWNER=$ASSIGNEE. $(decision_prompt_args "$PR" "$ISSUE")" ;;
   depfix)    PROMPT="Read $RUNBOOK_DIR/depfix.md and follow it. PR=$PR BRANCH=$BRANCH." ;;
   docfix)    PROMPT="Read $RUNBOOK_DIR/docfix.md and follow it. PR=$PR BRANCH=$BRANCH." ;;
   phasefix)  PROMPT="Read $RUNBOOK_DIR/phasefix.md and follow it. PR=$PR ISSUE=$ISSUE BRANCH=$BRANCH." ;;

@@ -57,20 +57,34 @@ def _jq_filter() -> str:
     Tests that paste a copy of the filter prove only that the copy works; this one fails when the
     shipped query regresses, which is the whole point of testing a detector.
     """
-    m = re.search(r"'(\[\(\.comments.*?)'", _detector_body(), re.S)
+    m = re.search(r"'(\[\.\[\]\[\].*?)'", _detector_body(), re.S)
     assert m, "could not lift the jq filter out of claude_reviewed_at"
     return m.group(1)
 
 
+#: How GraphQL reports the pipeline App: its bare slug — which only means the App together with
+#: `__typename: Bot`. REST reports it as `<slug>[bot]` with `user.type: Bot`.
+APP = "cqc-lem-agent-pipeline"
+
+
 def _detect(*comments: dict) -> str:
-    """Run the shipped filter over a comments payload and return the timestamp it resolves."""
+    """Run the shipped filter over a comments payload and return the timestamp it resolves.
+
+    The filter reads REST pages (`--paginate --slurp`) and emits `login|type|created_at` for every
+    phrase-matching comment, newest first; the function's author loop takes the first trusted one.
+    Every comment here is the App's, so these tests stay about DETECTION; authorship has its own
+    tests below and in test_agent_pipeline_comment_authority.py.
+    """
+    pages = [[{"body": c["body"], "created_at": c["createdAt"],
+               "user": {"login": APP + "[bot]", "type": "Bot"}} for c in comments]]
     out = subprocess.run(
         ["jq", "-r", "--arg", "m", _var("CLAUDE_REVIEW_MARKER_TEXT"), _jq_filter()],
-        input=json.dumps({"comments": list(comments)}),
+        input=json.dumps(pages),
         capture_output=True, text=True, check=False,
     )
     assert out.returncode == 0, out.stderr
-    return out.stdout.strip()
+    first = (out.stdout.splitlines() or [""])[0]
+    return first.split("|")[2] if first.count("|") >= 2 else ""
 
 
 MANGLED = "���� Claude adversarial review — no findings"
@@ -193,11 +207,13 @@ def test_v2_pins_the_same_anchor_as_tick_sh():
 
 def test_v2_review_state_sees_a_mangled_marker(monkeypatch):
     """The #1273 body, through v2's own reader."""
+    monkeypatch.delenv("GH_APP_BOT_LOGIN", raising=False)
     monkeypatch.setattr(github, "gh_json", lambda *a, **k: {"data": {"repository": {
         "pullRequest": {
             "commits": {"nodes": [{"commit": {"committedDate": "2026-08-10T03:00:00Z"}}]},
             "reviews": {"nodes": []},
-            "comments": {"nodes": [{"createdAt": "2026-08-10T03:04:02Z", "body": MANGLED}]},
+            "comments": {"nodes": [{"createdAt": "2026-08-10T03:04:02Z", "body": MANGLED,
+                                    "author": {"login": APP, "__typename": "Bot"}}]},
             "reviewThreads": {"nodes": []},
         }}}})
     state = github.review_state("o/r", 1)
@@ -261,3 +277,83 @@ def test_an_unrelated_comment_is_still_not_review_evidence():
     """Widening the accepted set must not make every comment a review."""
     for body in ("Addressed your review direction: rebased", "🛑 Human decision needed", "LGTM"):
         assert not github.MARKER_DECORATION_RE.sub("", body).startswith(github.REVIEW_MARKER_TEXTS)
+
+
+# ---------------------------------------------------------------- who may write the marker (v2)
+# The marker clears the merge gate, and on a public repo anybody can open a comment with the
+# phrase. Owner ruling: only the pipeline App's marker, or a trusted author's, is evidence. The
+# v1 half (tick.sh's `claude_reviewed_at`) runs for real in test_agent_pipeline_comment_authority.py.
+
+
+def _v2_marker_state(monkeypatch, author: dict, perms: dict | None = None) -> github.ReviewState:
+    """`review_state` over ONE marker posted after the head by `author`."""
+    monkeypatch.setattr(github, "_PERMISSION_CACHE", {})
+    perms = perms or {}
+
+    def gh(args, **_k):
+        if args[:2] == ["api", "graphql"]:
+            return {"data": {"repository": {"pullRequest": {
+                "commits": {"nodes": [{"commit": {"committedDate": "2026-08-10T03:00:00Z"}}]},
+                "reviews": {"nodes": []},
+                "comments": {"nodes": [{"createdAt": "2026-08-10T03:04:02Z",
+                                        "body": "🔎 Claude adversarial review — PASS",
+                                        "author": author}]},
+                "reviewThreads": {"nodes": []},
+            }}}}
+        login = args[1].split("/collaborators/")[1].split("/")[0]
+        if login not in perms:
+            raise github.GitHubUnavailable("404")
+        return {"permission": perms[login], "role_name": perms[login]}
+
+    monkeypatch.setattr(github, "gh_json", gh)
+    return github.review_state("o/r", 1, owner="the-owner")
+
+
+def test_v2_counts_the_apps_own_marker(monkeypatch):
+    monkeypatch.delenv("GH_APP_BOT_LOGIN", raising=False)
+    assert _v2_marker_state(monkeypatch, {"login": APP, "__typename": "Bot"}).fresh is True
+
+
+def test_v2_counts_the_app_named_by_the_environment(monkeypatch):
+    """A pinned GH_APP_BOT_LOGIN (REST form) is matched against GraphQL's bare slug."""
+    monkeypatch.setenv("GH_APP_BOT_LOGIN", "other-app[bot]")
+    assert _v2_marker_state(monkeypatch, {"login": "other-app", "__typename": "Bot"}).fresh is True
+    assert _v2_marker_state(monkeypatch, {"login": APP, "__typename": "Bot"}).fresh is False
+
+
+@pytest.mark.parametrize("login,perm", [("the-owner", None), ("maint", "maintain"),
+                                        ("writer", "write"), ("admin-person", "admin")])
+def test_v2_counts_a_trusted_humans_marker(monkeypatch, login, perm):
+    perms = {login: perm} if perm else {}
+    assert _v2_marker_state(monkeypatch, {"login": login, "__typename": "User"}, perms).fresh
+
+
+@pytest.mark.parametrize("perm", ["read", "triage", "none"])
+def test_v2_ignores_an_untrusted_humans_marker(monkeypatch, perm):
+    state = _v2_marker_state(monkeypatch, {"login": "drive-by", "__typename": "User"},
+                             {"drive-by": perm})
+    assert (state.fresh, state.reviewed_at) == (False, "")
+
+
+def test_v2_ignores_a_marker_when_the_permission_is_unreadable(monkeypatch):
+    """Fail closed: an errored lookup is not trust."""
+    assert _v2_marker_state(monkeypatch, {"login": "writer", "__typename": "User"}).fresh is False
+
+
+@pytest.mark.parametrize("author", [{"login": APP, "__typename": "User"}, {"login": APP},
+                                    {"login": APP + "[bot]"}])
+def test_v2_a_user_wearing_the_apps_bare_login_is_not_the_app(monkeypatch, author):
+    """Only `__typename: Bot` says a bare-slug author is the App.
+
+    GraphQL drops `[bot]`, and the bare slug is an unregistered USER login, so an untyped or
+    User-typed author holding it is never the App.
+    """
+    monkeypatch.delenv("GH_APP_BOT_LOGIN", raising=False)
+    assert _v2_marker_state(monkeypatch, author).fresh is False
+
+
+def test_v2_another_bot_is_never_review_evidence(monkeypatch):
+    """github-actions posts its own review comments; they are not this pipeline's marker."""
+    state = _v2_marker_state(monkeypatch, {"login": "github-actions", "__typename": "Bot"},
+                             {"github-actions": "write"})
+    assert state.fresh is False

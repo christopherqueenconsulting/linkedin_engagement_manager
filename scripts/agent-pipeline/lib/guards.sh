@@ -13,8 +13,9 @@
 # error here does not degrade the pipeline, it removes its trust boundary while leaving every log
 # line looking normal.
 #
-# Expects from the caller, at CALL time (not source time): BASE, REPO, SLUG, OWNER, WORKROOT,
-# TRUSTED_ASSOCIATIONS, AGENT_LABEL_TRUSTED_ACTORS, AGENT_CI_LABEL_ACTORS, and a log() function.
+# Expects from the caller, at CALL time (not source time): BASE, REPO, SLUG, OWNER, ASSIGNEE (the
+# owner's login), WORKROOT, TRUSTED_ASSOCIATIONS, AGENT_LABEL_TRUSTED_ACTORS, AGENT_CI_LABEL_ACTORS,
+# and a log() function.
 
 # Per-branch work claim so concurrent slots never touch the same PR/issue. Re-opening fd 10
 # releases any previously held claim (fd close drops the flock).
@@ -110,6 +111,131 @@ pr_is_upstream() {
 pr_admissible() {
   # pr_admissible <number> <lane-label> -> both halves for a PR lane.
   pr_is_upstream "$1" && label_actor_trusted "$1" "$2"
+}
+
+# --- Comment authority: whose COMMENT may instruct the pipeline ---------------------------------
+# Owner ruling: "accept comment instructions only from trusted authors (owner, collaborators)".
+# A comment is trusted when its author is the configured owner login ($ASSIGNEE), or holds `admin`,
+# `maintain` or `write` on this repository per `GET repos/{slug}/collaborators/{login}/permission`.
+# NOT `authorAssociation`: on an org-owned repo MEMBER is any member of the org, and COLLABORATOR
+# includes read-only collaborators — neither says "may change what this repository's agent does".
+# An unreadable lookup is NOT trusted, the same direction as every gate above.
+#
+# `lemd/github.py:comment_author_trusted` is the daemon's twin of this function. The daemon decides
+# an un-park with one and the action re-checks it with the other, so they must keep agreeing.
+
+pipeline_app_login() {
+  # pipeline_app_login -> the pipeline App's login, REST form (`<slug>[bot]`). The fallback is why a
+  # missing GH_APP_BOT_LOGIN pin does not make the App's own review markers invisible. It is only
+  # ever matched WITH the author's type (`comment_login_is_app`): the App is a `Bot` with exactly
+  # this login, never whoever holds the bare slug — that USER login is unregistered, so anybody
+  # could take it.
+  echo "${GH_APP_BOT_LOGIN:-cqc-lem-agent-pipeline[bot]}"
+}
+
+comment_login_is_app() {
+  # comment_login_is_app <login> <type> -> 0 when the author IS the pipeline App: REST's
+  # `.user.type` is `Bot` AND `.user.login` equals the exact `<slug>[bot]` login. This grants (the
+  # App's markers count as evidence), so it must only ever be fed a TYPED source — the REST issue
+  # comments endpoint. `gh --json comments` reports a bot by its bare slug with no type, which a
+  # human registering that slug could reproduce.
+  [ "${2:-}" = "Bot" ] || return 1
+  local who app
+  who="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+  app="$(pipeline_app_login | tr '[:upper:]' '[:lower:]')"
+  [ -n "$who" ] && [ "$who" = "$app" ]
+}
+
+comment_login_names_app() {
+  # comment_login_names_app <login> -> 0 when an UNTYPED login (gh --json comments) is the App's
+  # bare slug. EXCLUSION ONLY — the answer lanes use it to skip the App's own comments, where a
+  # false match can only remove a comment, never make one count. Never use it to grant.
+  local who app
+  who="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"; who="${who%\[bot\]}"
+  app="$(pipeline_app_login | tr '[:upper:]' '[:lower:]')"; app="${app%\[bot\]}"
+  [ -n "$who" ] && [ "$who" = "$app" ]
+}
+
+comment_author_trusted() {
+  # comment_author_trusted <login> -> 0 when a comment by <login> may instruct the pipeline.
+  # Cached per login for the life of the shell (one run): the answer lane re-reads the same thread,
+  # and codecov / github-actions comment on every push. The cache only lives as long as the shell
+  # it was filled in — a call inside `$(...)` starts empty, which costs calls, never correctness.
+  local login="${1:-}" lc perm
+  [ -n "$login" ] || return 1
+  lc="$(printf '%s' "$login" | tr '[:upper:]' '[:lower:]')"
+  [ "$lc" = "$(printf '%s' "${ASSIGNEE:-}" | tr '[:upper:]' '[:lower:]')" ] && return 0
+  case "$lc" in *"[bot]") return 1 ;; esac
+  # The login is interpolated into an API path; anything that is not a GitHub login never reaches it.
+  [[ "$login" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]] || return 1
+  declare -gA _COMMENT_PERM_CACHE 2>/dev/null || true
+  if [ -n "${_COMMENT_PERM_CACHE[$lc]+set}" ]; then
+    perm="${_COMMENT_PERM_CACHE[$lc]}"
+  else
+    # A 404 ("is not a user" — a bot's bare slug from `gh --json comments`, e.g. codecov) is a
+    # READABLE "no", recorded as `none`; only a lookup that genuinely failed (network, 5xx,
+    # 401/403, rate limit) reads as unreadable. Same split as `lemd/github.py:collaborator_permission`.
+    local out rc
+    out="$(gh api "repos/$SLUG/collaborators/$login/permission" \
+              --jq '"\(.permission // "") \(.role_name // "")"' 2>&1)"; rc=$?
+    if [ "$rc" -eq 0 ]; then perm="$out"
+    elif printf '%s' "$out" | grep -qF '(HTTP 404)'; then perm="none"
+    else perm=""
+    fi
+    _COMMENT_PERM_CACHE[$lc]="$perm"
+  fi
+  case " $perm " in *" admin "*|*" maintain "*|*" write "*) return 0 ;; esac
+  # >&2: callers run this inside `$(...)` whose stdout IS their answer, and log() tees to stdout.
+  if [ -n "${perm// /}" ]; then
+    log "TRUST: comment by '$login' ignored — permission '$perm' is not admin/maintain/write." >&2
+  else
+    log "TRUST: comment by '$login' ignored — permission lookup unreadable; refusing." >&2
+  fi
+  return 1
+}
+
+decision_context() {
+  # decision_context <number> -> "<menu-url> <answer-url>" ("none" for either) on that thread.
+  #
+  # The menu is the newest "Human decision needed" comment by the pipeline App — TYPED: REST
+  # `user.type == "Bot"` and the exact `<slug>[bot]` login, never the bare slug — the owner, or a
+  # trusted author; anybody else's is an ordinary comment. The answer is the newest trusted,
+  # non-agent reply after it. The RUNNER works this out because the agent cannot: under the opt-in
+  # permission profile (`config/claude-headless.json`) `gh api` is denied, so the agent has no
+  # typed author and no permission lookup. MODE=revise / MODE=start receive the two URLs in their
+  # prompt (`decision_prompt_args`) and treat every other comment as DATA.
+  local n="${1:-}" rows url login type dec agent menu="" answer=""
+  if [ -z "$n" ]; then echo "none none"; return 0; fi
+  rows="$(gh api "repos/$SLUG/issues/$n/comments" --paginate --slurp 2>/dev/null \
+    | jq -r '[.[][]] | reverse | .[]
+        | "\(.html_url // "")|\(.user.login // "")|\(.user.type // "")|\(if ((.body // "") | test("Human decision needed"; "i")) then 1 else 0 end)|\(if ((.body // "") | test("Generated with \\[Claude Code\\]")) then 1 else 0 end)"' 2>/dev/null)"
+  while IFS='|' read -r url login type dec agent; do
+    [[ "$url" =~ ^https://github\.com/[A-Za-z0-9._/-]+#issuecomment-[0-9]+$ ]] || continue
+    [ -n "$login" ] || continue
+    if [ "$dec" = 1 ]; then
+      if comment_login_is_app "$login" "$type" || comment_author_trusted "$login"; then
+        menu="$url"; break
+      fi
+      continue
+    fi
+    [ -z "$answer" ] || continue
+    [ "$agent" = 1 ] && continue
+    comment_login_is_app "$login" "$type" && continue
+    comment_login_names_app "$login" && continue
+    comment_author_trusted "$login" || continue
+    answer="$url"
+  done <<< "$rows"
+  # No menu from anyone who may ask: nothing was asked, so nothing was answered.
+  [ -n "$menu" ] || answer=""
+  echo "${menu:-none} ${answer:-none}"
+}
+
+decision_prompt_args() {
+  # decision_prompt_args <pr> <issue> -> "MENU_PR=… ANSWER_PR=… MENU_ISSUE=… ANSWER_ISSUE=…" for a
+  # MODE=revise / MODE=start prompt. Either number may be empty.
+  local p i
+  p="$(decision_context "${1:-}")"; i="$(decision_context "${2:-}")"
+  echo "MENU_PR=${p%% *} ANSWER_PR=${p#* } MENU_ISSUE=${i%% *} ANSWER_ISSUE=${i#* }"
 }
 
 issue_for_pr() {

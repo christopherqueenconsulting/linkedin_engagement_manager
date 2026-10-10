@@ -180,20 +180,17 @@ def test_both_answer_parsers_agree_on_the_same_thread(tmp_path, body, is_answer)
     ]
     parsed = answers.parse(thread, "owner")
 
-    # The jq half, run exactly as `common.sh` runs it.
-    prog = (
-        'def isdecision: ((.body // "") | test("Human decision needed"; "i"));\n'
-        'def isagent:    ((.body // "") | test("Generated with \\\\[Claude Code\\\\]"));\n'
-        '((.comments // []) | to_entries) as $c\n'
-        '| (($c | map(select(.value | isdecision)) | last | .key) // -1) as $di\n'
-        '| [ $c[] | select(.key > $di) | .value\n'
-        '    | select((.author.login // "") == "owner")\n'
-        '    | select(isdecision | not) | select(isagent | not) ]\n'
-        '| (last // empty) | (.author.login // "")'
-    )
+    # The jq half, LIFTED from `common.sh` rather than copied, so a drift in the shipped filter
+    # fails here. It emits every eligible author newest first; the shell then asks each one
+    # `comment_author_trusted`, which accepts the owner login without a lookup.
+    src = (_V2 / "actions" / "common.sh").read_text()
+    fn = src[src.index("v2_owner_answered()"):]
+    prog = re.search(r"--jq '(.*?)' 2>/dev/null", fn, re.S).group(1)
     got = subprocess.run(["jq", "-r", prog], input=json.dumps({"comments": thread}),
                          capture_output=True, text=True, timeout=20)
-    shell_found_owner = got.stdout.strip() == "owner"
+    # One row per comment, newest first: id|login|is-decision|is-agent.
+    rows = [ln.split("|") for ln in got.stdout.splitlines()]
+    shell_found_owner = any(r[1] == "owner" and r[2] == "0" and r[3] == "0" for r in rows)
 
     # The jq answers "is there an owner reply", the Python answers "is it a DECISION". The first is
     # a precondition of the second, so Python saying yes while the shell says no is the divergence

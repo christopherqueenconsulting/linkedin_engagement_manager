@@ -123,7 +123,7 @@ def test_a_refused_non_unpark_action_writes_no_answer(tmp_path, monkeypatch):
     """Only an un-park spends an answer; a refused `start` leaves `last_comment_id` alone."""
     dmn = _daemon(tmp_path)
     db.upsert_item(dmn.conn, kind="issue", number=2268, state=db.STATE_RUNNING)
-    dmn._answer_ids[("issue", 2268)] = "a1"
+    dmn._hold_answer("issue", 2268, "a1")
     child = SimpleNamespace(kind="issue", number=2268, mode="start",
                             started=time.time() - 60, killed=False)
     monkeypatch.setattr(dmn.sup, "reap", lambda: [(child, dispatch.EX_TRUST)])
@@ -245,3 +245,87 @@ def test_snapshot_issue_reads_the_author_only_when_row_9a_could_fire(monkeypatch
     assert snap.menu_posted is True
     assert snap.author_trusted is None
     assert seen == []
+
+
+# ---------------------------------------------------------------- an untrusted reply is not an answer
+
+
+def _thread_from(monkeypatch, login: str, permission: str | None) -> answers.Thread:
+    """Read #2268's thread where `login` replied `1A` to the menu; `None` = the lookup fails."""
+    monkeypatch.setattr(github, "_PERMISSION_CACHE", {})
+
+    def fake_gh_json(args, **_k):
+        if args[0] == "api":
+            if permission is None:
+                raise github.GitHubUnavailable("rc=1")
+            return {"permission": permission, "role_name": permission}
+        return {"comments": [{"id": "m", "body": MENU, "author": {"login": "cqc-lem-agent-pipeline"}},
+                             {"id": "a1", "body": "1A", "author": {"login": login}}]}
+
+    monkeypatch.setattr(github, "gh_json", fake_gh_json)
+    return answers.read_thread("o/r", "issue", 2268, OWNER)
+
+
+def test_a_write_collaborators_answer_un_parks(monkeypatch):
+    """Owner ruling: collaborators with write are trusted authors, so their answer routes."""
+    thread = _thread_from(monkeypatch, "collab", "write")
+    snap = held_issue(answer=thread.answer, menu_posted=thread.menu_posted)
+    assert observe.decide(snap, **TTLS).action == observe.ACT_UNPARK
+
+
+def test_an_untrusted_reply_never_reaches_the_trust_gate(monkeypatch):
+    """A read-only collaborator's, or an unverifiable author's, `1A` is data, not an answer.
+
+    No un-park is dispatched at all, so the refused-and-retried loop #2331 bounds cannot start
+    from it — the item simply stays parked on its menu, waiting for a trusted reply.
+    """
+    for login, permission in (("reader", "read"), ("stranger", "none"), ("ghost", None)):
+        thread = _thread_from(monkeypatch, login, permission)
+        assert thread.answer is None and thread.menu_posted is True, login
+        snap = held_issue(answer=thread.answer, menu_posted=thread.menu_posted)
+        assert observe.decide(snap, **TTLS).action != observe.ACT_UNPARK, login
+
+
+# ---------------------------------------------------------------- the answer id survives a restart
+
+
+def test_the_held_answer_survives_a_daemon_restart(tmp_path, monkeypatch):
+    """Decided, then the daemon restarts before dispatch: the action must still get the id."""
+    dmn = _daemon(tmp_path)
+    db.upsert_item(dmn.conn, kind="issue", number=2268, state=db.STATE_PARKED)
+    _observe(dmn, monkeypatch, {})
+    dmn.conn.close()
+    again = _daemon(tmp_path)
+    assert again._held_answer("issue", 2268) == "a1"
+    seen: dict = {}
+    monkeypatch.setattr(again.sup, "dispatch_gh", lambda **kw: seen.update(kw))
+    again._launch(db.get_item(again.conn, "issue", 2268), "unpark")
+    assert seen["args"][2] == "a1"
+
+
+def test_a_refused_unpark_with_an_answer_is_re_observed_at_once(tmp_path, monkeypatch):
+    """So a NEWER trusted reply (the binding refusal) routes now, not after the 6h TTL."""
+    dmn = _daemon(tmp_path)
+    db.upsert_item(dmn.conn, kind="issue", number=2268, state=db.STATE_PARKED)
+    _observe(dmn, monkeypatch, {})
+    db.force_state(dmn.conn, db.get_item(dmn.conn, "issue", 2268)["id"], db.STATE_RUNNING)
+    _finish(dmn, monkeypatch, dispatch.EX_TRUST)
+    row = db.get_item(dmn.conn, "issue", 2268)
+    assert (row["last_comment_id"], row["dirty"]) == ("a1", 1)
+    assert dmn._held_answer("issue", 2268) is None
+    # ...and the spent reply alone does not loop: it reads as already routed.
+    _observe(dmn, monkeypatch, {})
+    assert db.get_item(dmn.conn, "issue", 2268)["pending_mode"] != "unpark"
+    # ...while a newer trusted reply does route.
+    _observe(dmn, monkeypatch, {"answer": answers.Answer("a2", "answer", "1B")})
+    assert db.get_item(dmn.conn, "issue", 2268)["pending_mode"] == "unpark"
+
+
+def test_a_refusal_with_no_answer_held_says_so_and_waits(tmp_path, monkeypatch, caplog):
+    dmn = _daemon(tmp_path)
+    db.upsert_item(dmn.conn, kind="issue", number=2268, state=db.STATE_RUNNING)
+    with caplog.at_level(logging.WARNING, logger="lemd"):
+        _finish(dmn, monkeypatch, dispatch.EX_TRUST)
+    row = db.get_item(dmn.conn, "issue", 2268)
+    assert (row["last_comment_id"], row["dirty"]) == (None, 0)
+    assert any("no answer id held" in r.getMessage() for r in caplog.records)

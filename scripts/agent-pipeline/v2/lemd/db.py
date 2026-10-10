@@ -233,6 +233,11 @@ def kv_get(conn: sqlite3.Connection, key: str, default: str | None = None) -> st
     return row["v"] if row else default
 
 
+def kv_delete(conn: sqlite3.Connection, key: str) -> None:
+    """Remove one daemon scalar (a no-op when absent)."""
+    conn.execute("DELETE FROM kv WHERE k=?", (key,))
+
+
 def kv_set(conn: sqlite3.Connection, key: str, value: str) -> None:
     """Write one daemon scalar."""
     conn.execute(

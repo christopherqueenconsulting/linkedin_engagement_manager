@@ -133,15 +133,25 @@ def test_the_park_is_lap_counted_like_any_other():
 
 
 def test_a_decision_comment_by_body_is_the_menu():
-    """Recognised by the marker, whoever posted it — the pipeline has had two logins."""
-    assert answers.menu_posted([comment(MENU, login="cqc-lem-agent-pipeline")]) is True
-    assert answers.menu_posted([comment(MENU, login=OWNER)]) is True
+    """Recognised by the marker from either login the pipeline has posted under (#1736)."""
+    assert answers.menu_posted([comment(MENU, login="cqc-lem-agent-pipeline")], OWNER) is True
+    assert answers.menu_posted([comment(MENU, login=OWNER)], OWNER) is True
 
 
 def test_a_thread_without_the_marker_is_unasked():
     """An owner addendum (#1732's shape) is not a menu."""
-    assert answers.menu_posted([]) is False
-    assert answers.menu_posted([comment("also: check the rate limiter first")]) is False
+    assert answers.menu_posted([], OWNER) is False
+    assert answers.menu_posted([comment("also: check the rate limiter first")], OWNER) is False
+
+
+def test_an_outsiders_marker_does_not_suppress_the_real_menu():
+    """Anyone can write "Human decision needed"; read as the menu it would stop row 9a for good."""
+    assert answers.menu_posted([comment(MENU, login="drive-by")], OWNER) is False
+    assert answers.menu_posted([comment(MENU, login="drive-by")], OWNER, lambda _l: False) is False
+
+
+def test_a_trusted_authors_marker_is_a_menu():
+    assert answers.menu_posted([comment(MENU, login="collab")], OWNER, lambda who: who == "collab") is True
 
 
 def test_read_thread_carries_both_halves_from_one_call(monkeypatch):
@@ -150,7 +160,8 @@ def test_read_thread_carries_both_halves_from_one_call(monkeypatch):
 
     def gh(args, **_kw):
         calls.append(args)
-        return {"comments": [comment(MENU, login="bot", cid="m"), comment("1B", cid="a1")]}
+        return {"comments": [comment(MENU, login="cqc-lem-agent-pipeline", cid="m"),
+                             comment("1B", cid="a1")]}
 
     monkeypatch.setattr(answers.github, "gh_json", gh)
     got = answers.read_thread("o/r", "issue", 1736, OWNER)
