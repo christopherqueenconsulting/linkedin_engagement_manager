@@ -415,3 +415,20 @@ class ConnectStatus(StrEnum):
     REQUESTED = 'requested'
     CONNECTED = 'connected'
     FAILED = 'failed'                    # the invite could not be sent — never auto-retried
+
+
+class EngagementMode(StrEnum):
+    """Whether browser automation may run on a user's LinkedIn account (issue #2367).
+
+    `users.engagement_mode`. `AUTOMATE` is every pre-existing account's behaviour; `SUGGEST` (new
+    trial accounts) runs no Selenium lane at all and stores drafts as `engagement_suggestions`.
+    """
+    SUGGEST = 'suggest'
+    AUTOMATE = 'automate'
+
+
+class EngagementSuggestionKind(StrEnum):
+    """What a stored engagement suggestion is a draft of (issue #2367) — `engagement_suggestions.kind`."""
+    COMMENT = 'comment'
+    REPLY = 'reply'
+    DM = 'dm'

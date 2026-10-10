@@ -14,10 +14,11 @@ from cqc_lem.platform.db.connection import db_cursor
 from cqc_lem.platform.db.enums import (
     COMMENT_LOG_ACTION_TYPES,
     INVITE_LOG_ACTION_TYPES,
+    EngagementSuggestionKind,
     LogActionType,
     LogResultType,
 )
-from cqc_lem.utilities.logger import log_error, log_info, log_warning
+from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
 
 # Marker message logged (as INVITE/SUCCESS) whenever a LinkedIn invite is actually sent — reactive
 # profile-viewer AND proactive (issue #398) sends both flow through invite_to_connect_now, so the
@@ -725,3 +726,79 @@ def seconds_since_last_dm_touch(user_id: int, profile_url: str, window_hours: in
     except mysql.connector.Error as err:
         log_error("Could not read the last DM touch to a recipient", exc=err, user_id=user_id)
         return 0
+
+
+# Caps on what one suggestion row may carry (issue #2367). `dedup_key` is a VARCHAR(255) UNIQUE
+# member and `target_url` a VARCHAR(1024); truncating here keeps an over-long permalink from turning
+# a store into a DB error that loses the draft.
+_SUGGESTION_DEDUP_MAX = 255
+_SUGGESTION_URL_MAX = 1024
+
+
+def insert_engagement_suggestion(user_id: int, kind: EngagementSuggestionKind, source: str,
+                                 body: str, dedup_key: str,
+                                 target_url: Optional[str] = None) -> Optional[bool]:
+    """Store a draft a suggest-mode lane produced instead of sending it (issue #2367).
+
+    Args:
+        user_id: whose draft it is.
+        kind: what it is a draft of (comment / reply / dm).
+        source: the lane that drafted it, e.g. the task name.
+        body: the draft text the user will copy.
+        dedup_key: the identity of this draft, unique per user — a re-dispatched task stores nothing.
+        target_url: where the user should paste it (the post or the profile), when there is one.
+
+    Returns:
+        True when a row was written, False when the same `dedup_key` was already stored (a no-op),
+        None when the write failed.
+    """
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT IGNORE INTO engagement_suggestions"
+                " (user_id, kind, source, target_url, body, dedup_key)"
+                " VALUES (%s, %s, %s, %s, %s, %s)",
+                (user_id, str(kind), str(source)[:64],
+                 target_url[:_SUGGESTION_URL_MAX] if target_url else None,
+                 body, str(dedup_key)[:_SUGGESTION_DEDUP_MAX]))
+            return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        log_error("Could not store an engagement suggestion", exc=err, user_id=user_id)
+        return None
+
+
+def has_engagement_suggestion(user_id: int, dedup_key: str) -> Optional[bool]:
+    """Whether a suggestion with this `dedup_key` is already stored for the user (issue #2367).
+
+    Lets a lane skip the LLM call for a draft it already wrote. None when the read failed.
+    """
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT 1 FROM engagement_suggestions WHERE user_id = %s AND dedup_key = %s LIMIT 1",
+                (user_id, str(dedup_key)[:_SUGGESTION_DEDUP_MAX]))
+            return cursor.fetchone() is not None
+    except mysql.connector.Error as err:
+        log_error("Could not read engagement suggestions", exc=err, user_id=user_id)
+        return None
+
+
+def get_engagement_suggestions(user_id: int, limit: int = 50) -> Optional[list[dict]]:
+    """The user's newest engagement suggestions, newest first (issue #2367).
+
+    Returns None — never an empty list — when the read failed, so the API can answer 503 instead
+    of telling the user they have no suggestions.
+    """
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT id, kind, source, target_url, body, created_at FROM engagement_suggestions"
+                " WHERE user_id = %s ORDER BY created_at DESC, id DESC LIMIT %s",
+                (user_id, max(1, int(limit))))
+            rows = cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        log_error("Could not list engagement suggestions", exc=err, user_id=user_id)
+        return None
+    log_debug(f"Read {len(rows)} engagement suggestion(s)", user_id=user_id)
+    return [{"id": r[0], "kind": r[1], "source": r[2], "target_url": r[3], "body": r[4],
+             "created_at": r[5]} for r in rows]

@@ -251,6 +251,10 @@ def get_docker_driver(headless: bool = True, session_name: str = "ChromeTests", 
     silently. Every one of those steps is best-effort: a CDP override that fails is logged, not
     raised, so a session is still returned.
 
+    A `user_id` whose engagement mode is not a readable `automate` raises `SuggestOnlyEngagement`
+    before anything else happens (issue #2367) — the fail-closed backstop behind each lane's own
+    `skip_browser_lane` check.
+
     Blocks here while the fixed session pool is full, and records that wait either way
     (`_record_session_wait`) — a request that gives up waiting is the loudest capacity signal there
     is, so it must not unwind unmeasured.
@@ -269,6 +273,12 @@ def get_docker_driver(headless: bool = True, session_name: str = "ChromeTests", 
     other caller keeps today's behavior — this must never widen past the messaging- and
     groups-surface lanes that pass it explicitly.
     """
+    if user_id is not None:
+        # The backstop behind every lane's own check (issue #2367): a suggest-only account, or one
+        # whose mode cannot be read, never gets a browser — raised BEFORE the pool is touched.
+        from cqc_lem.utilities.engagement_mode import require_browser_automation
+        require_browser_automation(user_id, session_name)
+
     if debug is None:
         debug = isTrue(os.getenv("SELENIUM_DEBUG_NODE", "False"))
     if debug_required:

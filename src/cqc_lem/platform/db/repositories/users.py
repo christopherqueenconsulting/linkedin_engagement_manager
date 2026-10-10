@@ -22,6 +22,7 @@ from cqc_lem.platform.db import connection as _connection
 from cqc_lem.platform.db.connection import db_cursor
 from cqc_lem.platform.db.enums import (
     CatchupEventType,
+    EngagementMode,
     OnboardingStep,
     PostStatus,
 )
@@ -226,7 +227,8 @@ def add_user(email: str, password: str):
         with db_cursor(commit=True) as cursor:
         # The row has to exist before the password can be encrypted — the ciphertext is bound to
         # users.id (AAD), which auto-increment only hands out on INSERT.
-            cursor.execute("INSERT INTO users (email) VALUES (%s)", (email,))
+            cursor.execute("INSERT INTO users (email, engagement_mode) VALUES (%s, %s)",
+                           (email, EngagementMode.SUGGEST.value))
             user_id = cursor.lastrowid
             cursor.execute("UPDATE users SET password = %s WHERE id = %s",
                            (encrypt_secret(password, user_id, SECRET_FIELD_PASSWORD), user_id))
@@ -270,14 +272,17 @@ def add_user_with_access_token(email: str, linked_sub_id: str, access_token: str
         # value that was allocated and burned by the failed insert. Sealing the tokens against that
         # id would bind them to a row that does not exist (silently storing no token at all), so
         # the id is pinned explicitly here and still cross-checked by email below.
-        cursor.execute("""INSERT INTO users (email, linked_sub_id, last_login, linkedin_connection_status)
-        VALUES (%s, %s, %s, 'connected')
+        # `engagement_mode` is on the INSERT half ONLY (issue #2367): a brand-new account starts in
+        # `suggest`, while an existing account re-connecting keeps whatever mode it already has.
+        cursor.execute("""INSERT INTO users
+            (email, linked_sub_id, last_login, linkedin_connection_status, engagement_mode)
+        VALUES (%s, %s, %s, 'connected', %s)
         ON DUPLICATE KEY UPDATE
                 id = LAST_INSERT_ID(id),
                 linked_sub_id = VALUES(linked_sub_id),
                 last_login = VALUES(last_login),
                 linkedin_connection_status = 'connected'
-        """, (email, linked_sub_id, datetime.now(timezone.utc)))
+        """, (email, linked_sub_id, datetime.now(timezone.utc), EngagementMode.SUGGEST.value))
         user_id = cursor.lastrowid
         if not user_id:
             cursor.execute("SELECT id FROM users WHERE email = %s", (email,))
@@ -1048,9 +1053,9 @@ def add_user_by_email(email: str) -> Optional[int]:
         cursor.execute(
             """INSERT INTO users
                (email, public_uid, subscription_status, subscription_tier, trial_started_at,
-                trial_ends_at)
-               VALUES (%s, %s, 'trial', 'free_trial', %s, %s)""",
-            (email, str(uuid.uuid4()), now, trial_ends),
+                trial_ends_at, engagement_mode)
+               VALUES (%s, %s, 'trial', 'free_trial', %s, %s, %s)""",
+            (email, str(uuid.uuid4()), now, trial_ends, EngagementMode.SUGGEST.value),
         )
         connection.commit()
         user_id = cursor.lastrowid
@@ -1537,6 +1542,22 @@ def get_users_with_reply_mode(mode: str) -> list:
     except mysql.connector.Error as err:
         log_error(f"Could not get users with reply mode {mode}", exc=err)
         return []
+def get_user_engagement_mode(user_id: int) -> Optional[str]:
+    """The stored `users.engagement_mode` for a user (issue #2367), or None when it cannot be read.
+
+    None covers a missing row as well as a DB fault. This reader does not decide what None MEANS —
+    `utilities/engagement_mode.py` is the one place that does, and it reads None as `suggest`.
+    """
+    try:
+        with db_cursor() as cursor:
+            cursor.execute("SELECT engagement_mode FROM users WHERE id = %s", (user_id,))
+            row = cursor.fetchone()
+    except mysql.connector.Error as err:
+        log_warning("Could not read engagement mode", exc=err, user_id=user_id)
+        return None
+    return row[0] if row and row[0] else None
+
+
 def get_user_geo(user_id: int) -> Optional[dict]:
     """Return the user's full geo profile for Selenium spoofing.
 

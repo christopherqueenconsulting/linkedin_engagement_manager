@@ -71,6 +71,10 @@ class _FakeCursor:
         elif s.startswith("UPDATE posts SET status"):
             posts[params[1]]["status"] = params[0]
             self.rowcount = 1
+        elif s.startswith("SELECT engagement_mode FROM users"):
+            # Issue #2367: this fixture's account is a pre-existing (`automate`) one, so its seed
+            # comment publishes through the API rather than being stored as a suggestion.
+            self._rows([self.store["users"][params[0]]], ["engagement_mode"])
         elif s.startswith("SELECT email, password FROM users"):
             self._rows([self.store["users"][params[0]]], ["email", "password"])
         elif "FROM engagement_preferences" in s:
@@ -124,7 +128,8 @@ def _store(link_pref_row=None):
         "posts": {10: {"id": 10, "status": "approved", "content": _BODY, "post_type": "text",
                        "first_comment_link": None, "manual_publish": 0,
                        "curated_source_id": None}},
-        "users": {1: {"email": "u@example.com", "password": "pw"}},
+        "users": {1: {"email": "u@example.com", "password": "pw",
+                      "engagement_mode": "automate"}},
         "prefs": ({1: link_pref_row} if link_pref_row else {}),
         "logs": [],
     }

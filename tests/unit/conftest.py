@@ -168,6 +168,24 @@ def _no_real_selenium():
 
 
 @pytest.fixture(autouse=True)
+def _engagement_mode_defaults_to_automate():
+    """Every test user is an EXISTING (`automate`) account unless the test says otherwise.
+
+    The engagement-mode reader fails CLOSED (issue #2367): with no MySQL in this lane it reads as
+    `suggest`, which would turn every Selenium lane test into a test of the skip path. Production
+    gives every account that existed before #2367 the `automate` value, so that is what the lane
+    tests model. Only the stored-value reader is replaced — the resolver, the lane checks and the
+    `get_docker_driver` backstop all still run. A test of suggest mode patches the same name; its
+    patch nests inside this one and wins.
+    """
+    from unittest.mock import patch
+
+    with patch("cqc_lem.utilities.engagement_mode.get_user_engagement_mode",
+               return_value="automate"):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _no_real_title_card_encode():
     """No unit test encodes a real title-card video by accident (showcase round 4).
 

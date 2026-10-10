@@ -1,5 +1,74 @@
 # Engagement automation internals
 
+## Engagement mode — suggest-only accounts (`utilities/engagement_mode.py`, issue #2367)
+
+Every account has a `users.engagement_mode`: `automate` or `suggest`. Free-trial accounts get
+engagement as **suggestions only** — no Selenium or browser automation ever runs on their LinkedIn
+account. `utilities/engagement_mode.py` is the one place the mode is decided.
+
+**Who is which.** The migration added the column with `DEFAULT 'automate'`, so every account that
+existed before #2367 behaves exactly as before. New accounts do not rely on the default: every
+creation path in `platform/db/repositories/users.py` writes `suggest` explicitly — `add_user_by_email`
+(trial signup), `add_user`, and the INSERT half of the OAuth upsert in `add_user_with_access_token`.
+The upsert's `ON DUPLICATE KEY UPDATE` half does not touch the column, so an existing account that
+re-connects keeps its mode. The API exposes the mode read-only (`GET /user/settings` →
+`engagement_mode`); no endpoint changes it — switching an account to `automate` is an operator
+action on the row.
+
+**Fail closed.** Only a stored, readable `automate` allows a browser. A missing row, a DB fault, an
+exception from the reader, or any unrecognised value is `suggest`. `GET /user/settings` reports
+the same fail-closed reading, so the SPA never shows `automate` for an account the lanes treat as
+`suggest`. This is a per-account safety control, not a feature flag: it never falls back to an
+environment variable and is never read from PostHog.
+
+**Three layers.**
+
+1. **Dispatcher.** The run_scheduler fan-outs drop suggest accounts before queueing a Selenium
+   task (`_browser_lane_users`), and the approval-queue dispatchers (`auto_check_scheduled_dms`,
+   `auto_check_connection_requests`, `auto_check_catchup_touches`) skip a suggest account's rows,
+   leaving them `approved` and unchanged. The pre-post warm-up is not queued either; the post itself
+   is. This is an efficiency layer — nothing relies on it.
+2. **Lane task.** Every Selenium lane task calls `skip_browser_lane(user_id, task)` first (row-id
+   tasks right after resolving the row's user) and returns `SUGGEST_ONLY_SKIP_MESSAGE`. The skip
+   logs at DEBUG — it is the mode working, never a warning.
+3. **Backstop.** `get_docker_driver` calls `require_browser_automation` whenever it is given a
+   `user_id`, before the Grid is touched, and raises `SuggestOnlyEngagement`. Reaching it means a
+   lane is missing its layer-2 check. Sessions with no `user_id` (tutorial capture, load test) are
+   not engagement lanes and are not affected.
+
+The live profile scrape that post and carousel generation use for personalisation
+(`_resolve_user_profile`, `generate_carousel_content`) is skipped for a suggest account, which goes
+straight to the cached profile.
+
+**Not gated:** publishing approved posts through the OAuth `w_member_social` API
+(`post_to_linkedin`). That is not a browser, and trial scope includes it.
+
+**Suggestions.** Where a lane has a finished draft and no browser read is needed to produce it, a
+suggest account gets the draft stored in `engagement_suggestions` instead of sent. The SPA lists the
+newest 50 on the Settings page ("Suggested", `EngagementSuggestionsCard`) with a copy button. A
+failed read is 503, never an empty list. `dedup_key` (unique per user) makes a re-dispatched task a
+no-op, and the seed and second-wave lanes check it before their LLM call.
+
+| Source | Kind | Produced for a suggest account in v1? |
+|---|---|---|
+| `auto_seed_comment_on_post` — the first comment on the user's own published post | comment | **Yes.** Same generator and held link as the API path. Dedup key `seed:<post_id>` |
+| `auto_second_wave_comment` — the 6–8h self-comment | comment | **Yes.** Dedup key `second_wave:<post_id>`. No golden-hour report, because nothing was published |
+| `comment_on_post` — a drafted comment handed to the send task | comment | **Yes** when it is dispatched. Its v1 dispatchers (profile-viewer walk, outreach funnel) are browser lanes and skip for a suggest account, so in practice this is a backstop |
+| `send_private_dm` — a drafted DM handed to the send task | dm | **Yes** when it is dispatched (for example the admin send route). Its automated dispatchers are browser lanes and skip |
+| Feed, group and roster commenting; reply sweeps; comment follow-ups; DM follow-ups; profile-viewer DMs; appreciation DMs; catch-up touches; lead responses; invites | — | **No.** Each needs a browser READ (the feed, a thread, a profile) before there is anything to draft, so the whole lane is skipped |
+
+Because a suggest account's seed is a suggestion and never a COMMENT log row, the
+`get_posts_missing_their_seed_comment` reconciler in `auto_check_scheduled_posts` skips suggest
+accounts. Otherwise it would re-find the post on every tick.
+
+Tests: `tests/unit/app/test_engagement_mode_lanes.py` drives every lane task with
+`get_docker_driver` replaced by a mock that fails if called, for `suggest` and for three unreadable
+readings. Its `TestEveryBrowserLaneIsCovered` reads the lane modules and fails when a new function
+that opens a session has no test. The resolver, backstop, store, dispatchers and creation paths are
+covered in `tests/unit/utilities/test_engagement_mode.py`. The unit-lane autouse fixture
+`_engagement_mode_defaults_to_automate` models pre-existing accounts, because the reader fails
+closed with no MySQL. A suggest-mode test patches the same name.
+
 ## Profile freshness — the on-demand re-scrape (issue #1076)
 
 Every comment and DM is written in a voice distilled from the user's own profile, so a stale profile
