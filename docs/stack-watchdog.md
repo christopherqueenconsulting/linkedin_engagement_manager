@@ -125,7 +125,8 @@ simply is not in the reply.
 
 ```json
 {"status": "healthy", "workers": 5, "consuming": 5, "maintenance": false,
- "egress": "ok", "egress_checked": 1, "egress_failing": 0}
+ "egress": "ok", "egress_checked": 1, "egress_failing": 0,
+ "linkedin_session": "ok", "session_checked": 1, "session_failing": 0}
 ```
 
 | Field | Meaning |
@@ -137,6 +138,9 @@ simply is not in the reply.
 | `egress` | Can the automation browser's egress proxy reach LinkedIn? `ok` / `unreachable` / `auth_failed` / `refused` / `unknown` / `direct` — see below |
 | `egress_checked` | distinct egress proxies probed (counts only) |
 | `egress_failing` | how many of them are `unreachable`, `auth_failed` or `refused` |
+| `linkedin_session` | Is there a usable signed-in LinkedIn session? `needs_owner` / `stale` / `backing_off` / `ok` / `unknown` — see [LinkedIn session](#linkedin-session-a-reachable-egress-is-not-a-signed-in-browser-issue-2356) |
+| `session_checked` | active users read (counts only, at most 10) |
+| `session_failing` | how many of them are `needs_owner` or `stale` |
 
 ### Counts only — the endpoint names nothing (issue #1020)
 
@@ -335,6 +339,43 @@ is needed. The owner of the response is whoever receives the layer 3 monitor's a
   reminder. Whoever paused it unpauses it as soon as the re-deploy in the Rollback bullet finishes.
   Do not wait for the proxy provider: with the switch applied, the egress reading no longer changes
   `status`.
+
+### LinkedIn session: a reachable egress is not a signed-in browser (issue #2356)
+
+The egress reading answers "can the browser's proxy reach linkedin.com?". It does not answer "is
+there a usable signed-in session?", and a session can be unusable while the egress is fine: `li_at`
+expired and the password fallback drew a challenge, a device approval is pending or timed out, the
+challenge cooldown is running, the 429 breaker is open, or automation is paused.
+`utilities/linkedin/session_health.py` reads what the owning modules already record in Redis
+(`login_status.get_login_status`, `login_status.challenge_cooldown_remaining`,
+`rate_limit.rate_limit_cooldown_remaining`, `rate_limit.is_automation_paused`). **No browser is
+opened and no LinkedIn request is made.**
+
+Each active user (`get_active_user_ids()`, the first 10) gets one state, checked in this order;
+`linkedin_session` is the worst across them:
+
+| State | When |
+|---|---|
+| `needs_owner` | `approval_pending`, `approval_timed_out`, or a challenge cooldown running |
+| `stale` | no sign-in record, or `signed_in_at` older than `LINKEDIN_SESSION_STALE_HOURS` (default 24) |
+| `backing_off` | the global 429 breaker is open, or automation is paused (a deploy's maintenance window pauses it too) |
+| `ok` | signed in within the window |
+| `unknown` | Redis did not answer a `PING`, no user is active (a database outage reads as no users), or the reading crashed. **Unmeasured is never `ok`.** |
+
+- **Report-only by default.** `status` does not change unless `HEALTH_DEEP_SESSION_DEGRADES=true`;
+  the owner flips it once a week of readings shows the stale window does not flap on rest days and
+  nights. With it on, only `needs_owner` and `stale` degrade a `healthy` reading; `backing_off` is a
+  pause something chose and `unknown` is unmeasured, so neither does, and the session never
+  upgrades an `unknown` or `degraded` reading.
+- **Counts only.** The body never carries a user id, email or timestamp. `session_failing` says
+  how many users; the Account page (`GET /user/linkedin-signin-status`) says which.
+- **Bounded:** readings are cached in-process for `LINKEDIN_SESSION_HEALTH_CACHE_SECONDS` (default
+  60), each costing one `PING`, one MySQL query and a handful of Redis reads per user. A crash is
+  cached too, so it logs one WARNING per window, not one per scrape.
+- **Rollback:** the flag ships off, so there is nothing to roll back until it is set. If it is set
+  and pages falsely, set `HEALTH_DEEP_SESSION_DEGRADES=false` the same way the egress
+  [Rollback](#risk-and-rollback) sets `HEALTH_DEEP_EGRESS_DEGRADES` (same `grep`, `sed` and
+  re-deploy, with this name). The fields stay; reverting the PR removes them.
 
 ## Layer 3 — external dead-man's switch (owner setup)
 

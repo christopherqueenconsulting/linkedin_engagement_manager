@@ -12,6 +12,11 @@ infra**; this file is the detail behind them.
 They fail differently and are reported separately — a user can hold a healthy OAuth token while
 the browser session is dead, and vice versa.
 
+The Selenium session's state is also read, as counts only, by `GET /health/deep`
+(`linkedin_session` / `session_checked` / `session_failing`, issue #2356) so an external monitor
+sees a dead session that the egress reading cannot — see
+[stack-watchdog.md § LinkedIn session](stack-watchdog.md#linkedin-session-a-reachable-egress-is-not-a-signed-in-browser-issue-2356).
+
 ---
 
 ## Sign-in visibility (issue #933)
