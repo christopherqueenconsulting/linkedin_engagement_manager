@@ -65,12 +65,17 @@ _PHONE_PATTERNS = (
 _TLDS = (r"(?:com|net|org|io|co|xyz|info|biz|me|app|site|online|top|vip|live|cc|ru|cn|ly|gg|"
          r"tk|ml|ga|cf|ws|su|icu|buzz)")
 
-# A bare domain, inbound: an ALL-LOWERCASE label so a brand named in prose ("Booking.com",
-# "ASP.NET") stays safe, while the shape a scammer types ("cryptofx-pro.io/join") fires.
+# A bare domain, inbound, in ANY case. `_has_bare_domain` lets exactly two shapes through: a bare
+# `linkedin.com`, and a capitalised path-less brand on .com/.net/.org ("Booking.com", "ASP.NET").
+# A path, or any other TLD ("Cryptofxpro.io", "CRYPTOFX-PRO.IO"), fires whatever the case.
 _BARE_DOMAIN_RE = re.compile(
-    rf"(?<![\w@./-])((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+{_TLDS})(?![\w-])(/\S*)?")
+    rf"(?<![\w@./-])((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+{_TLDS})(?![\w-])(/\S*)?",
+    re.IGNORECASE)
 # Bare mentions of these, with no path, are the platform naming itself, not a link push.
 _SAFE_BARE_DOMAINS = frozenset({"linkedin.com"})
+# The only TLDs on which a CAPITALISED, path-less token can be brand prose ("Booking.com",
+# "ASP.NET"). Everywhere else — any path, any other TLD — case changes nothing.
+_BRAND_PROSE_TLDS = frozenset({"com", "net", "org"})
 
 # Outbound is stricter: ANY case, any domain-shaped token, an @handle, or an obfuscated dot.
 _OUTBOUND_CONTACT_OR_LINK_RE = re.compile(
@@ -80,6 +85,9 @@ _OUTBOUND_CONTACT_OR_LINK_RE = re.compile(
         rf"\b\s*(?:\[\s*(?:\.|dot)\s*\]|\(\s*(?:\.|dot)\s*\)|\{{\s*(?:\.|dot)\s*\}})\s*{_TLDS}\b",
         rf"\s+dot\s+{_TLDS}\b",
         r"\bhttps?://|\bwww\.",
+        # Any domain-shaped token WITH a path, on any TLD ("scam.finance/x", "evil.ai/x"). A false
+        # positive here only costs one skipped reply of ours.
+        r"\b[a-z0-9-]+\.[a-z]{2,24}/\S",
         *_PHONE_PATTERNS,
     )),
     re.IGNORECASE)
@@ -247,15 +255,24 @@ def normalize_for_matching(text: Optional[str]) -> str:
     Returns:
         The folded, whitespace-collapsed, stripped text.
     """
-    body = unicodedata.normalize("NFKC", str(text or "")[:MAX_CLASSIFY_CHARS])
+    # Cut before AND after NFKC: one input character can expand to several, so only the second cut
+    # makes the cap literal.
+    body = unicodedata.normalize("NFKC", str(text or "")[:MAX_CLASSIFY_CHARS])[:MAX_CLASSIFY_CHARS]
     body = "".join(ch for ch in body if unicodedata.category(ch) != "Cf")
     return re.sub(r"\s+", " ", body.translate(_QUOTE_FOLD)).strip()
 
 
 def _has_bare_domain(body: str) -> bool:
     for match in _BARE_DOMAIN_RE.finditer(body):
-        if match.group(2) or match.group(1) not in _SAFE_BARE_DOMAINS:
+        domain, path = match.group(1), match.group(2)
+        if path:
             return True
+        folded = domain.lower()
+        if folded in _SAFE_BARE_DOMAINS:
+            continue
+        if domain != folded and folded.rsplit(".", 1)[-1] in _BRAND_PROSE_TLDS:
+            continue  # "Booking.com" named in prose — capitalised, no path, .com/.net/.org
+        return True
     return False
 
 

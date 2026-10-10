@@ -232,9 +232,11 @@ engaging a hostile one feeds the fight in public.
   space inside "WhatsApp", or a fullwidth or math-bold spelling, still matches.
 - **What it checks.** Scam: off-platform contact asks (a messenger named as a channel, "text me",
   a phone-number shape), money-for-nothing promises, crypto/forex "account manager" and
-  fund-recovery pitches, any raw URL, link shortener or bare all-lowercase domain on a scam-typical
-  TLD (`cryptofx-pro.io`; a capitalised brand such as "Booking.com" and a bare `linkedin.com` with
-  no path stay safe, `linkedin.com/in/…` does not), "check my profile/bio", hacked-account
+  fund-recovery pitches, any raw URL or link shortener, and any bare domain on a scam-typical TLD
+  **in any case** (`cryptofx-pro.io`, `Cryptofxpro.io`, `CRYPTOFX-PRO.IO`). Exactly two shapes stay
+  safe: a bare `linkedin.com` with no path, and a CAPITALISED, path-less brand on .com/.net/.org
+  ("Booking.com", "ASP.NET"). A path (`Cryptofxpro.com/join`, `linkedin.com/in/…`) or any other TLD
+  fires whatever the case. Also: "check my profile/bio", hacked-account
   recovery, and prize/giveaway claims. Hostile: profanity (the shared list in
   `utilities/text_safety.py`), insults aimed at the reader, threats, and hostility to the account
   ("stop spamming", "unfollowed", "this is spam"). Each family is a named check, and the reason names
@@ -244,8 +246,8 @@ engaging a hostile one feeds the fight in public.
   alone. Known trade-off: a profane word in a positive comment ("damn good point") is filtered too.
 - **Outbound.** Before a drafted reply is posted, `_outbound_reply_refusal` applies three gates to
   OUR draft: `outbound_qa.outbound_violations(…, SURFACE_COMMENT)`, `classify_comment`, and
-  `outbound_contact_or_link` (reason of the same name: any domain-shaped token in any case, an
-  @handle, an obfuscated dot such as "x dot com" or "x[.]io", a URL or a phone number). These make
+  `outbound_contact_or_link` (reason of the same name: any listed-TLD domain in any case, any
+  domain WITH a path on any TLD such as `scam.finance/x`, an @handle, an obfuscated dot such as "x dot com" or "x[.]io", a URL or a phone number). These make
   a scammy or hostile reply of ours much less likely; they only catch what a pattern describes. A
   refusal WARNS with **check names only** — the draft may have been steered by an attacker's
   comment, so its excerpt goes to DEBUG and never into an escalated `$exception` or auto-filed
@@ -265,10 +267,16 @@ engaging a hostile one feeds the fight in public.
   sweep) or per run (follow-ups) reads `Comment safety filter skipped comments` with `filtered=N`
   and `reasons=<check>:<n>,…` as context — never comment text. These land in the persistent prod
   log (`docs/production-logs.md`).
-- *Checking a suspected false positive.* Run `classify_comment(text)` against the comment in a
-  prod-image container with the repo's `src` mounted (the sidecar pattern in
-  `docs/error-tracking.md`); the verdict names the check that fired. Or set `LOG_LEVEL=DEBUG`
-  temporarily to see the per-comment `Skipping unsafe comment` lines.
+- *Checking a suspected false positive.* The classifier is pure (no DB, assets, Redis or LinkedIn),
+  so a checkout of the DEPLOYED tag is enough — `git checkout vX.Y.Z`, then
+  `PYTHONPATH=src poetry run python -c "from cqc_lem.utilities.ai.comment_safety import
+  classify_comment; print(classify_comment('<the comment>'))"`. The verdict names the check that
+  fired. To run it against the prod image instead, use the sidecar steps in
+  `docs/content-quality-audits/video.md` §8 (the `lem_assets` mount there is only needed by
+  scripts that read assets). To see the per-comment `Skipping unsafe comment` lines, set
+  `LOG_LEVEL=DEBUG` in the production `.env`, restart the Celery workers so they pick it up, and
+  REVERT it (and restart again) afterwards — prod runs at INFO on purpose
+  (`docs/production-logs.md`).
 - *Tuning a pattern.* Edit the check in `utilities/ai/comment_safety.py` and add the misfiring text
   as a false-positive guard in `tests/unit/utilities/ai/test_comment_safety.py` in the same change.
 - *Rollback.* Code-only, deliberately not a flag (a safety control is never a flag,
@@ -280,10 +288,11 @@ The follow-up sweep revisits posts we commented on, reacts to replies to our com
 ones that ask a question. It applies the **same filter** (`_followup_on_post_comment_replies`): an
 unsafe reply is skipped before the lead flag, the reaction and the answer, counted as `filtered`
 (with per-check `filtered_reasons`) in the sweep summary and the per-run INFO line, and a drafted
-answer passes the same three outbound gates before it is posted. A refused answer is NOT
-remembered here: the only durable record is `comment_followups.replied`, which also feeds the daily
-reply cap, so latching it would spend the cap on a reply that never went out. A refused answer is
-therefore re-drafted (and re-warned) on each follow-up sweep while the post stays in the window.
+answer passes the same three outbound gates before it is posted. A refused answer is latched in a
+SEPARATE short-lived Redis marker (`linkedin:followup_draft_refused:<user>:<reply key>`, the
+follow-up window plus a day), so an outsider's reply cannot make every sweep re-draft and re-warn
+it into an auto-filed issue. It deliberately does not touch `comment_followups.replied`, which also
+feeds the daily reply cap. Without Redis the marker fails open (re-drafts, as before).
 
 ## Golden-hour presence & second wave (`utilities/golden_hour.py`, issue #622)
 

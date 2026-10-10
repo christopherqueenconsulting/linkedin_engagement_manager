@@ -879,6 +879,49 @@ def _record_replied_to_comment(user_id: int, post_id: int, commenter_slug: str, 
                     post_id=post_id, action_type="reply")
 
 
+def _followup_refused_key(user_id: int, reply_key: str) -> str:
+    return f"linkedin:followup_draft_refused:{user_id}:{reply_key}"
+
+
+def _followup_draft_refused(user_id: int, reply_key: str) -> bool:
+    """Return True when a draft for this follow-up reply was refused recently (fails open).
+
+    Args:
+        user_id: The account the sweep runs for.
+        reply_key: The follow-up reply key (`_followup_reply_key`).
+
+    Returns:
+        Whether the short-lived refusal marker is set.
+    """
+    client = _redis_client()
+    if client is None or not reply_key:
+        return False
+    try:
+        return bool(client.get(_followup_refused_key(user_id, reply_key)))
+    except Exception:
+        return False
+
+
+def _record_followup_draft_refused(user_id: int, reply_key: str) -> None:
+    """Latch a refused follow-up draft for the follow-up window, so it is not re-drafted.
+
+    Kept apart from `comment_followups.replied`, which also feeds the daily reply cap.
+
+    Args:
+        user_id: The account the sweep runs for.
+        reply_key: The follow-up reply key (`_followup_reply_key`).
+    """
+    client = _redis_client()
+    if client is None or not reply_key:
+        return
+    try:
+        client.set(_followup_refused_key(user_id, reply_key), "1",
+                   ex=(_FOLLOWUP_WINDOW_DAYS + 1) * 24 * 60 * 60)
+    except Exception as e:
+        log_warning("Could not record refused follow-up draft marker", exc=e, user_id=user_id,
+                    action_type="reply")
+
+
 def _comment_asks_for_keyword(comment_text: str, keyword: str) -> bool:
     r"""Did this comment use the lead-magnet keyword as a WORD?
 
@@ -1478,13 +1521,19 @@ def _followup_on_post_comment_replies(driver, wait, user_id: int, post_url: str,
             insert_new_log(user_id=user_id, action_type=LogActionType.ENGAGED,
                            result=LogResultType.SUCCESS, post_url=post_url,
                            message="Reacted to reply on our comment")
-        if not did_reply and replies_remaining > 0 and _reply_is_question(reply_text):
+        if (not did_reply and replies_remaining > 0 and _reply_is_question(reply_text)
+                and not _followup_draft_refused(user_id, reply_key)):
             # We are a GUEST replying in someone else's thread — not the post author (issue #478).
             with llm_attribution(user_id=user_id, feature=FEATURE_COMMENT):
                 response = generate_comment_reply_followup(reply_text, my_profile, prefs=prefs,
                                                            profile_synthesis=profile_synthesis,
                                                            user_id=user_id)
-            if (response and not _outbound_reply_refusal(response, user_id)
+            refused = bool(response) and bool(_outbound_reply_refusal(response, user_id))
+            if refused:
+                # Latch the refusal so an outsider's reply cannot make every sweep re-draft and
+                # re-warn. A separate marker: `comment_followups.replied` feeds the daily cap.
+                _record_followup_draft_refused(user_id, reply_key)
+            if (response and not refused
                     and _reply_under_comment_inline(driver, wait, cont, response, user_id=user_id)):
                 result["replied"] += 1
                 replies_remaining -= 1

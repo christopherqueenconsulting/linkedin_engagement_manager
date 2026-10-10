@@ -54,6 +54,14 @@ SCAM_CASES = [
     ("learned so much from cryptofx-pro.io", cs.CHECK_LINK_PUSH),
     ("details at quickreturns.xyz/join", cs.CHECK_LINK_PUSH),
     ("my page is linkedin.com/in/fxqueen", cs.CHECK_LINK_PUSH),
+    # Case never helps a link through: a path, or a non-.com/.net/.org TLD, fires in any case.
+    ("Cryptofxpro.io changed my life", cs.CHECK_LINK_PUSH),
+    ("CRYPTOFX-PRO.IO", cs.CHECK_LINK_PUSH),
+    ("CryptoFx-Pro.io/join", cs.CHECK_LINK_PUSH),
+    ("Quickreturns.xyz/join", cs.CHECK_LINK_PUSH),
+    ("Visit Cryptofxpro.com/join", cs.CHECK_LINK_PUSH),
+    ("Join at Fastgains.VIP", cs.CHECK_LINK_PUSH),
+    ("all lowercase quickreturns.com", cs.CHECK_LINK_PUSH),
     # profile redirects
     ("Check my profile for more", cs.CHECK_PROFILE_REDIRECT),
     ("Check out my bio", cs.CHECK_PROFILE_REDIRECT),
@@ -120,6 +128,7 @@ BENIGN = [
     # missing space after a full stop on a common word.
     "We rebuilt the API in Node.js and Next.js, e.g. the auth layer.",
     "Booking.com and Amazon.com both did this early.",
+    "We migrated off ASP.NET and Wikipedia.org was our first reference.",
     "Agreed.to be fair the data was thin.",
     # Decision: naming the platform itself, with no path, is not a link push.
     "I found you on linkedin.com last year.",
@@ -218,6 +227,11 @@ class TestVerdictShape:
         assert classify_comment("Saw this on linkedin.com").is_safe
         assert cs.CHECK_LINK_PUSH in classify_comment("see linkedin.com/in/someone").reasons
 
+    def test_the_cap_is_literal_even_when_nfkc_expands_the_text(self):
+        # U+3392 (SQUARE MHZ) folds to three characters under NFKC.
+        folded = cs.normalize_for_matching("㎒" * cs.MAX_CLASSIFY_CHARS)
+        assert len(folded) == cs.MAX_CLASSIFY_CHARS
+
     def test_text_past_the_cap_is_not_read(self):
         assert classify_comment("a" * cs.MAX_CLASSIFY_CHARS + " whatsapp me").is_safe
         assert not classify_comment("whatsapp me " + "a" * cs.MAX_CLASSIFY_CHARS).is_safe
@@ -270,6 +284,8 @@ class TestOutboundContactOrLink:
         "cryptofx (dot) xyz",
         "https://example.com",
         "see www.example.org",
+        "details at scam.finance/x",
+        "try evil.ai/x today",
     ])
     def test_refuses_any_contact_or_link_shape(self, draft):
         assert cs.outbound_contact_or_link(draft)

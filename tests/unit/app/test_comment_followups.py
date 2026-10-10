@@ -481,6 +481,30 @@ class TestFollowupSafetyFilter:
         assert r["replied"] == 0 and r["reacted"] == 1 and r["filtered"] == 0
         assert "Refusing to post an unsendable reply" in warn.call_args.args[0]
 
+    def test_a_refused_draft_is_latched_so_the_next_sweep_does_not_redraft_it(self):
+        """An outsider's reply must not make every sweep re-draft and re-warn (escalating)."""
+        store = {}
+        redis = MagicMock()
+        redis.get.side_effect = store.get
+        redis.set.side_effect = lambda key, value, ex=None: store.__setitem__(key, value)
+        from cqc_lem.app.engagement.posting import _followup_on_post_comment_replies
+        drafts, warnings, caps = [], [], []
+        for _sweep in range(2):
+            with ExitStack() as es:
+                _p(es, "_redis_client", return_value=redis)
+                warn = _p(es, "log_warning")
+                driver, prof, rec = _worker_env(es)
+                gen = _p(es, "generate_comment_reply_followup", return_value="Ping @fxqueen")
+                _followup_on_post_comment_replies(driver, MagicMock(), 1, self._URL, self._KEY, prof,
+                                                  "voice", {}, replies_remaining=5)
+                drafts.append(gen.call_count)
+                warnings.append(warn.call_count)
+                caps.append([c for c in rec.call_args_list if c.kwargs.get("replied")])
+        assert drafts == [1, 0] and warnings == [1, 0]
+        assert len(store) == 1 and next(iter(store)).startswith("linkedin:followup_draft_refused:1:")
+        # The daily-cap record (`comment_followups.replied`) is never latched for a refusal.
+        assert caps == [[], []]
+
     def test_a_draft_that_reads_hostile_is_not_posted(self):
         with ExitStack() as es:
             warn = _p(es, "log_warning")
