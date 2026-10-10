@@ -52,6 +52,28 @@ straight to the cached profile.
 **Not gated:** publishing approved posts through the OAuth `w_member_social` API
 (`post_to_linkedin`). That is not a browser, and trial scope includes it.
 
+**Connection (issue #2368).** A suggest account connects through LinkedIn sign-in (the OAuth
+`w_member_social` flow) only. LEM never collects or stores a LinkedIn password, session cookie or
+verification PIN for it. `credential_collection_allowed` applies the same fail-closed rule as the
+browser check, and every credential write path checks it:
+
+- `PUT /user/linkedin-password`, `POST /user/linkedin-cookie` (the SPA paste and the browser
+  extension) and `POST /user/extension-token` return **403** with
+  `detail.code = "suggest_mode_oauth_only"`. The check runs before step-up, so nothing is stored.
+- The SendGrid PIN webhook stays 200 (SendGrid retries anything else), but `_store_pin` refuses
+  the code, so no PIN is stored.
+- `GET /user/account-readiness` drops the `linkedin_session` item, and the daily "connect your
+  LinkedIn session" email is not sent.
+- No admin route writes these credentials. An admin route that ever does must refuse a suggest
+  account in the same way, because the ruling is about the account, not about who is asking.
+  `tests/unit/api/test_suggest_mode_credentials.py` fails if a new API caller of a credential
+  setter has no gate.
+
+In the SPA, the Setup section shows only the LinkedIn sign-in controls and a one-line note for these
+accounts. The refusal is expected, so it logs at INFO, never as a warning. Cookie persistence after a
+Selenium login (`helper.store_cookies`) is not gated here: a suggest account cannot open a browser
+session in the first place (layer 3 above).
+
 ### Suggestions
 
 Where a lane has a finished draft and no browser read is needed to produce it, a suggest account

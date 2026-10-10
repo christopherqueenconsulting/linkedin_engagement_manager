@@ -69,6 +69,13 @@ standard cookie store (`store_linkedin_li_at` → `store_cookies`), so the exist
 cookie-first `login_to_linkedin` path picks it up. Returns 422 on a malformed `li_at`,
 401 on a bad session.
 
+**Suggest-only accounts are not asked for a cookie** (issue #2368). An account in suggest
+mode (every trial account) connects through LinkedIn sign-in (OAuth) only. For it, this
+endpoint, `PUT /api/user/linkedin-password` and `POST /api/user/extension-token` return
+**403** with `detail.code = "suggest_mode_oauth_only"` and store nothing. The SPA hides the
+cookie, extension and password controls for these accounts. See
+[engagement-automation.md](engagement-automation.md) § Engagement mode.
+
 ## Security
 
 `li_at` is **as sensitive as a password** — anyone holding it can act as that LinkedIn
