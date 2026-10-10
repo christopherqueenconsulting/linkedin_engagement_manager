@@ -42,7 +42,7 @@ A fresh worktree on branch `$BRANCH` (from origin/main) is ready. Implement issu
      comment containing "human decision needed" (`scripts/agent-pipeline/v2/lemd/answers.py`), so an
      issue parked without one can never be un-parked by an answer — measured as a permanent park on
      #1313.
-   - `gh issue edit $ISSUE --add-label needs-human --add-assignee gitchrisqueen --remove-label agent:ready`
+   - `/home/lem/agent-pipeline/lib/gh_safe.sh issue-edit $ISSUE --add-label needs-human --add-assignee gitchrisqueen --remove-label agent:ready`
      (the same escalation shape as the preamble's "Escalate to a human" — assignee included).
    - Do **not** proceed to step 3 — no worktree change, no commit.
    If `Acceptance` IS testable against `Verifier`, proceed to step 3 exactly as on any other issue; this
@@ -51,11 +51,12 @@ A fresh worktree on branch `$BRANCH` (from origin/main) is ready. Implement issu
    Reuse existing utilities named in the issue; don't invent parallel helpers.
 4. Add/extend tests. Run unit tests locally if you can.
 5. Commit atomically with a clear conventional-commit message.
-6. `git push -u origin $BRANCH`.
+6. `/home/lem/agent-pipeline/lib/git_push.sh` (pushes your branch and sets its upstream).
 7. **Scope check BEFORE you claim the close** (see the preamble's "Phased work"). Re-read issue #$ISSUE:
    does this PR satisfy **every** acceptance criterion? If any remains — an unchecked box you did not
    implement, or an explicit later phase ("Phase 2", "lands in a follow-up PR", "deferred to") — do one of:
-   - **(a)** File the follow-up issue now — `<original title> — Phase N (follow-up of #$ISSUE)`, quoting
+   - **(a)** File the follow-up issue now (`gh_safe.sh issue-create`, see the preamble) —
+     `<original title> — Phase N (follow-up of #$ISSUE)`, quoting
      the remaining scope, labeled topical + a `priority:` (+ `risk:*` if it needs the owner at merge) —
      never `agent:ready`, the owner or a trusted labeler adds that; check it doesn't already exist (`gh issue list --search`). Link it as
      `Follow-up: #<new>` in the PR body **and** comment it on #$ISSUE. Keep `Closes #$ISSUE`.
@@ -69,7 +70,8 @@ A fresh worktree on branch `$BRANCH` (from origin/main) is ready. Implement issu
    the follow-up issue.
 8. Open the PR — Write the body (what & why, testing notes, `Closes #$ISSUE`) to `tmp/pr-body.md` first:
    `gh pr create --base main --head $BRANCH --title "<type>(<scope>): <summary> (closes #$ISSUE)"
-    --body-file tmp/pr-body.md --label agent:working`
+    --body-file tmp/pr-body.md`, then label it with the number it printed:
+   `/home/lem/agent-pipeline/lib/gh_safe.sh pr-edit <pr> --add-label agent:working`
    End the PR body with: `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
 9. **Do NOT enable auto-merge.** Merge is controlled by the runner (`tick.sh`), which merges only after
    CI is green AND one fresh review exists (the runner's Claude adversarial review — or Copilot's,
@@ -79,6 +81,7 @@ A fresh worktree on branch `$BRANCH` (from origin/main) is ready. Implement issu
    - If `RISK` is non-empty (migration/security/live-linkedin/product-decision): add label `needs-human`,
      assign `gitchrisqueen`, **post a Decision Comment (see the preamble) — lettered options +
      a recommendation, NOT just prose** — then **park it** so the serial pipeline proceeds:
-     `gh pr edit <pr> --add-label agent:blocked --remove-label agent:working` and
-     `gh issue edit <ISSUE> --add-label agent:blocked --remove-label agent:working`. The human owns it.
+     `/home/lem/agent-pipeline/lib/gh_safe.sh pr-edit <pr> --add-label agent:blocked --remove-label agent:working` and
+     `/home/lem/agent-pipeline/lib/gh_safe.sh issue-edit <ISSUE> --add-label agent:blocked --remove-label agent:working`.
+     The human owns it.
 10. STOP. (CI + review happen asynchronously; later ticks handle fix/review/selfreview/merge.)

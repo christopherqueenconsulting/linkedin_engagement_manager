@@ -42,14 +42,21 @@ Repo: `christopherqueenconsulting/linkedin_engagement_manager`. Owner/escalation
     exports the token `gh` should use, and the prefixed form is denied.
   - **Multi-line text goes in a file, never in `--body "…"`.** Write it with the Write tool to
     `tmp/<name>.md` in your worktree (`tmp/*` is gitignored) and pass `--body-file tmp/<name>.md` to
-    `gh pr create` / `gh pr comment` / `gh pr edit` / `gh issue create` / `gh issue comment`. A
-    multi-line commit message is `git commit -F tmp/<name>.txt`. A file argument outside your
-    worktree (absolute, `~`, `$VAR` or `..`) is denied.
-  - Push with the branch name written out: `git push`, `git push -u origin feature/…` / `fix/…`, or
-    `git push --force-with-lease` — never to `main`, never a delete, never a plain `--force`.
-  - `gh issue edit` is for labels and assignees only (its `--body` / `--title` forms are denied), and
-    no agent may ADD `agent:ready` — that label is the owner's provenance signal. Leave a follow-up
-    issue without it; the owner or a trusted labeler decides when it is ready.
+    `gh pr create` / `gh pr comment` / `gh pr edit` / `gh issue comment` / the helper's `issue-create`.
+    A multi-line commit message is `git commit -F tmp/<name>.txt`. A file argument outside your
+    worktree (absolute, `~`, `$VAR` or `..`) is denied. Never `--repo` / `-R`: you are in the repo.
+  - **Push only with `/home/lem/agent-pipeline/lib/git_push.sh`** (or `… --force-with-lease` after a
+    rebase). `git push` is denied in every form; the helper pushes exactly your checked-out run
+    branch to itself — never `main`, never another branch, no refspecs.
+  - **Labels, assignees and new issues go through ONE helper**, `/home/lem/agent-pipeline/lib/gh_safe.sh`
+    (`gh issue edit`, `gh issue create` and label-adding `gh pr edit` / `gh pr create` are denied):
+    - `gh_safe.sh issue-edit <ISSUE> --add-label L --remove-label L --add-assignee U …`
+    - `gh_safe.sh pr-edit <PR> --add-label L --remove-label L --add-assignee U …`
+    - `gh_safe.sh issue-create --title "…" --body-file tmp/<name>.md [--label L]`
+    It edits only THIS run's issue/PR (or the PR on your branch), and it refuses to ADD the
+    provenance-gated labels — `agent:ready`, `release:now`, `agent:revise`, `agent:depfix`,
+    `agent:docfix` — in any spelling. Removing one is fine. Leave a follow-up issue without
+    `agent:ready`; the owner or a trusted labeler decides when it is ready.
   - `gh api` is denied. Review threads are read and resolved through
     `/home/lem/agent-pipeline/lib/review_threads.sh` (`list <PR>` / `resolve <PR> <thread-id>`);
     everything else has a `gh pr …` / `gh issue …` form.
@@ -106,7 +113,7 @@ Before you open (or merge) a PR that closes an issue:
 2. If **nothing** remains → normal `Closes #N`. Ticking the issue's acceptance boxes needs
    `gh issue edit --body`, which your profile denies — list the boxes this PR satisfies in the PR body.
 3. If **something** remains, pick one — never neither:
-   - **(a) File the follow-up issue now.** Title it so the lineage is obvious
+   - **(a) File the follow-up issue now** (`gh_safe.sh issue-create`, above). Title it so the lineage is obvious
      (`<original title> — Phase N (follow-up of #<orig>)`), quote the remaining scope from the
      original, give it real acceptance criteria, and label it with the topical labels + a `priority:`
      (+ `risk:*` if it needs the owner at merge) — never `agent:ready`, which the owner or a trusted
@@ -153,9 +160,10 @@ nothing held.
 - A **DB migration is destructive** or ambiguous, or you'd have to weaken a security control.
 - You've made **4+ fix attempts** on CI and it still fails, or you're otherwise stuck.
 
-To escalate: `gh issue edit <ISSUE> --add-label needs-human --add-assignee gitchrisqueen`, remove `agent:ready`
-(`--remove-label agent:ready`), **post a Decision Comment (see below)**, and if a PR exists convert it to
-draft (`gh pr ready --undo <PR>`) and label it `agent:blocked`. Then STOP.
+To escalate: `/home/lem/agent-pipeline/lib/gh_safe.sh issue-edit <ISSUE> --add-label needs-human
+--add-assignee gitchrisqueen --remove-label agent:ready`, **post a Decision Comment (see below)**, and if
+a PR exists convert it to draft (`gh pr ready --undo <PR>`) and label it `agent:blocked`
+(`gh_safe.sh pr-edit <PR> --add-label agent:blocked`). Then STOP.
 
 ## Decision Comment — REQUIRED whenever you hand anything to a human
 Any time you label something `needs-human` (in MODE=start with `RISK` set, or when escalating from any mode),
@@ -242,19 +250,14 @@ as, don't grind — escalate with `needs-human` and say the model tier may be th
 CREATING side-instruction issues you may suggest a tier in a comment, but leave labeling to the owner
 (exception: trivial docs-only issues you create may carry `agent:model:sonnet` from the start).
 
-## Release fast lane (`release:now`) — YOUR call to make
+## Release fast lane (`release:now`) — REQUEST it, never apply it
 
-Releases batch 4× daily (median ~168 min wait). You may self-apply `release:now` per the policy in the
-**ship-issue** skill and `docs/release-fast-lane.md` — high priority or user-visible breakage yes; docs/tests/
-refactors/dep bumps/flag-disabled/unverified work no; one fast-laned PR per session; reverts and prod fixes
-always allowed.
-
-```bash
-gh pr edit <PR> --repo "$SLUG" --add-label 'release:now'
-```
-
-Apply it BEFORE the PR merges (the label is read at merge time) and say why in one line in the PR body so
-the call is auditable. It skips the WAIT, never a check.
+Releases batch 4× daily (median ~168 min wait). `release:now` is a provenance-gated label, so you do
+not apply it: the helper refuses it, and the owner applies it. When a PR meets the policy in the
+**ship-issue** skill and `docs/release-fast-lane.md` — high priority or user-visible breakage yes;
+docs/tests/refactors/dep bumps/flag-disabled/unverified work no; reverts and prod fixes always — say so
+in ONE line of the PR body (`Requesting release:now: <why>`) so the owner can apply it before the merge
+(the label is read at merge time). It skips the WAIT, never a check.
 
 Keep each tick focused and finite. Prefer correctness and convention-compliance over speed — a clean PR that
 passes CI and review the first time is the goal.

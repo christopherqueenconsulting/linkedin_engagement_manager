@@ -803,29 +803,31 @@ observation, nothing parked). v1's `tick.sh` wraps `ledger_charge` once
 (`guard_ledger_charge_with_profile`) so its six charge sites charge nothing for an agent MODE that
 would be refused. `run_lane` itself also returns 73 on the refusal.
 
-**Operator step after this lands.** The sync timer is not enabled (§7), so this is manual:
+**Operator step after this lands.** The sync timer is not enabled (§7; §8 "Automated" explains why), so this is manual:
 
 1. From an up-to-date checkout of `main`, run `scripts/agent-pipeline/install.sh --sync` and require
    its summary to report **0 refused**. A refused file stays the box's old copy.
 2. Before touching `config.env`, prove the installed launcher is the new one: the installed
    `lib/run_lane.sh` must contain the string `PERMISSION PROFILE OFF`, and `config/claude-headless.json`
-   and `lib/review_threads.sh` must exist under `$BASE`.
+   `lib/review_threads.sh`, `lib/gh_safe.sh` and `lib/git_push.sh` must exist under `$BASE`.
 3. Only then remove `LEM_PERMISSION_PROFILE_MODES=selfreview` (and the old
    `LEM_PERMISSION_PROFILE=<path>`) from `$BASE/config.env`. ⚠️ **Under the OLD `run_lane.sh`,
    removing those lines drops EVERY mode to the unrestricted flag** — the old default was the flag,
    not the profile — which is why step 2 comes first.
 4. Restart the daemon units by the §8 procedure above: `v2/lemd/spend.py` changed (the `/usage`
    probe's argv), and a unit keeps serving the code it imported.
-5. `scripts/agent-pipeline/status.sh` must show no `stale units:`, and `denials (24h):` is the line
-   to watch for the first day of all-mode runs.
+5. `scripts/agent-pipeline/status.sh` must show no `stale units:`, `permission profile: on`, and
+   `denials (24h):` is the line to watch for the first day of all-mode runs.
 
 The two usage probes (`lib/capacity.sh`'s `_claude_probe`, `v2/lemd/spend.py`'s `/usage` read) call
 no tool, so they run with `--permission-mode dontAsk` and no settings file.
 
-**Reviewing denials.** `status.sh` prints `denials (24h): N, by mode: …` on every report and raises
-it under NEEDS ATTENTION when N > 0. The owner reviews that list at least daily while the profile is
-new (and whenever it is raised): a denial is either an allow a runbook step needs (fix the profile
-or the runbook in a PR) or an agent trying something it should not (read the run). The raw entries:
+**Reviewing denials.** `status.sh` prints `permission profile: on|off|restricted(<modes>)` (or
+`MISSING`) and `denials (24h): N, by mode: …` on every report. It raises NEEDS ATTENTION when N > 0,
+when the profile is `off` or missing, and when any run in the window has `parsed: false` — that run's
+denials are unknown, not zero. The owner reviews that list at least daily while the profile is new
+(and whenever it is raised): a denial is either an allow a runbook step needs (fix the profile or the
+runbook in a PR) or an agent trying something it should not (read the run). The raw entries:
 
 ```
 jq -c 'select(.denial_count > 0) | {ts, mode, pr, issue, d: [.denials[] | .tool_input.command // .tool_name]}' logs/denials.jsonl | tail -20
@@ -838,22 +840,37 @@ What the profile allows each mode, and the calls that are narrower than they loo
   execution; the exact allow list is the control, and the `--ex*` / `-x*` / `-i*` / `--interactive*`
   denies are belt-and-braces against a broader allow merged from another settings source.
   `run_lane.sh` sets `GIT_EDITOR=true` on the launch so `--continue` never waits on an editor.
-  `git rm <path>` (not `-r`) resolves a modify/delete conflict, and `git mv` is allowed only under
-  `compose/local/database/migrations/` for the duplicate-version rename.
-- **`git push`** — no `git push *`. Allowed: bare `git push`, `git push [-u] origin feature/*|fix/*`
-  (`HEAD` too), `git push origin dependabot/*`, and `git push --force-with-lease [origin
-  feature/*|fix/*]`. The trailing `*` of a branch shape still matches extra arguments, so denies
-  catch main as a target anywhere (`* main`, `* main *`, `*:main`, `*:main *`,
-  `*:refs/heads/main[ *]`), deletes (`--delete`, `-d`, the `origin :branch` refspec), `--mirror`,
-  `--all`, `--prune`, `--repo`, `+refspec`, and every `--force` / `-f` form including bundles
-  (`-fu`). Claude Code treats the space before a trailing `*` as part of the rule, so `Bash(git push
-  --force *)` matches `git push --force` and `git push --force origin x` but never
-  `--force-with-lease`. `tests/unit/test_agent_pipeline_permission_profile.py` pins both directions
-  with a matcher that implements the documented rules.
+  `git rm <path>` resolves a modify/delete conflict; any `git rm` carrying a flag with an `r` in it
+  (`-r`, `-rf`, `--cached … router.py` included — conservative on purpose), `--recursive`, or a
+  path under `.claude/` or `.github/workflows/` is denied. `git mv` is allowed only with BOTH source
+  and destination under `compose/local/database/migrations/` (the duplicate-version rename), and
+  never with `..`.
+- **Pushing — `lib/git_push.sh`, and `git push` denied in every form.** Push patterns could not be
+  made safe: a branch-shaped allow's trailing `*` still admits a second refspec (`feature/x
+  refs/heads/main`), ref resolution (`x:heads/main`), deletes and `--mirror`; and Claude Code reads a
+  rule ending in `:*` as a trailing wildcard (the docs' `Bash(ls:*)` = `Bash(ls *)`), so "deny any
+  refspec colon" — `Bash(git push *:*)` — would actually mean `git push * *`. So `Bash(git push)` and
+  `Bash(git push *)` are denied outright, and the profile allows exactly
+  `/home/lem/agent-pipeline/lib/git_push.sh` and `… --force-with-lease`. The helper takes no other
+  argument and no refspec: it pushes `refs/heads/<current>:refs/heads/<current>` with `-u`, only when
+  the checked-out branch is this run's `$BRANCH` (or a new `fix/*` branch in MODE=depfix), and never
+  `main`/`master`. `$BRANCH`/`$MODE` come from the runner; an allow never matches past a `VAR=…`
+  prefix. Its tests push to a real local bare remote and assert `main` never moves.
+  `--force-with-lease` keeps its lease; a plain `--force` does not exist any more.
+- **Fetching** is exact: `git fetch origin` and `git fetch origin main` only, because
+  `git fetch origin x:refs/heads/main` rewrites local `main`; the refspec forms (`refs/`, `heads/`,
+  `:main`) are denied as well against a broader allow merged from another settings source.
+  `tests/unit/test_agent_pipeline_permission_profile.py` asserts no rule in the profile ends in `:*`.
 - **File arguments.** Allowed commands that read or write a named file are fenced to the worktree:
-  `git *--output*`, `git *--no-index*`, `*--output-file*`, and `--body-file` / `-F` on `gh`,
-  `-F` / `--file` / `-t` / `--template` on `git commit` are denied when the path is absolute, `~`,
-  a `$VAR` or contains `..` (quoted or not). Agents write such files under the gitignored `tmp/`.
+  `git *--output*`, `git *--no-index*`, `*--output-file*`, `git *--pathspec-from-file*`, and
+  `--body-file` / `-F` on `gh`, `-F` / `--file` / `-t` / `--template` on `git commit` are denied when
+  the path is absolute, `~`, a `$VAR` or contains `..` (quoted or not). `git diff` with such a path
+  is denied as well, because a path outside the repository makes `git diff` switch to `--no-index`
+  on its own and print the file. `git show` / `git log` / `git blame` refuse an outside path
+  ("outside repository"), so they need no rule. Agents write such files under the gitignored `tmp/`.
+  **Limit:** a path INSIDE the worktree that is a committed symlink to an outside file is not caught
+  by any pattern — the rules see text, not the filesystem. `gh_safe.sh issue-create` checks its body
+  file with `realpath` and refuses symlinks; the other `--body-file` users do not.
 - **GitHub GraphQL** — `gh api *` stays denied. Any allow pattern with a wildcard also admits a
   second `-f query=…` (gh keeps the last), `--input <file>` or `-X`, i.e. any call with the
   pipeline's token. MODE=review must still resolve Copilot threads (the merge gate holds on an open
@@ -862,19 +879,37 @@ What the profile allows each mode, and the calls that are narrower than they loo
   validated arguments: `list <PR>`, and `resolve <PR> <PRRT_id>`, which first reads the thread's PR
   and refuses one that is not `<PR>` here — one PR's run cannot clear another PR's merge gate. An
   in-thread reply needs `gh api` too, so the review runbook replies with one `gh pr comment`.
-- **`gh issue create *`** replaces `gh issue create --template agent-task.yml *`: gh refuses
-  `--template` together with `--body`/`--body-file`, so the old allow could never file an issue
-  headlessly — and filing the follow-up is MODE=phasefix's whole job. **`gh issue edit *`** parks
-  and escalates, so it is labels and assignees only: `--body*`, `-b`, `-F`, `--title*`, `-t` are
-  denied. **No agent may ADD `agent:ready`** — `gh issue edit --add-label` in every spelling
-  (`=`, quoted, comma lists) and any `gh issue create` naming it are denied; follow-ups are filed
-  unlabelled for it and the owner or a trusted labeler decides. Removing it (escalation) stays allowed.
+- **Labels, assignees and new issues — `lib/gh_safe.sh`.** Provenance-gated labels can be spelled
+  past any glob (`Agent:Ready`, `agent\:ready`, `agent:read''y`, `-l AGENT:READY` all reach GitHub
+  as one label: the shell expands quotes and escapes, GitHub matches names case-insensitively), so
+  the profile denies `gh issue edit`, `gh issue create`, `gh pr edit … --add-label` and
+  `gh pr create … --label/-l`, and allows `/home/lem/agent-pipeline/lib/gh_safe.sh` instead. It sees
+  the EXPANDED arguments and:
+  - `issue-edit <N>` / `pr-edit <N>`: only `--add-label`, `--remove-label`, `--add-assignee`,
+    `--remove-assignee`; labels are trimmed, lower-cased and limited to `[a-z0-9:_./ -]`; it refuses
+    to ADD `agent:ready`, `release:now`, `agent:revise`, `agent:depfix` or `agent:docfix` (removing
+    is allowed — escalation removes `agent:ready`); and the target must be this run's `$ISSUE` or
+    `$PR`, or a PR whose head is `$BRANCH` (MODE=start labels the PR it opened). The runner exports
+    those three, and an allow rule never matches past a `VAR=…` prefix, so one run cannot lift
+    another item's `needs-human` hold.
+  - `issue-create --title T --body-file tmp/<name> [--label L]`: the same label rules; the body file
+    must be a regular, non-symlink file whose `realpath` is `./tmp/<name>` in the worktree. (gh
+    refuses `--template` with `--body-file`, so the old `--template agent-task.yml` allow could never
+    file an issue headlessly — and filing the follow-up is MODE=phasefix's whole job.)
+  - **Behaviour change:** agents no longer apply `agent:ready` to follow-ups or `release:now` to PRs.
+    Follow-ups wait for the owner or a trusted labeler; a fast-lane candidate carries a
+    `Requesting release:now: <why>` line in its PR body for the owner (`docs/release-fast-lane.md`).
+  - `gh * -R*` / `gh * --repo*` are denied: the agent runs in the repo, and the helpers pin it.
 - **`git switch -c fix/* origin/main`** — MODE=depfix's "not the bump's fault" path opens a fix PR
-  to `main` from a fresh branch; `poetry lock` / `poetry lock --no-update` fix a stale lockfile.
+  to `main` from a fresh branch; `poetry lock` fixes a stale lockfile (the repo is on Poetry 2.x —
+  `poetry.lock` is generated by 2.5 — where `lock` never updates and `--no-update` no longer exists).
 - **`poetry install --with test`** — the preamble's documented fix for a venv with no test plugins.
 - **`scripts/deploy.sh`** — executing it is denied (`scripts/deploy.sh*`, `./scripts/…`, an absolute
   path, `bash`/`sh`/`source`/`.`); naming it in `git add` / `git diff` is not, so a PR touching it
   can be committed.
+- **Playwright MCP** — `browser_run_code` / `browser_run_code_unsafe` (code executed by the MCP
+  server process, i.e. on this host) are denied. MCP permission rules match tool NAMES only, so
+  `browser_navigate` to a `file://` URL cannot be expressed as a rule; that stays a known gap.
 - **Denied, and the runbooks now say so:** `sudo`/`docker` (live validation is owner-run), an
   `env -u GH_TOKEN` prefix (`Bash(env *)` — an `env` allow would let `env … gh api` slip past the
   `gh api` deny; the pipeline already exports the right token), a `| xargs` pipe (MODE=docfix runs
@@ -884,12 +919,12 @@ What the profile allows each mode, and the calls that are narrower than they loo
 
 **A guard rail, not a boundary.** The profile constrains the commands an agent writes. Code an
 allowed command runs — `poetry run pytest` executes the worktree's own tests — runs as the runner's
-uid, and that uid can rewrite `lib/review_threads.sh`, `config/claude-headless.json` and
-`$BASE/config.env`. So the helper's installed path is a guard rail, and such code could persist
-`LEM_PERMISSION_PROFILE=off` into `config.env`; the per-dispatch `PERMISSION PROFILE OFF` line is
-its only detection. The real fix is root custody of `$BASE/lib`, `$BASE/config` and `config.env`
-(an owner action, not in this change). The control for credentials stays custody too
-(`docs/contribution-security.md`).
+uid, and that uid can rewrite `lib/review_threads.sh`, `lib/gh_safe.sh`, `lib/git_push.sh`, `config/claude-headless.json`
+and `$BASE/config.env`. So the helpers' installed paths are guard rails, and such code could persist
+`LEM_PERMISSION_PROFILE=off` into `config.env`; the per-dispatch `PERMISSION PROFILE OFF` line and
+`status.sh`'s `permission profile: off` are its only detection. The real fix is root custody of
+`$BASE/lib`, `$BASE/config` and `config.env` (an owner action, not in this change). The control for
+credentials stays custody too (`docs/contribution-security.md`).
 
 A profile run appends one line to `logs/denials.jsonl` (`ts`, `lane`, `mode`, `issue`, `pr`, `rc`,
 `parsed`, `denial_count`, `denials`), and the JSON `.result` text is written back into the run's

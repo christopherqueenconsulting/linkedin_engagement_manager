@@ -69,7 +69,8 @@ files() {
   # config/ holds the agent permission profile (claude-headless.json) that run_lane.sh applies to
   # EVERY mode by default. A box without it REFUSES every dispatch (run_lane will not fall back to
   # the unrestricted flag on its own), so this glob is load-bearing, not optional. lib/*.sh above
-  # also ships review_threads.sh, the one GraphQL path the profile allows by its installed path.
+  # also ships review_threads.sh, gh_safe.sh and git_push.sh, the helpers the profile allows by
+  # their installed paths (review threads; labels/assignees/new issues; the only push path).
   for f in "$SRC"/config/*.json; do [ -e "$f" ] && echo "config/$(basename "$f")"; done
   # v2 daemon, shipped by the SAME installer as v1 on purpose: during migration both runners live
   # on this box, and two sync mechanisms is how one of them silently goes stale — the exact drift

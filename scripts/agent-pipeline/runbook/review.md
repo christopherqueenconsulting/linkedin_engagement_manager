@@ -20,5 +20,5 @@ The runner will NOT merge while any Copilot thread is unresolved, so you must bo
    - Then **resolve the thread** so the merge gate can clear:
      `/home/lem/agent-pipeline/lib/review_threads.sh resolve $PR <thread_id>` (the `PRRT_…` id from
      step 1; the helper refuses a thread that is not on this PR).
-3. Commit + `git push` (re-triggers CI; Copilot re-reviews the new head and may open fresh threads —
+3. Commit + `/home/lem/agent-pipeline/lib/git_push.sh` (re-triggers CI; Copilot re-reviews the new head and may open fresh threads —
    a later tick will loop back here until Copilot has nothing left). STOP.
