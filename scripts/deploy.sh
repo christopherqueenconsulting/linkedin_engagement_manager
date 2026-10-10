@@ -314,6 +314,61 @@ litellm_ready() {  # $1 = timeout seconds
   return 1
 }
 
+# Bring litellm onto its target state INSIDE the drain window, so the converge in step 7 finds it
+# already there and leaves it alone (issue #2343). The image is the floating `main-latest` tag, so
+# step 4's `pull` usually lands a new digest, and a converge that recreated litellm did it in
+# parallel with the new workers (they have no `depends_on` on it) with no readiness wait — the same
+# dropped-in-flight-call hazard as #2304, on deploys that never touched the config.
+#   $1 = 1 when .litellm/config.yaml changed: --force-recreate, because litellm reads the
+#        bind-mounted config only at startup and compose cannot see a bind-mount edit.
+#   otherwise a plain `up`, which recreates only when the image digest or the service definition
+#        changed, and is a no-op when neither did.
+# At most one recreate either way. Every failure is a WARN, never an abort: the web tier is already
+# live on the new tag, and the client's connect-retry (#986) rides out a proxy that is still coming up.
+# The container's image ID and its registry digest are logged before and after, so the deploy log
+# shows whether a new digest landed and which one it replaced. The registry digest
+# (ghcr.io/berriai/litellm@sha256:...) is what to pin as `image:` if the new one is broken; the
+# image ID only works with `docker tag`, and only while the image is still on the box
+# (docs/zero-downtime-deploys.md, "litellm not ready after a deploy").
+litellm_image_id() {
+  docker inspect -f '{{.Image}}' litellm 2>/dev/null || echo "<none>"
+}
+
+litellm_repo_digest() {  # $1 = image ID from litellm_image_id
+  if [[ "$1" == "<none>" ]]; then
+    echo "<none>"
+    return 0
+  fi
+  docker image inspect -f '{{index .RepoDigests 0}}' "$1" 2>/dev/null || echo "<none>"
+}
+
+reconcile_litellm() {  # $1 = 1 when .litellm/config.yaml changed
+  local before before_digest after
+  before="$(litellm_image_id)"
+  before_digest="$(litellm_repo_digest "${before}")"
+  log "litellm image before reconcile: ${before} (repo digest ${before_digest})"
+  if [[ "$1" == "1" ]]; then
+    log "litellm config changed vs ${PREV_TAG:-<none>} — recreating litellm to reload it"
+    if ! ${COMPOSE} up -d --no-deps --force-recreate litellm; then
+      log "WARN: litellm recreate failed (continuing)"
+      return 0
+    fi
+  else
+    log "Reconciling litellm onto its pulled image (recreated only if the digest changed)"
+    if ! ${COMPOSE} up -d --no-deps litellm; then
+      log "WARN: litellm reconcile failed (continuing)"
+      return 0
+    fi
+  fi
+  after="$(litellm_image_id)"
+  log "litellm image after reconcile: ${after} (repo digest $(litellm_repo_digest "${after}"))"
+  if litellm_ready "${LITELLM_READY_TIMEOUT}"; then
+    log "litellm is ready"
+  else
+    log "WARN: litellm not ready after ${LITELLM_READY_TIMEOUT}s (continuing; previous image ${before}, repo digest ${before_digest})"
+  fi
+}
+
 main() {
 TAG="${1:?Usage: deploy.sh <image-tag>}"
 
@@ -329,8 +384,8 @@ git checkout --quiet "${TAG}" 2>/dev/null || git checkout --quiet "tags/${TAG}"
 
 # litellm reads its bind-mounted .litellm/config.yaml ONLY at startup, and `compose up -d` does
 # not recreate it on a mere file change — so a config edit (e.g. dropping a retired model) would
-# otherwise sit inert until a manual restart. Restart it below when the config changed vs the last
-# good tag (or when there's no baseline to compare against).
+# otherwise sit inert until a manual restart. Step 6d force-recreates it when the config changed vs
+# the last good tag (or when there's no baseline to compare against).
 LITELLM_RESTART=0
 if [[ -z "${PREV_TAG}" ]] || ! git diff --quiet "${PREV_TAG}" "${TAG}" -- .litellm/config.yaml 2>/dev/null; then
   LITELLM_RESTART=1
@@ -529,27 +584,17 @@ persist_image_tag "${TAG}"
 #     code — so a slow drain costs deploy duration, not availability.
 drain_workers
 
-# 6d. Reload litellm if its config changed (compose won't recreate it on a bind-mount edit alone).
-#     It restarts HERE, inside the drain window and before step 7 brings up the new workers, so no
-#     worker LLM call can be in flight across it — provided the drain finished. A drain that TIMED
-#     OUT leaves its stragglers running, and one mid-LLM-call is exposed here exactly as it is to the
-#     recreate that follows (warm shutdown, then SIGKILL). Restarting after the converge (the old step 7a)
-#     dropped live requests mid-response — 4 `APIConnectionError: Connection error.` on the v0.184.0
-#     deploy (issue #2304) — and those are deliberately NOT retried in-app, because the provider may
-#     already have billed them. The web API stays live through this, so a user-facing call at that
-#     exact moment can still fail; that window is now the restart plus the readiness wait, not more.
-if [[ "${LITELLM_RESTART}" == "1" ]]; then
-  log "litellm config changed vs ${PREV_TAG:-<none>} — restarting litellm to reload it"
-  if ${COMPOSE} restart litellm; then
-    if litellm_ready "${LITELLM_READY_TIMEOUT}"; then
-      log "litellm is ready"
-    else
-      log "WARN: litellm not ready after ${LITELLM_READY_TIMEOUT}s (continuing)"
-    fi
-  else
-    log "WARN: litellm restart failed (continuing)"
-  fi
-fi
+# 6d. Reconcile litellm (reconcile_litellm above): recreate it HERE, inside the drain window and
+#     before step 7 brings up the new workers, so no worker LLM call can be in flight across it —
+#     provided the drain finished. A drain that TIMED OUT leaves its stragglers running, and one
+#     mid-LLM-call is exposed here exactly as it is to the recreate that follows (warm shutdown, then
+#     SIGKILL). Recreating it inside the converge dropped live requests mid-response — 4
+#     `APIConnectionError: Connection error.` on the v0.184.0 deploy (issue #2304) — and those are
+#     deliberately NOT retried in-app, because the provider may already have billed them. This runs
+#     on EVERY deploy, not only a config change: a new `main-latest` digest from step 4 is the same
+#     hazard (issue #2343). The web API stays live through this, so a user-facing call at that exact
+#     moment can still fail; that window is the recreate plus the readiness wait, not more.
+reconcile_litellm "${LITELLM_RESTART}"
 
 # 7. Converge the rest of the stack on the new tag (workers, beat, the standby color). The active
 #    color and the edge are already at their target state, so this doesn't touch routing.

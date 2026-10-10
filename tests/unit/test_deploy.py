@@ -59,6 +59,12 @@ _FAKE_COMPOSE = textwrap.dedent(
             f.write(str(n))
         return n
 
+    # DEPLOY_FAKE_CALLS: append every invocation, one per line, so a test can read the ORDER.
+    calls_file = os.environ.get("DEPLOY_FAKE_CALLS")
+    if calls_file:
+        with open(calls_file, "a", encoding="utf-8") as f:
+            f.write(" ".join(args) + "\\n")
+
     if args[:2] == ["config", "--services"]:
         for svc in _EXPECTED + ["flyway"]:
             print(svc)
@@ -78,6 +84,11 @@ _FAKE_COMPOSE = textwrap.dedent(
         print("urllib.error.URLError: <urlopen error [Errno 111] Connection refused>",
               file=sys.stderr)
         sys.exit(1)
+    elif args[:3] == ["up", "-d", "--no-deps"] and args[-1] == "litellm":
+        if os.environ.get("DEPLOY_FAKE_LITELLM_UP_FAIL") == "1":
+            print("Error response from daemon: pull access denied", file=sys.stderr)
+            sys.exit(1)
+        sys.exit(0)
     elif args[:3] == ["up", "-d", "--remove-orphans"]:
         n = inc_state()
         if n <= fail_count:
@@ -152,9 +163,34 @@ _FAKE_DOCKER = textwrap.dedent(
                 print(name.strip())
         sys.exit(0)
 
+    if args[:2] == ["image", "inspect"]:
+        # DOCKER_FAKE_REPO_DIGESTS: comma-separated "<image id>=<repo digest>"; an unlisted ID has no
+        # repo digest, which real docker reports as a template error (non-zero exit).
+        digests = dict(
+            item.split("=", 1) for item in os.environ.get("DOCKER_FAKE_REPO_DIGESTS", "").split(",") if item
+        )
+        if args[-1] not in digests:
+            sys.exit(1)
+        print(digests[args[-1]])
+        sys.exit(0)
+
     if args[:1] == ["inspect"]:
         fmt = args[args.index("-f") + 1]
         wanted = args[-1]
+        if ".Image" in fmt:
+            # DOCKER_FAKE_IMAGE_IDS: comma-separated IDs handed out one per inspect, in order; unset
+            # means no such container.
+            ids = [i for i in os.environ.get("DOCKER_FAKE_IMAGE_IDS", "").split(",") if i]
+            if not ids:
+                sys.exit(1)
+            counter = os.environ["DOCKER_FAKE_IMAGE_STATE"]
+            n = 0
+            if os.path.exists(counter):
+                with open(counter, encoding="utf-8") as fh:
+                    n = int(fh.read().strip() or "0")
+            bump(counter)
+            print(ids[min(n, len(ids) - 1)])
+            sys.exit(0)
         for cid, name, running in containers():
             if cid == wanted:
                 print(running if "State.Running" in fmt else "/" + name)
@@ -370,36 +406,186 @@ class TestLitellmReady:
         assert int(state.read_text(encoding="utf-8")) >= 1
 
 
-class TestLitellmRestartOrdering:
-    """The litellm restart must sit inside the drain window and wait for readiness.
+class TestReconcileLitellm:
+    """The litellm reconcile inside the drain window (issues #2304, #2343).
+
+    One recreate at most, a readiness wait after it, and every failure a WARN rather than an abort.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _fake_docker(self, tmp_path: Path) -> None:
+        # The image-ID lookup calls `docker inspect`; never let it reach a real daemon.
+        _write_docker_stub(tmp_path)
+
+    @staticmethod
+    def _calls(path: Path) -> list[str]:
+        return path.read_text(encoding="utf-8").splitlines()
+
+    def test_logs_the_image_id_before_and_after(self, tmp_path: Path) -> None:
+        result = _run(
+            tmp_path,
+            {
+                "DEPLOY_FAKE_STATE": str(tmp_path / "state"),
+                "DEPLOY_FAKE_LITELLM_READY_AFTER": "0",
+                "DOCKER_FAKE_IMAGE_IDS": "sha256:old,sha256:new",
+                "DOCKER_FAKE_IMAGE_STATE": str(tmp_path / "image-state"),
+            },
+            "reconcile_litellm 0",
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "litellm image before reconcile: sha256:old (repo digest <none>)" in result.stdout
+        assert "litellm image after reconcile: sha256:new (repo digest <none>)" in result.stdout
+
+    def test_logs_the_registry_digest_to_pin_back_to(self, tmp_path: Path) -> None:
+        old_digest = "ghcr.io/berriai/litellm@sha256:aaa"
+        new_digest = "ghcr.io/berriai/litellm@sha256:bbb"
+        result = _run(
+            tmp_path,
+            {
+                "DEPLOY_FAKE_STATE": str(tmp_path / "state"),
+                "LITELLM_READY_TIMEOUT": "1",
+                "DOCKER_FAKE_IMAGE_IDS": "sha256:old,sha256:new",
+                "DOCKER_FAKE_IMAGE_STATE": str(tmp_path / "image-state"),
+                "DOCKER_FAKE_REPO_DIGESTS": f"sha256:old={old_digest},sha256:new={new_digest}",
+            },
+            "set -e; reconcile_litellm 0; echo after",
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert f"litellm image before reconcile: sha256:old (repo digest {old_digest})" in result.stdout
+        assert f"litellm image after reconcile: sha256:new (repo digest {new_digest})" in result.stdout
+        assert (
+            f"WARN: litellm not ready after 1s (continuing; previous image sha256:old, repo digest {old_digest})"
+            in result.stdout
+        )
+        assert result.stdout.rstrip().endswith("after")
+
+    def test_not_ready_warn_names_the_previous_image(self, tmp_path: Path) -> None:
+        result = _run(
+            tmp_path,
+            {
+                "DEPLOY_FAKE_STATE": str(tmp_path / "state"),
+                "LITELLM_READY_TIMEOUT": "1",
+                "DOCKER_FAKE_IMAGE_IDS": "sha256:old,sha256:new",
+                "DOCKER_FAKE_IMAGE_STATE": str(tmp_path / "image-state"),
+            },
+            "set -e; reconcile_litellm 1; echo after",
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert (
+            "WARN: litellm not ready after 1s (continuing; previous image sha256:old, repo digest <none>)"
+            in result.stdout
+        )
+
+    def test_a_missing_container_logs_none_and_does_not_trip_set_e(self, tmp_path: Path) -> None:
+        result = _run(
+            tmp_path,
+            {"DEPLOY_FAKE_STATE": str(tmp_path / "state"), "DEPLOY_FAKE_LITELLM_READY_AFTER": "0"},
+            "set -e; reconcile_litellm 0; echo after",
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "litellm image before reconcile: <none> (repo digest <none>)" in result.stdout
+        assert "litellm image after reconcile: <none> (repo digest <none>)" in result.stdout
+        assert result.stdout.rstrip().endswith("after")
+
+    def test_config_change_force_recreates_exactly_once_then_waits(self, tmp_path: Path) -> None:
+        calls = tmp_path / "calls"
+        result = _run(
+            tmp_path,
+            {
+                "DEPLOY_FAKE_CALLS": str(calls),
+                "DEPLOY_FAKE_STATE": str(tmp_path / "state"),
+                "DEPLOY_FAKE_LITELLM_READY_AFTER": "0",
+            },
+            "reconcile_litellm 1",
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        lines = self._calls(calls)
+        recreates = [c for c in lines if c.startswith("up -d") and c.endswith("litellm")]
+        assert recreates == ["up -d --no-deps --force-recreate litellm"]
+        assert not any(c.startswith("restart") for c in lines)
+        probe = next(i for i, c in enumerate(lines) if c.startswith("exec -T litellm"))
+        assert lines.index(recreates[0]) < probe
+        assert "litellm is ready" in result.stdout
+
+    def test_unchanged_config_still_reconciles_onto_a_new_digest(self, tmp_path: Path) -> None:
+        # A plain `up` (no --force-recreate): compose recreates only on a new image digest, so a
+        # `main-latest` bump lands HERE instead of in the converge, and nothing else does.
+        calls = tmp_path / "calls"
+        result = _run(
+            tmp_path,
+            {
+                "DEPLOY_FAKE_CALLS": str(calls),
+                "DEPLOY_FAKE_STATE": str(tmp_path / "state"),
+                "DEPLOY_FAKE_LITELLM_READY_AFTER": "0",
+            },
+            "reconcile_litellm 0",
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        lines = self._calls(calls)
+        assert [c for c in lines if c.startswith("up")] == ["up -d --no-deps litellm"]
+        assert any(c.startswith("exec -T litellm") for c in lines)
+
+    def test_readiness_timeout_is_a_warn_not_an_abort(self, tmp_path: Path) -> None:
+        result = _run(
+            tmp_path,
+            {"DEPLOY_FAKE_STATE": str(tmp_path / "state"), "LITELLM_READY_TIMEOUT": "2"},
+            "set -e; reconcile_litellm 1; echo after",
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "WARN: litellm not ready after 2s (continuing" in result.stdout
+        assert result.stdout.rstrip().endswith("after")
+
+    @pytest.mark.parametrize(("changed", "needle"), [("1", "recreate failed"), ("0", "reconcile failed")])
+    def test_a_failed_up_is_a_warn_and_skips_the_wait(self, tmp_path: Path, changed: str, needle: str) -> None:
+        calls = tmp_path / "calls"
+        result = _run(
+            tmp_path,
+            {"DEPLOY_FAKE_CALLS": str(calls), "DEPLOY_FAKE_LITELLM_UP_FAIL": "1"},
+            f"set -e; reconcile_litellm {changed}; echo after",
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert f"WARN: litellm {needle}" in result.stdout
+        assert not any(c.startswith("exec") for c in self._calls(calls))
+        assert result.stdout.rstrip().endswith("after")
+
+
+class TestLitellmReconcileOrdering:
+    """The litellm reconcile must sit inside the drain window, before the worker converge.
 
     A config-changing deploy restarted litellm AFTER the new workers were up, dropping their
-    in-flight LLM calls (issue #2304: 4x `APIConnectionError: Connection error.` on v0.184.0).
-    The restart must sit inside the drain window — after the drain, before the worker converge —
-    and wait for readiness, and only one restart may exist.
+    in-flight LLM calls (issue #2304: 4x `APIConnectionError: Connection error.` on v0.184.0), and a
+    new `main-latest` digest let the converge recreate it alongside the workers (issue #2343). Order:
+    drain < reconcile (recreate < readiness wait) < converge, on the success path only.
     """
 
     BODY = DEPLOY_SH.read_text(encoding="utf-8")
     MAIN = BODY[BODY.index("\nmain() {"):]
+    FN = BODY[BODY.index("reconcile_litellm() {"):BODY.index("\nmain() {")]
+    CALL = 'reconcile_litellm "${LITELLM_RESTART}"'
 
-    def test_restart_runs_after_the_drain_and_before_the_converge(self) -> None:
+    def test_reconcile_runs_after_the_drain_and_before_the_converge(self) -> None:
         drain = self.MAIN.rindex("drain_workers")
-        restart = self.MAIN.index("${COMPOSE} restart litellm")
+        reconcile = self.MAIN.index(self.CALL)
         converge = self.MAIN.index("if ! converge_stack; then")
-        assert drain < restart < converge
+        assert drain < reconcile < converge
 
-    def test_there_is_exactly_one_restart(self) -> None:
-        assert self.BODY.count("${COMPOSE} restart litellm") == 1
+    def test_reconcile_waits_for_readiness_after_recreating(self) -> None:
+        force = self.FN.index("${COMPOSE} up -d --no-deps --force-recreate litellm")
+        plain = self.FN.index("${COMPOSE} up -d --no-deps litellm")
+        ready = self.FN.index('litellm_ready "${LITELLM_READY_TIMEOUT}"')
+        assert force < ready and plain < ready
 
-    def test_restart_waits_for_readiness_before_the_converge(self) -> None:
-        restart = self.MAIN.index("${COMPOSE} restart litellm")
-        ready = self.MAIN.index('litellm_ready "${LITELLM_READY_TIMEOUT}"')
-        converge = self.MAIN.index("if ! converge_stack; then")
-        assert restart < ready < converge
+    def test_called_once_and_no_restart_left(self) -> None:
+        # One call, on the success path. The abort and rollback paths run before it and exit, so
+        # they never restart litellm on the reverted config.
+        assert self.MAIN.count(self.CALL) == 1
+        assert "${COMPOSE} restart litellm" not in self.BODY
+        rollback = self.MAIN.index('log "Rolling back to ${PREV_TAG}"')
+        assert rollback < self.MAIN.index(self.CALL)
 
     def test_probe_uses_the_interpreter_the_compose_healthcheck_proves(self) -> None:
         # The probe's output is discarded, so a missing interpreter reads as "never ready" and
-        # costs every config-changing deploy the full timeout. Pin it to the healthcheck's binary.
+        # costs every deploy the full timeout. Pin it to the healthcheck's binary.
         compose = (DEPLOY_SH.parents[1] / "docker-compose.yml").read_text(encoding="utf-8")
         litellm_service = compose.split("\n  litellm:\n", 1)[1]
         assert 'test: ["CMD-SHELL", "python3 -c' in litellm_service

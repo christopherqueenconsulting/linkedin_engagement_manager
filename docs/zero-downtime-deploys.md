@@ -26,23 +26,73 @@ Cloudflare Tunnel (dashboard ingress: http://web_app:8000  — UNCHANGED)
 
 ## Deploy flow (scripts/deploy.sh)
 
-1. Pull images, maintenance-drain the Celery workers, run Flyway (old code keeps serving —
-   migrations must stay backward-compatible, which additive Flyway migrations are).
+1. Pull images, run Flyway (old code keeps serving — migrations must stay backward-compatible,
+   which additive Flyway migrations are).
 2. Start the INACTIVE color on the new tag (`up -d --no-deps web_api_<target>`), health-check it.
    - **Failure here costs zero downtime**: the active color was never touched; the standby is
      restored to the last-good tag and the deploy aborts.
 3. Render `/opt/lem/deploy/nginx/default.conf` to the new color, `nginx -t`, graceful
    `nginx -s reload` (no dropped connections), verify `/health` through the edge, then write
    `/opt/lem/.active_color`.
-4. `up -d --remove-orphans` converges workers/beat and the now-standby color onto the new tag.
-   - If `.litellm/config.yaml` changed vs the last-good tag, `litellm` is restarted just BEFORE
-     this converge, inside the drain window, and the deploy waits for `/health/readiness`
-     (`LITELLM_READY_TIMEOUT`, default 90s; a timeout is a WARN, not an abort). Restarting it after
-     the converge dropped live worker LLM calls (issue #2304), and a dropped in-flight call is
+4. Persist the tag baseline (`.last_good_tag`, `IMAGE_TAG`), then enter maintenance mode and drain
+   the Celery workers: stop beat, pause dispatch, cancel queue consumers and wait up to
+   `DRAIN_TIMEOUT` for running tasks. The site is already on the new code, so a slow drain costs
+   deploy duration, not availability.
+5. `up -d --remove-orphans` converges workers/beat and the now-standby color onto the new tag.
+   - `litellm` is reconciled just BEFORE this converge, inside step 4's drain window, on EVERY deploy
+     (`reconcile_litellm`), and the deploy then waits for `/health/readiness`
+     (`LITELLM_READY_TIMEOUT`, default 90s; a timeout or a failed `up` is a WARN, not an abort).
+     If `.litellm/config.yaml` changed vs the last-good tag it is `up -d --no-deps --force-recreate`
+     (litellm reads the bind-mounted config only at startup); otherwise a plain `up -d --no-deps`,
+     which recreates it only when step 1's `pull` brought a new `main-latest` digest (or its
+     service definition changed) and is a no-op otherwise. Either way it is recreated at most once,
+     and the converge then finds it already on target and leaves it alone.
+   - Why: recreating it after the converge (issue #2304), or inside it alongside the new workers on
+     a new digest (issue #2343), dropped live worker LLM calls, and a dropped in-flight call is
      never retried in-app because the provider may already have billed it. The guarantee holds
      only when the drain finished: a task still running after `DRAIN_TIMEOUT` can lose its
      in-flight call here, as it can to the worker recreate that follows. The probe runs `python3`
      inside the container, the same interpreter the compose healthcheck uses.
+   - The abort and rollback paths exit before this step, so they never recreate litellm on the
+     reverted config by this route. Residual: the legacy first-cutover rollback's own converge can
+     still recreate litellm if `pull` brought a new digest — that path only runs when there is no
+     serving colour to fall back behind.
+   - Every reconcile adds up to `LITELLM_READY_TIMEOUT` (90s) to the deploy when the proxy is slow
+     to answer.
+
+#### litellm not ready after a deploy
+
+The reconcile never aborts a deploy, so a broken `main-latest` digest can go live with the deploy
+reporting success. Look for these lines in the deploy log (the CI SSH step, or a local
+`scripts/deploy.sh` run):
+
+- `litellm image before reconcile: <id> (repo digest <digest>)` and the matching `after` line.
+  Different IDs mean a new digest landed on this deploy. `<digest>` is the registry digest,
+  `ghcr.io/berriai/litellm@sha256:...`. `<none>` means no `litellm` container existed (or the image
+  has no registry digest).
+- `WARN: litellm not ready after <N>s (continuing; previous image <id>, repo digest <digest>)`, the
+  readiness wait ran out. Workers resume against the proxy anyway when maintenance mode ends.
+- `WARN: litellm recreate failed (continuing)` or `WARN: litellm reconcile failed (continuing)`,
+  the `up` itself failed and no readiness wait ran. The worker converge that follows may then
+  recreate litellm alongside the new workers, which is the dropped-call hazard this step exists to
+  avoid, so treat this WARN like the not-ready one.
+
+Diagnose: `docker logs --tail 200 litellm`, then re-run the readiness probe by hand:
+`docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T litellm python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/readiness', timeout=5)"`.
+
+Pin back to the previous image. The logged `ghcr.io/berriai/litellm@sha256:...` repo digest is
+the value to pin as `image:` for the `litellm` service in `docker-compose.yml`; it still pulls after
+the local image is pruned. The image ID (`sha256:...` without a registry name) is for `docker tag`
+only. Quick, box-local route: tag the logged previous ID
+(`docker tag <previous-id> ghcr.io/berriai/litellm:main-latest`), then
+`docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --no-deps --force-recreate litellm`
+from `/opt/lem` (add `-f docker-compose.grid.yml` when the box runs the Grid overlay, as
+`deploy.sh` does). The next deploy's
+`pull` moves the tag forward again, so pin a digest in `docker-compose.yml` by PR if the new one
+stays broken, using the logged repo digest. The same deploy ends with `docker image prune -af --filter until=168h`, which deletes
+every image created more than 7 days ago that no container uses. If the previous digest was that
+old, it is gone by the time the deploy finishes and cannot be re-tagged. Pin the logged repo
+digest in `docker-compose.yml` by PR instead.
 
 ### Worker-tier resilience (issue #831)
 
