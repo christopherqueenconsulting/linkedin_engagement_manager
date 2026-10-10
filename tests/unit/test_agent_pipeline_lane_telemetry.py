@@ -269,6 +269,12 @@ def _install_lane_fixture(tmp_path: Path, claude_rc: int) -> dict:
     lib.mkdir()
     for sh in (RUN_LANE_SH.parent).glob("*.sh"):
         (lib / sh.name).write_text(sh.read_text(encoding="utf-8"), encoding="utf-8")
+    # run_lane applies $BASE/config/claude-headless.json to every MODE and REFUSES without it, so a
+    # $BASE that models a real install ships it — the same file install.sh places.
+    config = tmp_path / "config"
+    config.mkdir()
+    profile = RUN_LANE_SH.parent.parent / "config" / "claude-headless.json"
+    (config / profile.name).write_text(profile.read_text(encoding="utf-8"), encoding="utf-8")
     binf = tmp_path / "bin"
     binf.mkdir()
     claude = binf / "claude"

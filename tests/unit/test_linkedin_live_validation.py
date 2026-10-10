@@ -4459,7 +4459,7 @@ class TestMainRefusals:
 
         The probe drives the owner's real LinkedIn session on an account with a 429-lockout
         history. A hatch that only an instruction keeps agents away from is not a control, because
-        headless lanes launch with `--dangerously-skip-permissions`.
+        a headless lane's permission profile is not a sandbox.
         """
         monkeypatch.setattr(llv, "breaker_reading",
                             lambda: {"readable": True, "open": True, "wait_seconds": 900,

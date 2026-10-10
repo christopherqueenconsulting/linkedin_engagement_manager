@@ -160,9 +160,11 @@ _claude_probe() {
   # Returns 0 ok, 1 usage-limit, 2 other failure. Side effect: one real (tiny) Claude call.
   local out rc
   out="$(mktemp "${TMPDIR:-/tmp}/probe.XXXXXX")"
+  # `dontAsk`, not the skip-permissions flag: the probe needs no tool at all, so the mode that
+  # denies every un-allowed tool call costs it nothing. No `--settings` — no rule is needed.
   ( unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY 2>/dev/null || true
     timeout "${CLAUDE_PROBE_TIMEOUT:-40}" claude -p "Reply with the single word OK." \
-      --dangerously-skip-permissions 2>&1 ) >"$out" 2>&1
+      --permission-mode dontAsk 2>&1 ) >"$out" 2>&1
   rc=$?
   if [ "$rc" -eq 0 ]; then rm -f "$out"; echo 0; return 0; fi
   if grep -qiE "$UL_REGEX" "$out" 2>/dev/null; then rm -f "$out"; echo 1; return 0; fi

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Lane executor — the single place a `claude -p` run is launched, wrapped with capacity-aware lane
 # env, PostHog lifecycle telemetry, outcome recording, and GitHub labeling. run_claude() in tick.sh
-# delegates here so every MODE (depfix/revise/rebase/fix/review/selfreview/start) gets identical
-# routing + observability without per-call-site edits. Runs headless with --dangerously-skip-permissions
-# (the same flag tick.sh's original run_claude uses) so the unattended cron pipeline can execute.
-# LEM_PERMISSION_PROFILE (opt-in, unset by default) swaps that flag for a dontAsk settings profile;
-# see _permission_args below.
+# and v2's agent_run.sh delegate here so every MODE (start/fix/review/selfreview/rebase/revise/
+# depfix/docfix/phasefix — all nine) gets identical
+# routing + observability without per-call-site edits. Every MODE runs headless under the `dontAsk`
+# permission profile ($BASE/config/claude-headless.json) — anything the profile does not allow is
+# denied, never prompted. LEM_PERMISSION_PROFILE=off is the emergency opt-out back to the old
+# --dangerously-skip-permissions flag; see _permission_args below.
 #
 # Env read (set by tick.sh before each call): MODE, ISSUE, PR, BRANCH, WORKTREE, RISK, SLOT,
 #   WORKER_ID, EXECUTION_ID, _TICK_LOG, LOG, LOGDIR, CLAUDE_TIMEOUT, DRY_RUN,
@@ -66,32 +67,93 @@ print(json.dumps({**base,**extra}))
 ' 2>/dev/null)" || true
 }
 
-# Opt-in permission profile. Setting LEM_PERMISSION_PROFILE to a settings file
-# (scripts/agent-pipeline/config/claude-headless.json) runs the agent in `dontAsk` mode instead of
-# with the default flag: anything the profile does not allow is DENIED, and the denials are logged
-# so the profile can be tuned on one lane before it is widened.
+# The permission profile — the DEFAULT for every MODE. Each agent launches with
+# `--permission-mode dontAsk --settings <profile> --output-format json`: anything the profile does
+# not allow is DENIED (there is no human to ask), and every run is logged to denials.jsonl.
 #
-# LEM_PERMISSION_PROFILE_MODES (optional, comma-separated MODE names, e.g. `review`) limits the
-# profile to those lanes, so it can shadow ONE low-risk lane first; empty = every lane.
+#   LEM_PERMISSION_PROFILE        unset/empty -> $BASE/config/claude-headless.json (the default)
+#                                 <path>      -> that settings file instead
+#                                 off         -> EMERGENCY OPT-OUT: the old
+#                                                --dangerously-skip-permissions argv, with a loud
+#                                                log line on every dispatch so it cannot be
+#                                                forgotten in place
+#   LEM_PERMISSION_PROFILE_MODES  unset/empty -> every MODE gets the profile
+#                                 `selfreview,review` -> ONLY those MODEs get it; every other MODE
+#                                 falls back to the old flag, logged per dispatch. This is a
+#                                 RESTRICTION and applies only when explicitly set: a box-local
+#                                 value left over from the one-lane shadow keeps limiting the
+#                                 profile until the operator clears it.
 #
-# UNSET is the default and must stay byte-for-byte the historical argv — every lane runs that way
-# until the owner opts it in. A profile path that is not a file REFUSES the dispatch rather than
-# falling back to the default argv: an opt-in that silently degrades would read as applied in
-# every log while not being applied at all.
-_permission_args() {  # -> sets the caller's perm_args array + perm_profile; returns 1 on a bad profile
-  local modes="${LEM_PERMISSION_PROFILE_MODES:-}"
+# A profile path that is not a file REFUSES the dispatch rather than falling back to the old argv —
+# including the default path, so a box whose installer never shipped config/ stops loudly instead
+# of quietly running every lane unrestricted. The refusal is EX_SETUP (73): an environment that is
+# not ready, which the v2 daemon retries without parking — and callers check
+# `permission_profile_ready` BEFORE charging a run budget, so a refusal never spends one.
+#
+# Neither setting is a boundary against the agent itself: both live in $BASE/config.env, which the
+# runner's uid — and so code an allowed `pytest` runs — can write. The per-dispatch log lines below
+# are how an `off` that nobody chose gets noticed.
+PERMISSION_PROFILE_REFUSED=73
+
+# _permission_profile_for <mode> -> prints the profile path that applies, or nothing when the mode
+# runs on the old flag (`off`, or excluded by LEM_PERMISSION_PROFILE_MODES).
+_permission_profile_for() {
+  local modes="${LEM_PERMISSION_PROFILE_MODES:-}" profile="${LEM_PERMISSION_PROFILE:-}"
+  modes="${modes// /}"
+  [ "$profile" = "off" ] && return 0
+  if [ -n "$modes" ]; then
+    case ",${modes}," in *",${1:-},"*) ;; *) return 0 ;; esac
+  fi
+  printf '%s\n' "${profile:-$BASE/config/claude-headless.json}"
+}
+
+# permission_profile_ready [mode] -> 0 when run_lane would launch MODE, 1 when it would refuse.
+# Quiet on purpose: callers log their own refusal next to the budget they did not charge.
+permission_profile_ready() {
+  local p; p="$(_permission_profile_for "${1:-${MODE:-}}")"
+  [ -z "$p" ] || [ -f "$p" ]
+}
+
+# guard_ledger_charge_with_profile — v1's lanes charge `ledger_charge pr <n> <mode>` before
+# calling run_claude, at six call sites. Rather than repeat the check at each, wrap ledger_charge
+# once: for an agent MODE whose dispatch run_lane would refuse, charge nothing (prints 0). Every
+# other ledger (merge, disarm) passes straight through.
+guard_ledger_charge_with_profile() {
+  command -v ledger_charge >/dev/null 2>&1 || return 0
+  command -v _ledger_charge_unguarded >/dev/null 2>&1 && return 0   # already wrapped
+  eval "_ledger_charge_unguarded() $(declare -f ledger_charge | tail -n +2)"
+  ledger_charge() {
+    case "${3:-}" in
+      start|fix|review|selfreview|rebase|revise|depfix|docfix|phasefix)
+        if ! permission_profile_ready "$3"; then
+          # stderr: callers capture or discard this function's stdout (the attempt number).
+          log "LEDGER: not charging $1 #$2 $3 — run_lane would refuse it (permission profile missing)." >&2
+          echo 0; return 0
+        fi ;;
+    esac
+    _ledger_charge_unguarded "$@"
+  }
+}
+
+_permission_args() {  # -> sets the caller's perm_args array + perm_profile; returns 73 on a bad profile
+  local modes="${LEM_PERMISSION_PROFILE_MODES:-}" profile
   modes="${modes// /}"
   perm_profile=""
   perm_args=(--dangerously-skip-permissions)
-  [ -z "${LEM_PERMISSION_PROFILE:-}" ] && return 0
-  if [ -n "$modes" ]; then
-    case ",${modes}," in *",${MODE:-},"*) ;; *) return 0 ;; esac
+  if [ "${LEM_PERMISSION_PROFILE:-}" = "off" ]; then
+    log "run_lane: PERMISSION PROFILE OFF — LEM_PERMISSION_PROFILE=off, launching MODE=${MODE:-?} with --dangerously-skip-permissions (emergency opt-out; unset it to restore dontAsk)"
+    return 0
   fi
-  if [ ! -f "$LEM_PERMISSION_PROFILE" ]; then
-    log "run_lane: REFUSING to dispatch — LEM_PERMISSION_PROFILE='${LEM_PERMISSION_PROFILE}' is not a file. Unset it to restore the default, or fix the path. MODE=${MODE:-?}"
-    return 1
+  profile="$(_permission_profile_for "${MODE:-}")"
+  if [ -z "$profile" ]; then
+    log "run_lane: permission profile NOT applied to MODE=${MODE:-?} — LEM_PERMISSION_PROFILE_MODES='${modes}' restricts it; launching with --dangerously-skip-permissions. Clear LEM_PERMISSION_PROFILE_MODES to apply it to every MODE."
+    return 0
   fi
-  perm_profile="$LEM_PERMISSION_PROFILE"
+  if [ ! -f "$profile" ]; then
+    log "run_lane: REFUSING to dispatch — permission profile '${profile}' is not a file. Fix the path (or ship config/ with install.sh --sync); LEM_PERMISSION_PROFILE=off is the emergency opt-out. MODE=${MODE:-?}"
+    return "$PERMISSION_PROFILE_REFUSED"
+  fi
+  perm_profile="$profile"
   perm_args=(--permission-mode dontAsk --settings "$perm_profile" --output-format json)
 }
 
@@ -100,10 +162,10 @@ _permission_args() {  # -> sets the caller's perm_args array + perm_profile; ret
 # back into the same output file, keep any non-JSON lines (stderr) around it, and append one line per
 # run to denials.jsonl. Unparseable output is left exactly as it was: a crash dump is more useful in
 # $LOG than nothing, and the denials line records `parsed: false` so the gap is visible.
-_record_permission_run() {  # $1=output file (rewritten in place)  $2=agent rc
+_record_permission_run() {  # $1=output file (rewritten in place)  $2=agent rc  $3=profile path
   local denials_log="${LOGDIR:-$BASE/logs}/denials.jsonl"
   python3 - "$1" "$denials_log" "$2" "${LANE:-}" "${MODE:-}" "${ISSUE:-}" "${PR:-}" \
-    "${EXECUTION_ID:-}" "${LEM_PERMISSION_PROFILE:-}" <<'PY' 2>/dev/null || true
+    "${EXECUTION_ID:-}" "${3:-}" <<'PY' 2>/dev/null || true
 import json, os, sys, time
 
 out_path, log_path, rc, lane, mode, issue, pr, execution_id, profile = sys.argv[1:10]
@@ -197,7 +259,7 @@ never run in the shared checkout. MODE=${MODE:-?} BRANCH=${BRANCH:-?} ISSUE=${IS
     log "run_lane: REFUSING to dispatch — '$wt' is not a git worktree (no .git). MODE=${MODE:-?}"
     return 1
   fi
-  _permission_args || return 1
+  _permission_args || return "$PERMISSION_PROFILE_REFUSED"
 
   dispatch_lane "$hint"
 
@@ -242,15 +304,20 @@ never run in the shared checkout. MODE=${MODE:-?} BRANCH=${BRANCH:-?} ISSUE=${IS
   # (before this change) the App private key, while the prompt an agent follows is assembled from
   # issue text written by strangers — the RUNBOOK's own prompt-injection section says exactly that.
   #
-  # Be precise about what this buys: `--add-dir` scopes the FILE tools, but
-  # `--dangerously-skip-permissions` leaves the Bash tool able to read anything this uid can read,
-  # and agents run as the same uid as this runner. So this is defense in depth, NOT the control.
+  # Be precise about what this buys: `--add-dir` scopes the FILE tools, but the Bash tool runs as
+  # the same uid as this runner — under the dontAsk profile a command it allows (pytest, say) can
+  # still read anything this uid can read, and under the `off` opt-out every command can. So this
+  # is defense in depth, NOT the control.
   # The control is custody: the App key is root-owned in /etc/lem and minted into a ~1h token by
   # lem-gh-token.timer, so the worst an agent can reach is a credential that expires within the
   # hour and carries authority the pipeline already has — instead of a key that never expires.
   local runbook_dir; runbook_dir="$(dirname "${RUNBOOK:-$BASE/RUNBOOK.md}")"
+  # GIT_EDITOR=true on both launches: a headless run has no editor, so `git rebase --continue`
+  # (MODE=rebase) would otherwise wait on one until the lane timeout, and under the dontAsk profile
+  # the agent cannot prefix the assignment itself — an allow rule does not match past it.
   if [ "$LANE" = "ollama" ]; then
     ( cd "$wt" && \
+      GIT_EDITOR=true \
       ANTHROPIC_BASE_URL="$OLLAMA_LITELLM_URL" \
       ANTHROPIC_AUTH_TOKEN="$LITELLM_MASTER_KEY" \
       ANTHROPIC_API_KEY="$LITELLM_MASTER_KEY" \
@@ -260,12 +327,12 @@ never run in the shared checkout. MODE=${MODE:-?} BRANCH=${BRANCH:-?} ISSUE=${IS
   else
     ( cd "$wt" && \
       unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY 2>/dev/null || true
-      timeout "${CLAUDE_TIMEOUT:-45m}" claude -p "$prompt" \
+      GIT_EDITOR=true timeout "${CLAUDE_TIMEOUT:-45m}" claude -p "$prompt" \
         "${perm_args[@]}" --add-dir "$runbook_dir" "${model_arg[@]}" "${mcp_arg[@]}" ) >"$out" 2>&1
     rc=$?
   fi
   if [ -n "$perm_profile" ]; then
-    _record_permission_run "$out" "$rc"
+    _record_permission_run "$out" "$rc" "$perm_profile"
   fi
   ms=$(( ($(date +%s) - t0) * 1000 ))
   cat "$out" >> "${LOG:-/dev/null}"

@@ -38,6 +38,12 @@ which covers why a label doing the job of an access control was the underlying d
 
 ## When agents may apply it — the policy
 
+> **Pipeline agents request it; they do not apply it.** Headless pipeline runs change labels only
+> through `scripts/agent-pipeline/lib/gh_safe.sh`, which refuses to add `release:now` in any
+> spelling. They write one PR-body line instead — *"Requesting release:now: <why>"* — and the owner
+> applies the label. The policy below is what such a request (and an interactive session applying
+> the label directly) is judged against. See `docs/agent-pipeline-v2.md`, "Permission profile".
+
 **Agents may add `release:now` on their own judgement, without asking, when the change is either:**
 
 1. **High priority** — the issue carries `priority:high`, or is labelled `bug` + `feedback-loop`
