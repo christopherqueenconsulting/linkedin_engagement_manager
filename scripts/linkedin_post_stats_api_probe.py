@@ -49,6 +49,29 @@ import urllib.request
 from typing import Callable, Optional
 
 API_URL = "https://api.linkedin.com/rest/memberCreatorPostAnalytics"
+
+
+# DEMO_MODE (#2372): this script calls LinkedIn over urllib, which the package's `requests` guard
+# does not see, so it refuses explicitly. Imported lazily like the rest of `cqc_lem` here; where
+# `cqc_lem` cannot be imported the import error stops the run, so it fails closed.
+DEMO_MODE_EXIT = 3
+
+
+def _guard_linkedin() -> None:
+    """Raise `DemoModeError` when DEMO_MODE is on — called before every urlopen to LinkedIn."""
+    from cqc_lem.utilities.demo_mode import guard_linkedin
+    guard_linkedin("scripts.linkedin_post_stats_api_probe")
+
+
+def _demo_mode_refusal() -> Optional[str]:
+    """The refusal message when DEMO_MODE is on, else None.
+
+    Checked without `guard_linkedin`'s log line: the logger writes to stdout, and stdout here is
+    the one JSON document the caller parses.
+    """
+    from cqc_lem.utilities.demo_mode import DemoModeError, is_demo_mode
+    return str(DemoModeError("scripts.linkedin_post_stats_api_probe")) if is_demo_mode() else None
+
 REQUIRED_PERMISSION = "r_member_postAnalytics"
 
 # The finder that takes a single post. Aggregated ("q=me") stats have been available longer but
@@ -197,6 +220,7 @@ def classify_status(status: int, body: str) -> str:
 
 def http_get_json(url: str, token: str, version: str, timeout: int = 20) -> tuple[int, str]:
     """GET the versioned API. Returns (status, body). Never raises for an HTTP status."""
+    _guard_linkedin()
     request = urllib.request.Request(url, headers={
         "Authorization": f"Bearer {token}",
         "LinkedIn-Version": version,
@@ -387,6 +411,13 @@ def main(argv: Optional[list] = None) -> int:
                         choices=list(METRIC_COLUMNS))
     parser.add_argument("--aggregation", default="TOTAL", choices=["TOTAL", "DAILY"])
     args = parser.parse_args(argv)
+
+    # DEMO_MODE (#2372): refuse before the DB read and any call to LinkedIn.
+    refusal = _demo_mode_refusal()
+    if refusal:
+        print(json.dumps({"probe": "memberCreatorPostAnalytics",
+                          "verdict": {"outcome": "skipped", "reason": refusal}}))
+        return DEMO_MODE_EXIT
 
     version = args.version
     if not version:

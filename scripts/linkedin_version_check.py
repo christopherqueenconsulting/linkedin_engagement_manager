@@ -48,6 +48,28 @@ class ProbeError(RuntimeError):
     """The probe could not decide whether a version is active."""
 
 
+# DEMO_MODE (#2372): this script calls LinkedIn over urllib, which the package's `requests` guard
+# does not see, so it refuses explicitly. Imported lazily like the rest of `cqc_lem` here; where
+# `cqc_lem` cannot be imported the import error stops the run, so it fails closed.
+DEMO_MODE_EXIT = 3
+
+
+def _guard_linkedin() -> None:
+    """Raise `DemoModeError` when DEMO_MODE is on — called before every urlopen to LinkedIn."""
+    from cqc_lem.utilities.demo_mode import guard_linkedin
+    guard_linkedin("scripts.linkedin_version_check")
+
+
+def _demo_mode_refusal() -> Optional[str]:
+    """The refusal message when DEMO_MODE is on, else None.
+
+    Checked without `guard_linkedin`'s log line: the logger writes to stdout, and stdout here is
+    the one JSON document the caller parses.
+    """
+    from cqc_lem.utilities.demo_mode import DemoModeError, is_demo_mode
+    return str(DemoModeError("scripts.linkedin_version_check")) if is_demo_mode() else None
+
+
 def candidate_versions(today: datetime, lookback: int = DEFAULT_LOOKBACK,
                        lookahead: int = DEFAULT_LOOKAHEAD) -> list[str]:
     """Candidate YYYYMM versions, NEWEST first, spanning lookahead ahead .. lookback back."""
@@ -74,6 +96,7 @@ def is_active_response(status_code: int, body: str) -> bool:
 def probe_version(token: str, version: str, timeout: int = 20,
                   attempts: int = DEFAULT_ATTEMPTS, sleep=time.sleep) -> bool:
     """Probe one version, retrying transient throttles/outages before giving up."""
+    _guard_linkedin()
     request = urllib.request.Request(PROBE_URL, headers={
         "Authorization": f"Bearer {token}",
         "LinkedIn-Version": version,
@@ -202,6 +225,13 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if not args.plan_json:
         parser.error("nothing to do — pass --plan-json or --rewrite-repo-defaults")
+
+    # Before the token read and any probe. `skipped` is its own action so the weekly wrapper can
+    # never read a refusal as a retired pin; the distinct exit code says the same to anything else.
+    refusal = _demo_mode_refusal()
+    if refusal:
+        print(json.dumps({"action": "skipped", "reason": refusal}))
+        return DEMO_MODE_EXIT
 
     token = args.token or _access_token(args.user_id)
     if not token:

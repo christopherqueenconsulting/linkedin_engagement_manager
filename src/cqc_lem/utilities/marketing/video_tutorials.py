@@ -235,8 +235,18 @@ def spa_base_url() -> str:
 
     Kept separate from `API_URL_FINAL` because the SPA being filmed and the API serving the
     `asset_url` embeds do not have to be the same origin.
+
+    Raises:
+        TutorialCaptureError: The origin is a LinkedIn host. The capture browser is the one session
+            DEMO_MODE lets through (`demo_safe=True`) on the promise that it films our own SPA,
+            so it must never be pointed at LinkedIn (#2372).
     """
-    return (TUTORIAL_SPA_BASE_URL or API_URL_FINAL).rstrip("/")
+    from cqc_lem.utilities.demo_mode import is_linkedin_url
+    base = (TUTORIAL_SPA_BASE_URL or API_URL_FINAL).rstrip("/")
+    if is_linkedin_url(base):
+        raise TutorialCaptureError("TUTORIAL_SPA_BASE_URL points at LinkedIn; the tutorial "
+                                   "capture only ever films our own SPA")
+    return base
 
 
 def ui_fingerprint(markers: list) -> str:
@@ -333,8 +343,8 @@ def capture_flow(flow: TutorialFlow, driver=None) -> dict:
     create_folder_if_not_exists(frames_dir)
     owns_driver = driver is None
     # No user_id on purpose: this session hits OUR OWN SPA, never LinkedIn, so it wants neither a
-    # residential proxy nor a user's geo profile.
-    driver = driver or get_docker_driver(headless=True, session_name="TutorialCapture")
+    # residential proxy nor a user's geo profile — and is the one session DEMO_MODE allows (#2372).
+    driver = driver or get_docker_driver(headless=True, session_name="TutorialCapture", demo_safe=True)
     wait = WebDriverWait(driver, WAIT_DEFAULT_TIMEOUT)
     frames, markers = [], []
     try:

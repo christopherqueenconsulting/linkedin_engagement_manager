@@ -72,6 +72,7 @@ index and the `CLAUDE.md` row that points at it, or the pointer becomes a dead e
 - ★ [Selenium Grid](SELENIUM_GRID.md) — the horizontal browser path and the session-slot capacity invariant
 - [Connect LinkedIn by session cookie](LINKEDIN_COOKIE.md) — `li_at` is the default engagement login; the extension and manual paths
 - [Email-reply verification PIN](EMAIL_PIN_VERIFICATION.md) — answering LinkedIn's login challenge without a human at the keyboard
+- [Demo mode](demo-mode.md) — `DEMO_MODE` refuses every LinkedIn client (HTTP and Selenium) before any connection and shows a croppable "Demo data" badge; a safety control, not a flag
 - [Per-user egress proxy](PER_USER_PROXY.md) — static residential egress per user and the MV3 auth-extension that carries its credentials
 - [Egress & LinkedIn access at scale](EGRESS_AT_SCALE.md) — the build-vs-buy decision behind the proxy posture
 - [Debugging the live browser](SELENIUM_DEBUGGING.md) — Selenium MCP + lemvnc against a running session

@@ -66,6 +66,7 @@ from cqc_lem.utilities.db import (
     insert_new_log,
     set_target_connect_status,
 )
+from cqc_lem.utilities.demo_mode import DemoModeError
 from cqc_lem.utilities.human_pacing import ACTION_INVITE, record_action
 from cqc_lem.utilities.lead_scoring import profile_slug
 from cqc_lem.utilities.linkedin.company_page_inviter import (
@@ -1568,10 +1569,12 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None,
             # reached (#1924). Defer like a 429 instead — nothing was learned about this target.
             raise LinkedInRateLimited(
                 f"LinkedIn login failed before inviting to connect: {e}") from e
-        except LinkedInRateLimited:
+        except (LinkedInRateLimited, DemoModeError):
             # Already rate-limit-class (breaker, pause, or `LinkedInChallengeUnsolved`) — pass it
             # through as-is. `LinkedInRateLimited` IS a RuntimeError, so the re-wrap below would
             # otherwise erase the subclass `send_connection_request` reads its outcome word from.
+            # A DEMO_MODE refusal (#2372) is a RuntimeError too: re-wrapped, it would defer the row
+            # to 'approved' instead of the 'pending' hold `send_connection_request` gives it.
             raise
         except RuntimeError as e:
             # `login_to_linkedin` raises a plain RuntimeError when every automated way to clear a
@@ -1685,8 +1688,9 @@ def invite_to_connect_now(user_id: int, profile_url: str, message: str = None,
                     dispatched = _submit_connect_invite(driver, wait, user_id, with_note=noted)
                     result = (_OUTCOME_MESSAGES[_confirm_invite_outcome(driver, user_id)]
                               if dispatched else INVITE_NOT_SENT_MESSAGE)
-    except LinkedInRateLimited:
+    except (LinkedInRateLimited, DemoModeError):
         # Kill-switch / 429 breaker is open — let the caller defer instead of logging a false failure.
+        # A DEMO_MODE refusal (#2372) likewise goes to the caller, which holds the row at 'pending'.
         raise
     except Exception as e:
         log_error("Error while inviting to connect", exc=e, user_id=user_id, action_type="invite_connect")
@@ -1932,6 +1936,12 @@ def send_connection_request(self, request_id: int):
         reason = INVITE_OUTCOME_CHALLENGE if isinstance(e, LinkedInChallengeUnsolved) else "throttled"
         track_invite_outcome(user_id, INVITE_RESULT_DEFERRED, reason, attempts_before)
         return f"Connection request {request_id} deferred (LinkedIn {reason})"
+    except DemoModeError:
+        # DEMO_MODE (#2372) refused before a browser opened — no attempt is charged. Left
+        # 'sending', the orphan reaper would re-queue this on every beat and send the invite to a
+        # real person once demo mode is turned off; 'pending' needs a human to approve it again.
+        update_connection_request_status(request_id, ConnectionRequestStatus.PENDING)
+        return f"Connection request {request_id} held at pending (DEMO_MODE)"
     if sent:
         update_connection_request_status(request_id, ConnectionRequestStatus.SENT)
         track_invite_outcome(user_id, INVITE_RESULT_SENT, _invite_outcome_reason(reason),

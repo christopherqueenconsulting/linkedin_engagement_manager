@@ -4,6 +4,8 @@ import api from '../api/client'
 export interface AppInfo {
   version: string
   show_version: boolean
+  // DEMO_MODE (issue #2372) — drives the "Demo data" corner badge. Older servers omit it.
+  demo_mode?: boolean
 }
 
 // Public app metadata for the footer: the running release version and whether to

@@ -28,6 +28,7 @@ from celery.signals import (
 from cqc_lem.app import celeryconfig
 from cqc_lem.app.celeryconfig import broker_url
 from cqc_lem.app.task_outcome import LaneTaskFailed
+from cqc_lem.utilities.demo_mode import DemoModeError, is_demo_mode
 from cqc_lem.utilities.engagement_window import STAGGER_TICK_MINUTES
 from cqc_lem.utilities.env_constants import AWS_REGION
 from cqc_lem.utilities.logger import logger
@@ -526,6 +527,14 @@ def _task_user_id(kwargs) -> Optional[int]:
         return None
 
 
+def _demo_refusal(exc: object) -> bool:
+    """A `DemoModeError` raised while DEMO_MODE is on (#2372) — expected, so never filed.
+
+    With demo mode OFF the same type is a real defect and is filed like any other failure.
+    """
+    return isinstance(exc, DemoModeError) and is_demo_mode()
+
+
 @task_failure.connect(weak=False)
 def on_task_failure(task_id: str = None, exception: BaseException = None, sender=None,
                     kwargs: dict = None, einfo=None, **_) -> None:
@@ -536,8 +545,11 @@ def on_task_failure(task_id: str = None, exception: BaseException = None, sender
     A `LaneTaskFailed` (#2097) is NOT filed: the lane already logged its failure at the level its
     own contract chose (a crashed tab is a warning that escalates on repeat, #1746), and filing
     here would turn every such run into a fresh `$exception`. Its FAILURE state is the count.
+
+    A `DemoModeError` (#2372) is not filed either: under DEMO_MODE every LinkedIn task is refused
+    by design, so the refusal is the expected outcome, not a defect.
     """
-    if isinstance(exception, LaneTaskFailed):
+    if isinstance(exception, LaneTaskFailed) or _demo_refusal(exception):
         return
     capture_exception(
         exception,
@@ -553,9 +565,10 @@ def on_task_retry(request=None, reason=None, sender=None, einfo=None, **_) -> No
     """A retry is a failure that will be tried again — worth the same issue so a task that only ever
     succeeds on its 3rd attempt is still visible. `reason` is the exception when the retry was
     raised from one; anything else (a bare `self.retry()`) carries no exception to group and is
-    skipped rather than filed as a synthetic one.
+    skipped rather than filed as a synthetic one. A `DemoModeError` (#2372) is expected under
+    DEMO_MODE and is never filed.
     """
-    if not isinstance(reason, BaseException):
+    if not isinstance(reason, BaseException) or _demo_refusal(reason):
         return
     capture_exception(
         reason,

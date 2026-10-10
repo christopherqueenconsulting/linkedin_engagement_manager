@@ -182,6 +182,7 @@ from cqc_lem.utilities.db import (
     update_outreach_target,
     update_outreach_target_status,
 )
+from cqc_lem.utilities.demo_mode import DemoModeError
 from cqc_lem.utilities.dm_templates import _draft_connect_note, render_dm_placeholders
 from cqc_lem.utilities.engagement_window import (
     PRE_POST_TASK_VIEWER,
@@ -2864,7 +2865,15 @@ def send_scheduled_dm(self, dm_id: int):
         update_scheduled_dm_status(dm_id, ScheduledDmStatus.APPROVED)  # retry on the next scan
         return lane_result(TaskOutcome.NO_OP, f"Scheduled DM {dm_id} deferred (daily DM cap reached)")
 
-    dm_sent = send_dm_now(user_id, dm["recipient_profile_url"], dm["message"])
+    try:
+        dm_sent = send_dm_now(user_id, dm["recipient_profile_url"], dm["message"])
+    except DemoModeError:
+        # DEMO_MODE (#2372) refused before a browser opened. Left 'scheduled', the orphan reaper
+        # would re-queue this DM forever and SEND it the moment demo mode is turned off — to a real
+        # person. 'pending' needs a human to approve it again, so nothing is ever replayed.
+        update_scheduled_dm_status(dm_id, ScheduledDmStatus.PENDING)
+        return lane_result(TaskOutcome.NO_OP,
+                           f"Scheduled DM {dm_id} held at pending (DEMO_MODE)")
     update_scheduled_dm_status(dm_id, ScheduledDmStatus.SENT if dm_sent else ScheduledDmStatus.FAILED)
     if dm_sent and dm.get("source") == SCHEDULED_DM_SOURCE_PROFILE_VIEWER:
         # The direct-dispatch branch starts the 'profile_viewer' ladder the moment it sends, so the
@@ -3631,6 +3640,7 @@ CATCHUP_STATUS_NOT_SENDABLE = "not_sendable"        # row missing or no longer a
 CATCHUP_STATUS_CONTACT_COOLDOWN = "contact_cooldown"  # per-contact interval hasn't elapsed (issue #1078)
 CATCHUP_STATUS_CONTACT_CAP = "contact_cap"            # per-contact window cap reached (issue #1078)
 CATCHUP_STATUS_ALREADY_SENT = "already_sent"          # durable claim row already exists (issue #1078)
+CATCHUP_STATUS_DEMO_HELD = "demo_held"                # DEMO_MODE refused the send; held at pending (#2372)
 
 # Ordered fallback chain for the catch-up cards. Live-grounded 2026-08-03 on a real session: the
 # surface is full SDUI — every card is a div[role='listitem'] (with a componentkey UUID) inside the
@@ -4356,6 +4366,15 @@ def send_catchup_touch(self, touch_id: int):
         update_catchup_touch_status(touch_id, CatchupTouchStatus.APPROVED)
         _report(CATCHUP_STATUS_THROTTLED, user_id)
         return f"Catch-up touch {touch_id} deferred (LinkedIn throttled)"
+    except DemoModeError:
+        # DEMO_MODE (#2372) refused before a browser opened, so nothing was sent: give the claim
+        # back (or a later attempt would mark this touch `sent` having sent nothing) and hold the
+        # row at 'pending'. Left 'sending', the orphan reaper would re-queue it and send it to a
+        # real person once demo mode is turned off.
+        release_catchup_send_attempt(user_id, touch["profile_url"], touch["event_type"], event_period)
+        update_catchup_touch_status(touch_id, CatchupTouchStatus.PENDING)
+        _report(CATCHUP_STATUS_DEMO_HELD, user_id)
+        return f"Catch-up touch {touch_id} held at pending (DEMO_MODE)"
     update_catchup_touch_status(touch_id, CatchupTouchStatus.SENT if sent else CatchupTouchStatus.FAILED)
     _report(CATCHUP_STATUS_SENT if sent else CATCHUP_STATUS_FAILED, user_id)
     if sent:
