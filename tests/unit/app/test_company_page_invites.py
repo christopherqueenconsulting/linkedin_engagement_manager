@@ -590,6 +590,40 @@ class TestInviteTask:
         warn.assert_called_once()
         assert track.call_args[0][1]["status"] == INVITE_STATUS_RATE_LIMITED
 
+    def test_an_unreachable_egress_at_login_is_a_back_off_not_an_exception(self):
+        """An unreachable egress at the lane's own login is a back-off, never an ERROR (#2359).
+
+        The exact occurrence: the login inside the REAL `automate_invitations` raised
+        `LinkedInEgressUnreachable` (stored cookies refused on a non-LinkedIn origin, #2320).
+        """
+        from cqc_lem.app.engagement.invites import automate_invites_to_company_page_for_user
+        from cqc_lem.utilities.linkedin.company_page_inviter import INVITE_STATUS_RATE_LIMITED
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInEgressUnreachable
+        egress = LinkedInEgressUnreachable(
+            "Base page did not load on LinkedIn's origin (https://www.linkedin.com/) — stored "
+            "cookies could not be installed; transient, retrying later without tripping the "
+            "rate-limit breaker.")
+        with patch(f"{_INV}.is_automation_paused", return_value=False), \
+             patch(f"{_INV}.plan_daily_invites",
+                   return_value={"allowance": 5, "status": "sent", "cap": 5, "sent_today": 1}), \
+             patch(f"{_INV}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
+             patch(f"{_INV}.quit_gracefully") as quit_driver, \
+             patch(f"{_CPI}.get_user_password_pair_by_id", return_value=("a@b.c", "pw")), \
+             patch(f"{_CPI}.get_company_linked_in_url_for_user",
+                   return_value="https://www.linkedin.com/company/acme/"), \
+             patch(f"{_CPI}.login_to_linkedin", side_effect=egress) as login, \
+             patch(f"{_INV}.log_error") as err, \
+             patch(f"{_INV}.log_warning") as warn, \
+             patch(f"{_INV}.track_company_page_invite_run") as track:
+            result = automate_invites_to_company_page_for_user.run(user_id=1)
+        login.assert_called_once()
+        err.assert_not_called()
+        warn.assert_called_once()
+        assert warn.call_args.kwargs["exc"] is egress
+        quit_driver.assert_called_once()
+        assert track.call_args[0][1]["status"] == INVITE_STATUS_RATE_LIMITED
+        assert "(rate_limited)" in result
+
     def test_any_other_batch_failure_is_still_an_error_and_failed(self):
         from cqc_lem.utilities.linkedin.company_page_inviter import INVITE_STATUS_FAILED
         _, _, _, err, warn, track = self._run_raising(batch_exc=RuntimeError("boom"))
