@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.189.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.188.0...v0.189.0) (2026-10-10)
+
+
+### Features
+
+* **backup:** copy each night's DB dump off the host, and alert when it stops landing ([#2355](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2355)) ([7ef34ea](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7ef34ea76aafb7a598f58e63b39b1ec4d9a479e2))
+* **health:** report LinkedIn session state in /health/deep (closes [#2356](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2356)) ([#2357](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2357)) ([229e08e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/229e08e1da0456c4498e39fc9e74fe795557f092))
+* **health:** report LinkedIn session state in /health/deep (counts only, report-only) ([229e08e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/229e08e1da0456c4498e39fc9e74fe795557f092)), closes [#2356](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2356)
+
+
+### Bug Fixes
+
+* **deploy:** reconcile litellm inside the drain window on every deploy (closes [#2343](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2343)) ([#2344](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2344)) ([62f428d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/62f428d5c4028eb90c686b30a9cb1c3d84ca885f))
+* **invites:** report a LinkedIn back-off in the company-page invite lane as rate_limited, not failed (closes [#2353](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2353)) ([#2354](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2354)) ([1cb98de](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1cb98deb684546e4dc2aa22a7d7709a8e2315b09))
+* **invites:** treat a LinkedIn back-off in the company-page invite lane as rate_limited, not failed ([1cb98de](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1cb98deb684546e4dc2aa22a7d7709a8e2315b09)), closes [#2353](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2353)
+
 ## [0.188.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.187.4...v0.188.0) (2026-10-09)
 
 
