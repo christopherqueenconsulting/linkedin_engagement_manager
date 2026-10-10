@@ -15,8 +15,9 @@ import re
 import uuid
 from typing import Optional
 
+from cqc_lem.utilities.engagement_mode import credential_collection_allowed
 from cqc_lem.utilities.linkedin.rate_limit import _redis_client
-from cqc_lem.utilities.logger import log_warning
+from cqc_lem.utilities.logger import log_info, log_warning
 
 _TOKEN_KEY = "linkedin:pin_token:{token}"   # token -> user_id (attribute inbound reply)
 _PIN_KEY = "linkedin:pin:{user_id}"         # user_id -> submitted 6-digit code
@@ -147,6 +148,12 @@ def submit_pin(user_id: int, pin: str) -> bool:
 
 
 def _store_pin(client, user_id: int, pin: str) -> bool:
+    # Both submit paths store here, so this is where a suggest-only account's code is refused
+    # (#2368): it connects by OAuth only and runs no password login that could be waiting on one.
+    if not credential_collection_allowed(user_id):
+        log_info("LinkedIn verification PIN refused — suggest-only account connects by OAuth only",
+                 user_id=user_id, action_type="login")
+        return False
     try:
         client.set(_PIN_KEY.format(user_id=user_id), str(pin), ex=_ttl())
         return True

@@ -1657,6 +1657,8 @@ export interface paths {
          * @description Report whether the account has everything the automation needs (LinkedIn OAuth for
          *     posting, a session cookie or password for engagement, an active plan; location is
          *     recommended). The UI uses this to mark required fields and gate automation pages.
+         *
+         *     A suggest-only account (#2368) gets no `linkedin_session` item: it connects by OAuth only.
          */
         get: operations["account_readiness_endpoint_api_user_account_readiness_get"];
         put?: never;

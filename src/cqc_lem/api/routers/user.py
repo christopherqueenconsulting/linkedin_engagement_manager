@@ -217,7 +217,11 @@ from cqc_lem.utilities.db import (
     verify_pin_for_email,
 )
 from cqc_lem.utilities.email import generate_pin, hash_pin, send_pin_email
-from cqc_lem.utilities.engagement_mode import resolve_engagement_mode
+from cqc_lem.utilities.engagement_mode import (
+    CREDENTIAL_WRITE_REFUSAL_CODE,
+    credential_collection_allowed,
+    resolve_engagement_mode,
+)
 from cqc_lem.utilities.geocoding import GeocodeError, geocode_city
 from cqc_lem.utilities.group_post_slot import group_skip_undo_open, skip_undo_deadline
 from cqc_lem.utilities.linkedin.helper import load_profile_for_user
@@ -1303,6 +1307,8 @@ def mint_extension_token(request: ExtensionTokenRequest, http_request: Request =
     user_id = _main.get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
+    # The extension token's ONLY surface is the cookie write, which a suggest account is refused.
+    _refuse_credential_write_for_suggest_mode(user_id, "mint_extension_token")
     # This is where the extension's step-up happens (2c) — ONCE, here in the SPA, where a passkey
     # ceremony is possible. The minted token is `extension`-scoped, and that scope is what later
     # lets it POST a cookie without a ceremony it could never run (design §6.5).
@@ -1471,6 +1477,28 @@ def _step_up_error(user_id: int) -> HTTPException:
         "code": "step_up_required",
         "message": "Confirm it's you to change this.",
         "methods": available_methods(user_id),
+    })
+
+
+def _refuse_credential_write_for_suggest_mode(user_id: int, action: str) -> None:
+    """Refuse to store a LinkedIn password or session cookie for a suggest-only account (#2368).
+
+    A suggest-only account (trial accounts included, whatever their stored mode) connects through
+    LinkedIn sign-in (OAuth) only, and an unreadable mode refuses too — `credential_collection_allowed`
+    is fail-closed. Runs BEFORE step-up, so a refused account is never asked for a passkey ceremony
+    whose result would then be thrown away. The refusal is the ruling working, so it logs INFO.
+
+    Raises:
+        HTTPException: 403 with `code` set to `CREDENTIAL_WRITE_REFUSAL_CODE`.
+    """
+    if credential_collection_allowed(user_id):
+        return
+    log_info("LinkedIn credential write refused — suggest-only account connects by OAuth only",
+             user_id=user_id, task_name=action)
+    raise HTTPException(status_code=403, detail={
+        "code": CREDENTIAL_WRITE_REFUSAL_CODE,
+        "message": ("This account connects to LinkedIn through LinkedIn sign-in only. "
+                    "LEM does not store a LinkedIn password or session cookie for it."),
     })
 
 
@@ -3425,6 +3453,7 @@ def update_linkedin_password(request: LinkedInPasswordRequest,
     user_id = _main.get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
+    _refuse_credential_write_for_suggest_mode(user_id, "store_linkedin_password")
     _require_step_up(user_id, request.session_token, "store_linkedin_password",
                      http_request=http_request)
     if not request.linkedin_password:
@@ -3687,6 +3716,8 @@ def store_linkedin_cookie_endpoint(request: LinkedInCookieRequest,
     user_id = _main.get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
+    # Suggest-only accounts connect by OAuth only (#2368) — checked first, so nothing is stored.
+    _refuse_credential_write_for_suggest_mode(user_id, "store_linkedin_cookie")
     # The crown jewel (design §2, T1): storing a li_at IS handing over a LinkedIn session, so it is
     # step-up gated like every other credential write. This is the ONE call site that accepts the
     # extension scope — its token can never run a passkey ceremony, and its step-up already happened
@@ -3725,6 +3756,8 @@ def account_readiness_endpoint(session_token: str) -> ResponseModel[dict[str, An
     """Report whether the account has everything the automation needs (LinkedIn OAuth for
     posting, a session cookie or password for engagement, an active plan; location is
     recommended). The UI uses this to mark required fields and gate automation pages.
+
+    A suggest-only account (#2368) gets no `linkedin_session` item: it connects by OAuth only.
     """
     user_id = _main.get_session_user_id(session_token)
     if not user_id:
@@ -3742,6 +3775,11 @@ def account_readiness_endpoint(session_token: str) -> ResponseModel[dict[str, An
     # Design §5.4: accounts whose ONLY engagement login is a stored password get a one-time prompt
     # to paste a session cookie instead, after which the password is deleted rather than kept.
     cookie_migration_needed = has_password and not has_session_cookie
+    # A suggest-only account connects by OAuth only (#2368): the API refuses its cookie and
+    # password writes, so asking it for one would be a required item it can never complete.
+    oauth_only = not credential_collection_allowed(user_id)
+    if oauth_only:
+        cookie_migration_needed = False
 
     sub = get_user_subscription_info(user_id)
     sub_status = (sub or {}).get("subscription_status")
@@ -3771,6 +3809,8 @@ def account_readiness_endpoint(session_token: str) -> ResponseModel[dict[str, An
         {"key": "location", "label": "Login location set", "ok": has_location,
          "required": False, "hint": "Set your login location to reduce LinkedIn challenges."},
     ]
+    if oauth_only:
+        items = [i for i in items if i["key"] != "linkedin_session"]
     ready = all(i["ok"] for i in items if i["required"])
     return ResponseModel(status_code=200, detail={
         "ready": ready, "items": items, "cookie_migration_needed": cookie_migration_needed})

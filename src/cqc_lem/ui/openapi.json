@@ -10931,7 +10931,7 @@
     },
     "/api/user/account-readiness": {
       "get": {
-        "description": "Report whether the account has everything the automation needs (LinkedIn OAuth for\nposting, a session cookie or password for engagement, an active plan; location is\nrecommended). The UI uses this to mark required fields and gate automation pages.",
+        "description": "Report whether the account has everything the automation needs (LinkedIn OAuth for\nposting, a session cookie or password for engagement, an active plan; location is\nrecommended). The UI uses this to mark required fields and gate automation pages.\n\nA suggest-only account (#2368) gets no `linkedin_session` item: it connects by OAuth only.",
         "operationId": "account_readiness_endpoint_api_user_account_readiness_get",
         "parameters": [
           {

@@ -19,14 +19,22 @@ from cqc_lem.utilities.email import (
     send_newsletter_draft_ready_email,
     send_session_revalidation_email,
 )
-from cqc_lem.utilities.logger import log_info, log_warning
+from cqc_lem.utilities.engagement_mode import credential_collection_allowed
+from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 
 
 def notify_linkedin_session(user_id: int, revalidation: bool = False) -> bool:
     """Email the user to connect (revalidation=False) or reconnect (True) their LinkedIn
     session. Throttled per LINKEDIN_SESSION_EMAIL_THROTTLE_DAYS (default 7). Returns True
     only if an email was actually sent.
+
+    Never sent to a suggest-only account (#2368): it connects by OAuth only, so a prompt to
+    connect a session cookie would ask for a credential the API refuses to store.
     """
+    if not credential_collection_allowed(user_id):
+        log_debug("LinkedIn session email skipped — suggest-only account connects by OAuth only",
+                  user_id=user_id)
+        return False
     throttle_days = int(os.getenv("LINKEDIN_SESSION_EMAIL_THROTTLE_DAYS", "7"))
     last = get_linkedin_session_email_sent_at(user_id)
     if last and throttle_days > 0:
