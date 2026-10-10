@@ -57,31 +57,34 @@ def _jq_filter() -> str:
     Tests that paste a copy of the filter prove only that the copy works; this one fails when the
     shipped query regresses, which is the whole point of testing a detector.
     """
-    m = re.search(r"'(\[\(\.comments.*?)'", _detector_body(), re.S)
+    m = re.search(r"'(\[\.\[\]\[\].*?)'", _detector_body(), re.S)
     assert m, "could not lift the jq filter out of claude_reviewed_at"
     return m.group(1)
 
 
-#: How `gh --json comments` reports the pipeline App: its bare slug, no `[bot]`.
+#: How GraphQL reports the pipeline App: its bare slug — which only means the App together with
+#: `__typename: Bot`. REST reports it as `<slug>[bot]` with `user.type: Bot`.
 APP = "cqc-lem-agent-pipeline"
 
 
 def _detect(*comments: dict) -> str:
     """Run the shipped filter over a comments payload and return the timestamp it resolves.
 
-    The filter emits `login|createdAt` for every phrase-matching comment, newest first, and the
-    function's author loop takes the first trusted one. A comment with no author here is the App's,
-    so these tests stay about DETECTION; authorship has its own tests below.
+    The filter reads REST pages (`--paginate --slurp`) and emits `login|type|created_at` for every
+    phrase-matching comment, newest first; the function's author loop takes the first trusted one.
+    Every comment here is the App's, so these tests stay about DETECTION; authorship has its own
+    tests below and in test_agent_pipeline_comment_authority.py.
     """
-    comments = [{"author": {"login": APP}, **c} for c in comments]
+    pages = [[{"body": c["body"], "created_at": c["createdAt"],
+               "user": {"login": APP + "[bot]", "type": "Bot"}} for c in comments]]
     out = subprocess.run(
         ["jq", "-r", "--arg", "m", _var("CLAUDE_REVIEW_MARKER_TEXT"), _jq_filter()],
-        input=json.dumps({"comments": comments}),
+        input=json.dumps(pages),
         capture_output=True, text=True, check=False,
     )
     assert out.returncode == 0, out.stderr
     first = (out.stdout.splitlines() or [""])[0]
-    return first.split("|", 1)[1] if "|" in first else ""
+    return first.split("|")[2] if first.count("|") >= 2 else ""
 
 
 MANGLED = "���� Claude adversarial review — no findings"
@@ -337,10 +340,16 @@ def test_v2_ignores_a_marker_when_the_permission_is_unreadable(monkeypatch):
     assert _v2_marker_state(monkeypatch, {"login": "writer", "__typename": "User"}).fresh is False
 
 
-def test_v2_a_user_wearing_the_apps_bare_login_is_not_the_app(monkeypatch):
-    """GraphQL drops `[bot]`; `__typename` is what says the author is the App and not a person."""
+@pytest.mark.parametrize("author", [{"login": APP, "__typename": "User"}, {"login": APP},
+                                    {"login": APP + "[bot]"}])
+def test_v2_a_user_wearing_the_apps_bare_login_is_not_the_app(monkeypatch, author):
+    """Only `__typename: Bot` says a bare-slug author is the App.
+
+    GraphQL drops `[bot]`, and the bare slug is an unregistered USER login, so an untyped or
+    User-typed author holding it is never the App.
+    """
     monkeypatch.delenv("GH_APP_BOT_LOGIN", raising=False)
-    assert _v2_marker_state(monkeypatch, {"login": APP, "__typename": "User"}).fresh is False
+    assert _v2_marker_state(monkeypatch, author).fresh is False
 
 
 def test_v2_another_bot_is_never_review_evidence(monkeypatch):

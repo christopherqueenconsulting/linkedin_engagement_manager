@@ -167,7 +167,7 @@ v2_owner_answered() {
     | reverse | .[] | (.author.login // "")' 2>/dev/null)" || logins=""
   while IFS= read -r login; do
     [ -n "$login" ] || continue
-    comment_login_is_app "$login" && continue
+    comment_login_names_app "$login" && continue
     comment_author_trusted "$login" && return 0
   done <<< "$logins"
   # Unreadable is a refusal, as everywhere else in this file — and so is an unreadable permission.

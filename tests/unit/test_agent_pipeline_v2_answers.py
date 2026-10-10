@@ -266,6 +266,22 @@ def test_a_failed_lookup_is_retried_after_its_short_ttl(monkeypatch):
     assert looked == ["writer", "writer"]
 
 
+def test_an_unreadable_permission_is_logged_at_warning(monkeypatch, caplog):
+    """The refusal decides whether a human's answer counts, so an operator must be able to see it."""
+    _serve_thread(monkeypatch, [], fail=True)
+    with caplog.at_level("WARNING", logger="lemd.github"):
+        assert answers.github.comment_author_trusted("o/r", "writer", OWNER) is False
+    hits = [r for r in caplog.records if r.name == "lemd.github" and r.levelname == "WARNING"]
+    assert len(hits) == 1 and "writer" in hits[0].getMessage()
+
+
+def test_a_login_with_a_trailing_newline_never_reaches_the_api(monkeypatch):
+    """`fullmatch`, not `match` with `$` — which accepts a trailing newline."""
+    looked = _serve_thread(monkeypatch, [])
+    assert answers.github.comment_author_trusted("o/r", "writer\n", OWNER) is False
+    assert looked == []
+
+
 # ---------------------------------------------------------------- the decision
 
 

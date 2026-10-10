@@ -594,8 +594,9 @@ TRUSTED_PERMISSIONS = frozenset({"admin", "maintain", "write"})
 
 #: The pipeline App's login when `GH_APP_BOT_LOGIN` is not in this process's environment. Without a
 #: fallback the review-evidence gate below would fail CLOSED on the App's own markers and send every
-#: open PR round the selfreview lane until its budget parked it. A `[bot]` login lives in GitHub's
-#: App namespace, so naming it here cannot make anybody else's comment count.
+#: open PR round the selfreview lane until its budget parked it. It is only ever matched together
+#: with the author's type (`is_pipeline_app`): the App is a `Bot` with this login, never whoever
+#: holds the bare slug — that USER login is unregistered, so anybody could take it.
 PIPELINE_APP_LOGIN_DEFAULT = "cqc-lem-agent-pipeline[bot]"
 
 #: What a GitHub login can look like (an App's REST form carries `[bot]`). Anything else never
@@ -623,21 +624,27 @@ def _bare_login(login: str) -> str:
 
 
 def is_pipeline_app(author: dict[str, Any] | None) -> bool:
-    """Was this comment posted by the pipeline's own App?
+    """Was this comment posted by the pipeline's own App? GRANTS, so it needs a TYPED author.
 
-    `gh --json comments` and GraphQL report a bot as its bare slug (`cqc-lem-agent-pipeline`), REST
-    as `<slug>[bot]`, so the two are compared without the suffix. When the payload carries a
-    `__typename` (the review query asks for it) it must be `Bot`: a bare login is only the App's if
-    GitHub says the author IS a bot.
+    GraphQL reports a bot as its bare slug (`cqc-lem-agent-pipeline`) and REST as `<slug>[bot]`,
+    so the logins are compared without the suffix — but only when `__typename` is `Bot`. A missing
+    type is NOT the App: `gh --json comments` carries none, and the bare slug is an unregistered
+    USER login anybody could take.
     """
     author = author or {}
     login = str(author.get("login") or "")
-    if not login:
-        return False
-    typename = author.get("__typename")
-    if typename is not None and typename != "Bot":
+    if not login or author.get("__typename") != "Bot":
         return False
     return _bare_login(login) == _bare_login(pipeline_app_login())
+
+
+def names_pipeline_app(login: str) -> bool:
+    """Does an UNTYPED login read as the App's slug? EXCLUSION ONLY.
+
+    The answer lane uses it to skip the App's own comments from `gh --json comments`, where a false
+    match can only remove a comment from consideration. Never use it to grant anything.
+    """
+    return bool(login) and _bare_login(login) == _bare_login(pipeline_app_login())
 
 
 def collaborator_permission(slug: str, login: str, *, timeout: int = 30) -> frozenset[str] | None:
@@ -652,7 +659,7 @@ def collaborator_permission(slug: str, login: str, *, timeout: int = 30) -> froz
     if hit is not None and hit[0] > now:
         return hit[1]
     perms: frozenset[str] | None
-    if not _LOGIN_RE.match(login):
+    if not _LOGIN_RE.fullmatch(login):
         perms = None
     else:
         try:
@@ -662,7 +669,9 @@ def collaborator_permission(slug: str, login: str, *, timeout: int = 30) -> froz
                 str(v).lower() for v in (data.get("permission"), data.get("role_name")) if v
             )
         except GitHubUnavailable as exc:
-            LOG.debug("permission for %s unreadable: %s", login, exc)
+            # WARNING, not DEBUG: this refusal decides whether a human's answer counts, and an
+            # operator must be able to see why it did not. Bounded by PERMISSION_FAILURE_TTL.
+            LOG.warning("permission for %s unreadable — treating as untrusted: %s", login, exc)
             perms = None
     ttl = PERMISSION_TTL if perms is not None else PERMISSION_FAILURE_TTL
     _PERMISSION_CACHE[key] = (now + ttl, perms)

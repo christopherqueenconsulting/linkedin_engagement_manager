@@ -470,7 +470,7 @@ newest_owner_answer() {
   # `|` and not a tab: a tab is IFS whitespace, so an empty login would collapse into the body.
   while IFS='|' read -r login body; do
     [ -n "$login" ] || continue
-    comment_login_is_app "$login" && continue
+    comment_login_names_app "$login" && continue
     comment_author_trusted "$login" || continue
     printf '%s\n' "$body"
     return 0
@@ -636,14 +636,17 @@ claude_reviewed_at() {  # $1=pr
   # Only the pipeline App's marker, or a trusted author's, counts (owner ruling on comment
   # authority): the marker clears the merge gate, and on a public repo anybody can open a comment
   # with the phrase. The jq emits every phrase-matching comment newest first; the author test below
-  # takes the first one that may speak for the pipeline.
-  local rows login at
-  rows="$(gh pr view "$1" --repo "$SLUG" --json comments 2>/dev/null \
+  # takes the first one that may speak for the pipeline. REST, not `gh --json comments`: the App is
+  # recognised by `.user.type == "Bot"` plus its exact `[bot]` login, and only REST carries the type
+  # (gh reports a bare slug a human could register). `--slurp` + external jq for the same paging
+  # reason `label_actor_trusted` gives; a PR's conversation comments are its issue comments.
+  local rows login type at
+  rows="$(gh api "repos/$SLUG/issues/$1/comments" --paginate --slurp 2>/dev/null \
     | jq -r --arg m "$CLAUDE_REVIEW_MARKER_TEXT" \
-        '[(.comments // [])[] | select(((.body // "") | sub("^[^A-Za-z]*"; "")) | startswith($m))] | reverse | .[] | "\(.author.login // "")|\(.createdAt // "")"' 2>/dev/null)"
-  while IFS='|' read -r login at; do
+        '[.[][] | select(((.body // "") | sub("^[^A-Za-z]*"; "")) | startswith($m))] | reverse | .[] | "\(.user.login // "")|\(.user.type // "")|\(.created_at // "")"' 2>/dev/null)"
+  while IFS='|' read -r login type at; do
     [ -n "$login" ] && [ -n "$at" ] || continue
-    comment_login_is_app "$login" || comment_author_trusted "$login" || continue
+    comment_login_is_app "$login" "$type" || comment_author_trusted "$login" || continue
     echo "$at"
     return 0
   done <<< "$rows"
@@ -690,7 +693,10 @@ review_wait_expired() {  # $1=head-commit-iso-date -> 0 when the no-review fallb
 #     in this repo are routinely left unticked, so parking on those alone would stall everything).
 # A "#N" sitting next to follow-up/phase wording — on the PR or in the issue's comments — counts as
 # the follow-up and clears the guard. FAIL-OPEN: any gh/jq hiccup returns "safe to merge", because
-# a broken check must never wedge the pipeline.
+# a broken check must never wedge the pipeline. The one exception is who may CLEAR it: comments
+# count only from a trusted author or the App (`trusted_comment_bodies`), and that read fails
+# closed, so during a permission-lookup outage a collaborator's follow-up link no longer clears the
+# guard (the PR body and the owner's comments still do).
 PHASE_GUARD="${PHASE_GUARD:-1}"
 PHASE_GUARD_MARKER="🧩 phase-guard"
 
@@ -758,15 +764,16 @@ phase_leftover() {  # $1=issue -> echoes "phase: <marker>" / "boxes: <n>" / noth
   return 0
 }
 
-trusted_comment_bodies() {  # $1=pr|issue $2=number -> bodies of comments a trusted author or the App wrote
+trusted_comment_bodies() {  # $1=number (issue or PR) -> bodies of comments a trusted author or the App wrote
   # Only comments that mention an issue number are judged at all (`#[0-9]`), which is everything
   # phase_followup_linked can use and keeps the permission lookups to the commenters who matter.
-  local rows login body
-  rows="$(gh "$1" view "$2" --repo "$SLUG" --json comments \
-            --jq '(.comments // [])[] | select((.body // "") | test("#[0-9]")) | "\(.author.login // "")|\((.body // "") | @base64)"' 2>/dev/null)"
-  while IFS='|' read -r login body; do
+  # REST for the author's TYPE — see claude_reviewed_at for why the App is never matched untyped.
+  local rows login type body
+  rows="$(gh api "repos/$SLUG/issues/$1/comments" --paginate --slurp 2>/dev/null \
+    | jq -r '.[][] | select((.body // "") | test("#[0-9]")) | "\(.user.login // "")|\(.user.type // "")|\((.body // "") | @base64)"' 2>/dev/null)"
+  while IFS='|' read -r login type body; do
     [ -n "$login" ] || continue
-    comment_login_is_app "$login" || comment_author_trusted "$login" || continue
+    comment_login_is_app "$login" "$type" || comment_author_trusted "$login" || continue
     printf '%s' "$body" | base64 -d 2>/dev/null
     echo
   done <<< "$rows"
@@ -777,10 +784,13 @@ phase_followup_linked() {  # $1=pr $2=issue -> 0 when a follow-up issue is alrea
   # The PR BODY is the PR author's, and an upstream branch already needs write access. COMMENTS are
   # anybody's on a public repo, so only a trusted author's (or the App's) can clear this guard — an
   # outsider's "follow-up: #123" would otherwise merge a PR whose remaining scope nobody tracks.
+  # Unlike the rest of this guard that read FAILS CLOSED: during a permission-lookup outage a
+  # collaborator's follow-up link stops clearing it (the PR body and the owner's comments still do),
+  # so the PR goes to MODE=phasefix rather than merging on an unverified claim.
   local P="$1" N="$2" hit
   hit="$( { gh pr view "$P" --repo "$SLUG" --json body --jq '.body // ""' 2>/dev/null
-            trusted_comment_bodies pr "$P"
-            trusted_comment_bodies issue "$N" ; } \
+            trusted_comment_bodies "$P"
+            trusted_comment_bodies "$N" ; } \
           | grep -oiE '(follow-?up|phase [2-9]|part [2-9]|split out|tracked (in|as|by))[^#]{0,60}#[0-9]+' \
           | grep -vE "#$N\$" | head -1)"
   [ -n "$hit" ]

@@ -126,14 +126,30 @@ pr_admissible() {
 
 pipeline_app_login() {
   # pipeline_app_login -> the pipeline App's login, REST form (`<slug>[bot]`). The fallback is why a
-  # missing GH_APP_BOT_LOGIN pin does not make the App's own review markers invisible; a `[bot]`
-  # login lives in GitHub's App namespace, so naming it cannot make anybody else's comment count.
+  # missing GH_APP_BOT_LOGIN pin does not make the App's own review markers invisible. It is only
+  # ever matched WITH the author's type (`comment_login_is_app`): the App is a `Bot` with exactly
+  # this login, never whoever holds the bare slug — that USER login is unregistered, so anybody
+  # could take it.
   echo "${GH_APP_BOT_LOGIN:-cqc-lem-agent-pipeline[bot]}"
 }
 
 comment_login_is_app() {
-  # comment_login_is_app <login> -> 0 when <login> is the pipeline App. `gh --json comments` reports
-  # a bot by its bare slug and REST as `<slug>[bot]`, so both sides are compared without the suffix.
+  # comment_login_is_app <login> <type> -> 0 when the author IS the pipeline App: REST's
+  # `.user.type` is `Bot` AND `.user.login` equals the exact `<slug>[bot]` login. This grants (the
+  # App's markers count as evidence), so it must only ever be fed a TYPED source — the REST issue
+  # comments endpoint. `gh --json comments` reports a bot by its bare slug with no type, which a
+  # human registering that slug could reproduce.
+  [ "${2:-}" = "Bot" ] || return 1
+  local who app
+  who="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+  app="$(pipeline_app_login | tr '[:upper:]' '[:lower:]')"
+  [ -n "$who" ] && [ "$who" = "$app" ]
+}
+
+comment_login_names_app() {
+  # comment_login_names_app <login> -> 0 when an UNTYPED login (gh --json comments) is the App's
+  # bare slug. EXCLUSION ONLY — the answer lanes use it to skip the App's own comments, where a
+  # false match can only remove a comment, never make one count. Never use it to grant.
   local who app
   who="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"; who="${who%\[bot\]}"
   app="$(pipeline_app_login | tr '[:upper:]' '[:lower:]')"; app="${app%\[bot\]}"

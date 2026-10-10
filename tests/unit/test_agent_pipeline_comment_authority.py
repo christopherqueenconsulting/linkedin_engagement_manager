@@ -42,8 +42,11 @@ TICK = (_PIPELINE / "tick.sh").read_text(encoding="utf-8")
 COMMON = (_PIPELINE / "v2" / "actions" / "common.sh").read_text(encoding="utf-8")
 
 OWNER = "owner-person"
-#: How `gh --json comments` reports the pipeline App: its bare slug.
-APP = "cqc-lem-agent-pipeline"
+#: The pipeline App as REST reports it: exact `[bot]` login, type `Bot`. `c()` derives the untyped
+#: bare slug `gh --json comments` shows from it.
+APP = "cqc-lem-agent-pipeline[bot]"
+#: The App's bare slug as a USER login — unregistered on GitHub, so anybody could take it.
+SPOOF = "cqc-lem-agent-pipeline"
 DECISION = "🛑 **Human decision needed** — reply with option letters"
 TRAILER = "\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)"
 MARKER_TEXT = "Claude adversarial review"
@@ -69,11 +72,17 @@ def _fn(src: str, name: str) -> str:
 
 
 HELPERS = "".join(_fn(GUARDS, n) for n in
-                  ("pipeline_app_login", "comment_login_is_app", "comment_author_trusted"))
+                  ("pipeline_app_login", "comment_login_is_app", "comment_login_names_app",
+                   "comment_author_trusted"))
 
 _GH_STUB = r'''#!/usr/bin/env bash
-# Stub gh: comment reads come from $COMMENTS ({"body": ..., "comments": [...]}), permission reads
-# from $PERMS ({login: permission}); every permission lookup is logged to $CALLS.
+# Stub gh: comment reads come from $COMMENTS ({"body": ..., "comments": [...]}) — through
+# `gh pr/issue view --json` or, as one slurped page, through REST `api .../issues/N/comments` —
+# permission reads from $PERMS ({login: permission}); every permission lookup is logged to $CALLS.
+if [ "$1" = api ] && [ "${2%/comments}" != "$2" ]; then
+  printf '%s' "$COMMENTS" | jq -c '[.comments]'
+  exit 0
+fi
 if [ "$1" = api ]; then
   login="$(printf '%s' "$2" | sed -n 's#.*/collaborators/\([^/]*\)/permission$#\1#p')"
   echo "$login" >> "$CALLS"
@@ -122,9 +131,17 @@ def _calls(tmp_path: Path) -> list[str]:
     return f.read_text().split() if f.exists() else []
 
 
-def c(body: str, login: str, at: str = "2026-10-01T00:00:00Z") -> dict:
-    """One comment as `gh --json comments` returns it."""
-    return {"body": body, "author": {"login": login}, "createdAt": at}
+def c(body: str, login: str, at: str = "2026-10-01T00:00:00Z", user_type: str | None = None) -> dict:
+    """One comment in BOTH shapes the shell reads.
+
+    `login` is the REST login (`<slug>[bot]` for a bot). REST carries `user.login` + `user.type`;
+    `gh --json comments` carries `author.login` with the `[bot]` dropped and no type at all.
+    """
+    if user_type is None:
+        user_type = "Bot" if login.endswith("[bot]") else "User"
+    bare = login[:-5] if login.endswith("[bot]") else login
+    return {"body": body, "author": {"login": bare}, "createdAt": at,
+            "user": {"login": login, "type": user_type}, "created_at": at}
 
 
 # ------------------------------------------------------------------ the predicate itself
@@ -165,18 +182,29 @@ class TestCommentAuthorTrusted:
         assert "done" in r.stdout
         assert _calls(tmp_path) == ["writer", "ghost"]
 
-    def test_the_app_is_recognised_in_both_login_forms(self, tmp_path):
+    def test_the_app_is_its_exact_login_with_type_bot(self, tmp_path):
         r = _run(tmp_path, f'''
-            comment_login_is_app "{APP}" && echo A1
-            comment_login_is_app "{APP}[bot]" && echo A2
-            comment_login_is_app "writer" || echo A3
-            comment_login_is_app "" || echo A4''')
-        assert r.stdout.split() == ["A1", "A2", "A3", "A4"]
+            comment_login_is_app "{APP}" Bot && echo A1
+            comment_login_is_app "{SPOOF}" Bot || echo A2
+            comment_login_is_app "{SPOOF}" User || echo A3
+            comment_login_is_app "{SPOOF}" || echo A4
+            comment_login_is_app "{APP}" User || echo A5
+            comment_login_is_app "{APP}" || echo A6
+            comment_login_is_app "" Bot || echo A7''')
+        assert r.stdout.split() == ["A1", "A2", "A3", "A4", "A5", "A6", "A7"]
+
+    def test_the_untyped_name_check_is_exclusion_only(self, tmp_path):
+        """`comment_login_names_app` matches the bare slug; it exists to SKIP, never to grant."""
+        r = _run(tmp_path, f'''
+            comment_login_names_app "{SPOOF}" && echo N1
+            comment_login_names_app "{APP}" && echo N2
+            comment_login_names_app writer || echo N3''')
+        assert r.stdout.split() == ["N1", "N2", "N3"]
 
     def test_the_app_login_follows_the_pin(self, tmp_path):
         r = _run(tmp_path, f'''
-            comment_login_is_app "other-app" && echo PINNED
-            comment_login_is_app "{APP}" || echo DEFAULT_OFF''',
+            comment_login_is_app "other-app[bot]" Bot && echo PINNED
+            comment_login_is_app "{APP}" Bot || echo DEFAULT_OFF''',
                  env={"GH_APP_BOT_LOGIN": "other-app[bot]"})
         assert r.stdout.split() == ["PINNED", "DEFAULT_OFF"]
 
@@ -272,7 +300,7 @@ class TestClaudeReviewedAt:
             "2026-10-02T00:00:00Z"
 
     def test_the_apps_marker_counts_under_a_pinned_login(self, tmp_path):
-        got = _reviewed_at(tmp_path, [c(self.MARK, "other-app", "2026-10-02T00:00:00Z")],
+        got = _reviewed_at(tmp_path, [c(self.MARK, "other-app[bot]", "2026-10-02T00:00:00Z")],
                            env={"GH_APP_BOT_LOGIN": "other-app[bot]"})
         assert got == "2026-10-02T00:00:00Z"
 
@@ -283,6 +311,12 @@ class TestClaudeReviewedAt:
     @pytest.mark.parametrize("login", ["outsider", "reader", "ghost", "github-actions"])
     def test_an_untrusted_marker_is_ignored(self, tmp_path, login):
         assert _reviewed_at(tmp_path, [c(self.MARK, login, "2026-10-02T00:00:00Z")]) == ""
+
+    @pytest.mark.parametrize("user_type", ["User", "Organization", ""])
+    def test_a_human_holding_the_apps_bare_slug_is_not_the_app(self, tmp_path, user_type):
+        """The bare slug is an unregistered USER login: whoever takes it must not post as the App."""
+        got = _reviewed_at(tmp_path, [c(self.MARK, SPOOF, "2026-10-02T00:00:00Z", user_type)])
+        assert got == ""
 
     def test_a_newer_outsider_marker_does_not_mask_the_apps_older_one(self, tmp_path):
         got = _reviewed_at(tmp_path, [c(self.MARK, APP, "2026-10-01T00:00:00Z"),
@@ -306,7 +340,7 @@ class TestPhaseFollowupLinked:
     def test_the_apps_comment_links_the_follow_up(self, tmp_path):
         assert _linked(tmp_path, [c("Follow-up: #123 filed", APP)])
 
-    @pytest.mark.parametrize("login", ["outsider", "reader", "ghost"])
+    @pytest.mark.parametrize("login", ["outsider", "reader", "ghost", SPOOF])
     def test_an_outsiders_comment_cannot_clear_the_guard(self, tmp_path, login):
         assert not _linked(tmp_path, [c("Follow-up: #123 filed", login)])
 

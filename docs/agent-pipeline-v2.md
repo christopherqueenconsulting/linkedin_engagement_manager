@@ -643,7 +643,10 @@ the Decision Comment — the owner, or a collaborator with `admin`/`maintain`/`w
 (`docs/contribution-security.md` §1, "Comment authority") — classified by `lemd/answers.py`:
 `answer`/`directive` un-park, `hold`/`question` stay parked. Anyone else's reply is not an answer
 (no new decision row: it reads as row 10's "no answer"), and `v2_owner_answered` re-checks the same
-rule at execution time. An answer is spent once (`items.last_comment_id`), written only after the un-park
+rule at execution time. When that fresh re-check refuses a reply the daemon had trusted (a failed
+lookup, or access revoked inside the daemon's 15-minute permission cache), the un-park exits
+`EX_TRUST`, the reply is recorded as routed (`last_comment_id`) and is never retried; the way out is
+a NEW reply from the owner or a write+ collaborator. An answer is spent once (`items.last_comment_id`), written only after the un-park
 succeeds so a failed action retries.
 
 Un-parking **resets the ledger** — the owner's answer is the statement "the world changed, try
@@ -743,6 +746,14 @@ by `tick.sh` and `v2/actions/common.sh`) are unchanged.
 **Pause vs retire.** `PAUSED` stops both runners. `V1_RETIRED` demotes v1 to the failsafe cron and is
 what `cutover.sh` writes — deliberately not `PAUSED`, because `tick.sh` exits unconditionally on
 PAUSED and that would disable the failsafe too.
+
+### Rolling back comment authority
+
+The trusted-author rule for comments (`docs/contribution-security.md` §1, "Comment authority") lives
+in BOTH runners — `lemd/` and `actions/common.sh` for v2, `tick.sh` and `lib/guards.sh` for v1 — so
+`v2/rollback.sh` is **not** a rollback for it: handing dispatch to v1 keeps the same rule. To undo it,
+revert its merge commit on `main`, then deploy that revert the normal way above (`install.sh --sync`,
+then restart BOTH units).
 
 ### Opt-in permission profile
 

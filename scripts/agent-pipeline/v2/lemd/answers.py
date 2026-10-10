@@ -177,7 +177,7 @@ def parse(comments: list[dict[str, Any]], owner: str,
             continue
         author = c.get("author") or {}
         login = str(author.get("login") or "")
-        if not login or github.is_pipeline_app(author):
+        if not login or github.is_pipeline_app(author) or github.names_pipeline_app(login):
             continue
         if login != owner and not (trusted is not None and trusted(login)):
             continue
