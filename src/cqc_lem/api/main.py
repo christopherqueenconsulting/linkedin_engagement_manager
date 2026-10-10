@@ -1489,6 +1489,19 @@ def health_check_deep():
     except Exception as e:
         log_warning("Deep health check could not measure egress", exc=e)
 
+    # LinkedIn session (#2356): a healthy egress still leaves the lanes dead when no usable
+    # signed-in session exists (approval pending, challenge cooldown, sign-in gone stale). Read
+    # from Redis only (`utilities/linkedin/session_health.py`) — no browser, no LinkedIn request.
+    # Report-only until `HEALTH_DEEP_SESSION_DEGRADES` is set; `session_health` never raises.
+    session = {"linkedin_session": "unknown", "session_checked": 0, "session_failing": 0}
+    try:
+        from cqc_lem.utilities.linkedin import session_health as linkedin_session
+        session = linkedin_session.session_health()
+        if status == "healthy" and linkedin_session.should_degrade(session):
+            status = "degraded"
+    except Exception as e:
+        log_warning("Deep health check could not measure the LinkedIn session", exc=e)
+
     # `lanes` is computed but NOT returned (issue #1020): this endpoint is unauthenticated by
     # design — an external dead-man's switch cannot carry a credential — and the per-worker map was
     # the one field with disclosure value, naming container IDs and the internal queue topology.
@@ -1499,7 +1512,7 @@ def health_check_deep():
     # insertion order, so dropping the last key leaves the literal `"status":"healthy"` that
     # docs/stack-watchdog.md pins as a monitor contract byte-identical.
     return {"status": status, "workers": len(lanes), "consuming": consuming,
-            "maintenance": maintenance, **egress}
+            "maintenance": maintenance, **egress, **session}
 
 
 @router.get("/app-info")

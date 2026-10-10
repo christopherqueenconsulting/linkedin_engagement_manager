@@ -17,6 +17,9 @@ _MAIN = "cqc_lem.api.main"
 # Captured at import, before the autouse fixture below patches it, for the one test that drives
 # the real reading end to end.
 from cqc_lem.utilities.egress_probe import egress_health as _REAL_EGRESS_HEALTH  # noqa: E402
+from cqc_lem.utilities.linkedin.session_health import (  # noqa: E402
+    session_health as _REAL_SESSION_HEALTH,
+)
 
 
 def _call():
@@ -43,6 +46,18 @@ def _egress_direct():
     with patch("cqc_lem.utilities.egress_probe.egress_health",
                return_value={"egress": "direct", "egress_checked": 0, "egress_failing": 0}), \
          patch("cqc_lem.utilities.egress_probe.should_degrade", return_value=False):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _session_unknown():
+    """Default every test to an unmeasured LinkedIn session so nothing reaches Redis or MySQL.
+
+    Tests of the session reading itself patch `session_health` explicitly.
+    """
+    with patch("cqc_lem.utilities.linkedin.session_health.session_health",
+               return_value={"linkedin_session": "unknown", "session_checked": 0,
+                             "session_failing": 0}):
         yield
 
 
@@ -80,7 +95,8 @@ class TestHealthDeep:
         with patch("cqc_lem.utilities.maintenance._inspect", return_value=insp):
             out = _call()
         assert set(out) == {"status", "workers", "consuming", "maintenance", "egress",
-                            "egress_checked", "egress_failing"}
+                            "egress_checked", "egress_failing", "linkedin_session",
+                            "session_checked", "session_failing"}
         assert "3571c22235c8" not in json.dumps(out)
         assert "se_engage" not in json.dumps(out)
 
@@ -95,7 +111,8 @@ class TestHealthDeep:
         with patch("cqc_lem.utilities.maintenance._inspect", return_value=insp):
             out = _call()
         assert list(out) == ["status", "workers", "consuming", "maintenance", "egress",
-                             "egress_checked", "egress_failing"]
+                             "egress_checked", "egress_failing", "linkedin_session",
+                             "session_checked", "session_failing"]
         assert json.dumps(out).startswith('{"status": "healthy"')
 
     def test_registered_but_consuming_nothing_is_degraded(self):
@@ -329,3 +346,80 @@ class TestHealthDeepEgress:
             reset_cache()
         assert "proxy.example" not in body and "secret" not in body and "3128" not in body
         assert '"egress": "ok"' in body
+
+
+class TestHealthDeepLinkedInSession:
+    """#2356: a healthy egress still leaves every lane dead without a usable signed-in session."""
+
+    _STALE = {"linkedin_session": "stale", "session_checked": 2, "session_failing": 1}
+
+    def _with(self, reading):
+        return patch("cqc_lem.utilities.linkedin.session_health.session_health",
+                     return_value=reading)
+
+    def test_flag_off_reports_a_stale_session_but_stays_healthy(self, monkeypatch):
+        monkeypatch.delenv("HEALTH_DEEP_SESSION_DEGRADES", raising=False)
+        with _healthy_inspect(), self._with(self._STALE):
+            out = _call()
+        assert out["status"] == "healthy"
+        assert out["linkedin_session"] == "stale" and out["session_failing"] == 1
+
+    def test_flag_on_degrades_a_stale_session(self, monkeypatch):
+        monkeypatch.setenv("HEALTH_DEEP_SESSION_DEGRADES", "true")
+        with _healthy_inspect(), self._with(self._STALE):
+            out = _call()
+        assert out["status"] == "degraded"
+        assert out["consuming"] == 1  # legible: Celery is fine, the session is not
+
+    @pytest.mark.parametrize("state", ["ok", "backing_off", "unknown"])
+    def test_flag_on_never_degrades_a_non_failing_state(self, monkeypatch, state):
+        monkeypatch.setenv("HEALTH_DEEP_SESSION_DEGRADES", "true")
+        reading = {"linkedin_session": state, "session_checked": 1, "session_failing": 0}
+        with _healthy_inspect(), self._with(reading):
+            assert _call()["status"] == "healthy"
+
+    def test_session_never_upgrades_an_unknown_reading(self, monkeypatch):
+        monkeypatch.setenv("HEALTH_DEEP_SESSION_DEGRADES", "true")
+        with patch("cqc_lem.utilities.maintenance._inspect", side_effect=RuntimeError("down")), \
+             patch(f"{_MAIN}.log_warning"), self._with(self._STALE):
+            assert _call()["status"] == "unknown"
+
+    def test_a_crashing_reading_is_unknown_and_never_raises(self):
+        with _healthy_inspect(), \
+             patch("cqc_lem.utilities.linkedin.session_health.session_health",
+                   side_effect=RuntimeError("x")), \
+             patch(f"{_MAIN}.log_warning") as warn:
+            out = _call()
+        assert out["status"] == "healthy"
+        assert out["linkedin_session"] == "unknown"
+        warn.assert_called_once()
+
+    def test_body_names_no_user_email_or_timestamp(self):
+        """End to end through the real reader: only the three keys reach the public body."""
+        import json
+
+        from cqc_lem.utilities.linkedin import session_health as sh
+        record = {"state": "signed_in", "signed_in_at": "2026-10-09T07:00:00+00:00",
+                  "email": "owner@example.com"}
+        with _healthy_inspect(), \
+             patch("cqc_lem.utilities.linkedin.rate_limit.shared_redis_client",
+                   return_value=MagicMock()), \
+             patch("cqc_lem.utilities.db.get_active_user_ids", return_value=[4242]), \
+             patch("cqc_lem.utilities.linkedin.rate_limit.rate_limit_cooldown_remaining",
+                   return_value=0), \
+             patch("cqc_lem.utilities.linkedin.rate_limit.is_automation_paused",
+                   return_value=False), \
+             patch("cqc_lem.utilities.linkedin.login_status.get_login_status",
+                   return_value=record), \
+             patch("cqc_lem.utilities.linkedin.login_status.challenge_cooldown_remaining",
+                   return_value=0), \
+             patch("cqc_lem.utilities.linkedin.session_health.session_health",
+                   new=_REAL_SESSION_HEALTH):
+            sh.reset_cache()
+            out = _call()
+            sh.reset_cache()
+        session_keys = {k for k in out if k.startswith("session_") or k == "linkedin_session"}
+        assert session_keys == {"linkedin_session", "session_checked", "session_failing"}
+        body = json.dumps(out)
+        assert "4242" not in body and "example.com" not in body and "2026-10-09" not in body
+        assert out["session_checked"] == 1
