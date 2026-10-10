@@ -6,20 +6,30 @@ Every account has a `users.engagement_mode`: `automate` or `suggest`. Free-trial
 engagement as **suggestions only** — no Selenium or browser automation ever runs on their LinkedIn
 account. `utilities/engagement_mode.py` is the one place the mode is decided.
 
-**Who is which.** The migration added the column with `DEFAULT 'automate'`, so every account that
-existed before #2367 behaves exactly as before. New accounts do not rely on the default: every
-creation path in `platform/db/repositories/users.py` writes `suggest` explicitly — `add_user_by_email`
-(trial signup), `add_user`, and the INSERT half of the OAuth upsert in `add_user_with_access_token`.
-The upsert's `ON DUPLICATE KEY UPDATE` half does not touch the column, so an existing account that
-re-connects keeps its mode. The API exposes the mode read-only (`GET /user/settings` →
-`engagement_mode`); no endpoint changes it — switching an account to `automate` is an operator
-action on the row.
+**The rule.** An account may have a browser only when BOTH hold:
 
-**Fail closed.** Only a stored, readable `automate` allows a browser. A missing row, a DB fault, an
-exception from the reader, or any unrecognised value is `suggest`. `GET /user/settings` reports
-the same fail-closed reading, so the SPA never shows `automate` for an account the lanes treat as
-`suggest`. This is a per-account safety control, not a feature flag: it never falls back to an
-environment variable and is never read from PostHog.
+1. its stored `engagement_mode` is exactly `automate`, and
+2. it is not on a trial — `subscription_status` is not `trial` AND `subscription_tier` is not
+   `free_trial`.
+
+Everything else is `suggest`. `get_user_engagement_state` reads the mode and both subscription
+columns in ONE query, so the two halves cannot disagree. Condition 2 is what makes the ruling hold
+for accounts that existed before this column: the migration added it with `DEFAULT 'automate'`, so
+a pre-existing trial account stores `automate` — and is still suggest-only, because it is on a
+trial. A paid account that was `automate` before stays `automate`.
+
+**Who is which.** New accounts do not rely on the column default: every creation path in
+`platform/db/repositories/users.py` writes `suggest` explicitly — `add_user_by_email` (trial
+signup), `add_user`, and the INSERT half of the OAuth upsert in `add_user_with_access_token`. The
+upsert's `ON DUPLICATE KEY UPDATE` half does not touch the column, so an account that re-connects
+keeps its mode. The API exposes the resolved mode read-only (`GET /user/settings` →
+`engagement_mode`).
+
+**Fail closed.** A missing row, a DB fault, an exception from the reader, a reading without its
+subscription half, or any mode value other than exactly `automate` is `suggest`. `GET
+/user/settings` reports the same resolved value, so the SPA never shows `automate` for an account
+the lanes treat as `suggest`. This is a per-account safety control, not a feature flag: it never
+falls back to an environment variable and is never read from PostHog.
 
 **Three layers.**
 
@@ -29,8 +39,7 @@ environment variable and is never read from PostHog.
    leaving them `approved` and unchanged. The pre-post warm-up is not queued either; the post itself
    is. This is an efficiency layer — nothing relies on it.
 2. **Lane task.** Every Selenium lane task calls `skip_browser_lane(user_id, task)` first (row-id
-   tasks right after resolving the row's user) and returns `SUGGEST_ONLY_SKIP_MESSAGE`. The skip
-   logs at DEBUG — it is the mode working, never a warning.
+   tasks right after resolving the row's user) and returns `SUGGEST_ONLY_SKIP_MESSAGE`.
 3. **Backstop.** `get_docker_driver` calls `require_browser_automation` whenever it is given a
    `user_id`, before the Grid is touched, and raises `SuggestOnlyEngagement`. Reaching it means a
    lane is missing its layer-2 check. Sessions with no `user_id` (tutorial capture, load test) are
@@ -43,11 +52,16 @@ straight to the cached profile.
 **Not gated:** publishing approved posts through the OAuth `w_member_social` API
 (`post_to_linkedin`). That is not a browser, and trial scope includes it.
 
-**Suggestions.** Where a lane has a finished draft and no browser read is needed to produce it, a
-suggest account gets the draft stored in `engagement_suggestions` instead of sent. The SPA lists the
-newest 50 on the Settings page ("Suggested", `EngagementSuggestionsCard`) with a copy button. A
-failed read is 503, never an empty list. `dedup_key` (unique per user) makes a re-dispatched task a
-no-op, and the seed and second-wave lanes check it before their LLM call.
+### Suggestions
+
+Where a lane has a finished draft and no browser read is needed to produce it, a suggest account
+gets the draft stored in `engagement_suggestions` instead of sent. The SPA lists the newest 50 on
+the Settings page ("Suggested", `EngagementSuggestionsCard`) with a copy button; a target URL is a
+link only when it starts with `https://`, and plain text otherwise. A failed read is 503, never an
+empty list. `dedup_key` (unique per user) makes a re-dispatched task a no-op, and the seed and
+second-wave lanes check it before their LLM call. Every key is fixed-length — the comment and DM
+keys hash the URL as well as the message — so the column's 255-character limit can never truncate
+two drafts into one key.
 
 | Source | Kind | Produced for a suggest account in v1? |
 |---|---|---|
@@ -57,17 +71,98 @@ no-op, and the seed and second-wave lanes check it before their LLM call.
 | `send_private_dm` — a drafted DM handed to the send task | dm | **Yes** when it is dispatched (for example the admin send route). Its automated dispatchers are browser lanes and skip |
 | Feed, group and roster commenting; reply sweeps; comment follow-ups; DM follow-ups; profile-viewer DMs; appreciation DMs; catch-up touches; lead responses; invites | — | **No.** Each needs a browser READ (the feed, a thread, a profile) before there is anything to draft, so the whole lane is skipped |
 
-Because a suggest account's seed is a suggestion and never a COMMENT log row, the
-`get_posts_missing_their_seed_comment` reconciler in `auto_check_scheduled_posts` skips suggest
-accounts. Otherwise it would re-find the post on every tick.
+**A read fault never converts a comment.** The seed and second-wave lanes post a live comment for
+an `automate` account, so they divert to a suggestion only when the mode was actually READ as
+`suggest` (`read_engagement_mode`, three-valued). On a read fault they generate nothing, post
+nothing and return `ENGAGEMENT_MODE_UNREADABLE_MESSAGE`. The seed is retried: the
+`get_posts_missing_their_seed_comment` reconciler in `auto_check_scheduled_posts` re-arms it on
+the next tick. The second wave is not retried — it is discretionary amplification, and a missed one
+costs less than a wrong one. The reconciler skips only accounts READ as `suggest`, whose seed is a
+suggestion and never a COMMENT log row (it would otherwise re-find the post on every tick).
 
-Tests: `tests/unit/app/test_engagement_mode_lanes.py` drives every lane task with
-`get_docker_driver` replaced by a mock that fails if called, for `suggest` and for three unreadable
-readings. Its `TestEveryBrowserLaneIsCovered` reads the lane modules and fails when a new function
-that opens a session has no test. The resolver, backstop, store, dispatchers and creation paths are
-covered in `tests/unit/utilities/test_engagement_mode.py`. The unit-lane autouse fixture
-`_engagement_mode_defaults_to_automate` models pre-existing accounts, because the reader fails
-closed with no MySQL. A suggest-mode test patches the same name.
+**Retention.** Suggestion rows are kept until the account is deleted: the foreign key is
+`ON DELETE CASCADE`, so deleting the `users` row removes them. No account-deletion flow exists yet,
+and there is no daily database-cleanup beat to hang an age-based purge on, so nothing removes them
+by age. The SPA only ever shows the newest 50.
+
+### Operating it
+
+**Switching an account to `automate`.** Only the owner may authorize this, and never for a trial
+account — the resolver ignores a stored `automate` on a trial account (rule 2 above), so the switch
+would do nothing until the account is paid. Run it as the deploy user, from `/opt/lem`, against the
+production MySQL compose service `mysql`. Credentials come from the container's own environment
+variables (`MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DATABASE`), never from the command line:
+
+```bash
+cd /opt/lem
+docker compose -f docker-compose.yml -f docker-compose.prod.yml exec mysql \
+  sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysql -u"$MYSQL_USER" "$MYSQL_DATABASE"'
+```
+
+```sql
+UPDATE users SET engagement_mode='automate' WHERE id=<id>;
+SELECT id, engagement_mode FROM users WHERE id=<id>;
+```
+
+The same `UPDATE` with `'suggest'` reverts it. The mode is read on every lane run and every
+dispatch (nothing caches it), so the change takes effect on the next lane run with no restart.
+
+**Which accounts are suggest-only right now** — the same rule the resolver applies:
+
+```sql
+SELECT id, engagement_mode, subscription_status, subscription_tier FROM users
+WHERE engagement_mode <> 'automate'
+   OR subscription_status = 'trial'
+   OR subscription_tier = 'free_trial';
+```
+
+**What it leaves in the logs** (production logs at INFO, `docs/production-logs.md`):
+
+- A skip is the mode working, so it is never a warning. The FIRST skip per account per UTC day is
+  INFO — `<task> skipped — suggest-only engagement mode`, with `user_id` — so an account wrongly
+  left in `suggest` leaves one trace a day in the persistent log. Every later skip that day is
+  DEBUG and does not reach the production log. The once-a-day claim is a Redis key
+  (`engagement_mode:skip_logged:<user_id>:<date>`); with Redis down, or the claim erroring, the
+  skip falls back to DEBUG rather than logging every skip at INFO.
+- A read fault is a WARNING, and escalates on repeat like any other: the reader logs
+  `Could not read engagement mode` (a MySQL error), and the resolver logs
+  `Engagement mode unreadable — treating the account as suggest-only` (anything else the reader
+  raised). Either way the account is treated as `suggest` for that run.
+- A backstop hit — a lane that reached `get_docker_driver` without its own check — raises
+  `SuggestOnlyEngagement` (`Browser session '<session>' refused — the account is suggest-only`).
+  It surfaces as that lane's task failure (its error log or failed result, with
+  `SuggestOnlyEngagement` in the exception) and is a defect in the lane, not in the account.
+
+**Rollback.**
+
+- *Image rollback.* Rolling back to an image from before #2367 leaves the `engagement_mode` column
+  and the `engagement_suggestions` table in place. The old code never reads either, so every
+  account behaves as it did before — including trial accounts, which get automation again. No
+  schema change is needed to roll back, and none should be made.
+- *One account.* Restore an account's mode with the `UPDATE` above.
+- *A partial migration.* MySQL DDL auto-commits, so a Flyway run that dies mid-file keeps what it
+  already did. The migration is ordered so a replay is safe: the idempotent
+  `CREATE TABLE IF NOT EXISTS engagement_suggestions` runs first and the `ALTER TABLE users ADD
+  COLUMN` runs last. If the ALTER failed, re-running the migration completes it. If the ALTER ran
+  but Flyway did not record the version (the process died between the two), a replay fails on the
+  duplicate column. Recover by dropping the column
+  (`ALTER TABLE users DROP COLUMN engagement_mode;`, through the same `mysql` service as above),
+  clearing any failed history row with Flyway's `repair`, and re-running the migration. Dropping
+  is safe: every account comes back on the column default, and any trial account that signed up
+  in between is still suggest-only through the trial rule. The alternative — recording the
+  version as applied by hand in `flyway_schema_history` — is an owner decision. Both are owner
+  actions, from `/opt/lem`.
+
+### Tests
+
+`tests/unit/app/test_engagement_mode_lanes.py` drives every lane task with `get_docker_driver`
+replaced by a mock that fails if called, for `suggest`, for three unreadable readings, and for a
+trial account whose stored mode is `automate`. Its `TestEveryBrowserLaneIsCovered` reads the lane
+modules and fails when a new function that opens a session has no test. The resolver (including
+the trial rule), backstop, store, dispatchers, creation paths and read-fault deferral are covered
+in `tests/unit/utilities/test_engagement_mode.py`. The unit-lane autouse fixture
+`_engagement_mode_defaults_to_automate` models a pre-existing PAID account, because the reader
+fails closed with no MySQL. A suggest-mode test patches the same name.
 
 ## Profile freshness — the on-demand re-scrape (issue #1076)
 

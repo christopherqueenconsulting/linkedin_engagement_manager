@@ -60,6 +60,17 @@ describe('EngagementSuggestionsCard (issue #2367)', () => {
     expect(get).toHaveBeenCalledWith('/user/engagement-suggestions?session_token=tok')
   })
 
+  it('links only an https:// target and shows anything else as plain text', async () => {
+    const unsafe = { ...DM, id: 9, target_url: 'javascript:alert(1)' }
+    const plainHttp = { ...SEED, id: 10, target_url: 'http://www.linkedin.com/in/x/' }
+    get.mockResolvedValue(payload({ suggestions: [unsafe, plainHttp] }))
+    harness(<EngagementSuggestionsCard />)
+    await waitFor(() => expect(screen.getAllByTestId('engagement-suggestion')).toHaveLength(2))
+    expect(screen.queryAllByRole('link')).toHaveLength(0)
+    expect(screen.getByText('javascript:alert(1)')).toBeTruthy()
+    expect(screen.getByText('http://www.linkedin.com/in/x/')).toBeTruthy()
+  })
+
   it('copies exactly the draft text of the row whose button was pressed', async () => {
     writeText.mockResolvedValue(undefined)
     get.mockResolvedValue(payload({ suggestions: [SEED, DM] }))

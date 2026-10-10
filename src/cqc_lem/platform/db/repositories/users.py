@@ -1542,20 +1542,26 @@ def get_users_with_reply_mode(mode: str) -> list:
     except mysql.connector.Error as err:
         log_error(f"Could not get users with reply mode {mode}", exc=err)
         return []
-def get_user_engagement_mode(user_id: int) -> Optional[str]:
-    """The stored `users.engagement_mode` for a user (issue #2367), or None when it cannot be read.
+def get_user_engagement_state(user_id: int) -> Optional[dict]:
+    """What decides a user's engagement mode (issue #2367), read in ONE query — or None.
 
-    None covers a missing row as well as a DB fault. This reader does not decide what None MEANS —
-    `utilities/engagement_mode.py` is the one place that does, and it reads None as `suggest`.
+    Returns `engagement_mode`, `subscription_status` and `subscription_tier` together, because a
+    trial account is suggest-only whatever its stored mode says, and reading the two halves in
+    separate round trips would let them disagree. None covers a missing row as well as a DB fault.
+    This reader does not decide what anything MEANS — `utilities/engagement_mode.py` is the one place
+    that does, and it reads None as `suggest`.
     """
     try:
         with db_cursor() as cursor:
-            cursor.execute("SELECT engagement_mode FROM users WHERE id = %s", (user_id,))
+            cursor.execute("SELECT engagement_mode, subscription_status, subscription_tier"
+                           " FROM users WHERE id = %s", (user_id,))
             row = cursor.fetchone()
     except mysql.connector.Error as err:
         log_warning("Could not read engagement mode", exc=err, user_id=user_id)
         return None
-    return row[0] if row and row[0] else None
+    if not row:
+        return None
+    return {"engagement_mode": row[0], "subscription_status": row[1], "subscription_tier": row[2]}
 
 
 def get_user_geo(user_id: int) -> Optional[dict]:

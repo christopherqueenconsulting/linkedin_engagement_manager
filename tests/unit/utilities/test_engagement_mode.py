@@ -18,22 +18,29 @@ from cqc_lem.utilities.db import EngagementMode, EngagementSuggestionKind
 
 pytestmark = pytest.mark.unit
 
-_MODE = "cqc_lem.utilities.engagement_mode.get_user_engagement_mode"
+_MODE = "cqc_lem.utilities.engagement_mode.get_user_engagement_state"
+
+
+def _state(mode, status="active", tier="professional"):
+    """What `get_user_engagement_state` returns: the stored mode and the subscription it rides on."""
+    return {"engagement_mode": mode, "subscription_status": status, "subscription_tier": tier}
+
+
 _CONN = "cqc_lem.platform.db.connection.get_db_connection"
 
 
 class TestResolverFailsClosed:
     def test_a_stored_automate_is_the_only_way_to_automate(self):
-        with patch(_MODE, return_value="automate"):
+        with patch(_MODE, return_value=_state("automate")):
             assert em.resolve_engagement_mode(1) is EngagementMode.AUTOMATE
             assert em.browser_automation_allowed(1) is True
             assert em.is_suggest_only(1) is False
 
     @pytest.mark.parametrize("reading", [
-        {"return_value": "suggest"},
+        {"return_value": _state("suggest")},
         {"return_value": None},
-        {"return_value": ""},
-        {"return_value": "Automate"},
+        {"return_value": _state("")},
+        {"return_value": _state("Automate")},
         {"side_effect": TypeError("unset DB port")},
         {"side_effect": RuntimeError("anything")},
     ], ids=["suggest", "none", "empty", "wrong-case", "typeerror", "runtimeerror"])
@@ -48,6 +55,39 @@ class TestResolverFailsClosed:
             assert em.resolve_engagement_mode(None) is EngagementMode.SUGGEST
         read.assert_not_called()
 
+    @pytest.mark.parametrize("status,tier", [
+        ("trial", "free_trial"), ("trial", None), ("trial", "professional"), ("active", "free_trial"),
+        ("cancelled", "free_trial"), (" TRIAL ", None),
+    ])
+    def test_a_trial_account_is_suggest_whatever_its_stored_mode_says(self, status, tier):
+        """A trial account that existed before the column took its `automate` default (#2367)."""
+        with patch(_MODE, return_value=_state("automate", status=status, tier=tier)):
+            assert em.resolve_engagement_mode(7) is EngagementMode.SUGGEST
+            assert em.read_engagement_mode(7) is EngagementMode.SUGGEST
+
+    @pytest.mark.parametrize("status,tier", [
+        ("active", "professional"), ("active", "enterprise"), ("past_due", "starter"), (None, None),
+        ("inactive", None),
+    ])
+    def test_a_paid_or_non_trial_automate_account_stays_automate(self, status, tier):
+        with patch(_MODE, return_value=_state("automate", status=status, tier=tier)):
+            assert em.resolve_engagement_mode(7) is EngagementMode.AUTOMATE
+
+    @pytest.mark.parametrize("state", [{}, {"engagement_mode": "automate"}, "automate", 1])
+    def test_a_state_without_its_subscription_half_is_suggest(self, state):
+        """A reading that cannot say whether the account is on a trial is not an `automate`."""
+        with patch(_MODE, return_value=state):
+            assert em.resolve_engagement_mode(7) is EngagementMode.SUGGEST
+
+    def test_read_is_three_valued(self):
+        with patch(_MODE, return_value=None):
+            assert em.read_engagement_mode(7) is None
+        with patch(_MODE, side_effect=TypeError("x")):
+            assert em.read_engagement_mode(7) is None
+        assert em.read_engagement_mode(None) is None
+        with patch(_MODE, return_value=_state("suggest")):
+            assert em.read_engagement_mode(7) is EngagementMode.SUGGEST
+
     def test_an_unreadable_mode_warns_once_where_it_is_detected(self):
         with patch(_MODE, side_effect=TypeError("x")), \
              patch("cqc_lem.utilities.engagement_mode.log_warning") as warn:
@@ -57,7 +97,7 @@ class TestResolverFailsClosed:
 
 class TestTheLaneSkipIsAnExpectedNoOp:
     def test_a_skip_logs_debug_never_a_warning(self):
-        with patch(_MODE, return_value="suggest"), \
+        with patch(_MODE, return_value=_state("suggest")), \
              patch("cqc_lem.utilities.engagement_mode.log_debug") as debug, \
              patch("cqc_lem.utilities.engagement_mode.log_warning") as warn:
             assert em.skip_browser_lane(3, "automate_commenting") is True
@@ -65,16 +105,45 @@ class TestTheLaneSkipIsAnExpectedNoOp:
         assert debug.call_args.kwargs == {"user_id": 3, "task_name": "automate_commenting"}
         warn.assert_not_called()
 
+    def test_the_first_skip_of_the_day_is_info_and_the_rest_debug(self):
+        """An account wrongly left in suggest must leave ONE trace in the INFO production log."""
+        claims = iter([True, False])
+        redis = MagicMock()
+        redis.set.side_effect = lambda *a, **k: next(claims)
+        with patch(_MODE, return_value=_state("suggest")), \
+             patch("cqc_lem.utilities.linkedin.rate_limit.shared_redis_client", return_value=redis), \
+             patch("cqc_lem.utilities.engagement_mode.log_info") as info, \
+             patch("cqc_lem.utilities.engagement_mode.log_debug") as debug:
+            em.skip_browser_lane(3, "automate_commenting")
+            em.skip_browser_lane(3, "sweep_reply_comments")
+        info.assert_called_once()
+        assert "automate_commenting skipped" in info.call_args.args[0]
+        debug.assert_called_once()
+        key = redis.set.call_args.args[0]
+        assert key.startswith("engagement_mode:skip_logged:3:")
+        assert redis.set.call_args.kwargs["nx"] is True
+
+    def test_a_redis_fault_falls_back_to_debug(self):
+        redis = MagicMock()
+        redis.set.side_effect = ConnectionError("down")
+        with patch(_MODE, return_value=_state("suggest")), \
+             patch("cqc_lem.utilities.linkedin.rate_limit.shared_redis_client", return_value=redis), \
+             patch("cqc_lem.utilities.engagement_mode.log_info") as info, \
+             patch("cqc_lem.utilities.engagement_mode.log_debug") as debug:
+            assert em.skip_browser_lane(3, "automate_commenting") is True
+        info.assert_not_called()
+        debug.assert_called_once()
+
     def test_an_automate_account_is_not_skipped_and_logs_nothing(self):
-        with patch(_MODE, return_value="automate"), \
+        with patch(_MODE, return_value=_state("automate")), \
              patch("cqc_lem.utilities.engagement_mode.log_debug") as debug:
             assert em.skip_browser_lane(3, "automate_commenting") is False
         debug.assert_not_called()
 
     def test_require_raises_for_suggest_and_passes_for_automate(self):
-        with patch(_MODE, return_value="suggest"), pytest.raises(em.SuggestOnlyEngagement):
+        with patch(_MODE, return_value=_state("suggest")), pytest.raises(em.SuggestOnlyEngagement):
             em.require_browser_automation(3, "Post Comment")
-        with patch(_MODE, return_value="automate"):
+        with patch(_MODE, return_value=_state("automate")):
             assert em.require_browser_automation(3, "Post Comment") is None
 
 
@@ -88,7 +157,19 @@ class TestTheDriverBackstop:
     def test_a_suggest_account_is_refused_before_the_grid_is_touched(self):
         from cqc_lem.utilities import selenium_util
 
-        with patch(_MODE, return_value="suggest"), \
+        with patch(_MODE, return_value=_state("suggest")), \
+             patch.object(selenium_util, "_wait_for_selenium_ready") as ready, \
+             patch("selenium.webdriver.Remote") as remote, \
+             pytest.raises(em.SuggestOnlyEngagement):
+            selenium_util.get_docker_driver(session_name="Post Comment", user_id=9)
+        ready.assert_not_called()
+        remote.assert_not_called()
+
+    def test_a_trial_account_stored_as_automate_is_refused(self):
+        """The ruling's own case: subscription_status='trial' with the column's `automate` default."""
+        from cqc_lem.utilities import selenium_util
+
+        with patch(_MODE, return_value=_state("automate", status="trial", tier="free_trial")), \
              patch.object(selenium_util, "_wait_for_selenium_ready") as ready, \
              patch("selenium.webdriver.Remote") as remote, \
              pytest.raises(em.SuggestOnlyEngagement):
@@ -108,7 +189,7 @@ class TestTheDriverBackstop:
     def test_an_automate_account_goes_on_to_the_grid(self):
         from cqc_lem.utilities import selenium_util
 
-        with patch(_MODE, return_value="automate"), \
+        with patch(_MODE, return_value=_state("automate")), \
              patch.object(selenium_util, "_wait_for_selenium_ready", side_effect=_Sentinel()), \
              patch.object(selenium_util, "DEVICE_FARM_PROJECT_ARN", None), \
              pytest.raises(_Sentinel):
@@ -147,6 +228,14 @@ class TestSaveSuggestion:
         assert a != em.dm_suggestion_key("https://www.linkedin.com/in/a/", "Hello")
         assert a != em.dm_suggestion_key("https://www.linkedin.com/in/b/", "Hi")
 
+    def test_keys_are_fixed_length_so_truncation_cannot_drop_the_digest(self):
+        """Two 400-char URLs sharing their first 255 chars must still get different keys."""
+        stem = "https://www.linkedin.com/feed/update/" + "x" * 400
+        for make in (lambda url: em.dm_suggestion_key(url, "Hi"), em.comment_suggestion_key):
+            first, second = make(stem + "A"), make(stem + "B")
+            assert first != second
+            assert len(first) == len(second) < 255
+
     @pytest.mark.parametrize("stored,expected", [(True, True), (False, False), (None, True)])
     def test_suggestion_exists_treats_an_unreadable_answer_as_present(self, stored, expected):
         with patch("cqc_lem.utilities.engagement_mode.has_engagement_suggestion",
@@ -155,29 +244,30 @@ class TestSaveSuggestion:
 
 
 class TestRepository:
-    def test_get_user_engagement_mode_reads_the_column(self, fake_cursor):
-        from cqc_lem.utilities.db import get_user_engagement_mode
+    def test_the_state_is_read_in_one_query(self, fake_cursor):
+        from cqc_lem.utilities.db import get_user_engagement_state
 
-        conn, cur = fake_cursor(fetch_one=("automate",))
+        conn, cur = fake_cursor(fetch_one=("automate", "trial", "free_trial"))
         with patch(_CONN, return_value=conn):
-            assert get_user_engagement_mode(4) == "automate"
+            assert get_user_engagement_state(4) == _state("automate", "trial", "free_trial")
+        cur.execute.assert_called_once()
         sql, params = cur.execute.call_args.args
-        assert "engagement_mode" in sql and params == (4,)
+        assert "engagement_mode" in sql and "subscription_status" in sql
+        assert "subscription_tier" in sql and params == (4,)
 
-    @pytest.mark.parametrize("row", [None, (None,)])
-    def test_get_user_engagement_mode_missing_is_none(self, fake_cursor, row):
-        from cqc_lem.utilities.db import get_user_engagement_mode
+    def test_a_missing_row_is_none(self, fake_cursor):
+        from cqc_lem.utilities.db import get_user_engagement_state
 
-        conn, _cur = fake_cursor(fetch_one=row)
+        conn, _cur = fake_cursor(fetch_one=None)
         with patch(_CONN, return_value=conn):
-            assert get_user_engagement_mode(4) is None
+            assert get_user_engagement_state(4) is None
 
-    def test_get_user_engagement_mode_db_fault_is_none(self, fake_cursor):
-        from cqc_lem.utilities.db import get_user_engagement_mode
+    def test_a_db_fault_is_none(self, fake_cursor):
+        from cqc_lem.utilities.db import get_user_engagement_state
 
         conn, _cur = fake_cursor(execute_error=mysql.connector.Error("boom"))
         with patch(_CONN, return_value=conn):
-            assert get_user_engagement_mode(4) is None
+            assert get_user_engagement_state(4) is None
 
     def test_insert_is_idempotent_on_the_dedup_key(self, fake_cursor):
         from cqc_lem.utilities.db import insert_engagement_suggestion
@@ -287,7 +377,7 @@ class TestContentGenerationNeverScrapesForASuggestAccount:
         from cqc_lem.app import run_content_plan
 
         cached = MagicMock()
-        with patch(_MODE, return_value="suggest"), \
+        with patch(_MODE, return_value=_state("suggest")), \
              patch.object(run_content_plan, "get_driver_wait_pair") as pair, \
              patch.object(run_content_plan, "get_user_password_pair_by_id") as creds, \
              patch.object(run_content_plan, "load_profile_for_user", return_value=cached):
@@ -299,7 +389,7 @@ class TestContentGenerationNeverScrapesForASuggestAccount:
         from cqc_lem.app import run_content_plan
 
         live = MagicMock()
-        with patch(_MODE, return_value="automate"), \
+        with patch(_MODE, return_value=_state("automate")), \
              patch.object(run_content_plan, "get_driver_wait_pair",
                           return_value=(MagicMock(), MagicMock())) as pair, \
              patch.object(run_content_plan, "get_user_password_pair_by_id", return_value=("e", "p")), \
@@ -311,7 +401,7 @@ class TestContentGenerationNeverScrapesForASuggestAccount:
     def test_carousel_generation_uses_the_cached_profile_quietly(self):
         from cqc_lem.utilities.ai import ai_helper
 
-        with patch(_MODE, return_value="suggest"), \
+        with patch(_MODE, return_value=_state("suggest")), \
              patch("cqc_lem.utilities.selenium_util.get_driver_wait_pair") as pair, \
              patch("cqc_lem.utilities.linkedin.helper.load_profile_for_user",
                    side_effect=_Sentinel()) as cached, \
@@ -332,13 +422,13 @@ class TestDispatchers:
     def test_browser_lane_users_drops_suggest_accounts(self):
         from cqc_lem.app.run_scheduler import _browser_lane_users
 
-        with patch(_MODE, side_effect=lambda uid: {1: "automate", 2: "suggest", 3: None}.get(uid)):
+        with patch(_MODE, side_effect=lambda uid: {1: _state("automate"), 2: _state("suggest"), 3: None}.get(uid)):
             assert _browser_lane_users([1, 2, 3], "auto_daily_engagement") == [1]
 
     def test_daily_engagement_is_not_queued_for_a_suggest_account(self):
         from cqc_lem.app.run_scheduler import auto_daily_engagement
 
-        with patch(_MODE, side_effect=lambda uid: "automate" if uid == 1 else "suggest"), \
+        with patch(_MODE, side_effect=lambda uid: _state("automate") if uid == 1 else _state("suggest")), \
              patch(f"{_SCHED}._skip_if_throttled", return_value=False), \
              patch(f"{_SCHED}.get_active_user_ids", return_value=[1, 2]), \
              patch(f"{_SCHED}.has_linkedin_session", return_value=True), \
@@ -351,7 +441,7 @@ class TestDispatchers:
     def test_seed_reconciler_does_not_rearm_a_suggest_account(self):
         from cqc_lem.app.run_scheduler import auto_check_scheduled_posts
 
-        with patch(_MODE, return_value="suggest"), \
+        with patch(_MODE, return_value=_state("suggest")), \
              patch(f"{_SCHED}.get_ready_to_post_posts", return_value=[]), \
              patch(f"{_SCHED}.get_orphaned_scheduled_posts", return_value=[]), \
              patch(f"{_SCHED}.get_posts_missing_their_seed_comment", return_value=[(3, 2)]), \
@@ -363,13 +453,30 @@ class TestDispatchers:
         seed.apply_async.assert_not_called()
         warn.assert_not_called()
 
+    def test_seed_reconciler_still_rearms_when_the_mode_is_unreadable(self):
+        """A read fault is not a `suggest` reading, so the reconciler keeps re-arming as before.
+
+        The seed task itself defers until the mode reads.
+        """
+        from cqc_lem.app.run_scheduler import auto_check_scheduled_posts
+
+        with patch(_MODE, return_value=None), \
+             patch(f"{_SCHED}.get_ready_to_post_posts", return_value=[]), \
+             patch(f"{_SCHED}.get_orphaned_scheduled_posts", return_value=[]), \
+             patch(f"{_SCHED}.get_posts_missing_their_seed_comment", return_value=[(3, 2)]), \
+             patch(f"{_SCHED}.get_ready_occasion_posts", return_value=[]), \
+             patch(f"{_SCHED}.get_orphaned_occasion_claims", return_value=[]), \
+             patch(f"{_SCHED}.auto_seed_comment_on_post") as seed:
+            auto_check_scheduled_posts.run()
+        seed.apply_async.assert_called_once_with(kwargs={'user_id': 2, 'post_id': 3})
+
     def test_pre_post_browser_tasks_are_not_queued_but_the_post_still_is(self):
         from datetime import timedelta, timezone
 
         from cqc_lem.app.run_scheduler import auto_check_scheduled_posts
 
         slot = datetime.now(timezone.utc) + timedelta(minutes=10)
-        with patch(_MODE, return_value="suggest"), \
+        with patch(_MODE, return_value=_state("suggest")), \
              patch(f"{_SCHED}.get_ready_to_post_posts", return_value=[(7, slot, 2)]), \
              patch(f"{_SCHED}.get_active_user_ids", return_value=[2]), \
              patch(f"{_SCHED}.update_db_post_status"), \
@@ -400,7 +507,7 @@ class TestDispatchers:
 
         rows = ([(5, datetime.now(timezone.utc), 2)] if task == "auto_check_scheduled_dms"
                 else [(5, 2)])
-        with patch(_MODE, return_value="suggest"), \
+        with patch(_MODE, return_value=_state("suggest")), \
              patch(f"{_SCHED}._skip_if_throttled", return_value=False), \
              patch(f"{_SCHED}.{reader}", return_value=rows), \
              patch(f"{_SCHED}.get_active_user_ids", return_value=[2]), \
@@ -448,7 +555,7 @@ class TestOwnPostCommentsBecomeSuggestions:
     def test_seed_is_stored_not_published(self, _seed_inputs):
         from cqc_lem.app.engagement.feed import auto_seed_comment_on_post
 
-        with patch(_MODE, return_value="suggest"), \
+        with patch(_MODE, return_value=_state("suggest")), \
              patch("cqc_lem.utilities.engagement_mode.has_engagement_suggestion", return_value=False), \
              patch(f"{_FEED}.generate_seed_comment", return_value="What surprised you most?"), \
              patch("cqc_lem.utilities.engagement_mode.insert_engagement_suggestion",
@@ -466,17 +573,33 @@ class TestOwnPostCommentsBecomeSuggestions:
     def test_a_stored_seed_is_not_regenerated(self, _seed_inputs):
         from cqc_lem.app.engagement.feed import auto_seed_comment_on_post
 
-        with patch(_MODE, return_value="suggest"), \
+        with patch(_MODE, return_value=_state("suggest")), \
              patch("cqc_lem.utilities.engagement_mode.has_engagement_suggestion", return_value=True), \
              patch(f"{_FEED}.generate_seed_comment") as gen:
             result = auto_seed_comment_on_post.run(user_id=1, post_id=3)
         assert "already suggested" in result
         gen.assert_not_called()
 
+    @pytest.mark.parametrize("fault", [{"return_value": None}, {"side_effect": TypeError("x")}],
+                             ids=["none", "raises"])
+    def test_a_read_fault_defers_the_seed_and_never_converts_it(self, _seed_inputs, fault):
+        """An automate account's live comment must never become a stored suggestion on a blip."""
+        from cqc_lem.app.engagement.feed import auto_seed_comment_on_post
+
+        with patch(_MODE, **fault), \
+             patch(f"{_FEED}.generate_seed_comment") as gen, \
+             patch(f"{_FEED}.comment_on_linkedin_post") as api, \
+             patch("cqc_lem.utilities.engagement_mode.insert_engagement_suggestion") as store:
+            result = auto_seed_comment_on_post.run(user_id=1, post_id=3)
+        assert result == em.ENGAGEMENT_MODE_UNREADABLE_MESSAGE
+        gen.assert_not_called()
+        api.assert_not_called()
+        store.assert_not_called()
+
     def test_seed_still_publishes_for_automate(self, _seed_inputs):
         from cqc_lem.app.engagement.feed import auto_seed_comment_on_post
 
-        with patch(_MODE, return_value="automate"), \
+        with patch(_MODE, return_value=_state("automate")), \
              patch(f"{_FEED}.generate_seed_comment", return_value="Q?"), \
              patch(f"{_FEED}.comment_on_linkedin_post", return_value="urn:li:comment:1") as api, \
              patch(f"{_FEED}.insert_new_log"), \
@@ -503,7 +626,7 @@ class TestOwnPostCommentsBecomeSuggestions:
     def test_second_wave_is_stored_not_published(self, _wave_inputs):
         from cqc_lem.app.engagement.feed import auto_second_wave_comment
 
-        with patch(_MODE, return_value="suggest"), \
+        with patch(_MODE, return_value=_state("suggest")), \
              patch("cqc_lem.utilities.engagement_mode.has_engagement_suggestion", return_value=False), \
              patch(f"{_FEED}.generate_second_wave_comment", return_value="The number: 40%."), \
              patch("cqc_lem.utilities.engagement_mode.insert_engagement_suggestion",
@@ -516,10 +639,23 @@ class TestOwnPostCommentsBecomeSuggestions:
         report.assert_not_called()
         assert store.call_args.args[4] == "second_wave:3"
 
+    def test_a_read_fault_skips_the_second_wave_and_never_converts_it(self, _wave_inputs):
+        from cqc_lem.app.engagement.feed import auto_second_wave_comment
+
+        with patch(_MODE, return_value=None), \
+             patch(f"{_FEED}.generate_second_wave_comment") as gen, \
+             patch(f"{_FEED}.comment_on_linkedin_post") as api, \
+             patch("cqc_lem.utilities.engagement_mode.insert_engagement_suggestion") as store:
+            result = auto_second_wave_comment.run(user_id=1, post_id=3)
+        assert result == em.ENGAGEMENT_MODE_UNREADABLE_MESSAGE
+        gen.assert_not_called()
+        api.assert_not_called()
+        store.assert_not_called()
+
     def test_a_stored_second_wave_is_not_regenerated(self, _wave_inputs):
         from cqc_lem.app.engagement.feed import auto_second_wave_comment
 
-        with patch(_MODE, return_value="suggest"), \
+        with patch(_MODE, return_value=_state("suggest")), \
              patch("cqc_lem.utilities.engagement_mode.has_engagement_suggestion", return_value=True), \
              patch(f"{_FEED}.generate_second_wave_comment") as gen:
             result = auto_second_wave_comment.run(user_id=1, post_id=3)

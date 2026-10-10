@@ -57,6 +57,7 @@ from cqc_lem.utilities import golden_hour as _golden
 from cqc_lem.utilities.db import (
     CatchupTouchStatus,
     ConnectionRequestStatus,
+    EngagementMode,
     PostStatus,
     ScheduledDmStatus,
     count_catchup_touches_sent_today,
@@ -89,7 +90,7 @@ from cqc_lem.utilities.db import (
     update_scheduled_dm_status,
     update_subscription_from_stripe,
 )
-from cqc_lem.utilities.engagement_mode import is_suggest_only, skip_browser_lane
+from cqc_lem.utilities.engagement_mode import read_engagement_mode, skip_browser_lane
 from cqc_lem.utilities.engagement_window import (
     PRE_POST_COMMENT_LEAD_MINUTES,
     PRE_POST_SKIP_PAST_WINDOW,
@@ -322,9 +323,10 @@ def auto_check_scheduled_posts(self):
     # `SELF_COMMENT_MAX_PER_POST` bounds the pair — so the worst case of a false positive here is a
     # no-op, while the cost of missing one is a post that never got a first comment.
     for post_id, user_id in get_posts_missing_their_seed_comment():
-        if is_suggest_only(user_id):
+        if read_engagement_mode(user_id) is EngagementMode.SUGGEST:
             # A suggest-only account's seed is a stored SUGGESTION, never a COMMENT log row, so this
-            # query would re-find the post on every tick (issue #2367).
+            # query would re-find the post on every tick (issue #2367). Only a mode READ as suggest
+            # skips: an unreadable one re-arms as before, and the seed task defers until it reads.
             log_debug("Seed comment not re-armed — suggest-only account", post_id=post_id,
                       user_id=user_id, task_name="auto_check_scheduled_posts")
             continue

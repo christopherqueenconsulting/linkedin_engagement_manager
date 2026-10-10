@@ -99,6 +99,7 @@ from cqc_lem.utilities.db import (
     ENGAGEMENT_TARGET_FOLLOW_TERMINAL,
     ROSTER_FOLLOWS_PER_DAY_DEFAULT,
     ConnectStatus,
+    EngagementMode,
     EngagementSuggestionKind,
     FollowStatus,
     GroupPostDraftStatus,
@@ -149,9 +150,11 @@ from cqc_lem.utilities.db import (
 )
 from cqc_lem.utilities.dm_templates import _draft_connect_note
 from cqc_lem.utilities.engagement_mode import (
+    ENGAGEMENT_MODE_UNREADABLE_MESSAGE,
     SUGGEST_ONLY_SKIP_MESSAGE,
     SUGGESTION_SAVED_MESSAGE,
-    is_suggest_only,
+    comment_suggestion_key,
+    read_engagement_mode,
     save_suggestion,
     skip_browser_lane,
     suggestion_exists,
@@ -329,7 +332,7 @@ def comment_on_post(self, user_id: int, post_link: str, comment_text: str):
     """
     if skip_browser_lane(user_id, "comment_on_post"):
         save_suggestion(user_id, EngagementSuggestionKind.COMMENT, "comment_on_post", comment_text,
-                        dedup_key=f"comment:{post_link}", target_url=post_link)
+                        dedup_key=comment_suggestion_key(post_link), target_url=post_link)
         return SUGGESTION_SAVED_MESSAGE
     # Check the database logs / claim ledger to make sure user hasn't already commented here.
     if has_user_commented_on_post_url(user_id, post_link) or has_commented_post(user_id, post_link):
@@ -3433,13 +3436,22 @@ def auto_seed_comment_on_post(self, user_id: int, post_id: int):
     comment: this is the delivery half of the link-in-first-comment mechanic.
 
     A suggest-only account (issue #2367) gets the finished seed — link included — stored as a
-    suggestion for the author to post, and nothing is published.
+    suggestion for the author to post, and nothing is published. Only a mode that was actually READ
+    as suggest diverts it: an unreadable mode defers the seed (nothing generated, nothing posted)
+    and the `auto_check_scheduled_posts` reconciler re-arms it, so a transient fault can never turn
+    an automate account's live comment into a stored suggestion.
     """
     post_url = get_post_url_from_log_for_user(user_id, post_id)
     if not post_url:
         return "No post URL yet for seed comment"
+    mode = read_engagement_mode(user_id)
+    if mode is None:
+        # read_engagement_mode / the reader already warned where the fault was detected.
+        log_debug("Seed comment deferred — engagement mode unreadable", user_id=user_id,
+                  post_id=post_id, task_name="auto_seed_comment_on_post")
+        return ENGAGEMENT_MODE_UNREADABLE_MESSAGE
     suggest_key = f"seed:{post_id}"
-    suggest_only = is_suggest_only(user_id)
+    suggest_only = mode is EngagementMode.SUGGEST
     if suggest_only and suggestion_exists(user_id, suggest_key):
         return "Seed comment already suggested for this post"
     object_urn = object_urn_from_post_url(post_url)
@@ -3525,6 +3537,8 @@ def auto_second_wave_comment(self, user_id: int, post_id: int):
     over. Each run re-checks the post's real age and re-arms itself until the post is due.
 
     A suggest-only account (issue #2367) gets the draft stored as a suggestion; nothing publishes.
+    An unreadable mode skips the wave (nothing generated, nothing posted) rather than guessing: the
+    second wave is discretionary amplification, so a missed one costs less than a wrong one.
     """
     if not _golden.second_wave_enabled():
         return "Second-wave comment disabled"
@@ -3548,8 +3562,13 @@ def auto_second_wave_comment(self, user_id: int, post_id: int):
     object_urn = object_urn_from_post_url(post_url)
     if not object_urn:
         return f"Could not derive object URN from {post_url}"
+    mode = read_engagement_mode(user_id)
+    if mode is None:
+        log_debug("Second-wave comment skipped — engagement mode unreadable", user_id=user_id,
+                  post_id=post_id, task_name="auto_second_wave_comment")
+        return ENGAGEMENT_MODE_UNREADABLE_MESSAGE
     suggest_key = f"second_wave:{post_id}"
-    suggest_only = is_suggest_only(user_id)
+    suggest_only = mode is EngagementMode.SUGGEST
     if suggest_only and suggestion_exists(user_id, suggest_key):
         return "Second-wave comment already suggested for this post"
     cap = _golden.self_comment_cap()

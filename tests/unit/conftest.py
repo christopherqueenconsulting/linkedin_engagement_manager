@@ -174,14 +174,16 @@ def _engagement_mode_defaults_to_automate():
     The engagement-mode reader fails CLOSED (issue #2367): with no MySQL in this lane it reads as
     `suggest`, which would turn every Selenium lane test into a test of the skip path. Production
     gives every account that existed before #2367 the `automate` value, so that is what the lane
-    tests model. Only the stored-value reader is replaced — the resolver, the lane checks and the
+    tests model — a PAID one, since a trial account is suggest-only whatever its stored mode says.
+    Only the stored-value reader is replaced — the resolver, the lane checks and the
     `get_docker_driver` backstop all still run. A test of suggest mode patches the same name; its
     patch nests inside this one and wins.
     """
     from unittest.mock import patch
 
-    with patch("cqc_lem.utilities.engagement_mode.get_user_engagement_mode",
-               return_value="automate"):
+    with patch("cqc_lem.utilities.engagement_mode.get_user_engagement_state",
+               return_value={"engagement_mode": "automate", "subscription_status": "active",
+                             "subscription_tier": "professional"}):
         yield
 
 

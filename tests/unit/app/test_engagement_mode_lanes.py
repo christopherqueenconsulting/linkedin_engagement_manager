@@ -30,7 +30,12 @@ _INV = "cqc_lem.app.engagement.invites"
 _NEWS = "cqc_lem.app.engagement.newsletter"
 _OUT = "cqc_lem.app.engagement.outreach"
 _POST = "cqc_lem.app.engagement.posting"
-_MODE = "cqc_lem.utilities.engagement_mode.get_user_engagement_mode"
+_MODE = "cqc_lem.utilities.engagement_mode.get_user_engagement_state"
+
+
+def _state(mode, status="active", tier="professional"):
+    """What `get_user_engagement_state` returns: the stored mode and the subscription it rides on."""
+    return {"engagement_mode": mode, "subscription_status": status, "subscription_tier": tier}
 
 # (module, task, kwargs, row patches) — every Selenium lane task, with the smallest call that
 # reaches its guard. Row-id tasks resolve their user from a row, so the row reader is stubbed.
@@ -95,14 +100,17 @@ _SAVE_LANES = [
      "dm", "Thanks, Sam.", "https://www.linkedin.com/in/sam/"),
 ]
 
-# Readings of `users.engagement_mode` that must all behave as `suggest` — the stored value, and
-# the three ways a read can fail to say `automate`.
+# Readings that must all behave as `suggest` — the stored value, the three ways a read can fail to
+# say `automate`, and a trial account whose stored mode says `automate`.
 _NOT_AUTOMATE = [
-    pytest.param({"return_value": "suggest"}, id="suggest"),
+    pytest.param({"return_value": _state("suggest")}, id="suggest"),
     pytest.param({"return_value": None}, id="unreadable-none"),
     pytest.param({"side_effect": TypeError("int() argument must be ... not 'NoneType'")},
                  id="unreadable-raises"),
-    pytest.param({"return_value": "AUTOMATE "}, id="unrecognised-value"),
+    pytest.param({"return_value": _state("AUTOMATE ")}, id="unrecognised-value"),
+    # A trial account that existed before the column took its `automate` default.
+    pytest.param({"return_value": _state("automate", status="trial", tier="free_trial")},
+                 id="trial-stored-automate"),
 ]
 
 
@@ -184,7 +192,7 @@ class TestAnAutomateAccountIsUnchanged:
     ], ids=["comment_on_post", "update_stale_profile", "send_private_dm"])
     def test_the_lane_reaches_its_browser(self, module, name, kwargs, acquire, setup):
         with ExitStack() as stack:
-            stack.enter_context(patch(_MODE, return_value="automate"))
+            stack.enter_context(patch(_MODE, return_value=_state("automate")))
             reached = stack.enter_context(patch(acquire, side_effect=self._DriverReached()))
             for target, value in setup.items():
                 stack.enter_context(patch(target, return_value=value))
@@ -225,7 +233,7 @@ class TestApiPublishingIsNotGated:
             "get_carousel_slides": slides,
         }
         with ExitStack() as stack:
-            stack.enter_context(patch(_MODE, return_value="suggest"))
+            stack.enter_context(patch(_MODE, return_value=_state("suggest")))
             driver, remote = _browser_tripwires(stack)
             for name, value in stubs.items():
                 stack.enter_context(patch(f"{_POST}.{name}", return_value=value))

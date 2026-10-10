@@ -62,7 +62,12 @@ function SuggestionRow({ item }: { item: Suggestion }) {
         </button>
       </div>
       <p {...maskProps('text-sm text-gray-800 whitespace-pre-wrap')}>{item.body}</p>
-      {item.target_url && (
+      {/* Only an https:// target becomes a link — anything else (javascript:, data:, a bare host)
+          is shown as text, so a stored URL can never become a script the user clicks. */}
+      {item.target_url && !item.target_url.startsWith('https://') && (
+        <p className="text-xs text-gray-500 break-all">{item.target_url}</p>
+      )}
+      {item.target_url && item.target_url.startsWith('https://') && (
         <a
           href={item.target_url}
           target="_blank"
