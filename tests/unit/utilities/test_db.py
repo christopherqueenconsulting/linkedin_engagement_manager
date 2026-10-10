@@ -1212,7 +1212,8 @@ class TestGetUserPreferences:
             result = get_user_preferences(5)
             # On DB error, safe defaults are returned so automation is not silently broken
             from cqc_lem.utilities.db import DEFAULT_CONTENT_BUFFER_DAYS, DEFAULT_CONTENT_BUFFER_MAX_POSTS
-            assert result == {"last_login_inactivate_delay": None, "auto_schedule_posts": True,
+            # auto_schedule_posts falls back to False (#2366): an unreadable row holds posts for approval.
+            assert result == {"last_login_inactivate_delay": None, "auto_schedule_posts": False,
                               "content_buffer_days": DEFAULT_CONTENT_BUFFER_DAYS,
                               "content_buffer_max_posts": DEFAULT_CONTENT_BUFFER_MAX_POSTS,
                               "content_language": None}
@@ -1225,7 +1226,7 @@ class TestGetUserPreferences:
             mock_database_connection["cursor"].fetchone.return_value = None
 
             result = get_user_preferences(99)
-            assert result["auto_schedule_posts"] is True
+            assert result["auto_schedule_posts"] is False
 
 
 @pytest.mark.unit
