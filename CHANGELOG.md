@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.190.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.189.1...v0.190.0) (2026-10-10)
+
+
+### Features
+
+* **engagement:** filter scam and hostile comments before auto-replying ([#2364](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2364)) ([3aa4369](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/3aa436964215985b0be168d84c0d1e3916a5c936))
+
+
+### Bug Fixes
+
+* **agent-pipeline:** accept comment instructions only from trusted authors ([#2363](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2363)) ([f968482](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f968482e4c117d4d88fd4f574e4f77181abe46fb))
+
 ## [0.189.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.189.0...v0.189.1) (2026-10-10)
 
 
