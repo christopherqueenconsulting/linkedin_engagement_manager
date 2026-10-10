@@ -202,3 +202,25 @@ class TestStripToolArguments:
         assert server._strip_tool_arguments({"event": "$mcp_initialize"}) == {
             "event": "$mcp_initialize"
         }
+
+
+class TestDemoMode:
+    """DEMO_MODE (#2372): this browser reaches live LinkedIn, so it never starts in demo mode."""
+
+    def test_start_browser_is_refused_before_any_session(self, server, monkeypatch):
+        from cqc_lem.utilities.demo_mode import DemoModeError
+
+        monkeypatch.setenv("DEMO_MODE", "true")
+        with patch.object(server, "apply_debug_node") as pin, \
+             patch.object(server.webdriver, "Remote") as remote:
+            with pytest.raises(DemoModeError):
+                server.start_browser()
+        pin.assert_not_called()
+        remote.assert_not_called()
+
+    def test_start_browser_runs_when_off(self, server, monkeypatch):
+        monkeypatch.delenv("DEMO_MODE", raising=False)
+        with patch.object(server, "apply_debug_node", return_value=True), \
+             patch.object(server.webdriver, "Remote", return_value=MagicMock()) as remote:
+            server.start_browser()
+        remote.assert_called_once()

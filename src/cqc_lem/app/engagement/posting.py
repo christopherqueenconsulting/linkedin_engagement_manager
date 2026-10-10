@@ -133,6 +133,7 @@ from cqc_lem.utilities.db import (
     update_db_post_status,
     upsert_engager,
 )
+from cqc_lem.utilities.demo_mode import DemoModeError
 from cqc_lem.utilities.dm_templates import render_dm_placeholders
 from cqc_lem.utilities.flags import OCCASION_NATIVE_PUBLISH, flag_enabled
 from cqc_lem.utilities.golden_hour import _record_golden_hour_report, _reply_outcome
@@ -2852,6 +2853,17 @@ def auto_publish_occasion_post(self, user_id: int, post_id: int):
     try:
         driver, wait, user_email, my_profile = get_current_profile(
             user_id=user_id, session_name="Occasion Post")
+    except DemoModeError:
+        # DEMO_MODE (#2372) refused before a browser opened. Released to 'approved' (the branch
+        # below), the dispatcher would re-run it every beat for a day and publish it once demo mode
+        # is off. Held at 'error' instead — the same hold an abandoned claim gets — so the author
+        # decides. The INFO line is what tells this hold apart from a real publish failure — both
+        # leave the post at 'error'.
+        log_info(f"Occasion post {post_id} held: demo mode", user_id=user_id, post_id=post_id,
+                 task_name=task_name)
+        update_db_post_status(post_id, PostStatus.ERROR)
+        release_run_lock(lock_name, lock_token)
+        return f"Post {post_id} held at error (DEMO_MODE)"
     except Exception as e:
         log_error("Error getting profile for the native occasion publish", exc=e, user_id=user_id,
                   post_id=post_id, task_name=task_name)

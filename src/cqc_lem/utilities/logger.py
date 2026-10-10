@@ -27,6 +27,8 @@ import time
 from logging.handlers import RotatingFileHandler
 from typing import Callable, Optional
 
+from cqc_lem.utilities.demo_mode import DemoModeError, is_demo_mode
+
 _LOG_LEVEL = getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO)
 # PostHog receives records at this level and above (default: ERROR)
 _POSTHOG_MIN_LEVEL = getattr(logging, os.getenv("POSTHOG_LOG_LEVEL", "ERROR").upper(), logging.ERROR)
@@ -407,6 +409,25 @@ def log_info(message: str, **context) -> None:
     logger.info(message, extra=_extra(**context))
 
 
+def _is_demo_refusal(exc: Optional[BaseException]) -> bool:
+    """A `DemoModeError` raised while DEMO_MODE is actually on.
+
+    Both halves, so a `DemoModeError` that somehow surfaces with demo mode OFF is a real defect and
+    keeps its level, escalation and `$exception`.
+    """
+    return isinstance(exc, DemoModeError) and is_demo_mode()
+
+
+def _log_demo_refusal(message: str, exc: DemoModeError, context: dict) -> None:
+    """Log a DEMO_MODE refusal (#2372) at INFO, whatever level the caller asked for.
+
+    The ONE place a refusal is kept out of error tracking: a broad `except Exception` around a
+    LinkedIn call logs it with `exc=` at WARNING or ERROR, and under demo mode that is the expected
+    outcome, so it must neither escalate, nor reach PostHog as an ERROR log, nor file `$exception`.
+    """
+    logger.info(f"{message} (DEMO_MODE refusal at {exc.surface})", extra=_extra(**context))
+
+
 def log_warning(
     message: str,
     exc: Optional[BaseException] = None,
@@ -414,7 +435,11 @@ def log_warning(
 ) -> None:
     """Log at WARNING level with optional structured context. Pass exc= to capture the
     exception's stack trace (via exc_info) instead of passing it as a raw attribute.
+    A `DemoModeError` is logged at INFO instead (`_log_demo_refusal`).
     """
+    if _is_demo_refusal(exc):
+        _log_demo_refusal(message, exc, context)
+        return
     escalation = None
     if _ESCALATION_AVAILABLE:
         # note() swallows its own errors, but this is the logging path: if escalation ever raises,
@@ -450,8 +475,11 @@ def log_error(
     **context,
 ) -> None:
     """Log at ERROR level. Pass exc= to capture exception info and stack trace, and to file the
-    exception as a grouped PostHog error-tracking issue.
+    exception as a grouped PostHog error-tracking issue. A `DemoModeError` is logged at INFO instead.
     """
+    if _is_demo_refusal(exc):
+        _log_demo_refusal(message, exc, context)
+        return
     if exc is not None:
         logger.error(message, exc_info=exc, extra=_extra(**context))
         _capture(exc, message, "ERROR", _extra(**context))
@@ -465,8 +493,11 @@ def log_critical(
     **context,
 ) -> None:
     """Log at CRITICAL level. Pass exc= to capture exception info and stack trace, and to file the
-    exception as a grouped PostHog error-tracking issue.
+    exception as a grouped PostHog error-tracking issue. A `DemoModeError` is logged at INFO instead.
     """
+    if _is_demo_refusal(exc):
+        _log_demo_refusal(message, exc, context)
+        return
     if exc is not None:
         logger.critical(message, exc_info=exc, extra=_extra(**context))
         _capture(exc, message, "CRITICAL", _extra(**context))

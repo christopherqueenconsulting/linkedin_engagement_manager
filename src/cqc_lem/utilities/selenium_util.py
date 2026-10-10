@@ -44,6 +44,7 @@ from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.wait import WebDriverWait
 
+from cqc_lem.utilities.demo_mode import guard_linkedin
 from cqc_lem.utilities.env_constants import *
 # Named explicitly ON TOP of the star import above: these decide which HALF of the Grid a
 # session may run on (`apply_debug_node`) and how long we wait for readiness. The star import
@@ -241,7 +242,7 @@ def _wait_for_selenium_ready(host: str, port: str, timeout: int = None) -> None:
 def get_docker_driver(headless: bool = True, session_name: str = "ChromeTests", coordinates: dict = None,
                       user_id: int = None, lat: float = None, lng: float = None,
                       debug: bool = None, debug_required: bool = False,
-                      needs_images: bool = False) -> webdriver.Remote:
+                      needs_images: bool = False, demo_safe: bool = False) -> webdriver.Remote:
     """Open a Chrome session on the standalone-chrome container — the ONE way a driver is created.
 
     Everything that makes a session look like the user rather than a datacenter bot is applied here:
@@ -268,7 +269,17 @@ def get_docker_driver(headless: bool = True, session_name: str = "ChromeTests", 
     `bandwidth_saver=False` regardless of `PROXY_BANDWIDTH_SAVER_ENABLED` or proxy state. Every
     other caller keeps today's behavior — this must never widen past the messaging- and
     groups-surface lanes that pass it explicitly.
+
+    `DEMO_MODE` (#2372) refuses the session here, before the Grid is contacted: this is the
+    Selenium transport's choke point, so no LinkedIn lane can open a browser in demo mode.
+    `demo_safe=True` is the exemption for a session that films our OWN SPA and never navigates to
+    LinkedIn (the tutorial recorder); `test_demo_mode.py` pins who may pass it.
+
+    Raises:
+        DemoModeError: `DEMO_MODE` is on and the caller did not pass `demo_safe=True`.
     """
+    if not demo_safe:
+        guard_linkedin("selenium.get_docker_driver")
     if debug is None:
         debug = isTrue(os.getenv("SELENIUM_DEBUG_NODE", "False"))
     if debug_required:

@@ -12,3 +12,9 @@ import os
 
 assets_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets')
 build_dir = os.path.join(os.path.dirname(os.path.abspath(__file__) + "/../../../"))
+
+# DEMO_MODE's HTTP choke point (#2372): installed here so every process that imports the package
+# refuses a LinkedIn-bound `requests` call while DEMO_MODE is on. A no-op wrapper when it is off.
+from cqc_lem.utilities.demo_mode import install_requests_guard as _install_requests_guard  # noqa: E402
+
+_install_requests_guard()

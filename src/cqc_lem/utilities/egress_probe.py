@@ -81,7 +81,12 @@ def probe_proxy(proxy_url: str, timeout: Optional[float] = None) -> str:
 
     Returns:
         One of ``ok``, ``auth_failed``, ``refused``, ``unreachable`` or ``unknown``. Never raises.
+        Under ``DEMO_MODE`` it is ``unknown`` without opening a socket: the probe asks the proxy
+        for a tunnel to LinkedIn, and demo mode allows no LinkedIn connection at all (#2372).
     """
+    from cqc_lem.utilities.demo_mode import is_demo_mode
+    if is_demo_mode():
+        return EGRESS_UNKNOWN
     timeout = timeout if timeout is not None else _env_float("EGRESS_PROBE_TIMEOUT_SECONDS",
                                                             _DEFAULT_TIMEOUT_SECONDS)
     try:
