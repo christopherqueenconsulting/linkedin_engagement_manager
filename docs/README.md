@@ -143,6 +143,7 @@ index and the `CLAUDE.md` row that points at it, or the pointer becomes a dead e
 ## Marketing, product & business
 
 - ★ [Marketing video tutorials](marketing-video-tutorials.md) — declarative `TutorialFlow` capture, fail-closed and cheapest-first
+- [Demo recording seed](demo-recording.md) — `scripts/seed_demo_account.py --scene demo1|demo2|demo3`: one synthetic account on a LOCAL database, idempotent, no LinkedIn call
 - ★ [YouTube publishing](youtube-publishing.md) — keeping the OAuth refresh token alive; `unknown` is not `needs_reauth`
 - [Launch & marketing plan](launch-and-marketing-plan.md) — the automated launch sequence
 - [Marketing front page — UX target spec](marketing-page-ux-spec.md) — what the public page should be
