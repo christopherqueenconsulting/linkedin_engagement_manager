@@ -375,14 +375,24 @@ a misfire.
 
 ### Operating it
 
-- **Set or change the cap:** edit `FREE_TRIAL_DAILY_AI_CAP_USD` in the stack's `.env` (`0` turns it
-  off). The value is read per call, but a container sees `.env` only when it is created, so recreate
-  every service that generates — the API (both colours) and the Celery workers:
+- **Set or change the cap:** edit `FREE_TRIAL_DAILY_AI_CAP_USD` in the stack's `.env`. Unset, it
+  is the $0.50 default; `0` turns the cap off. The value is read per call, but a container sees
+  `.env` only when it is created, so recreate every service that generates: both API colours and
+  the five Celery workers. Never `web_app` — in production that is the nginx edge, and recreating
+  it drops traffic. Use the same compose file set `scripts/deploy.sh` builds as `$COMPOSE`: add
+  `-f docker-compose.grid.yml` unless the box's `.env` sets `SELENIUM_TOPOLOGY=standalone` (grid is
+  the default). From the stack directory:
 
   ```
-  docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --no-deps --force-recreate \
-    web_app web_api_green celery_worker celery_worker_selenium celery_worker_selenium_prepost \
-    celery_worker_selenium_outreach celery_worker_selenium_content
+  COMPOSE="docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.grid.yml"
+  LIVE="$(cat .active_color)"; : "${LIVE:?no .active_color — stop and check the deploy state}"
+  STANDBY="$([ "$LIVE" = blue ] && echo green || echo blue)"
+  $COMPOSE up -d --no-deps --force-recreate "web_api_$STANDBY"   # standby colour first
+  # Wait until the standby answers (the probe deploy.sh's color_healthy uses; API_PORT default 8000):
+  until docker exec "web_api_$STANDBY" curl -fsS http://localhost:8000/health >/dev/null; do sleep 2; done
+  $COMPOSE up -d --no-deps --force-recreate "web_api_$LIVE"      # then the live one
+  $COMPOSE up -d --no-deps --force-recreate celery_worker celery_worker_selenium \
+    celery_worker_selenium_prepost celery_worker_selenium_outreach celery_worker_selenium_content
   ```
 
 - **Read one user's spend today** (USD, UTC day; no key means $0):
