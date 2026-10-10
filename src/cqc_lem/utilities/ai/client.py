@@ -372,6 +372,45 @@ def _attach_proxy_response_params(result: Any, response: Any) -> None:
         object.__setattr__(result, "_hidden_params", params)
 
 
+def _post_user_and_model(post_kwargs: Mapping[str, Any]) -> Tuple[Optional[Any], Optional[str]]:
+    """(user_id, model) of the request a `post()` is about to send.
+
+    The user an explicit caller stamped into the request metadata (`_call_llm` sets it from
+    `_track_user_id`) wins over the ambient attribution scope, the same order `_attach_attribution`
+    resolves it in.
+    """
+    body = post_kwargs.get("body")
+    body = body if isinstance(body, Mapping) else {}
+    options = post_kwargs.get("options")
+    options = options if isinstance(options, Mapping) else {}
+    model = body.get("model")
+    for source in (options.get("extra_json"), body):
+        metadata = source.get("metadata") if isinstance(source, Mapping) else None
+        if isinstance(metadata, Mapping) and metadata.get("user_id") is not None:
+            return metadata.get("user_id"), str(model) if model else None
+    return current_attribution()[0], str(model) if model else None
+
+
+def _enforce_daily_ai_cap(post_kwargs: Mapping[str, Any]) -> None:
+    """Refuse a request from a free-trial user whose daily AI cap is reached (issue #2378).
+
+    Raises `DailyAICapReached` and nothing else: any failure to DECIDE is swallowed, because the cap
+    is soft and an unreadable reading must never cost a generation.
+    """
+    try:
+        from cqc_lem.utilities.ai_spend_cap import DailyAICapReached, check_request
+    except Exception as exc:
+        log_debug(f"Daily AI cap check failed open: {exc}", api_provider="litellm")
+        return
+    try:
+        user_id, model = _post_user_and_model(post_kwargs)
+        check_request(user_id, model)
+    except DailyAICapReached:
+        raise
+    except Exception as exc:
+        log_debug(f"Daily AI cap check failed open: {exc}", api_provider="litellm")
+
+
 class AttributedOpenAI(OpenAI):
     """The OpenAI client with LEM's who/what — and which pipeline — stamped onto every proxied request.
 
@@ -432,6 +471,9 @@ class AttributedOpenAI(OpenAI):
         place that covers all of them. Deliberately NOT `request()`: the SDK's own retry re-enters
         `request()`, so wrapping it there would nest the two retry budgets and multiply them.
         """
+        # Before anything is sent, so a refused call costs nothing. Outside the retry loop because
+        # a refusal is an answer, never a transient. The gate itself fails OPEN.
+        _enforce_daily_ai_cap(kwargs)
         attempts = max(1, _env_number(_CONNECT_RETRY_ATTEMPTS_ENV, _DEFAULT_CONNECT_RETRY_ATTEMPTS, int))
         backoff = max(0.0, _env_number(_CONNECT_RETRY_BACKOFF_ENV, _DEFAULT_CONNECT_RETRY_BACKOFF, float))
         for attempt in range(attempts):

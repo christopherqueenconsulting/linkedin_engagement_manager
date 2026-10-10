@@ -147,6 +147,7 @@ from cqc_lem.utilities.ai.slop_lint import (
     lint_report as slop_lint_report,
     violation_reasons,
 )
+from cqc_lem.utilities.ai_spend_cap import generation_paused as ai_generation_paused
 from cqc_lem.utilities.content_generation_status import (
     ContentGenerationEmptyReason,
     mark_empty,
@@ -5705,6 +5706,15 @@ def _top_up_buffer_for_user(user_id: int, requested: bool = False) -> None:
     and doubling LLM/video spend. The lock serialises them; the loser skips (its own next run
     re-reads the counts). Fails OPEN when Redis is down — same trade-off as the Selenium tasks.
     """
+    # The free-trial daily AI cap (issue #2378) pauses this run until the next UTC day — checked
+    # before the lock, so a paused user neither generates nor holds the lock. A user who clicked
+    # Generate is told why; the beat run just resumes tomorrow.
+    if ai_generation_paused(user_id):
+        log_debug("Content top-up paused by the free-trial daily AI cap", user_id=user_id,
+                  task_name="auto_create_weekly_content")
+        _close_out_empty_run(user_id, requested, ContentGenerationEmptyReason.DAILY_AI_LIMIT)
+        return
+
     lock_name = f"content_buffer_topup:{user_id}"
     lock_token = acquire_run_lock(lock_name, ttl_seconds=_BUFFER_LOCK_TTL_SECONDS)
     if lock_token is None:

@@ -73,6 +73,7 @@ class ContentGenerationEmptyReason(StrEnum):
     BUFFER_FULL = 'buffer_full'              # enough ready posts already sit in the window
     NO_PLANNED_SLOTS = 'no_planned_slots'    # nothing left planned to generate from
     ALREADY_RUNNING = 'already_running'      # another top-up holds the single-flight lock
+    DAILY_AI_LIMIT = 'daily_ai_limit'        # free-trial daily AI cap reached (issue #2378)
 
 
 def _ttl_seconds() -> int:

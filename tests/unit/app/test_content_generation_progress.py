@@ -206,6 +206,21 @@ class TestEmptyRunReason:
         reason, _ = self._reason(progress)
         assert reason == ContentGenerationEmptyReason.ALREADY_RUNNING
 
+    def test_free_trial_daily_ai_cap_pauses_the_run_and_says_why(self, progress):
+        """Issue #2378: a paused trial user neither generates nor takes the single-flight lock."""
+        from cqc_lem.app.run_content_plan import auto_create_weekly_content
+        from cqc_lem.utilities.content_generation_status import ContentGenerationEmptyReason
+        patches = _generation_patches([_planned(1, 11)])
+        with _Patched(patches) as mocks, \
+                patch(f"{_RCP}.ai_generation_paused", return_value=True) as paused:
+            auto_create_weekly_content(user_id=1)
+
+        paused.assert_called_once_with(1)
+        reason, _ = self._reason(progress)
+        assert reason == ContentGenerationEmptyReason.DAILY_AI_LIMIT
+        mocks["acquire_run_lock"].assert_not_called()
+        mocks["create_content"].assert_not_called()
+
     def test_full_buffer_reports_the_counts(self, progress):
         from cqc_lem.app.run_content_plan import auto_create_weekly_content
         from cqc_lem.utilities.content_generation_status import ContentGenerationEmptyReason

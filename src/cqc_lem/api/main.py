@@ -73,6 +73,7 @@ from cqc_lem.app.engagement.invites import automate_invites_to_company_page_for_
 from cqc_lem.app.engagement.outreach import scheduled_dm_is_stale, send_lead_response
 from cqc_lem.app.engagement.posting import automate_reply_commenting, sweep_reply_comments
 from cqc_lem.app.run_content_plan import auto_create_weekly_content, plan_content_for_user
+from cqc_lem.utilities.ai_spend_cap import DailyAICapReached
 from cqc_lem.utilities.auth_factors import (
     enrollment_required,
 )
@@ -205,6 +206,20 @@ app = FastAPI(
     openapi_url="/api/openapi.json",
     swagger_ui_oauth2_redirect_url="/api/docs/oauth2-redirect",
 )
+
+@app.exception_handler(DailyAICapReached)
+async def daily_ai_cap_handler(request: Request, exc: DailyAICapReached) -> JSONResponse:
+    """Answer a request the free-trial daily AI cap refused (issue #2378) with a clear 429.
+
+    Registered as a handler, so it never reaches `observability_middleware`'s `except` — a designed
+    refusal is a response, not an error-tracking issue. `Retry-After` is the seconds to the next UTC
+    midnight, when the cap resets.
+    """
+    retry_after = max(1, int((exc.resets_at - datetime.now(timezone.utc)).total_seconds()))
+    return JSONResponse(status_code=429, headers={"Retry-After": str(retry_after)},
+                        content={"status_code": 429, "detail": str(exc), "reason": "daily_ai_limit",
+                                 "resets_at": exc.resets_at.isoformat()})
+
 
 # All API routes live under /api so the React client's baseURL: '/api' works
 router = APIRouter(prefix="/api")

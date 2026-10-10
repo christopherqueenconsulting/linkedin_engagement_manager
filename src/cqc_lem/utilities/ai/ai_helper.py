@@ -240,6 +240,11 @@ def _call_llm(**kwargs):
         return response
     except Exception as exc:
         duration_ms = int((time.time() - start) * 1000)
+        if getattr(exc, "expected_refusal", False):
+            # The free-trial daily AI cap refused it before anything was sent (#2378): no spend, no
+            # failed call to count, and the gate already logged the transition once.
+            log_debug("LLM call refused by the free-trial daily AI cap", ai_model=model)
+            raise
         log_error(f"LLM call failed after {duration_ms}ms", exc=exc, ai_model=model, duration_ms=duration_ms)
         try:
             from cqc_lem.utilities.observability import track_llm_call

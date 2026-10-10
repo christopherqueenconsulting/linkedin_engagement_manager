@@ -312,3 +312,46 @@ over the same set. Mint a separate root-span uuid and every event still carries 
 
 The de-dupe rule above still holds inside a trace — the money number is `llm_call`, and summing the
 generations under one trace gives you the provider's charge, not LEM's ledger.
+
+## Free-trial daily AI cap (issue #2378)
+
+A **soft** ceiling on one `free_trial` user's LLM spend per UTC day. The owner-set default is
+`FREE_TRIAL_DAILY_AI_CAP_USD` (see `.env.example`); `0` or below turns the cap off, and an
+unparseable value keeps the default (a typo must not remove a cost control). Module:
+`utilities/ai_spend_cap.py`.
+
+**Where the spend comes from.** `track_llm_call` already accrues every call's booked cost into the
+daily cost rollup; the same accrual also increments one Redis counter per user per UTC day
+(`lem:ai_spend:user:<day>:<user_id>`). That is the `llm_call` `cost_usd` (the proxy's own price when
+it reports one, the estimate otherwise; a cache hit is $0). Media renders booked straight to
+`cost_ledger` do not count toward it. The tier is `users.subscription_tier`, cached for 5 minutes.
+
+**What pauses (non-essential) once the day's spend reaches the cap:**
+
+- starting any new generation for that user: the content-buffer top-up (beat and Generate button),
+  variants, comment drafting, newsletter editions, and any other chat or image call attributed to
+  them;
+- in a Celery task the work is refused and resumes the next UTC day; the content top-up checks first
+  and closes a requested run out with the `daily_ai_limit` reason, so the SPA says "Daily AI limit
+  reached";
+- in an API request the caller gets **429** with `reason: "daily_ai_limit"`, a "Daily AI limit
+  reached" `detail` and a `Retry-After` to the next UTC midnight.
+
+**What never pauses (essential):**
+
+- a pipeline **admitted under the cap** (`llm_trace` root) runs to completion even if it crosses the
+  cap part-way, so a post never lands half-generated;
+- `lem-embedding` and `lem-vision`: dedup vectors and the quality check on a render already paid
+  for. Refusing them saves nothing and degrades a gate;
+- system work with no attributed user, and every user not on `free_trial`.
+
+**Where it is enforced.** `AttributedOpenAI.post()` checks before anything is sent (the ONE client,
+so no call site can skip it), and `llm_trace` checks at pipeline entry. The refusal is
+`DailyAICapReached`, which carries `expected_refusal = True`: `capture_exception` never files it,
+and `_call_llm` neither logs it as a failed call nor counts it as one.
+
+**Soft by construction.** An unreadable spend (no Redis, a Redis error) or an unreadable tier never
+blocks. An unreadable spend is warned ONCE per UTC day per process, not per call. The first refusal
+of a user's day logs INFO and emits `ai_daily_cap_reached` (`user_id`, `spend_usd`, `cap_usd`,
+`day`, `surface` = `background` | `user_request`), latched once per user per day across processes;
+later refusals are DEBUG.
