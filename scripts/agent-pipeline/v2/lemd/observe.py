@@ -673,7 +673,8 @@ def snapshot_pr(slug: str, number: int, *, owner: str | None = None,
         facts = github.pr_facts(slug, number)
         checks = github.checks_for(slug, number)
         queue = github.merge_queue_state(slug, number)
-        reviews = review if review is not None else github.review_state(slug, number)
+        reviews = (review if review is not None
+                   else github.review_state(slug, number, owner=owner or ""))
     except github.GitHubUnavailable as exc:
         LOG.warning("PR #%s unreadable: %s", number, exc)
         return Snapshot(kind="pr", number=number, readable=False)

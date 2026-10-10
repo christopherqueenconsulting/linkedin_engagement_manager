@@ -13,8 +13,9 @@
 # error here does not degrade the pipeline, it removes its trust boundary while leaving every log
 # line looking normal.
 #
-# Expects from the caller, at CALL time (not source time): BASE, REPO, SLUG, OWNER, WORKROOT,
-# TRUSTED_ASSOCIATIONS, AGENT_LABEL_TRUSTED_ACTORS, AGENT_CI_LABEL_ACTORS, and a log() function.
+# Expects from the caller, at CALL time (not source time): BASE, REPO, SLUG, OWNER, ASSIGNEE (the
+# owner's login), WORKROOT, TRUSTED_ASSOCIATIONS, AGENT_LABEL_TRUSTED_ACTORS, AGENT_CI_LABEL_ACTORS,
+# and a log() function.
 
 # Per-branch work claim so concurrent slots never touch the same PR/issue. Re-opening fd 10
 # releases any previously held claim (fd close drops the flock).
@@ -110,6 +111,59 @@ pr_is_upstream() {
 pr_admissible() {
   # pr_admissible <number> <lane-label> -> both halves for a PR lane.
   pr_is_upstream "$1" && label_actor_trusted "$1" "$2"
+}
+
+# --- Comment authority: whose COMMENT may instruct the pipeline ---------------------------------
+# Owner ruling: "accept comment instructions only from trusted authors (owner, collaborators)".
+# A comment is trusted when its author is the configured owner login ($ASSIGNEE), or holds `admin`,
+# `maintain` or `write` on this repository per `GET repos/{slug}/collaborators/{login}/permission`.
+# NOT `authorAssociation`: on an org-owned repo MEMBER is any member of the org, and COLLABORATOR
+# includes read-only collaborators — neither says "may change what this repository's agent does".
+# An unreadable lookup is NOT trusted, the same direction as every gate above.
+#
+# `lemd/github.py:comment_author_trusted` is the daemon's twin of this function. The daemon decides
+# an un-park with one and the action re-checks it with the other, so they must keep agreeing.
+
+pipeline_app_login() {
+  # pipeline_app_login -> the pipeline App's login, REST form (`<slug>[bot]`). The fallback is why a
+  # missing GH_APP_BOT_LOGIN pin does not make the App's own review markers invisible; a `[bot]`
+  # login lives in GitHub's App namespace, so naming it cannot make anybody else's comment count.
+  echo "${GH_APP_BOT_LOGIN:-cqc-lem-agent-pipeline[bot]}"
+}
+
+comment_login_is_app() {
+  # comment_login_is_app <login> -> 0 when <login> is the pipeline App. `gh --json comments` reports
+  # a bot by its bare slug and REST as `<slug>[bot]`, so both sides are compared without the suffix.
+  local who app
+  who="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"; who="${who%\[bot\]}"
+  app="$(pipeline_app_login | tr '[:upper:]' '[:lower:]')"; app="${app%\[bot\]}"
+  [ -n "$who" ] && [ "$who" = "$app" ]
+}
+
+comment_author_trusted() {
+  # comment_author_trusted <login> -> 0 when a comment by <login> may instruct the pipeline.
+  # Cached per login for the life of the shell (one run): the answer lane re-reads the same thread,
+  # and codecov / github-actions comment on every push. The cache only lives as long as the shell
+  # it was filled in — a call inside `$(...)` starts empty, which costs calls, never correctness.
+  local login="${1:-}" lc perm
+  [ -n "$login" ] || return 1
+  lc="$(printf '%s' "$login" | tr '[:upper:]' '[:lower:]')"
+  [ "$lc" = "$(printf '%s' "${ASSIGNEE:-}" | tr '[:upper:]' '[:lower:]')" ] && return 0
+  case "$lc" in *"[bot]") return 1 ;; esac
+  # The login is interpolated into an API path; anything that is not a GitHub login never reaches it.
+  [[ "$login" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]] || return 1
+  declare -gA _COMMENT_PERM_CACHE 2>/dev/null || true
+  if [ -n "${_COMMENT_PERM_CACHE[$lc]+set}" ]; then
+    perm="${_COMMENT_PERM_CACHE[$lc]}"
+  else
+    perm="$(gh api "repos/$SLUG/collaborators/$login/permission" \
+              --jq '"\(.permission // "") \(.role_name // "")"' 2>/dev/null)" || perm=""
+    _COMMENT_PERM_CACHE[$lc]="$perm"
+  fi
+  case " $perm " in *" admin "*|*" maintain "*|*" write "*) return 0 ;; esac
+  # >&2: callers run this inside `$(...)` whose stdout IS their answer, and log() tees to stdout.
+  log "TRUST: comment by '$login' ignored — permission '${perm:-unreadable}' is not admin/maintain/write." >&2
+  return 1
 }
 
 issue_for_pr() {

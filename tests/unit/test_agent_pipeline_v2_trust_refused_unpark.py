@@ -245,3 +245,42 @@ def test_snapshot_issue_reads_the_author_only_when_row_9a_could_fire(monkeypatch
     assert snap.menu_posted is True
     assert snap.author_trusted is None
     assert seen == []
+
+
+# ---------------------------------------------------------------- an untrusted reply is not an answer
+
+
+def _thread_from(monkeypatch, login: str, permission: str | None) -> answers.Thread:
+    """Read #2268's thread where `login` replied `1A` to the menu; `None` = the lookup fails."""
+    monkeypatch.setattr(github, "_PERMISSION_CACHE", {})
+
+    def fake_gh_json(args, **_k):
+        if args[0] == "api":
+            if permission is None:
+                raise github.GitHubUnavailable("rc=1")
+            return {"permission": permission, "role_name": permission}
+        return {"comments": [{"id": "m", "body": MENU, "author": {"login": "cqc-lem-agent-pipeline"}},
+                             {"id": "a1", "body": "1A", "author": {"login": login}}]}
+
+    monkeypatch.setattr(github, "gh_json", fake_gh_json)
+    return answers.read_thread("o/r", "issue", 2268, OWNER)
+
+
+def test_a_write_collaborators_answer_un_parks(monkeypatch):
+    """Owner ruling: collaborators with write are trusted authors, so their answer routes."""
+    thread = _thread_from(monkeypatch, "collab", "write")
+    snap = held_issue(answer=thread.answer, menu_posted=thread.menu_posted)
+    assert observe.decide(snap, **TTLS).action == observe.ACT_UNPARK
+
+
+def test_an_untrusted_reply_never_reaches_the_trust_gate(monkeypatch):
+    """A read-only collaborator's, or an unverifiable author's, `1A` is data, not an answer.
+
+    No un-park is dispatched at all, so the refused-and-retried loop #2331 bounds cannot start
+    from it — the item simply stays parked on its menu, waiting for a trusted reply.
+    """
+    for login, permission in (("reader", "read"), ("stranger", "none"), ("ghost", None)):
+        thread = _thread_from(monkeypatch, login, permission)
+        assert thread.answer is None and thread.menu_posted is True, login
+        snap = held_issue(answer=thread.answer, menu_posted=thread.menu_posted)
+        assert observe.decide(snap, **TTLS).action != observe.ACT_UNPARK, login

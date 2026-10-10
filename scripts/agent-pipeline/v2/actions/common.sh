@@ -139,33 +139,40 @@ v2_trust_ok() {
   label_actor_trusted "$n" "$label" || return 1
 }
 
-# v2_owner_answered <issue|pr> <number> -> 0 when the newest reply after the latest Decision
-# Comment was written by the OWNER.
+# v2_owner_answered <issue|pr> <number> -> 0 when a reply after the latest Decision Comment was
+# written by a TRUSTED author: the owner, or an account with admin/maintain/write on this repo
+# (`comment_author_trusted` in lib/guards.sh — the owner ruling on comment authority).
 #
 # This is the AUTHORSHIP half of an un-park, re-asked at execution time. The daemon classified the
 # reply (`lemd/answers.py`); what matters to the trust boundary is not what it said but WHO said
-# it, and a webhook-prompted decision can be minutes stale. Deliberately the same three rules the
-# parser uses, so the two cannot disagree: only comments AFTER the newest Decision Comment count,
-# Decision Comments themselves are skipped, and agent-authored comments are excluded by their
-# trailer as well as their login — under the PAT identity the agent posted AS the owner.
+# it, and a webhook-prompted decision can be minutes stale. Deliberately the same rules the parser
+# uses, so the two cannot disagree: only comments AFTER the newest Decision Comment count, Decision
+# Comments themselves are skipped, agent-authored comments are excluded by their trailer as well as
+# their login (under the PAT identity the agent posted AS the owner), and the pipeline App never
+# answers its own question.
 v2_owner_answered() {
-  local kind="$1" n="$2" who
-  # NOTE the owner filter inside the jq. Selecting the newest eligible comment and THEN comparing
-  # its author would let any bot bury the answer simply by commenting after it — codecov posts on
-  # every push. `answers.parse` skips non-owner comments rather than stopping at them, and this
-  # must make the same choice or the daemon and the action disagree about the same thread.
-  who="$(gh "$kind" view "$n" --repo "$SLUG" --json comments --jq '
+  local kind="$1" n="$2" logins login
+  # The jq emits EVERY eligible author, newest first, and the trust test runs per author below.
+  # Selecting the newest eligible comment and THEN judging its author would let any bot bury the
+  # answer simply by commenting after it — codecov posts on every push. `answers.parse` skips
+  # untrusted comments rather than stopping at them, and this must make the same choice or the
+  # daemon and the action disagree about the same thread.
+  logins="$(gh "$kind" view "$n" --repo "$SLUG" --json comments --jq '
     def isdecision: ((.body // "") | test("Human decision needed"; "i"));
     def isagent:    ((.body // "") | test("Generated with \\[Claude Code\\]"));
     ((.comments // []) | to_entries) as $c
     | (($c | map(select(.value | isdecision)) | last | .key) // -1) as $di
     | [ $c[] | select(.key > $di) | .value
-        | select((.author.login // "") == "'"$ASSIGNEE"'")
         | select(isdecision | not) | select(isagent | not) ]
-    | (last // empty) | (.author.login // "")' 2>/dev/null)"
-  # Unreadable is a refusal, as everywhere else in this file.
-  [ "$who" = "$ASSIGNEE" ] || { log "TRUST: #$n — no readable owner reply after the Decision Comment; refusing."; return 1; }
-  return 0
+    | reverse | .[] | (.author.login // "")' 2>/dev/null)" || logins=""
+  while IFS= read -r login; do
+    [ -n "$login" ] || continue
+    comment_login_is_app "$login" && continue
+    comment_author_trusted "$login" && return 0
+  done <<< "$logins"
+  # Unreadable is a refusal, as everywhere else in this file — and so is an unreadable permission.
+  log "TRUST: #$n — no readable reply from a trusted author after the Decision Comment; refusing."
+  return 1
 }
 
 # v2_hold_present <kind> <number> -> 0 when a human hold is on the thread RIGHT NOW.

@@ -14,8 +14,13 @@ unchanged, because they encode judgements paid for in incidents:
 * **Ambiguity leaves the work parked.** A reply that leads with a token but asks to hold, or a
   free-form directive ending in a question, is not a decision. Guessing wrong here starts a build
   the owner asked not to happen.
-* **Non-owner comments are skipped, never terminal.** A bot commenting after the owner must not be
+* **Untrusted comments are skipped, never terminal.** A bot commenting after the owner must not be
   able to bury the answer.
+* **Only a TRUSTED author answers.** The owner ruled that comment instructions come only from
+  trusted authors: the configured owner login, or an account holding `admin`/`maintain`/`write` on
+  the repository (`github.comment_author_trusted`). Never `authorAssociation` — on an org-owned repo
+  `MEMBER` is any org member and `COLLABORATOR` includes read-only collaborators. An unreadable
+  permission lookup is NOT trusted. The pipeline App never answers its own question.
 * **Agent comments are excluded by BODY SIGNATURE as well as by author.** Under the PAT identity
   the agent posted as the owner, and repos that roll back to it must not have every agent comment
   read as an owner answer.
@@ -28,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -147,11 +153,19 @@ def menu_posted(comments: list[dict[str, Any]]) -> bool:
     return _last_decision_index(comments) >= 0
 
 
-def parse(comments: list[dict[str, Any]], owner: str) -> Answer | None:
-    """The newest owner reply to the LATEST Decision Comment in a thread, classified.
+def parse(comments: list[dict[str, Any]], owner: str,
+          trusted: Callable[[str], bool] | None = None) -> Answer | None:
+    """The newest TRUSTED reply to the LATEST Decision Comment in a thread, classified.
 
-    Pure: `comments` is GitHub's list in chronological order. Returns None when the thread holds no
-    Decision Comment, no owner reply after it, or a reply that is not a decision.
+    `comments` is GitHub's list in chronological order. `trusted(login)` says whether a non-owner
+    author may answer; it is injected so this stays testable without GitHub, and `read_thread`
+    passes `github.comment_author_trusted`. Left out, only the owner answers. It is asked lazily,
+    newest comment first, and only until the first trusted reply — so a thread costs one lookup
+    per distinct untrusted commenter after the menu at most, and none when the owner replied last.
+
+    Returns:
+        None when the thread holds no Decision Comment, no trusted reply after it, or a reply that
+        is not a decision.
     """
     last_decision = _last_decision_index(comments)
     if last_decision < 0:
@@ -159,14 +173,18 @@ def parse(comments: list[dict[str, Any]], owner: str) -> Answer | None:
 
     for c in reversed(comments[last_decision + 1:]):
         body = c.get("body") or ""
-        if (c.get("author") or {}).get("login") != owner:
-            continue
         if _DECISION.search(body) or _AGENT.search(body):
+            continue
+        author = c.get("author") or {}
+        login = str(author.get("login") or "")
+        if not login or github.is_pipeline_app(author):
+            continue
+        if login != owner and not (trusted is not None and trusted(login)):
             continue
         v = verdict_for(body)
         if v is None:
-            # The owner's newest comment is not a decision. Stop rather than reaching further back:
-            # an older answer they have since talked past is not a live instruction.
+            # The newest trusted comment is not a decision. Stop rather than reaching further back:
+            # an older answer that has since been talked past is not a live instruction.
             return None
         return Answer(
             comment_id=str(c.get("id") or c.get("url") or ""),
@@ -178,7 +196,7 @@ def parse(comments: list[dict[str, Any]], owner: str) -> Answer | None:
 
 def read_thread(slug: str, kind: str, number: int, owner: str, *,
                 timeout: int = 30) -> Thread:
-    """Read one thread ONCE: the owner's newest reply, and whether a menu was ever posted.
+    """Read one thread ONCE: the newest trusted reply, and whether a menu was ever posted.
 
     One API call, made only for items already carrying a hold label — every other observation
     reaches its decision without it. Both facts come off the same read so #1736's `menu_posted`
@@ -199,7 +217,11 @@ def read_thread(slug: str, kind: str, number: int, owner: str, *,
         LOG.warning("%s #%s comments unreadable — staying parked: %s", kind, number, exc)
         return UNREADABLE
     comments = list(facts.get("comments") or [])
-    return Thread(answer=parse(comments, owner), menu_posted=menu_posted(comments))
+
+    def trusted(login: str) -> bool:
+        return github.comment_author_trusted(slug, login, owner, timeout=timeout)
+
+    return Thread(answer=parse(comments, owner, trusted), menu_posted=menu_posted(comments))
 
 
 def newest(slug: str, kind: str, number: int, owner: str, *,

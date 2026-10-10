@@ -147,6 +147,59 @@ class TestLabelActorTrusted:
         assert "NO" in r.stdout
 
 
+def _comment_helpers() -> str:
+    """lib/guards.sh's comment-authority helpers, verbatim."""
+    out = ""
+    for name in ("pipeline_app_login", "comment_login_is_app", "comment_author_trusted"):
+        block = re.search(rf"\n{name}\(\) \{{.*?\n\}}\n", GUARDS, re.S)
+        assert block, f"{name} not found in lib/guards.sh"
+        out += block.group(0)
+    return out
+
+
+# `gh api repos/../collaborators/<login>/permission --jq ...` -> "$PERM $PERM"; PERM="" = unreadable.
+_GH_PERMISSION = '''
+    [ -n "${PERM:-}" ] || exit 1
+    echo "$PERM $PERM"
+'''
+
+
+class TestCommentAuthority:
+    """Owner ruling: comment instructions come only from the owner or a write+ collaborator.
+
+    The same standing `author_trusted` reads from `authorAssociation` is NOT enough for a comment:
+    on an org-owned repo MEMBER is any org member and COLLABORATOR includes read-only ones. The
+    full behaviour (answer lanes, marker, follow-up guard) runs in
+    test_agent_pipeline_comment_authority.py; this pins the predicate beside its sibling gates.
+    """
+
+    @pytest.mark.parametrize("perm", ["admin", "maintain", "write"])
+    def test_write_or_better_is_trusted(self, tmp_path, perm):
+        r = _run(tmp_path, _comment_helpers() + 'comment_author_trusted someone && echo YES || echo NO',
+                 _GH_PERMISSION, {"PERM": perm})
+        assert r.stdout.strip().endswith("YES")
+
+    @pytest.mark.parametrize("perm", ["read", "triage", "none"])
+    def test_an_org_member_or_collaborator_without_write_is_not(self, tmp_path, perm):
+        r = _run(tmp_path, _comment_helpers() + 'comment_author_trusted someone && echo YES || echo NO',
+                 _GH_PERMISSION, {"PERM": perm})
+        assert r.stdout.strip().endswith("NO")
+
+    def test_an_unreadable_permission_REFUSES(self, tmp_path):
+        r = _run(tmp_path, _comment_helpers() + 'comment_author_trusted someone && echo YES || echo NO',
+                 _GH_PERMISSION, {"PERM": ""})
+        assert r.stdout.strip().endswith("NO")
+
+    def test_the_owner_is_trusted_without_asking(self, tmp_path):
+        r = _run(tmp_path, _comment_helpers() + 'comment_author_trusted owner-person && echo YES || echo NO',
+                 _GH_PERMISSION, {"PERM": ""})
+        assert r.stdout.strip() == "YES"
+
+    def test_the_predicate_never_reads_author_association(self):
+        assert "author_association" not in _comment_helpers()
+        assert "authorAssociation" not in _comment_helpers()
+
+
 class TestPrIsUpstream:
     def test_a_branch_in_this_repo_is_workable(self, tmp_path):
         r = _run(tmp_path, 'pr_is_upstream 12 && echo YES || echo NO', 'echo "${HEAD_OWNER:-}"',

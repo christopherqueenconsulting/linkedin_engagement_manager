@@ -638,9 +638,12 @@ meter by pushing a commit — is real and correct; the wiring is not.
 runs closed `-9` with a ~675s mean read exactly like a timeout problem, and were adopted orphans from
 16 daemon restarts.
 
-**How work ends.** A park is the pipeline saying "I stopped". The ONE way out is an owner reply to
-the Decision Comment, classified by `lemd/answers.py`: `answer`/`directive` un-park, `hold`/`question`
-stay parked. An answer is spent once (`items.last_comment_id`), written only after the un-park
+**How work ends.** A park is the pipeline saying "I stopped". The ONE way out is a TRUSTED reply to
+the Decision Comment — the owner, or a collaborator with `admin`/`maintain`/`write`
+(`docs/contribution-security.md` §1, "Comment authority") — classified by `lemd/answers.py`:
+`answer`/`directive` un-park, `hold`/`question` stay parked. Anyone else's reply is not an answer
+(no new decision row: it reads as row 10's "no answer"), and `v2_owner_answered` re-checks the same
+rule at execution time. An answer is spent once (`items.last_comment_id`), written only after the un-park
 succeeds so a failed action retries.
 
 Un-parking **resets the ledger** — the owner's answer is the statement "the world changed, try

@@ -447,23 +447,35 @@ assert_agent_token_scoped() {
 
 
 newest_owner_answer() {
-  # newest_owner_answer pr|issue <number> -> the owner's newest reply to the LATEST Decision Comment
-  # on that thread (empty if none). Shared by the PR and ISSUE answer lanes so they can't drift.
-  # Decision Comments and agent replies are authored under the OWNER'S login (agents post with the
-  # owner's gh token), so they're excluded by BODY SIGNATURE, not author. Only comments AFTER the
-  # latest Decision Comment count — else re-parking would instantly re-route on a stale answer.
-  # Non-owner comments are skipped rather than ending the search, so a bot commenting after the
-  # owner can't bury the answer.
-  gh "$1" view "$2" --repo "$SLUG" --json comments 2>/dev/null \
-    | jq -r --arg owner "$ASSIGNEE" '
+  # newest_owner_answer pr|issue <number> -> the newest TRUSTED reply to the LATEST Decision Comment
+  # on that thread, base64 (empty if none). Shared by the PR and ISSUE answer lanes so they can't
+  # drift. Trusted = the owner, or an account with admin/maintain/write on this repo
+  # (`comment_author_trusted` in lib/guards.sh — the owner ruling on comment authority; v2's
+  # `lemd/answers.py` applies the same rule). Decision Comments and agent replies were once authored
+  # under the OWNER'S login (agents posted with the owner's gh token), so they're excluded by BODY
+  # SIGNATURE as well as author, and the pipeline App never answers its own question. Only comments
+  # AFTER the latest Decision Comment count — else re-parking would instantly re-route on a stale
+  # answer. Untrusted comments are skipped rather than ending the search, so a bot commenting after
+  # the owner can't bury the answer.
+  local rows login body
+  rows="$(gh "$1" view "$2" --repo "$SLUG" --json comments 2>/dev/null \
+    | jq -r '
         def isdecision: ((.body // "") | test("Human decision needed"; "i"));
         def isagent:    ((.body // "") | test("Generated with \\[Claude Code\\]"));
         ((.comments // []) | to_entries) as $c
         | (($c | map(select(.value | isdecision)) | last | .key) // -1) as $di
         | [ $c[] | select(.key > $di) | .value
-            | select((.author.login // "") == $owner)
             | select(isdecision | not) | select(isagent | not) ]
-        | (last // empty) | (.body // "") | @base64' 2>/dev/null
+        | reverse | .[] | "\(.author.login // "")|\((.body // "") | @base64)"' 2>/dev/null)"
+  # `|` and not a tab: a tab is IFS whitespace, so an empty login would collapse into the body.
+  while IFS='|' read -r login body; do
+    [ -n "$login" ] || continue
+    comment_login_is_app "$login" && continue
+    comment_author_trusted "$login" || continue
+    printf '%s\n' "$body"
+    return 0
+  done <<< "$rows"
+  return 0
 }
 
 answer_verdict() {
@@ -620,9 +632,21 @@ claude_reviewed_at() {  # $1=pr
   # that was never reviewed. Leading NON-LETTERS are stripped first, which is exactly the room the
   # decoration needs (`🔎`, its four U+FFFD, `#`, `**`, spaces) and no room at all for a word like
   # "the" in front of it.
-  gh pr view "$1" --repo "$SLUG" --json comments 2>/dev/null \
+  #
+  # Only the pipeline App's marker, or a trusted author's, counts (owner ruling on comment
+  # authority): the marker clears the merge gate, and on a public repo anybody can open a comment
+  # with the phrase. The jq emits every phrase-matching comment newest first; the author test below
+  # takes the first one that may speak for the pipeline.
+  local rows login at
+  rows="$(gh pr view "$1" --repo "$SLUG" --json comments 2>/dev/null \
     | jq -r --arg m "$CLAUDE_REVIEW_MARKER_TEXT" \
-        '[(.comments // [])[] | select(((.body // "") | sub("^[^A-Za-z]*"; "")) | startswith($m))] | last | .createdAt // empty' 2>/dev/null
+        '[(.comments // [])[] | select(((.body // "") | sub("^[^A-Za-z]*"; "")) | startswith($m))] | reverse | .[] | "\(.author.login // "")|\(.createdAt // "")"' 2>/dev/null)"
+  while IFS='|' read -r login at; do
+    [ -n "$login" ] && [ -n "$at" ] || continue
+    comment_login_is_app "$login" || comment_author_trusted "$login" || continue
+    echo "$at"
+    return 0
+  done <<< "$rows"
 }
 
 # 0 when a Claude adversarial-review marker exists that is fresh for the current head.
@@ -734,10 +758,29 @@ phase_leftover() {  # $1=issue -> echoes "phase: <marker>" / "boxes: <n>" / noth
   return 0
 }
 
+trusted_comment_bodies() {  # $1=pr|issue $2=number -> bodies of comments a trusted author or the App wrote
+  # Only comments that mention an issue number are judged at all (`#[0-9]`), which is everything
+  # phase_followup_linked can use and keeps the permission lookups to the commenters who matter.
+  local rows login body
+  rows="$(gh "$1" view "$2" --repo "$SLUG" --json comments \
+            --jq '(.comments // [])[] | select((.body // "") | test("#[0-9]")) | "\(.author.login // "")|\((.body // "") | @base64)"' 2>/dev/null)"
+  while IFS='|' read -r login body; do
+    [ -n "$login" ] || continue
+    comment_login_is_app "$login" || comment_author_trusted "$login" || continue
+    printf '%s' "$body" | base64 -d 2>/dev/null
+    echo
+  done <<< "$rows"
+  return 0
+}
+
 phase_followup_linked() {  # $1=pr $2=issue -> 0 when a follow-up issue is already linked
+  # The PR BODY is the PR author's, and an upstream branch already needs write access. COMMENTS are
+  # anybody's on a public repo, so only a trusted author's (or the App's) can clear this guard — an
+  # outsider's "follow-up: #123" would otherwise merge a PR whose remaining scope nobody tracks.
   local P="$1" N="$2" hit
-  hit="$( { gh pr view "$P" --repo "$SLUG" --json body,comments --jq '.body, ((.comments // [])[].body)' 2>/dev/null
-            gh issue view "$N" --repo "$SLUG" --json comments --jq '((.comments // [])[].body)' 2>/dev/null ; } \
+  hit="$( { gh pr view "$P" --repo "$SLUG" --json body --jq '.body // ""' 2>/dev/null
+            trusted_comment_bodies pr "$P"
+            trusted_comment_bodies issue "$N" ; } \
           | grep -oiE '(follow-?up|phase [2-9]|part [2-9]|split out|tracked (in|as|by))[^#]{0,60}#[0-9]+' \
           | grep -vE "#$N\$" | head -1)"
   [ -n "$hit" ]

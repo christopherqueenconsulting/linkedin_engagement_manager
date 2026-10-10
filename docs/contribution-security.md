@@ -43,6 +43,7 @@ issue can be labelled by anyone with triage.
 | Author standing | `author_trusted` | `authorAssociation` ∈ `OWNER`/`MEMBER`/`COLLABORATOR` |
 | Label provenance | `label_actor_trusted` | the **last** actor to apply the label (timeline API) is in `AGENT_LABEL_TRUSTED_ACTORS` |
 | Fork safety (PR lanes) | `pr_is_upstream` | the head branch lives in this repo, not a fork |
+| Comment authority | `comment_author_trusted` (shell) / `github.comment_author_trusted` (daemon) | a comment may **instruct** the pipeline — answer a Decision Comment, give a directive, write review evidence (the adversarial-review marker, a `phase-gap` line, a follow-up link that clears v1's phase guard) — only when its author is the owner login or holds `admin`/`maintain`/`write` per `GET repos/{slug}/collaborators/{login}/permission`. **Not** `authorAssociation`: on an org-owned repo `MEMBER` is any org member and `COLLABORATOR` includes read-only collaborators. The pipeline App's own login counts for the markers it posts, never as the author of an answer; agent-trailer and Decision Comments never answer. Lookups are cached per login (per run in the shell, 15 min in the daemon); an **unreadable lookup is untrusted**, and an untrusted comment is skipped, never terminal, so it can neither answer nor bury a trusted answer |
 
 **An unreadable answer REFUSES.** A missed issue costs one tick; a wrongly-admitted one runs
 arbitrary work as the owner. `select_next_issue` walks the whole ordered queue rather than stopping
