@@ -398,7 +398,7 @@ missing a floor is a finding about the model, not the prompt.
   - **The baseline:** after landing the workflow, dispatch it once with `prompt_ids=classify.lead_intent`
     and `max_spend=1` as a smoke test of the key, the spend preflight, the artifact and the results PR.
     Then dispatch `force_full=true` for the baseline. Under the $1.00 ceiling, a full re-baseline
-    (the 2026-10-08 one planned $5.99) has to be split into several dispatches by `prompt_ids`. Merge
+    (a five-prompt dispatch on 2026-10-09 already planned $5.99) has to be split into several dispatches by `prompt_ids`. Merge
     each slice's `bot/prompt-evals` PR before dispatching the next one: `prompt_eval_publish.py`
     rebuilds that branch from `main` with `checkout -B` and force-pushes it (lines 150 and 154), so an
     unmerged slice's report and `eval_state.json` are replaced and its prompts come back as new work.
