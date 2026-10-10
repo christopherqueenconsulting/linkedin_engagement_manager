@@ -1,6 +1,7 @@
 import axios from 'axios'
 import type { InternalAxiosRequestConfig } from 'axios'
 import { NEW_VERSION_MESSAGE, RELOADING_MESSAGE, recoverFromChunkError } from '../utils/chunkReload'
+import { announceDailyAiLimit, DAILY_AI_LIMIT_REASON } from '../utils/dailyAiLimit'
 import { announceSessionEnded } from '../utils/sessionEnd'
 
 // `baseURL` must stay RELATIVE. It is what makes every request same-origin whatever the host (dev
@@ -122,6 +123,12 @@ api.interceptors.response.use(
       const outcome = recoverFromChunkError(error, { force: true })
       return Promise.reject(new Error(
         outcome === 'reloaded' ? RELOADING_MESSAGE : NEW_VERSION_MESSAGE, { cause: error }))
+    }
+    // The free-trial daily AI limit (issue #2378). Announced here, once, so every page shows the
+    // same notice; the error still rejects so the caller's own UI stops its spinner as before.
+    if (error.response?.status === 429 &&
+        error.response?.data?.reason === DAILY_AI_LIMIT_REASON) {
+      announceDailyAiLimit(error.response?.data?.detail)
     }
     return Promise.reject(error)
   }

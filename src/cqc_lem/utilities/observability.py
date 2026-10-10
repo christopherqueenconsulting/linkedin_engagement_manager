@@ -1310,6 +1310,12 @@ def track_media_cost(kind: str, provider: str, usd: float, user_id: Optional[int
                        provider=provider, model_tier=(model or None) and model[:64],
                        qty=qty, post_id=post_id,
                        task_name=_current_task_context()[0])
+    # A render is AI spend too, and usually the largest per call, so it counts toward the free-trial
+    # daily cap (#2378). Local compute (`local-*`, the ffmpeg caption burn) is an allocation, not a
+    # provider bill, and does not.
+    if not str(provider or "").startswith("local-"):
+        from cqc_lem.utilities.ai_spend_cap import record_user_spend
+        record_user_spend(user_id, usd)
 
 
 def track_avatar_likeness_probe(

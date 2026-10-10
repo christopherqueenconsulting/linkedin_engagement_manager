@@ -355,3 +355,88 @@ class TestApiAnswer:
         assert body["reason"] == "daily_ai_limit"
         assert body["detail"].startswith("Daily AI limit reached")
         assert 0 < int(response.headers["Retry-After"]) <= 86400
+
+
+class TestMediaSpendCounts:
+    def test_a_provider_render_counts_toward_the_cap(self, redis):
+        from cqc_lem.utilities import observability
+        with patch.object(observability, "_emit"), patch.object(observability, "_write_cost_ledger"):
+            observability.track_media_cost("image", "openai", 0.21, user_id=7)
+            observability.track_media_cost("video", "runway", 0.25, user_id=7)
+        assert cap._read_spend(7, cap.utc_day()) == pytest.approx(0.46)
+
+    def test_local_compute_is_not_ai_spend(self, redis):
+        from cqc_lem.utilities import observability
+        with patch.object(observability, "_emit"), patch.object(observability, "_write_cost_ledger"):
+            observability.track_media_cost("video", "local-ffmpeg", 0.01, user_id=7)
+        assert cap._read_spend(7, cap.utc_day()) == 0.0
+
+    def test_a_render_from_the_attribution_scope_counts_too(self, redis):
+        from cqc_lem.utilities import observability
+        with patch.object(observability, "_emit"), patch.object(observability, "_write_cost_ledger"), \
+                observability.llm_attribution(user_id=9):
+            observability.track_media_cost("image", "replicate", 0.04)
+        assert cap._read_spend(9, cap.utc_day()) == pytest.approx(0.04)
+
+
+class TestTierReadFailure:
+    def test_a_failed_tier_read_is_cached_briefly(self, redis):
+        with patch("cqc_lem.utilities.db.get_user_subscription_info", return_value=None) as info:
+            for _ in range(5):
+                assert cap.cap_status(7)[0] == cap.STATUS_EXEMPT
+        info.assert_called_once_with(7)
+
+    def test_and_is_read_again_after_the_short_window(self, redis):
+        later = 100.0 + cap._TIER_FAILURE_TTL_SECONDS + 1
+        with patch("cqc_lem.utilities.db.get_user_subscription_info", return_value=None) as info, \
+                patch(f"{_MOD}.time.monotonic", side_effect=[100.0, later]):
+            cap.cap_status(7)
+            cap.cap_status(7)
+        assert info.call_count == 2
+
+
+class TestCeleryOutcome:
+    """A task the cap stops is a designed stop — `no_op`, never Celery FAILURE (task_outcome.py)."""
+
+    def test_a_refused_task_ends_success_and_postrun_records_success(self):
+        from cqc_lem.app import my_celery
+
+        @my_celery.app.task(name="tests.ai_spend_cap.refused_task")
+        def refused_task(user_id: int):
+            raise cap.DailyAICapReached(user_id, 0.6, 0.5, _DAY2)
+
+        with patch.object(my_celery, "track_task") as tracked, \
+                patch.object(my_celery, "capture_exception") as captured:
+            result = refused_task.apply(kwargs={"user_id": 7})
+        assert result.state == "SUCCESS"
+        assert "Paused by the free-trial daily AI cap" in result.result
+        assert tracked.call_args.kwargs["state"] == "SUCCESS"
+        assert tracked.call_args.kwargs["success"] is True
+        captured.assert_not_called()
+
+    def test_any_other_exception_still_fails_the_task(self):
+        from cqc_lem.app import my_celery
+
+        @my_celery.app.task(name="tests.ai_spend_cap.broken_task")
+        def broken_task():
+            raise RuntimeError("a real fault")
+
+        with patch.object(my_celery, "track_task") as tracked, \
+                patch.object(my_celery, "capture_exception"):
+            result = broken_task.apply()
+        assert result.state == "FAILURE"
+        assert tracked.call_args.kwargs["state"] == "FAILURE"
+
+    def test_queue_once_tasks_get_the_same_boundary(self):
+        from cqc_lem.app.queue_once import QueueOnce
+        from cqc_lem.app.task_outcome import DailyCapAwareTask
+        assert issubclass(QueueOnce, DailyCapAwareTask)
+
+    def test_every_registered_lem_task_has_the_boundary(self):
+        from cqc_lem.app import my_celery
+        from cqc_lem.app.task_outcome import DailyCapAwareTask
+        my_celery.app.loader.import_default_modules()
+        lem_tasks = {name: task for name, task in my_celery.app.tasks.items()
+                     if name.startswith("cqc_lem.")}
+        assert lem_tasks, "no LEM task registered — the check would pass vacuously"
+        assert [n for n, t in lem_tasks.items() if not isinstance(t, DailyCapAwareTask)] == []

@@ -43,7 +43,8 @@ from cqc_lem.utilities.utils import get_cloudwatch_client
 app = Celery(
     'cqc_lem',
     broker=broker_url,
-
+    # A free-trial daily-AI-cap refusal ends a task as `no_op`, not FAILURE (issue #2378).
+    task_cls='cqc_lem.app.task_outcome:DailyCapAwareTask',
 )
 
 

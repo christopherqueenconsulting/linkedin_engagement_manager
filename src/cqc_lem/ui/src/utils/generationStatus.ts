@@ -60,7 +60,7 @@ export function emptyRunExplanation(
       headline: 'Daily AI limit reached',
       detail:
         "Your free trial's AI generation for today is used up. It resumes at 00:00 UTC, and " +
-        'your planned posts are generated automatically then.',
+        'your planned posts are generated on the next scheduled run after that.',
     }
   }
   if (s.reason === 'already_running') {

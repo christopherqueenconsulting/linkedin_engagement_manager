@@ -4,6 +4,7 @@ import type { AxiosResponse, InternalAxiosRequestConfig } from 'axios'
 import api from './client'
 import { NEW_VERSION_MESSAGE, RELOADING_MESSAGE, resetChunkReloadState } from '../utils/chunkReload'
 import { SESSION_ENDED_EVENT } from '../utils/sessionEnd'
+import { DAILY_AI_LIMIT_EVENT } from '../utils/dailyAiLimit'
 
 // The CSRF layer restored in issue #957. The server refuses a cookie-authenticated write that does
 // not carry this header, and what makes that work is that a cross-origin form cannot set a header
@@ -342,5 +343,48 @@ describe('a 401', () => {
     await expect(api.get('/user/timezone')).rejects.toMatchObject({ response: { status: 401 } })
     await vi.waitFor(() => expect(ended).toBe(1))
     expect(assign).not.toHaveBeenCalled()
+  })
+})
+
+// Issue #2378: the free-trial daily AI cap answers 429 with `reason: 'daily_ai_limit'`, and the ONE
+// client announces it so every page shows the same notice — a page that only knows its own generic
+// error still tells the user why nothing was generated.
+describe('a 429 daily_ai_limit', () => {
+  let messages: string[] = []
+  const onLimit = (event: Event) => { messages.push((event as CustomEvent<string>).detail) }
+
+  beforeEach(() => {
+    messages = []
+    window.addEventListener(DAILY_AI_LIMIT_EVENT, onLimit)
+  })
+  afterEach(() => window.removeEventListener(DAILY_AI_LIMIT_EVENT, onLimit))
+
+  const respond429 = (data: unknown): void => {
+    api.defaults.adapter = async (config: InternalAxiosRequestConfig) => {
+      const response = {
+        data, status: 429, statusText: 'Too Many Requests', headers: {}, config,
+      } as AxiosResponse
+      throw new AxiosError('Request failed with status code 429', AxiosError.ERR_BAD_REQUEST,
+        config, null, response)
+    }
+  }
+
+  it("announces the server's detail and still rejects to the caller", async () => {
+    respond429({
+      status_code: 429, reason: 'daily_ai_limit',
+      detail: 'Daily AI limit reached for your free trial. AI generation resumes at 00:00 UTC.',
+    })
+
+    await expect(api.post('/generate-carousel', {})).rejects.toMatchObject({ response: { status: 429 } })
+    expect(messages).toEqual([
+      'Daily AI limit reached for your free trial. AI generation resumes at 00:00 UTC.',
+    ])
+  })
+
+  it('leaves any other 429 alone', async () => {
+    respond429({ detail: 'slow down' })
+
+    await expect(api.get('/user/')).rejects.toMatchObject({ response: { status: 429 } })
+    expect(messages).toEqual([])
   })
 })

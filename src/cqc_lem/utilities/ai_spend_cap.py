@@ -1,15 +1,16 @@
 """Soft daily AI spend cap for `free_trial` users (issue #2378).
 
-A trial account's LLM spend is accrued per UTC day by `observability.track_llm_call` (the same
-attribution that feeds `cost_ledger`). Once a trial user's spend for the current UTC day reaches
+A trial account's AI spend is accrued per UTC day by `observability.track_llm_call` and
+`observability.track_media_cost` (the same attribution that feeds `cost_ledger`; local `local-*`
+compute does not count). Once a trial user's spend for the current UTC day reaches
 `FREE_TRIAL_DAILY_AI_CAP_USD`, NEW generation for that user pauses until the next UTC day.
 
 What pauses and what does not (full posture: `docs/llm-analytics.md`, "Free-trial daily AI cap"):
 
 * **Paused (non-essential):** starting any new generation — the background content plan, variants,
   comment drafting, newsletter editions, and any other chat or image call attributed to the user.
-  In a Celery task it is skipped and resumes the next UTC day; in an API request the caller gets a
-  429 "daily AI limit reached" answer.
+  In a Celery task the run ends as `no_op` (never FAILURE) and the next scheduled run after
+  00:00 UTC generates again; in an API request the caller gets a 429 "daily AI limit reached".
 * **Never paused (essential):**
     - a pipeline ADMITTED under the cap runs to completion, so a post never lands half-generated
       (the cap is soft, and the spend already sunk into its first steps would be wasted);
@@ -18,7 +19,7 @@ What pauses and what does not (full posture: `docs/llm-analytics.md`, "Free-tria
     - calls with no attributed user (system work) and every user not on the `free_trial` tier.
 
 Soft by construction: an unreadable spend (no Redis, a Redis error) or an unreadable tier never
-blocks — the spend case is warned ONCE per UTC day per process, not per call.
+blocks — the spend case is warned ONCE per UTC day per worker process, not per call.
 """
 
 import contextvars
@@ -53,7 +54,11 @@ _KEY_TTL_SECONDS = 2 * 24 * 60 * 60
 # The tier changes on a Stripe webhook, not per call; a short cache keeps a DB read off the path of
 # every LLM request without holding a stale tier past an upgrade for long.
 _TIER_CACHE_TTL_SECONDS = 300.0
+# A FAILED read is cached too, but briefly: otherwise a DB fault adds a DB read to every LLM call
+# while it lasts, on the path it is already slowing down.
+_TIER_FAILURE_TTL_SECONDS = 30.0
 
+#: user_id -> (monotonic expiry, tier or None for an unreadable read).
 _TIER_CACHE: dict[int, tuple[float, Optional[str]]] = {}
 #: UTC days an unreadable spend has already been warned about in this process.
 _UNKNOWN_WARNED: set[str] = set()
@@ -182,19 +187,21 @@ def _read_spend(user_id: int, day: str) -> Optional[float]:
 
 
 def _user_tier(user_id: int) -> Optional[str]:
-    """The user's `subscription_tier`, cached briefly; None when unreadable (and then not cached)."""
+    """The user's `subscription_tier`, cached for 5 minutes; None when unreadable (cached 30s)."""
+    now = time.monotonic()
     cached = _TIER_CACHE.get(user_id)
-    if cached and time.monotonic() - cached[0] < _TIER_CACHE_TTL_SECONDS:
+    if cached and now < cached[0]:
         return cached[1]
     try:
         from cqc_lem.utilities.db import get_user_subscription_info
         info = get_user_subscription_info(user_id)
     except Exception:
-        return None
+        info = None
     if info is None:
+        _TIER_CACHE[user_id] = (now + _TIER_FAILURE_TTL_SECONDS, None)
         return None
     tier = str(info.get("subscription_tier") or "")
-    _TIER_CACHE[user_id] = (time.monotonic(), tier)
+    _TIER_CACHE[user_id] = (now + _TIER_CACHE_TTL_SECONDS, tier)
     return tier
 
 
@@ -305,6 +312,22 @@ def admit_pipeline(user_id: object) -> Iterator[None]:
     """
     if not _pipeline_admitted.get():
         enforce(user_id)
+    token = _pipeline_admitted.set(True)
+    try:
+        yield
+    finally:
+        _pipeline_admitted.reset(token)
+
+
+@contextmanager
+def operator_action() -> Iterator[None]:
+    """An operator action (an admin-secret route) is never refused, though its spend still counts.
+
+    The admin routes act ON a user's post with the owner's credential, not the user's. Refusing them
+    would stop the operator repairing a capped trial user's content, and the classifier an admin
+    approval runs is attributed to the feedback's SUBMITTER — so a submitter at their cap would turn
+    the admin's approve into `filed: false`.
+    """
     token = _pipeline_admitted.set(True)
     try:
         yield

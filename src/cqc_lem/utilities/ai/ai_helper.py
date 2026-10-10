@@ -91,6 +91,7 @@ from cqc_lem.utilities.linkedin_formatter import (
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
 from cqc_lem.utilities.observability import (
     FEATURE_COMMENT,
+    FEATURE_CONTENT,
     FEATURE_NEWSLETTER,
     current_llm_attribution,
     llm_pipeline,
@@ -4033,6 +4034,9 @@ def _carousel_shape_directive(missing: list, schema_hint: str) -> str:
             "list. Return ONLY valid JSON.\n")
 
 
+# A pipeline (issue #2378): attributes every call to `user_id` whoever invokes it — the preview route
+# called it with no scope at all, so its spend landed on no user and the trial cap never saw it.
+@llm_pipeline("carousel_generation", feature=FEATURE_CONTENT)
 def generate_carousel_content(user_id: int, stage: str, prefs: dict = None,
                               profile_synthesis: str = None, blueprint: dict = None,
                               fact_anchors: list = None,

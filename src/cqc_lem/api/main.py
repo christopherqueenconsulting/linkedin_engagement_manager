@@ -173,7 +173,9 @@ from cqc_lem.utilities.linkedin.verification_pin import (
 from cqc_lem.utilities.logger import log_critical, log_debug, log_error, log_info, log_warning
 from cqc_lem.utilities.mime_type_helper import get_file_mime_type
 from cqc_lem.utilities.observability import (
+    FEATURE_CONTENT,
     capture_exception,
+    llm_trace,
     track_api_call,
 )
 from cqc_lem.utilities.post_image import (
@@ -3503,41 +3505,45 @@ def generate_carousel_preview(request: GenerateCarouselPreviewRequest) -> Respon
     assets_root = os.path.join(current_dir, "..", "assets", "images", "carousel", preview_id)
     output_dir = os.path.realpath(assets_root)
 
-    try:
-        post_text, carousel_dict = generate_carousel_content(user_id, stage)
+    # One pipeline for the whole request (issue #2378): every call is the session user's, a
+    # capped free-trial user is refused (429) before any spend, and an admitted one finishes.
+    with llm_trace("carousel_preview", user_id=user_id, feature=FEATURE_CONTENT):
+        try:
+            post_text, carousel_dict = generate_carousel_content(user_id, stage)
 
-        # The shared stage map (issue #1681): this route used to keep its own, which is how a
-        # "personal" preview asked the generator for one deck shape and validated another.
-        model_cls = carousel_model_for_stage(stage)
+            # The shared stage map (issue #1681): this route used to keep its own, which is how a
+            # "personal" preview asked the generator for one deck shape and validated another.
+            model_cls = carousel_model_for_stage(stage)
 
-        # The generator's own shape gate already spent its repair call, so a deck still missing a
-        # required slide is an upstream failure — say which slides, rather than handing the SPA a
-        # raw pydantic ValidationError dump from the constructor (issue #1666).
-        missing = missing_carousel_fields(model_cls, carousel_dict)
-        if missing:
-            raise HTTPException(
-                status_code=502,
-                detail="The carousel generator returned a deck missing required slide(s): "
-                       + ", ".join(missing) + ". Try again.")
+            # The generator's own shape gate already spent its repair call, so a deck still missing a
+            # required slide is an upstream failure — say which slides, rather than handing the SPA a
+            # raw pydantic ValidationError dump from the constructor (issue #1666).
+            missing = missing_carousel_fields(model_cls, carousel_dict)
+            if missing:
+                raise HTTPException(
+                    status_code=502,
+                    detail="The carousel generator returned a deck missing required slide(s): "
+                           + ", ".join(missing) + ". Try again.")
 
-        carousel_obj = build_carousel_model(model_cls, carousel_dict, user_id=user_id)
-        # The author's brand kit themes the preview exactly as it themes the posted deck; the
-        # likeness path stays unreached here (`brand_user_id` reads the kit and nothing else).
-        image_paths = create_carousel_slide_images(
-            carousel_obj, post_id=0, output_dir=output_dir, template=carousel_template,
-            brand_user_id=user_id,
-        )
-        slide_urls = [
-            f"{API_URL_FINAL}/api/assets?file_name=images/carousel/{preview_id}/{os.path.basename(p)}"
-            for p in image_paths
-        ]
-    except HTTPException:
-        # Already the answer we mean to send — re-wrapping it would bury a 502 inside a 500 whose
-        # detail is the repr of this exception.
-        raise
-    except Exception as exc:
-        log_info(f"generate-carousel: failed for user_id={user_id} — {exc}")
-        raise HTTPException(status_code=500, detail=str(exc))
+            carousel_obj = build_carousel_model(model_cls, carousel_dict, user_id=user_id)
+            # The author's brand kit themes the preview exactly as it themes the posted deck; the
+            # likeness path stays unreached here (`brand_user_id` reads the kit and nothing else).
+            image_paths = create_carousel_slide_images(
+                carousel_obj, post_id=0, output_dir=output_dir, template=carousel_template,
+                brand_user_id=user_id,
+            )
+            slide_urls = [
+                f"{API_URL_FINAL}/api/assets?file_name=images/carousel/{preview_id}/{os.path.basename(p)}"
+                for p in image_paths
+            ]
+        except (HTTPException, DailyAICapReached):
+            # DailyAICapReached is the free-trial cap's designed 429 (issue #2378).
+            # Already the answer we mean to send — re-wrapping it would bury a 502 inside a 500 whose
+            # detail is the repr of this exception.
+            raise
+        except Exception as exc:
+            log_info(f"generate-carousel: failed for user_id={user_id} — {exc}")
+            raise HTTPException(status_code=500, detail=str(exc))
 
     return ResponseModel(status_code=200, detail={
         "slide_urls": slide_urls,
