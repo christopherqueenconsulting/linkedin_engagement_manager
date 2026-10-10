@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.189.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.189.0...v0.189.1) (2026-10-10)
+
+
+### Bug Fixes
+
+* **prompt-evals:** hold every run to a $1.00 spend ceiling ([#2361](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2361)) ([b445622](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b445622cc553beff196c31a02093e12a9695265c))
+
 ## [0.189.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.188.0...v0.189.0) (2026-10-10)
 
 
