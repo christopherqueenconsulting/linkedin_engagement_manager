@@ -255,6 +255,7 @@ def _current_surface() -> str:
         if getattr(current_task, "name", None):
             return SURFACE_BACKGROUND
     except Exception:
+        # Celery not importable or no task context: treat the call as a user request.
         pass
     return SURFACE_USER_REQUEST
 
