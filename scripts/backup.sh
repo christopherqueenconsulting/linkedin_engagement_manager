@@ -116,7 +116,7 @@ backup() {
 # remote that rclone cannot use fails the run. Only the new file is sent, with --immutable, so the
 # box never overwrites or deletes anything off-host; remote retention is the bucket's own rule.
 offsite_copy() {  # $1 = the dump this run wrote
-  local name dest
+  local name dest remote_name remote_type
   if [[ -z "${BACKUP_REMOTE:-}" ]]; then
     log "off-host copy: not configured (BACKUP_REMOTE unset); this dump exists only on this disk"
     return 0
@@ -125,13 +125,31 @@ offsite_copy() {  # $1 = the dump this run wrote
     error "off-host copy: BACKUP_REMOTE is set but rclone is not installed"
     return 1
   fi
+  # The dump is plain SQL holding member personal data, so it only ever leaves through a configured
+  # rclone `crypt` remote: the provider stores ciphertext. Fail closed on anything else — a plain
+  # bucket remote, an inline connection string (":s3,…", which would also put keys in this log),
+  # or a value rclone would parse as a flag. Only the remote's NAME is ever logged.
+  remote_name="${BACKUP_REMOTE%%:*}"
+  if [[ "$BACKUP_REMOTE" != *:* || -z "$remote_name" || "$remote_name" == -* ]]; then
+    error "off-host copy: BACKUP_REMOTE must name a configured rclone crypt remote" \
+      "(name:path); refusing to upload"
+    return 1
+  fi
+  remote_type="$(rclone listremotes --long 2>/dev/null | awk -v r="${remote_name}:" '$1 == r {print $2; exit}')"
+  if [[ "$remote_type" != "crypt" ]]; then
+    error "off-host copy: BACKUP_REMOTE ${remote_name} is not a crypt remote" \
+      "(type: ${remote_type:-not found}); refusing to upload plaintext member data"
+    return 1
+  fi
   name="$(basename "$1")"
   # "remote:" names the remote's root; "remote:path" gets a separator. Never "remote:/name".
   dest="${BACKUP_REMOTE%/}"
   if [[ "$dest" == *: ]]; then dest="${dest}${name}"; else dest="${dest}/${name}"; fi
-  log "off-host copy: ${name} -> ${dest}"
-  if ! rclone copyto --immutable "$1" "$dest"; then
-    error "off-host copy failed: ${name} -> ${BACKUP_REMOTE}"
+  log "off-host copy: ${name} -> ${remote_name}:"
+  # rclone's own timeouts bound a stalled connection; this bounds a slow provider, so the nightly
+  # run always ends and the watchdog's marker age is the signal.
+  if ! timeout "${BACKUP_REMOTE_TIMEOUT:-3600}" rclone copyto --immutable "$1" "$dest"; then
+    error "off-host copy failed: ${name} -> ${remote_name}:"
     return 1
   fi
   # The watchdog reads this marker's age (stack_watchdog.sh check_backup_freshness).

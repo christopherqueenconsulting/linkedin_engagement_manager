@@ -32,12 +32,15 @@ ls -lht /opt/lem/backups | head -3
 
 ### 1.2 No off-box backup exists at all
 
-`BACKUP_REMOTE` is unset and `rclone` is not installed, so `scripts/backup.sh:42` skips the remote
-copy. Combined with 1.1 and 1.3, one disk loss is total loss.
+`BACKUP_REMOTE` is unset and `rclone` is not installed, so `scripts/backup.sh` (`offsite_copy`) logs
+`off-host copy: not configured` every night and the dump exists only on this disk. One disk loss is
+total loss.
 
 **Your action:** follow `docs/offsite-backups.md` § Install: pick a destination, set up an encrypted
-rclone remote as `deploy`, then set `BACKUP_REMOTE` in `/opt/lem/.env`. Documented at `docs/DEPLOYMENT.md:202-207` — currently marked "(Optional)", which
-under `ENCRYPTION_REQUIRED=true` it no longer is.
+(`crypt`) rclone remote as `deploy`, prove one upload, then set `BACKUP_REMOTE` in `/opt/lem/.env`.
+Also keep a dated record, outside the database, of every account deletion you complete. A restore
+from an off-host dump must re-apply the deletions made after that dump
+(`docs/offsite-backups.md` § Personal data, retention and deletion).
 
 ### 1.3 The master key backup still lives on the box it protects · issue #1095
 

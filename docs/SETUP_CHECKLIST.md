@@ -111,7 +111,7 @@ Legend: 🖱️ click-ops in a web console · ⌨️ run a command · ⏱️ rou
       ```
       ssh deploy@<vps-ip> 'crontab -l 2>/dev/null; echo "0 3 * * * cd /opt/lem && ./scripts/backup.sh >> logs/backup.log 2>&1" | crontab -'
       ```
-- [ ] 🖱️ (Optional) Configure `rclone` + `BACKUP_REMOTE` for off-box backups (Cloudflare R2 / S3).
+- [ ] 🖱️ Configure an encrypted off-host copy of the nightly dump (`rclone` `crypt` remote + `BACKUP_REMOTE`): `docs/offsite-backups.md` § Install.
 - [ ] 🖱️ (Optional) External uptime monitor on `https://app.<domain>/health`.
 - [ ] ⌨️ Test rollback once: `ssh deploy@<vps-ip> 'cd /opt/lem && ./scripts/rollback.sh <prev-tag>'`
 

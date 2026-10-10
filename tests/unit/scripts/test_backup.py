@@ -281,7 +281,12 @@ class TestBackupRun:
 _FAKE_RCLONE = textwrap.dedent(
     """\
     #!/bin/sh
-    # Fake rclone: records its argv, exits with FAKE_RCLONE_RC.
+    # Fake rclone. `listremotes --long` reports one remote, lem-offsite, of type
+    # FAKE_RCLONE_TYPE (default crypt). Any other call records its argv and exits FAKE_RCLONE_RC.
+    if [ "$1" = "listremotes" ]; then
+      echo "lem-offsite: ${FAKE_RCLONE_TYPE:-crypt}"
+      exit 0
+    fi
     printf '%s\\n' "$*" >> "$FAKE_RCLONE_LOG"
     exit "${FAKE_RCLONE_RC:-0}"
     """
@@ -381,3 +386,68 @@ class TestOffsiteCopy:
         )
         assert result.returncode != 0, result.stdout
         assert "ERROR: off-host copy: BACKUP_REMOTE is set but rclone is not installed" in result.stderr
+
+    def test_a_remote_that_is_not_crypt_is_refused_before_any_upload(self, tmp_path: Path) -> None:
+        """A plain bucket remote would ship member data readable by the provider: fail closed."""
+        backup_dir = tmp_path / "backups"
+        env_file = _write_env(tmp_path, backup_dir=str(backup_dir), backup_remote="lem-offsite:")
+        calls = _install_fake_rclone(tmp_path)
+        result = _run(
+            tmp_path,
+            {
+                "LEM_ENV_FILE": str(env_file),
+                "BACKUP_CHROME_VOL": "0",
+                "FAKE_RCLONE_LOG": str(calls),
+                "FAKE_RCLONE_TYPE": "s3",
+            },
+            '"$BACKUP_SH"',
+        )
+        assert result.returncode != 0, result.stdout
+        assert "lem-offsite is not a crypt remote" in result.stderr
+        assert "refusing to upload plaintext member data" in result.stderr
+        assert not calls.exists()
+        assert not (backup_dir / ".offsite-last-ok").exists()
+        assert len(list(backup_dir.glob("db-*.sql.gz"))) == 1
+
+    def test_an_unknown_remote_name_is_refused(self, tmp_path: Path) -> None:
+        backup_dir = tmp_path / "backups"
+        env_file = _write_env(tmp_path, backup_dir=str(backup_dir), backup_remote="lem-store:bucket")
+        calls = _install_fake_rclone(tmp_path)
+        result = _run(
+            tmp_path,
+            {"LEM_ENV_FILE": str(env_file), "BACKUP_CHROME_VOL": "0", "FAKE_RCLONE_LOG": str(calls)},
+            '"$BACKUP_SH"',
+        )
+        assert result.returncode != 0, result.stdout
+        assert "lem-store is not a crypt remote (type: not found)" in result.stderr
+        assert not calls.exists()
+
+    def test_inline_connection_strings_and_flag_shaped_values_are_refused(self, tmp_path: Path) -> None:
+        """An inline ":s3,…" remote carries keys; a "-…" value would be parsed as an rclone flag."""
+        for remote in (":s3,access_key_id=AKIDEXAMPLE:bucket", "--config=/tmp/x:", "no-colon"):
+            backup_dir = tmp_path / "backups"
+            env_file = _write_env(tmp_path, backup_dir=str(backup_dir), backup_remote=remote)
+            calls = _install_fake_rclone(tmp_path)
+            result = _run(
+                tmp_path,
+                {"LEM_ENV_FILE": str(env_file), "BACKUP_CHROME_VOL": "0", "FAKE_RCLONE_LOG": str(calls)},
+                '"$BACKUP_SH"',
+            )
+            assert result.returncode != 0, (remote, result.stdout)
+            assert "must name a configured rclone crypt remote" in result.stderr, remote
+            assert "AKIDEXAMPLE" not in result.stdout + result.stderr
+            assert not calls.exists()
+
+    def test_log_names_the_remote_but_not_the_full_destination(self, tmp_path: Path) -> None:
+        backup_dir = tmp_path / "backups"
+        env_file = _write_env(tmp_path, backup_dir=str(backup_dir), backup_remote="lem-offsite:db/")
+        calls = _install_fake_rclone(tmp_path)
+        result = _run(
+            tmp_path,
+            {"LEM_ENV_FILE": str(env_file), "BACKUP_CHROME_VOL": "0", "FAKE_RCLONE_LOG": str(calls)},
+            '"$BACKUP_SH"',
+        )
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert "-> lem-offsite:" in result.stdout
+        assert "lem-offsite:db/" not in result.stdout
+
