@@ -652,6 +652,13 @@ def collaborator_permission(slug: str, login: str, *, timeout: int = 30) -> froz
 
     Cached per (slug, login) for `PERMISSION_TTL` seconds — a revoked collaborator stops counting
     within that window, which is the trade for not calling GitHub once per comment per pass.
+
+    Two kinds of "no", deliberately logged differently. A 404 ("is not a user" — what a bot's bare
+    slug from `gh --json comments` gets, e.g. `codecov`) and a non-login are READABLE answers: an
+    empty set, cached for the full TTL, DEBUG only — they recur on every push, and the logging
+    contract says an expected no-op repeated is not a warning. Anything else that fails (network,
+    timeout, 5xx, 401/403, rate limit, unparseable JSON) is UNREADABLE: None, WARNING, and the short
+    `PERMISSION_FAILURE_TTL` so a blip does not refuse for a quarter of an hour.
     """
     key = (slug, login.lower())
     now = time.monotonic()
@@ -660,7 +667,7 @@ def collaborator_permission(slug: str, login: str, *, timeout: int = 30) -> froz
         return hit[1]
     perms: frozenset[str] | None
     if not _LOGIN_RE.fullmatch(login):
-        perms = None
+        perms = frozenset()
     else:
         try:
             data = gh_json(["api", f"repos/{slug}/collaborators/{login}/permission"],
@@ -669,10 +676,14 @@ def collaborator_permission(slug: str, login: str, *, timeout: int = 30) -> froz
                 str(v).lower() for v in (data.get("permission"), data.get("role_name")) if v
             )
         except GitHubUnavailable as exc:
-            # WARNING, not DEBUG: this refusal decides whether a human's answer counts, and an
-            # operator must be able to see why it did not. Bounded by PERMISSION_FAILURE_TTL.
-            LOG.warning("permission for %s unreadable — treating as untrusted: %s", login, exc)
-            perms = None
+            if "(HTTP 404)" in str(exc):
+                LOG.debug("permission for %s: not a user/collaborator (404) — untrusted", login)
+                perms = frozenset()
+            else:
+                # WARNING, not DEBUG: this refusal decides whether a human's answer counts, and an
+                # operator must be able to see why it did not. Bounded by PERMISSION_FAILURE_TTL.
+                LOG.warning("permission for %s unreadable — treating as untrusted: %s", login, exc)
+                perms = None
     ttl = PERMISSION_TTL if perms is not None else PERMISSION_FAILURE_TTL
     _PERMISSION_CACHE[key] = (now + ttl, perms)
     return perms

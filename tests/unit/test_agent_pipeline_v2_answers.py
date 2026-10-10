@@ -254,6 +254,54 @@ def test_comment_author_trusted_needs_no_lookup_for_the_owner_or_a_bot(monkeypat
     assert looked == []
 
 
+def _serve_error(monkeypatch, message: str) -> list[str]:
+    """The permission endpoint failing with `message` (what `run_gh` puts in the exception)."""
+    monkeypatch.setattr(answers.github, "_PERMISSION_CACHE", {})
+    looked: list[str] = []
+
+    def gh(args, **_kw):
+        looked.append(args[1].split("/collaborators/")[1].split("/")[0])
+        raise answers.github.GitHubUnavailable(message)
+
+    monkeypatch.setattr(answers.github, "gh_json", gh)
+    return looked
+
+
+def test_a_404_is_untrusted_quiet_and_cached_for_the_full_ttl(monkeypatch, caplog):
+    """`codecov` / `github-actions` 404 on every push: a readable "no", never a WARNING."""
+    looked = _serve_error(monkeypatch, "gh api repos/o/r/collaborators/codecov/permission rc=1: "
+                                       "gh: codecov is not a user (HTTP 404)")
+    clock = [1000.0]
+    monkeypatch.setattr(answers.github.time, "monotonic", lambda: clock[0])
+    with caplog.at_level("DEBUG", logger="lemd.github"):
+        assert answers.github.comment_author_trusted("o/r", "codecov", OWNER) is False
+        clock[0] += answers.github.PERMISSION_FAILURE_TTL + 1
+        assert answers.github.comment_author_trusted("o/r", "codecov", OWNER) is False
+        assert looked == ["codecov"], "a 404 is cached past the failure TTL"
+        clock[0] += answers.github.PERMISSION_TTL
+        answers.github.comment_author_trusted("o/r", "codecov", OWNER)
+    assert looked == ["codecov", "codecov"], "...and re-asked once the full TTL is up"
+    assert not [r for r in caplog.records if r.levelno >= 30]
+
+
+@pytest.mark.parametrize("message", [
+    "gh api repos/o/r rc=1: gh: Server Error (HTTP 502)",
+    "gh api repos/o/r: timed out after 30 seconds",
+    "gh api repos/o/r rc=1: gh: API rate limit exceeded (HTTP 403)",
+    "gh api repos/o/r: unparseable JSON (Expecting value)",
+])
+def test_an_unreadable_lookup_warns_and_uses_the_short_ttl(monkeypatch, caplog, message):
+    looked = _serve_error(monkeypatch, message)
+    clock = [1000.0]
+    monkeypatch.setattr(answers.github.time, "monotonic", lambda: clock[0])
+    with caplog.at_level("WARNING", logger="lemd.github"):
+        assert answers.github.comment_author_trusted("o/r", "writer", OWNER) is False
+    assert [r.levelname for r in caplog.records if r.name == "lemd.github"] == ["WARNING"]
+    clock[0] += answers.github.PERMISSION_FAILURE_TTL + 1
+    answers.github.comment_author_trusted("o/r", "writer", OWNER)
+    assert looked == ["writer", "writer"]
+
+
 def test_a_failed_lookup_is_retried_after_its_short_ttl(monkeypatch):
     """A blip refuses, but must not refuse for the full success TTL."""
     looked = _serve_thread(monkeypatch, [], fail=True)

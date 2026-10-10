@@ -172,13 +172,25 @@ comment_author_trusted() {
   if [ -n "${_COMMENT_PERM_CACHE[$lc]+set}" ]; then
     perm="${_COMMENT_PERM_CACHE[$lc]}"
   else
-    perm="$(gh api "repos/$SLUG/collaborators/$login/permission" \
-              --jq '"\(.permission // "") \(.role_name // "")"' 2>/dev/null)" || perm=""
+    # A 404 ("is not a user" — a bot's bare slug from `gh --json comments`, e.g. codecov) is a
+    # READABLE "no", recorded as `none`; only a lookup that genuinely failed (network, 5xx,
+    # 401/403, rate limit) reads as unreadable. Same split as `lemd/github.py:collaborator_permission`.
+    local out rc
+    out="$(gh api "repos/$SLUG/collaborators/$login/permission" \
+              --jq '"\(.permission // "") \(.role_name // "")"' 2>&1)"; rc=$?
+    if [ "$rc" -eq 0 ]; then perm="$out"
+    elif printf '%s' "$out" | grep -qF '(HTTP 404)'; then perm="none"
+    else perm=""
+    fi
     _COMMENT_PERM_CACHE[$lc]="$perm"
   fi
   case " $perm " in *" admin "*|*" maintain "*|*" write "*) return 0 ;; esac
   # >&2: callers run this inside `$(...)` whose stdout IS their answer, and log() tees to stdout.
-  log "TRUST: comment by '$login' ignored — permission '${perm:-unreadable}' is not admin/maintain/write." >&2
+  if [ -n "${perm// /}" ]; then
+    log "TRUST: comment by '$login' ignored — permission '$perm' is not admin/maintain/write." >&2
+  else
+    log "TRUST: comment by '$login' ignored — permission lookup unreadable; refusing." >&2
+  fi
   return 1
 }
 

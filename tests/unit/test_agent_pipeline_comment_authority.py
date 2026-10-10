@@ -87,6 +87,8 @@ if [ "$1" = api ]; then
   login="$(printf '%s' "$2" | sed -n 's#.*/collaborators/\([^/]*\)/permission$#\1#p')"
   echo "$login" >> "$CALLS"
   p="$(printf '%s' "$PERMS" | jq -r --arg l "$login" '.[$l] // empty')"
+  case " ${NOTFOUND:-} " in *" $login "*) echo "gh: $login is not a user (HTTP 404)" >&2; exit 1 ;; esac
+  case " ${SERVERERR:-} " in *" $login "*) echo "gh: Server Error (HTTP 502)" >&2; exit 1 ;; esac
   [ -n "$p" ] || exit 1
   echo "$p $p"
   exit 0
@@ -162,6 +164,21 @@ class TestCommentAuthorTrusted:
         r = _run(tmp_path, 'comment_author_trusted "ghost" && echo YES || echo NO')
         assert r.stdout.strip().endswith("NO")
         assert "unreadable" in r.stderr, "the refusal is logged on stderr, never into stdout"
+
+    def test_a_404_is_a_readable_no_not_an_unreadable_lookup(self, tmp_path):
+        """A bot's bare slug (codecov) 404s on every push; that is an answer, cached for the run."""
+        r = _run(tmp_path, """
+            comment_author_trusted codecov && echo YES || echo NO
+            comment_author_trusted codecov && echo YES || echo NO""", env={"NOTFOUND": "codecov"})
+        assert r.stdout.split()[-2:] == ["NO", "NO"]
+        assert "permission 'none'" in r.stderr and "unreadable" not in r.stderr
+        assert _calls(tmp_path) == ["codecov"]
+
+    def test_a_server_error_is_unreadable_and_refuses(self, tmp_path):
+        r = _run(tmp_path, 'comment_author_trusted writer && echo YES || echo NO',
+                 env={"SERVERERR": "writer"})
+        assert r.stdout.strip().endswith("NO")
+        assert "unreadable" in r.stderr
 
     def test_the_owner_needs_no_lookup(self, tmp_path):
         r = _run(tmp_path, f'comment_author_trusted "{OWNER.upper()}" && echo YES || echo NO')
