@@ -87,6 +87,9 @@ class TestSwitch:
         ("https://evil.com/?next=https://www.linkedin.com/", False),
         ("https://notlinkedin.com/", False),
         ("https://linkedin.com.evil.com/", False),
+        # Raw, unprepared URL: the stdlib reads evil.com, urllib3 reads api.linkedin.com. Either
+        # parser seeing LinkedIn is enough.
+        ("https://api.linkedin.com\\@evil.com/", True),
         ("https://api.bls.gov/publicAPI/v2/", False),
         ("", False),
         (None, False),
@@ -300,47 +303,194 @@ class TestEgressProbe:
 
 
 # --------------------------------------------------------------------------------------------------
-# Enumeration: no LinkedIn client in src/ may bypass both choke points
+# A refusal is expected under demo mode: it never reaches error tracking
 # --------------------------------------------------------------------------------------------------
 
-def _src_files():
-    # The guard module names every client it guards; it is the one file that is not a client.
-    return sorted(p for p in SRC.rglob("*.py")
-                  if "/ui/" not in p.as_posix() and p.name != "demo_mode.py")
+class TestRefusalIsNotADefect:
+    @pytest.mark.parametrize("level", ["log_warning", "log_error", "log_critical"])
+    def test_logger_demotes_a_refusal_to_info(self, level):
+        from cqc_lem.utilities import logger as lg
+        with patch.object(lg, "logger") as py_logger, patch.object(lg, "_capture") as capture, \
+             patch.object(lg.log_escalation, "note") as note:
+            getattr(lg, level)("Could not publish", exc=DemoModeError("poster.share_on_linkedin"),
+                               user_id=1)
+        py_logger.info.assert_called_once()
+        assert "poster.share_on_linkedin" in py_logger.info.call_args.args[0]
+        py_logger.warning.assert_not_called()
+        py_logger.error.assert_not_called()
+        py_logger.critical.assert_not_called()
+        capture.assert_not_called()
+        note.assert_not_called()
+
+    def test_control_a_real_error_is_still_captured(self):
+        from cqc_lem.utilities import logger as lg
+        with patch.object(lg, "logger") as py_logger, patch.object(lg, "_capture") as capture:
+            lg.log_error("Could not publish", exc=RuntimeError("boom"))
+        py_logger.error.assert_called_once()
+        capture.assert_called_once()
+
+    def test_celery_failure_and_retry_hooks_do_not_file_a_refusal(self):
+        from types import SimpleNamespace
+
+        from cqc_lem.app import my_celery
+        sender = SimpleNamespace(name="cqc_lem.app.run_automation.post_to_linkedin")
+        with patch.object(my_celery, "capture_exception") as capture:
+            my_celery.on_task_failure(task_id="t", exception=DemoModeError("x"), sender=sender,
+                                      kwargs={"user_id": 1})
+            my_celery.on_task_retry(request=SimpleNamespace(kwargs={}, id="t", retries=0),
+                                    reason=DemoModeError("x"), sender=sender)
+            capture.assert_not_called()
+            # Control: an ordinary failure is still filed by the same hooks.
+            my_celery.on_task_failure(task_id="t", exception=RuntimeError("boom"), sender=sender,
+                                      kwargs={})
+            my_celery.on_task_retry(request=SimpleNamespace(kwargs={}, id="t", retries=0),
+                                    reason=RuntimeError("boom"), sender=sender)
+        assert capture.call_count == 2
+
+
+class TestParserDifferential:
+    @pytest.mark.parametrize("url", [
+        "https://evil\\@api.linkedin.com/",
+        "https://api.linkedin.com\\@evil.com/",
+        "https://evil.com\\@api.linkedin.com/x",
+        "https://a@b@api.linkedin.com/",
+        "https://api.linkedin.com:443/rest/me",
+        "https://API.LinkedIn.com./rest/me",
+    ])
+    def test_whatever_actually_connects_to_linkedin_is_refused(self, demo_on, no_socket, url):
+        # The stdlib and urllib3 disagree about backslash-before-@ hosts (on the second URL the
+        # stdlib reads evil.com while urllib3 — what requests connects with — reads
+        # api.linkedin.com). The contract is about the CONNECTION: a request that would reach
+        # LinkedIn is refused, and one that reaches the adapter is bound for somewhere else.
+        try:
+            requests.get(url, timeout=1)
+        except DemoModeError:
+            no_socket.assert_not_called()
+            return
+        sent = no_socket.call_args.args[0].url
+        from urllib3.util import parse_url
+        assert not is_linkedin_url(sent), sent
+        assert not (parse_url(sent).host or "").lower().endswith("linkedin.com"), sent
+
+    @pytest.mark.parametrize("url", ["https://api.linkedin.com\\@evil.com/",
+                                     "https://a@b@api.linkedin.com/"])
+    def test_the_differential_cases_that_reach_linkedin_are_refused(self, demo_on, no_socket, url):
+        with pytest.raises(DemoModeError):
+            requests.get(url, timeout=1)
+        no_socket.assert_not_called()
+
+    def test_ip_literals_are_not_matched(self):
+        # Documented gap: the guard matches names, not addresses (docs/demo-mode.md).
+        assert is_linkedin_url("https://13.107.42.14/") is False
+
+
+# --------------------------------------------------------------------------------------------------
+# Enumeration: no LinkedIn client in src/cqc_lem, scripts/ or tools/ may bypass the guards
+# --------------------------------------------------------------------------------------------------
+
+ROOT = SRC.parents[1]
+SCAN_ROOTS = ("src/cqc_lem", "scripts", "tools")
+# Not scanned, on purpose (docs/demo-mode.md "Keeping it complete"): `ui/` is the SPA, and
+# `browser_extension/` runs in the operator's own Chrome, not on the stack.
+_SKIP_PARTS = ("/ui/", "/browser_extension/", "/__pycache__/")
+
+
+def _scan_files():
+    out = []
+    for root in SCAN_ROOTS:
+        for p in (ROOT / root).rglob("*.py"):
+            posix = p.as_posix()
+            # The guard module names every client it guards; it is the one file that is not one.
+            if any(s in posix for s in _SKIP_PARTS) or p.name == "demo_mode.py":
+                continue
+            out.append(p)
+    return sorted(out)
 
 
 def _rel(path: Path) -> str:
-    return path.relative_to(SRC).as_posix()
+    return path.relative_to(ROOT).as_posix()
 
 
-# Files that talk to a LinkedIn HTTP API. Each rides `requests` (the guarded transport) AND calls
-# `guard_linkedin` at its entry points. Adding a file here is a review decision, not a formality.
+def _dotted(node: ast.AST) -> str:
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
+def _unguarded_calls(path: Path, matches) -> list:
+    """Calls matching `matches(dotted_name)` with no guard call before them in their function.
+
+    A guard is any call whose name ends in `guard_linkedin`. A matching call at module level is
+    always unguarded.
+    """
+    tree = ast.parse(path.read_text())
+    found, inside = [], set()
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call)]
+        guards = [c.lineno for c in calls if _dotted(c.func).split(".")[-1].endswith("guard_linkedin")]
+        for c in calls:
+            if matches(_dotted(c.func)):
+                inside.add(id(c))
+                if not any(g < c.lineno for g in guards):
+                    found.append(f"{_rel(path)}:{c.lineno} {_dotted(c.func)}")
+    for c in ast.walk(tree):
+        if isinstance(c, ast.Call) and matches(_dotted(c.func)) and id(c) not in inside:
+            found.append(f"{_rel(path)}:{c.lineno} {_dotted(c.func)} (module level)")
+    return found
+
+
+# Files that talk to a LinkedIn HTTP API. Each calls `guard_linkedin` at its entry points; the src/
+# ones ride `requests` (the guarded transport), the two scripts use urllib and guard every urlopen.
+# Adding a file here is a review decision, not a formality.
 _LINKEDIN_HTTP_CLIENTS = {
-    "api/main.py",
-    "utilities/linkedin/poster.py",
-    "utilities/linkedin/reshare.py",
-    "utilities/linkedin/token_refresh.py",
+    "src/cqc_lem/api/main.py",
+    "src/cqc_lem/utilities/linkedin/poster.py",
+    "src/cqc_lem/utilities/linkedin/reshare.py",
+    "src/cqc_lem/utilities/linkedin/token_refresh.py",
+    "scripts/linkedin_version_check.py",
+    "scripts/linkedin_post_stats_api_probe.py",
 }
 _LINKEDIN_API_MARKERS = re.compile(
     r"api\.linkedin\.com|linkedin\.com/oauth|linkedin\.com/v2|linkedin\.com/rest|"
     r"\bRestliClient\b|\bAuthClient\b")
-# Any HTTP stack other than `requests` would go around the `Session.send` guard.
-_UNGUARDED_HTTP = re.compile(
-    r"^\s*(import|from)\s+(httpx|aiohttp|urllib3|pycurl|http\.client|urllib\.request)\b", re.M)
 _LINKEDIN_HOST = re.compile(r"linkedin\.com|licdn\.com|lnkd\.in")
 
 
+def _non_requests_http(name: str) -> bool:
+    """An HTTP call the `Session.send` guard cannot see."""
+    return (name.split(".")[-1] == "urlopen"
+            or name.startswith(("httpx.", "aiohttp.", "urllib3.", "http.client.", "pycurl.")))
+
+
+def _requests_call(name: str) -> bool:
+    return name.startswith("requests.") and name.split(".")[-1] in {
+        "get", "post", "put", "patch", "delete", "head", "request", "Session"}
+
+
+_BROWSER = re.compile(r"^(webdriver\.)?(Remote|Chrome|Firefox|Edge|Safari|ChromiumEdge)$")
+
+
 class TestEveryLinkedInClientIsGuarded:
+    def test_scan_roots_exist(self):
+        for root in SCAN_ROOTS:
+            assert any((ROOT / root).rglob("*.py")), f"scan root {root} has no python files"
+
     def test_linkedin_http_clients_are_exactly_the_guarded_set(self):
-        found = {_rel(p) for p in _src_files() if _LINKEDIN_API_MARKERS.search(p.read_text())}
+        found = {_rel(p) for p in _scan_files() if _LINKEDIN_API_MARKERS.search(p.read_text())}
         assert found == _LINKEDIN_HTTP_CLIENTS, (
-            "A file now talks to a LinkedIn API. Call `guard_linkedin(...)` at its entry points, "
-            "use `requests` (the guarded transport), and add it to _LINKEDIN_HTTP_CLIENTS. "
+            "A file now talks to a LinkedIn API. Call `guard_linkedin(...)` at its entry points "
+            "and add it to _LINKEDIN_HTTP_CLIENTS. "
             f"New: {sorted(found - _LINKEDIN_HTTP_CLIENTS)}; gone: {sorted(_LINKEDIN_HTTP_CLIENTS - found)}")
 
     @pytest.mark.parametrize("rel", sorted(_LINKEDIN_HTTP_CLIENTS))
     def test_each_client_calls_the_guard(self, rel):
-        assert "guard_linkedin(" in (SRC / rel).read_text(), f"{rel} never calls guard_linkedin"
+        assert "guard_linkedin(" in (ROOT / rel).read_text(), f"{rel} never calls guard_linkedin"
 
     def test_publish_entry_points_guard_first(self):
         # Several publish helpers swallow `Exception` around their LinkedIn calls, so the
@@ -362,31 +512,65 @@ class TestEveryLinkedInClientIsGuarded:
                 assert isinstance(call, ast.Call) and getattr(call.func, "id", "") == "guard_linkedin", (
                     f"{rel}:{name} must open with guard_linkedin(...)")
 
-    def test_no_linkedin_file_uses_an_unguarded_http_stack(self):
-        offenders = [_rel(p) for p in _src_files()
-                     if _LINKEDIN_HOST.search(p.read_text()) and _UNGUARDED_HTTP.search(p.read_text())]
-        assert offenders == [], f"LinkedIn-referencing files using a non-requests HTTP stack: {offenders}"
+    def test_no_unguarded_non_requests_http_in_a_linkedin_file(self):
+        # urllib / httpx / aiohttp / urllib3 / http.client go around `Session.send`, so in any
+        # file that names a LinkedIn host every such call needs a guard before it in its function.
+        offenders = []
+        for p in _scan_files():
+            if _LINKEDIN_HOST.search(p.read_text()):
+                offenders += _unguarded_calls(p, _non_requests_http)
+        assert offenders == [], offenders
+
+    def test_scripts_and_tools_guard_their_own_requests_calls(self):
+        # Under src/ the package import installs the `requests` guard. A script or tool may call
+        # `requests` before anything imports `cqc_lem`, so there the call itself must be guarded.
+        offenders = []
+        for p in _scan_files():
+            if not _rel(p).startswith("src/") and _LINKEDIN_HOST.search(p.read_text()):
+                offenders += _unguarded_calls(p, _requests_call)
+        assert offenders == [], offenders
 
     def test_raw_sockets_to_linkedin_check_demo_mode(self):
-        users = [_rel(p) for p in _src_files()
+        users = [_rel(p) for p in _scan_files()
                  if _LINKEDIN_HOST.search(p.read_text())
                  and re.search(r"socket\.create_connection|socket\.socket\(", p.read_text())]
-        assert users == ["utilities/egress_probe.py"], users
-        assert "is_demo_mode()" in (SRC / "utilities/egress_probe.py").read_text()
+        assert users == ["src/cqc_lem/utilities/egress_probe.py"], users
+        assert "is_demo_mode()" in (ROOT / users[0]).read_text()
 
-    def test_only_selenium_util_constructs_a_browser(self):
-        pattern = re.compile(r"webdriver\.(Remote|Chrome|Firefox|Edge|Safari)\(")
-        offenders = [_rel(p) for p in _src_files() if pattern.search(p.read_text())]
-        assert offenders == ["utilities/selenium_util.py"], offenders
+    def test_every_browser_construction_is_guarded(self):
+        builders = {_rel(p) for p in _scan_files()
+                    if re.search(r"webdriver\.(Remote|Chrome|Firefox|Edge|Safari)\(", p.read_text())}
+        assert builders == {"src/cqc_lem/utilities/selenium_util.py",
+                            "tools/selenium_mcp_server.py"}, builders
+        offenders = []
+        for rel in sorted(builders):
+            offenders += _unguarded_calls(ROOT / rel, lambda n: bool(_BROWSER.match(n)))
+        assert offenders == [], offenders
 
     def test_demo_safe_sessions_are_allowlisted(self):
         # `demo_safe=True` opens a browser in demo mode; only the SPA tutorial recorder may.
         users = []
-        for p in _src_files():
+        for p in _scan_files():
             for node in ast.walk(ast.parse(p.read_text())):
                 if isinstance(node, ast.Call) and any(
                         k.arg == "demo_safe" and not (isinstance(k.value, ast.Constant)
                                                       and k.value.value is False)
                         for k in node.keywords):
                     users.append(_rel(p))
-        assert users == ["utilities/marketing/video_tutorials.py"], users
+        assert users == ["src/cqc_lem/utilities/marketing/video_tutorials.py"], users
+
+    def test_the_scan_catches_an_unguarded_urlopen(self, tmp_path):
+        # The scanner itself, against a planted offender, so a green run is not a vacuous one.
+        bad = tmp_path / "bad.py"
+        bad.write_text("import urllib.request\nURL = 'https://api.linkedin.com/rest/me'\n"
+                       "def probe():\n    return urllib.request.urlopen(URL)\n")
+        good = tmp_path / "good.py"
+        good.write_text("import urllib.request\nURL = 'https://api.linkedin.com/rest/me'\n"
+                        "def probe():\n    _guard_linkedin()\n    return urllib.request.urlopen(URL)\n")
+        global ROOT
+        saved, ROOT = ROOT, tmp_path
+        try:
+            assert _unguarded_calls(bad, _non_requests_http)
+            assert _unguarded_calls(good, _non_requests_http) == []
+        finally:
+            ROOT = saved

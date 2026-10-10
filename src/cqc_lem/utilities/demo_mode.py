@@ -55,13 +55,33 @@ def is_demo_mode() -> bool:
     return os.environ.get("DEMO_MODE", "").strip().lower() in _TRUTHY
 
 
-def is_linkedin_url(url: Any) -> bool:
-    """True when ``url``'s parsed hostname is a LinkedIn host or a subdomain of one."""
+def _hosts(url: str) -> set:
+    """Every hostname the URL could be read as — the stdlib's reading AND urllib3's.
+
+    urllib3 is what `requests` actually connects with. Checking both readings closes any parser
+    differential (e.g. a backslash before ``@``) where one parser sees LinkedIn and the other does
+    not: if EITHER sees LinkedIn the request is refused.
+    """
+    hosts = set()
     try:
-        host = (urlparse(str(url or "")).hostname or "").lower().rstrip(".")
+        hosts.add(urlparse(url).hostname or "")
     except ValueError:
-        return False
-    return any(host == h or host.endswith("." + h) for h in LINKEDIN_HOSTS)
+        pass
+    try:
+        from urllib3.util import parse_url
+        hosts.add(parse_url(url).host or "")
+    except Exception:  # noqa: BLE001 - an unparseable URL simply contributes no host
+        pass
+    return {h.lower().strip("[]").rstrip(".") for h in hosts if h}
+
+
+def is_linkedin_url(url: Any) -> bool:
+    """True when ``url``'s parsed hostname is a LinkedIn host or a subdomain of one.
+
+    Matches names only: a bare IP literal is not recognised (see docs/demo-mode.md).
+    """
+    return any(host == h or host.endswith("." + h)
+               for host in _hosts(str(url or "")) for h in LINKEDIN_HOSTS)
 
 
 def guard_linkedin(surface: str) -> None:

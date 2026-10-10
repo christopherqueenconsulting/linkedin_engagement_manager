@@ -21,7 +21,7 @@ export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/
 # interactive dev checkout (overridable via REPO=... for tests).
 REPO="${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 ENV_FILE="/opt/lem/.env"
-DIR="/home/lem/li-version-check"
+DIR="${LI_VERSION_CHECK_DIR:-/home/lem/li-version-check}"
 LOG="$DIR/li_version_check.log"
 COMPOSE="sudo -n docker compose -f /opt/lem/docker-compose.yml -f /opt/lem/docker-compose.prod.yml"
 APP_SERVICES_BASE="celery_worker celery_worker_selenium celery_worker_selenium_prepost celery_worker_selenium_outreach celery_worker_selenium_content celery_beat flower"
@@ -157,6 +157,10 @@ log "plan: action=$ACTION target=$TARGET ($REASON)"
 case "$ACTION" in
   none)
     log "nothing to do"; log "=== done ==="; exit 0 ;;
+  skipped)
+    # DEMO_MODE (#2372) refused the probe. Nothing was learned about the pin, so it is NOT a
+    # retired pin: never a bump, never an .env write, never a recreate, never an alert.
+    log "skipped: $REASON"; log "=== done (skipped) ==="; exit 0 ;;
   error)
     alert "LinkedIn API-version check FAILED: $REASON"; exit 1 ;;
   bump|urgent-bump) ;;

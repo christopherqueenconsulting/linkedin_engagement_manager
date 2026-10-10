@@ -30,6 +30,7 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 
+from cqc_lem.utilities.demo_mode import guard_linkedin
 from cqc_lem.utilities.logger import log_info, log_warning
 from cqc_lem.utilities.selenium_util import DebugNodeUnavailable, apply_debug_node
 
@@ -147,6 +148,8 @@ def start_browser() -> str:
     interactive inspection and login, so it CAN type and click. Do not use it to post, comment,
     send invites/DMs, or change settings — a write from this session hits the owner's real account.
     """
+    # DEMO_MODE (#2372): this browser reaches live LinkedIn, so it never starts in demo mode.
+    guard_linkedin("tools.selenium_mcp_server.start_browser")
     if _state["driver"] is not None:
         return f"Session already open at {_driver().current_url}"
     options = Options()
