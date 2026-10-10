@@ -262,9 +262,14 @@ class TestAutoPublishOccasionPost:
         from cqc_lem.utilities.db import PostStatus
         from cqc_lem.utilities.demo_mode import DemoModeError
 
-        answer, mocks = self._run(session_raises=DemoModeError("selenium.get_docker_driver"))
+        with patch(f"{_MOD}.log_info") as log_info:
+            answer, mocks = self._run(session_raises=DemoModeError("selenium.get_docker_driver"))
 
         assert "held at error" in answer
+        # The one line that tells a demo hold apart from a real publish failure (both are `error`).
+        held = [c for c in log_info.call_args_list if "held: demo mode" in c.args[0]]
+        assert len(held) == 1 and "5" in held[0].args[0]
+        assert held[0].kwargs["post_id"] == 5
         assert [c.args for c in mocks["update_db_post_status"].call_args_list] == [
             (5, PostStatus.SCHEDULED), (5, PostStatus.ERROR)]
         mocks["publish"].assert_not_called()

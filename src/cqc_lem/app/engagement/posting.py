@@ -2637,7 +2637,10 @@ def auto_publish_occasion_post(self, user_id: int, post_id: int):
         # DEMO_MODE (#2372) refused before a browser opened. Released to 'approved' (the branch
         # below), the dispatcher would re-run it every beat for a day and publish it once demo mode
         # is off. Held at 'error' instead — the same hold an abandoned claim gets — so the author
-        # decides.
+        # decides. The INFO line is what tells this hold apart from a real publish failure — both
+        # leave the post at 'error'.
+        log_info(f"Occasion post {post_id} held: demo mode", user_id=user_id, post_id=post_id,
+                 task_name=task_name)
         update_db_post_status(post_id, PostStatus.ERROR)
         release_run_lock(lock_name, lock_token)
         return f"Post {post_id} held at error (DEMO_MODE)"

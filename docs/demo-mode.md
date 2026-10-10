@@ -84,7 +84,19 @@ limit on how old a row may be. Here is what each one finds after a refusal:
   `sending`, so it never re-queues it.
 - **Occasion posts (`get_orphaned_occasion_claims`).** A refused `auto_publish_occasion_post` holds
   its claim at `error` instead of releasing it to `approved`. That reaper never re-queues anything
-  either: it moves an abandoned claim to `error` for the author to resolve.
+  either: it moves an abandoned claim to `error` for the author to resolve. A real publish failure
+  also lands at `error`. To tell them apart, look for the INFO line
+  `Occasion post <id> held: demo mode`: it is written only for a demo hold.
+
+**Re-approving a held row.** A DM, connection request or catch-up touch held at `pending` goes back
+out only when someone approves it again:
+
+- **In the SPA:** Content Studio (`/content`), on the **DMs** (`?tab=dms`), **Connections**
+  (`?tab=connections`) or **Catch-up** (`?tab=catchup`) tab, where the row shows as pending.
+- **Through the API:** the approve action on `PUT /api/dm`, `PUT /api/connection_request` or
+  `PUT /api/catchup/touch`.
+
+An agent session can queue, but it can never approve.
 
 Beyond the reapers, the rule is that anything still approved and due keeps its schedule.
 Follow-up DMs, newsletter editions, group posts and hot-lead replies that come due while demo mode
