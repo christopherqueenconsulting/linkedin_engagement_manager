@@ -118,6 +118,9 @@ def parse_usage(text: str, *, now: float | None = None) -> Usage:
                  readable=readable, raw=(text or "")[:500])
 
 
+#: The usage probe's argv. It needs no tool, so it runs under `dontAsk` with no settings file.
+PROBE_ARGV = ["claude", "-p", "/usage", "--output-format", "json", "--permission-mode", "dontAsk"]
+
 #: The daemon's own long-lived token (set in its service environment). `/usage` has answered without
 #: a percentage line under it since 2026-08-19; see issue #2337.
 SETUP_TOKEN_VAR = "CLAUDE_CODE_OAUTH_TOKEN"
@@ -128,11 +131,14 @@ _PROBE_STATE = {"explained_unreadable": False}
 
 
 def _run_usage_cli(env: dict, timeout: int) -> Usage:
-    """Run `claude -p /usage` once under `env` and parse what it printed."""
+    """Run `claude -p /usage` once under `env` and parse what it printed.
+
+    `dontAsk` rather than the skip-permissions flag: `/usage` calls no tool, so a mode that denies
+    every un-allowed tool call changes nothing about the answer.
+    """
     try:
         proc = subprocess.run(
-            ["claude", "-p", "/usage", "--output-format", "json",
-             "--dangerously-skip-permissions"],
+            PROBE_ARGV,
             capture_output=True, text=True, timeout=timeout, env=env, check=False,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:

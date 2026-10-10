@@ -774,16 +774,69 @@ and — only once it exits 0 and prints `0 refused.` — restart BOTH units with
 If it refuses, stop and resolve the refusal first, exactly as "Stop on a refusal" says; restarting on
 a refused sync runs a half-reverted tree.
 
-### Opt-in permission profile
+### Permission profile (every mode)
 
-`scripts/agent-pipeline/config/claude-headless.json` is a `dontAsk` settings profile that lanes can
-opt into in place of the default permission flag. It is **off by default**: with
-`LEM_PERMISSION_PROFILE` unset, `run_lane.sh` launches the agent with exactly the historical argv.
+`scripts/agent-pipeline/config/claude-headless.json` is a `dontAsk` settings profile, and since the
+owner's ruling to extend it to every pipeline mode it is the **default for all nine MODEs**:
+`run_lane.sh` launches each agent with `--permission-mode dontAsk --settings
+$BASE/config/claude-headless.json --output-format json`. Anything the profile does not allow is
+denied, never prompted. It was shadowed on `selfreview` alone first; `logs/denials.jsonl` from that
+shadow is what the allow list below was tuned from.
 
 | Variable | Effect |
 |---|---|
-| `LEM_PERMISSION_PROFILE=<path>` | launch with `--permission-mode dontAsk --settings <path> --output-format json`; a path that is not a file REFUSES the dispatch, never falls back to the default argv |
-| `LEM_PERMISSION_PROFILE_MODES=review` | optional; limit the profile to these MODEs (comma-separated). Empty = every lane |
+| unset / empty | the default: `$BASE/config/claude-headless.json`. If that file is missing the dispatch REFUSES — it never falls back to the unrestricted flag on its own |
+| `LEM_PERMISSION_PROFILE=<path>` | use that settings file instead; a path that is not a file REFUSES the dispatch |
+| `LEM_PERMISSION_PROFILE=off` | **emergency opt-out**: the old `--dangerously-skip-permissions` argv, with a `PERMISSION PROFILE OFF` log line on every dispatch so it is not forgotten in place |
+| `LEM_PERMISSION_PROFILE_MODES=selfreview,review` | a RESTRICTION, only when explicitly set: those MODEs get the profile, every other MODE runs with the old flag (logged per dispatch). Empty = every mode |
+
+**Operator step after this lands.** The one-lane shadow was configured box-locally with
+`LEM_PERMISSION_PROFILE_MODES=selfreview` (and `LEM_PERMISSION_PROFILE=<path>`) in `config.env`.
+Left in place, that MODES value keeps limiting the profile to `selfreview` — the other eight modes
+stay on the old flag. Remove both lines from `config.env` after `install.sh --sync` ships the new
+`run_lane.sh`, `config/` and `runbook/`, then watch `denials.jsonl` per mode.
+
+The two usage probes (`lib/capacity.sh`'s `_claude_probe`, `v2/lemd/spend.py`'s `/usage` read) call
+no tool, so they run with `--permission-mode dontAsk` and no settings file.
+
+What the profile allows each mode, and the calls that are narrower than they look:
+
+- **`git rebase`** — only `origin/main`, `--continue`, `--skip` and `--abort` (MODE=rebase). Git
+  accepts abbreviated long options (`--exe` is `--exec`), so a deny list cannot fence off command
+  execution; the exact allow list is the control, and the `--ex*` / `-x*` / `-i*` / `--interactive*`
+  denies are belt-and-braces against a broader allow merged from another settings source.
+  `run_lane.sh` sets `GIT_EDITOR=true` on the launch so `--continue` never waits on an editor.
+- **`git push --force-with-lease`** is allowed (by `git push *`) and a plain `--force` / `-f` stays
+  denied. Claude Code treats the space before a trailing `*` as part of the rule, so
+  `Bash(git push --force *)` needs `--force` followed by a space or the end of the command; it
+  matches `git push --force` and `git push --force origin x`, never `--force-with-lease`.
+  `tests/unit/test_agent_pipeline_permission_profile.py` pins both directions with a matcher that
+  implements those documented rules. A lease push to `main` stays denied, and `*:main` /
+  `*:refs/heads/main` close the refspec form (`feature/x:main`) the older `* main` rules missed.
+- **GitHub GraphQL** — `gh api *` stays denied. Any allow pattern with a wildcard also admits a
+  second `-f query=…` (gh keeps the last), `--input <file>` or `-X`, i.e. any call with the
+  pipeline's token. MODE=review must still resolve Copilot threads (the merge gate holds on an open
+  one) and MODE=revise must read inline review comments, so the profile allows ONE path:
+  `/home/lem/agent-pipeline/lib/review_threads.sh`, which runs two fixed queries (`list <PR>`,
+  `resolve <PRRT_id>`) against this repo with validated arguments. It is allowed by its INSTALLED
+  path under `$BASE/lib`, which the profile gives the agent no way to edit. An in-thread reply
+  needs `gh api` too, so the review runbook replies with one `gh pr comment` instead.
+- **`gh issue create *`** replaces `gh issue create --template agent-task.yml *`: gh refuses
+  `--template` together with `--body`/`--body-file`, so the old allow could never file an issue
+  headlessly — and filing the follow-up is MODE=phasefix's whole job. **`gh issue edit *`** parks
+  and escalates (MODE=start, the preamble's escalation).
+- **`git switch -c fix/* origin/main`** — MODE=depfix's "not the bump's fault" path opens a fix PR
+  to `main` from a fresh branch.
+- **`poetry install --with test`** — the preamble's documented fix for a venv with no test plugins.
+- **Denied, and the runbooks now say so:** `sudo`/`docker` (live validation is owner-run), an
+  `env -u GH_TOKEN` prefix (`Bash(env *)` — an `env` allow would let `env … gh api` slip past the
+  `gh api` deny; the pipeline already exports the right token), a `| xargs` pipe (MODE=docfix runs
+  `git diff --name-only` and `ruff check <files>` separately), and multi-line `--body "…"` text
+  (written to the gitignored `tmp/` with the Write tool and passed as `--body-file`).
+
+**Not a sandbox.** The profile constrains the commands an agent writes. An allowed `poetry run
+pytest` still executes arbitrary code from the worktree. The control for credentials stays custody
+(`docs/contribution-security.md`).
 
 A profile run appends one line to `logs/denials.jsonl` (`ts`, `lane`, `mode`, `issue`, `pr`, `rc`,
 `parsed`, `denial_count`, `denials`), and the JSON `.result` text is written back into the run's

@@ -15,7 +15,8 @@ do NOT blindly patch the branch:
      acceptable to land the fix.
    - **(b) NOT the bump's fault** (a flaky test, a live-API/secret issue like a 401 in a keyless CI context, or a
      pre-existing failure also present on `main`) → do NOT hack the Dependabot branch. Instead open a small fix PR
-     to `main` (branch `fix/<slug>`, mirror the pexels 401-skip fix), then `gh pr comment $PR --body "@dependabot rebase"`
+     to `main` (`git fetch origin main`, then `git switch -c fix/<slug> origin/main` — the one branch switch
+     your permission profile allows; mirror the pexels 401-skip fix), then `gh pr comment $PR --body "@dependabot rebase"`
      so this PR re-runs on the fixed `main`.
    - **(c) Unclear / you can't safely fix it** → escalate: `gh pr edit $PR --add-label needs-human --add-assignee gitchrisqueen --remove-label agent:depfix`, comment what's needed, STOP.
 3. **Clear the flag** so this failure isn't reprocessed: `gh pr edit $PR --remove-label agent:depfix`.

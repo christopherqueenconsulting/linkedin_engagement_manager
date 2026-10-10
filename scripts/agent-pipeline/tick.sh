@@ -378,7 +378,7 @@ epoch() { date -d "$1" +%s 2>/dev/null || echo 0; }
 # and a merge to main, but labels have no ACL and this repo is PUBLIC — and three writers could
 # create that signal, two of them automated: an LLM triage cron with no author filter, and the
 # unauthenticated `POST /api/feedback` widget. So an outsider's issue body could become the prompt
-# for a `--dangerously-skip-permissions` run under the owner's token.
+# for an unattended agent run under the owner's token.
 #
 # Two INDEPENDENT halves must hold, because neither implies the other: an outsider's issue can be
 # labelled by a trusted bot (that was the feedback path), and a trusted author's issue can be

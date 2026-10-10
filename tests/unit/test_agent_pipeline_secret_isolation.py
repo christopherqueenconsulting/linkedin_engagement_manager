@@ -1,8 +1,10 @@
 """Guards for the pipeline's credential custody (closes the C4 finding).
 
-Agent runs execute as the same uid as the runner, with `--dangerously-skip-permissions`. That
-makes file modes on anything that uid owns worthless as a boundary: `--add-dir` scopes the file
-tools, but the Bash tool reads whatever the uid can read, and the prompt an agent follows is built
+Agent runs execute as the same uid as the runner. Their dontAsk permission profile is guard rails,
+not a sandbox (an allowed `pytest` runs arbitrary code; `LEM_PERMISSION_PROFILE=off` restores
+`--dangerously-skip-permissions`). That makes file modes on anything that uid owns worthless as a
+boundary: `--add-dir` scopes the file tools, but a process the Bash tool starts reads whatever the
+uid can read, and the prompt an agent follows is built
 from issue text written by strangers.
 
 So the property under test is CUSTODY, not permissions: the runner must not need the App private

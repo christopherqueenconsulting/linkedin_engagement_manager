@@ -11,12 +11,13 @@ the rules live in `pyproject.toml` (`[tool.ruff.lint]`), not in your judgement.
 **The gate is a RATCHET against `.ruff-baseline`, so it failed because THIS PR added violations.**
 Fix what this PR added — do NOT try to clear the repo's backlog, which is thousands of items and is
 being swept separately. A tree-wide pass here will exhaust your three attempts and strand the PR.
-1. Scope it to the diff:
-   `git diff --name-only origin/main...HEAD -- '*.py' | xargs -r poetry run ruff check`
+1. Scope it to the diff: list the files with `git diff --name-only origin/main...HEAD -- '*.py'`,
+   then pass them to `poetry run ruff check <file> <file> …` (a `| xargs` pipe is denied by your
+   permission profile — run the two commands separately).
    Then `poetry run ruff check src/ tests/ --statistics` only to confirm the total is back at or
    below the number in `.ruff-baseline`.
 2. Take the mechanical fixes on YOUR files:
-   `git diff --name-only origin/main...HEAD -- '*.py' | xargs -r poetry run ruff check --fix`.
+   `poetry run ruff check --fix <the same files>`.
    **Never `--unsafe-fixes`** (18 measured failures: it deletes `ai_helper`'s deliberate re-export
    aliases and strips `print()` from the CLIs where the output IS the product). Plain `--fix` also
    removes those aliases via `F401` — if your diff touches `ai_helper.py`, add

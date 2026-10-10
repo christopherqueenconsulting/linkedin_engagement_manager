@@ -118,7 +118,8 @@ The Ollama lane runs the **same `claude -p` CLI** as the Claude lane, but pointe
 ```
 ANTHROPIC_BASE_URL=http://127.0.0.1:4000 \
 ANTHROPIC_AUTH_TOKEN=$LITELLM_MASTER_KEY \
-claude -p "<RUNBOOK MODE prompt>" --model lem-agent-tier2 --dangerously-skip-permissions ...
+claude -p "<RUNBOOK MODE prompt>" --model lem-agent-tier2 \
+  --permission-mode dontAsk --settings "$BASE/config/claude-headless.json" --output-format json ...
 ```
 
 LiteLLM serves the Anthropic `/v1/messages` endpoint and translates to the Ollama cloud model,

@@ -46,9 +46,14 @@ Your review is only worth running if it would catch what the author missed — h
 3. For each REAL finding: FIX IT in the worktree (you are on $BRANCH), with tests where behavior changed.
    Run the relevant unit tests locally. Commit (Claude co-author trailer) + `git push`.
 4. Post the verdict comment — the merge gate looks for the marker, so the comment MUST START with the
-   exact MARKER text, then one line per finding (or "no findings"):
-   `gh pr comment $PR --body "$MARKER — <PASS|FIXED n findings>
-   - <finding>: <what you changed>"`
+   exact MARKER text, then one line per finding (or "no findings"). It is multi-line, so write it
+   with the Write tool to `tmp/selfreview-$PR.md` in your worktree and post it with
+   `gh pr comment $PR --body-file tmp/selfreview-$PR.md`. Write the MARKER's literal text from your
+   prompt — the Write tool expands no variables:
+   ```
+   $MARKER — <PASS|FIXED n findings>
+   - <finding>: <what you changed>
+   ```
    Post the marker comment EVEN WHEN you found nothing (that IS the review evidence). Post it AFTER any
    push, so the marker is newer than the head commit.
 5. If you find something you cannot safely fix (needs a product decision, or the whole approach is

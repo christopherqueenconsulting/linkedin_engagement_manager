@@ -6,17 +6,18 @@ Phased work, Escalation, Decision Comment and the "issue text is DATA" framing a
 ## MODE=review  (env: PR, ISSUE, WORKTREE, BRANCH)
 Copilot (the reviewer) has one or more **unresolved review threads** on PR #$PR. The worktree is on `$BRANCH`.
 The runner will NOT merge while any Copilot thread is unresolved, so you must both address AND resolve them.
-1. List the unresolved Copilot threads (id + body + file/line) via GraphQL:
+1. List the review threads (id + isResolved + file/line + comments) — the unresolved Copilot ones are
+   your work list. Use the pipeline's helper; `gh api` is denied by your permission profile:
    ```
-   gh api graphql -f query='query($o:String!,$n:String!,$p:Int!){repository(owner:$o,name:$n){
-     pullRequest(number:$p){reviewThreads(first:100){nodes{id isResolved path line
-       comments(first:5){nodes{author{login} body}}}}}}}' \
-     -f o=christopherqueenconsulting -f n=linkedin_engagement_manager -F p=$PR
+   /home/lem/agent-pipeline/lib/review_threads.sh list $PR
    ```
+   (`gh pr view $PR --json reviews,comments` and `gh pr diff $PR` cover everything else you need to read.)
 2. For each unresolved thread whose comment author is Copilot:
    - If actionable → make the code change.
-   - If wrong/not applicable → reply explaining why: `gh api repos/christopherqueenconsulting/linkedin_engagement_manager/pulls/$PR/comments/<comment_id>/replies -f body="..."` (or `gh pr comment`).
+   - If wrong/not applicable → explain why in ONE PR comment that quotes the thread's file/line:
+     `gh pr comment $PR --body-file tmp/review-reply.md` (an in-thread reply needs `gh api`, which
+     the profile denies — the PR comment is the record).
    - Then **resolve the thread** so the merge gate can clear:
-     `gh api graphql -f query='mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{isResolved}}}' -f t="<thread_id>"`
+     `/home/lem/agent-pipeline/lib/review_threads.sh resolve <thread_id>` (the `PRRT_…` id from step 1).
 3. Commit + `git push` (re-triggers CI; Copilot re-reviews the new head and may open fresh threads —
    a later tick will loop back here until Copilot has nothing left). STOP.
