@@ -67,6 +67,7 @@ from cqc_lem.utilities.marketing.attribution import (
 )
 from cqc_lem.utilities.marketing.youtube_auth import mint_access_token, preflight, youtube_configured
 from cqc_lem.utilities.observability import FEATURE_MARKETING, track_media_cost
+from cqc_lem.utilities.text_safety import profane_words
 from cqc_lem.utilities.utils import create_folder_if_not_exists
 from cqc_lem.utilities.video_captions import srt_timestamp
 
@@ -397,10 +398,6 @@ _SCRIPT_SYSTEM = (
 # Numbers/prices are the fabrication that costs credibility, so they must be traceable to the
 # flow definition or the captured screens.
 _NUMERIC_CLAIM_RE = re.compile(r"(?:\$\s?\d[\d,.]*|\d[\d,.]*\s?%|\b\d[\d,.]*\b)")
-_PROFANITY = frozenset({
-    "shit", "shitty", "fuck", "fucking", "fucked", "bullshit", "asshole", "bastard", "bitch",
-    "dick", "damn", "goddamn", "crap", "piss", "cunt", "twat", "wanker",
-})
 
 
 def _script_prompt(flow: TutorialFlow, capture: dict) -> str:
@@ -450,8 +447,7 @@ def check_narration(narration: str, allowed: str) -> None:
     if len(text) > TUTORIAL_MAX_NARRATION_CHARS:
         raise TutorialGuardrailError(
             f"Narration is {len(text)} chars, over the {TUTORIAL_MAX_NARRATION_CHARS} cap")
-    words = {w.lower().strip(".,!?;:") for w in text.split()}
-    profane = sorted(words & _PROFANITY)
+    profane = profane_words(text)
     if profane:
         raise TutorialGuardrailError(f"Narration contains disallowed language: {', '.join(profane)}")
     invented = ungrounded_claims(text, allowed)

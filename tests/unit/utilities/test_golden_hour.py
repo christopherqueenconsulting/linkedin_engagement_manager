@@ -6,6 +6,7 @@ these tests pin the decisions without touching Celery, Selenium or the DB.
 """
 
 import random
+from unittest.mock import patch
 
 import pytest
 
@@ -166,8 +167,24 @@ class TestGoldenHourReport:
         assert report == {
             "phase": g.PHASE_REPLY_SWEEP, "post_id": 7, "sweep_slot": 1, "status": "ok",
             "latency_minutes": 33.4, "within_window": True, "window_minutes": 90.0,
-            "comments_found": 4, "replies_sent": 2,
+            "comments_found": 4, "replies_sent": 2, "comments_filtered": 0,
         }
+
+    def test_carries_the_safety_filter_count_into_report_and_summary(self):
+        report = g.golden_hour_report(7, 20.0, comments_found=4, replies_sent=1,
+                                      comments_filtered=3)
+        assert report["comments_filtered"] == 3
+        assert "3 filtered unsafe" in g.report_summary(report)
+
+    def test_record_passes_the_filter_count_through_to_the_event(self):
+        with patch(f"{g.__name__}.get_post_age_minutes", return_value=10.0), \
+             patch(f"{g.__name__}.log_info") as info, \
+             patch(f"{g.__name__}.track_golden_hour_report") as track:
+            report = g._record_golden_hour_report(
+                1, 9, 0, g._reply_outcome("ok", "s", 4, 1, comments_filtered=2))
+        assert report["comments_filtered"] == 2
+        assert track.call_args.args[1]["comments_filtered"] == 2
+        assert "2 filtered unsafe" in info.call_args.args[0]
 
     def test_unknown_latency_reports_out_of_window(self):
         report = g.golden_hour_report(7, None)

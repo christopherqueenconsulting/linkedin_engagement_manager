@@ -213,7 +213,7 @@ def sweep_retry_countdown(minutes_since_publish: Optional[float], attempt: int =
 def golden_hour_report(post_id: Optional[int], minutes_since_publish: Optional[float],
                        comments_found: Optional[int] = 0, replies_sent: Optional[int] = 0,
                        status: str = "ok", sweep_slot: int = 0,
-                       phase: str = PHASE_REPLY_SWEEP) -> dict:
+                       phase: str = PHASE_REPLY_SWEEP, comments_filtered: Optional[int] = 0) -> dict:
     """One post's golden-hour record: how late we got there, what we found, what we sent. This is
     the shape both the log line and the PostHog event carry, so an analysis never has to reconcile
     two versions of the same reading.
@@ -229,6 +229,9 @@ def golden_hour_report(post_id: Optional[int], minutes_since_publish: Optional[f
         "window_minutes": round(phase_window_minutes(phase), 1),
         "comments_found": int(comments_found or 0),
         "replies_sent": int(replies_sent or 0),
+        # Comments the scam/hostility filter skipped (`ai/comment_safety.py`) — a sweep that found
+        # comments and sent nothing reads very differently when they were all filtered.
+        "comments_filtered": int(comments_filtered or 0),
     }
 
 
@@ -240,7 +243,8 @@ def report_summary(report: dict) -> str:
     window = report.get("window_minutes") or phase_window_minutes(str(report.get("phase") or ""))
     return (f"Golden-hour {report.get('phase')} on post {report.get('post_id')}: "
             f"{report.get('comments_found', 0)} comment(s) found, "
-            f"{report.get('replies_sent', 0)} reply/replies sent, {when} "
+            f"{report.get('replies_sent', 0)} reply/replies sent, "
+            f"{report.get('comments_filtered', 0)} filtered unsafe, {when} "
             f"({'in' if report.get('within_window') else 'OUTSIDE'} the "
             f"{window:.0f}-min window, status={report.get('status')})")
 
@@ -332,12 +336,13 @@ def self_comment_cap() -> int:
 # `_golden.<name>` was how run_automation reached this module's own helpers, so those prefixes are
 # the one edit the move made.
 def _reply_outcome(status: str, summary: str, comments_found: int = 0,
-                   replies_sent: int = 0) -> dict:
+                   replies_sent: int = 0, comments_filtered: int = 0) -> dict:
     """One post's reply-sweep outcome. A dict, not a string, because the golden-hour report
-    (issue #622) needs the counts the old summary line only ever rendered.
+    (issue #622) needs the counts the old summary line only ever rendered. `comments_filtered`
+    counts comments the safety filter skipped as scam or hostile (`ai/comment_safety.py`).
     """
     return {"status": status, "summary": summary, "comments_found": int(comments_found),
-            "replies_sent": int(replies_sent)}
+            "replies_sent": int(replies_sent), "comments_filtered": int(comments_filtered)}
 
 
 def _record_golden_hour_report(user_id: int, post_id: int, sweep_slot: int, outcome: dict,
@@ -363,7 +368,7 @@ def _record_golden_hour_report(user_id: int, post_id: int, sweep_slot: int, outc
     report = golden_hour_report(
         post_id, minutes, comments_found=outcome.get("comments_found"),
         replies_sent=outcome.get("replies_sent"), status=outcome.get("status") or "ok",
-        sweep_slot=sweep_slot, phase=phase)
+        sweep_slot=sweep_slot, phase=phase, comments_filtered=outcome.get("comments_filtered"))
     summary = report_summary(report)
     second_wave = phase == PHASE_SECOND_WAVE
     task_name = "auto_second_wave_comment" if second_wave else "sweep_reply_comments"

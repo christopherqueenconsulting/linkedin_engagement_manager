@@ -212,11 +212,94 @@ its exit condition, which is why both branches of that bookkeeping log at DEBUG.
 Both paths share `_reply_to_comments_on_open_post`, which is also the only writer of `post_engagers`
 (see Reciprocity capture, below).
 
+### Only positive, safe replies go out — the scam & hostility filter (`utilities/ai/comment_safety.py`)
+
+Owner ruling: keep comment auto-replies, but filter scam and hostile comments before anything is
+posted. Engaging a scam comment vouches for it in front of our audience and lifts it in the thread;
+engaging a hostile one feeds the fight in public.
+
+- **Inbound.** `classify_comment` runs on every comment the sweep reads, FIRST — before the engager
+  upsert, the lead flag, the artifact delivery, the reaction and the LLM draft. A `scam` or
+  `hostile` verdict skips the comment outright: no side effect and **no log row**, only a DEBUG
+  `Skipping unsafe comment: <label> (<checks>)` line (never the comment body) and a
+  `comments_filtered` count. This **narrows #1899's floor**: a filtered comment no longer gets the
+  reaction every other comment gets. Our OWN comments are ruled out before anything is counted —
+  `link_in_first_comment` puts a URL in our seed, which would otherwise read as `link_push` on
+  every sweep.
+- **Normalisation first.** Only the first 5,000 characters are read; the text is NFKC-folded
+  (math-bold and fullwidth letters become ASCII), format characters (Unicode category Cf: zero-width
+  spaces and joiners) are dropped, curly quotes fold and whitespace collapses — so a zero-width
+  space inside "WhatsApp", or a fullwidth or math-bold spelling, still matches.
+- **What it checks.** Scam: off-platform contact asks (a messenger named as a channel, "text me",
+  a phone-number shape), money-for-nothing promises, crypto/forex "account manager" and
+  fund-recovery pitches, any raw URL or link shortener, and any bare domain on a scam-typical TLD
+  **in any case** (`cryptofx-pro.io`, `Cryptofxpro.io`, `CRYPTOFX-PRO.IO`). Exactly two shapes stay
+  safe: a bare `linkedin.com` with no path, and a CAPITALISED, path-less, single-label brand on .com/.net/.org
+  ("Booking.com", "ASP.NET"). A path (`Cryptofxpro.com/join`, `linkedin.com/in/…`) or any other TLD
+  fires whatever the case. Also: "check my profile/bio", hacked-account
+  recovery, and prize/giveaway claims. Hostile: profanity (the shared list in
+  `utilities/text_safety.py`), insults aimed at the reader, threats, and hostility to the account
+  ("stop spamming", "unfollowed", "this is spam"). Each family is a named check, and the reason names
+  are stable. Checks key on how scam and hostile text is WRITTEN, not on topic words, so
+  "investment", "crypto", "spam filter" and "Telegram" in a news sense stay safe — the false-positive
+  guards in `tests/unit/utilities/ai/test_comment_safety.py` say which shapes are deliberately left
+  alone. Known trade-off: a profane word in a positive comment ("damn good point") is filtered too.
+- **Outbound.** Before a drafted reply is posted, `_outbound_reply_refusal` applies three gates to
+  OUR draft: `outbound_qa.outbound_violations(…, SURFACE_COMMENT)`, `classify_comment`, and
+  `outbound_contact_or_link` (reason of the same name: any listed-TLD domain in any case, any
+  domain WITH a path on any TLD such as `scam.finance/x`, an @handle, an obfuscated dot such as "x dot com" or "x[.]io", a URL or a phone number). These make
+  a scammy or hostile reply of ours much less likely; they only catch what a pattern describes. A
+  refusal WARNS with **check names only** — the draft may have been steered by an attacker's
+  comment, so its excerpt goes to DEBUG and never into an escalated `$exception` or auto-filed
+  issue. In the reply sweep it writes the same REPLY/FAILURE row an unposted reply always wrote, and
+  the comment is remembered in the reply dedup (`_record_replied_to_comment`) so the next sweep
+  does not re-draft and re-warn it.
+- **Skip-only, fail-closed by construction.** No hold-for-review queue in v1 (no migration). The
+  classifier is pure and deterministic — no LLM, DB or Selenium — so there is no "model down, so it
+  went out" path, and the same text always gets the same verdict.
+- **Known v1 gaps.** Confusable homoglyphs (a Cyrillic "а" standing in for a Latin "a") are not
+  folded, so a lookalike spelling can slip past; and every pattern is English-only.
+
+**Operating it.**
+- *Where the counts are.* Each swept post's golden-hour report carries `comments_filtered` — in the
+  `Golden-hour reply_sweep on post N: … N filtered unsafe, …` log line and as a count on the
+  `golden_hour_report` PostHog event. When anything was filtered, ONE INFO line per post (reply
+  sweep) or per run (follow-ups) reads `Comment safety filter skipped comments` with `filtered=N`
+  and `reasons=<check>:<n>,…` as context — never comment text. These land in the persistent prod
+  log (`docs/production-logs.md`).
+- *Checking a suspected false positive.* The classifier is pure (no DB, assets, Redis or LinkedIn),
+  so a checkout of the DEPLOYED tag is enough — `git checkout vX.Y.Z`, then
+  `PYTHONPATH=src poetry run python -c "from cqc_lem.utilities.ai.comment_safety import
+  classify_comment; print(classify_comment('<the comment>'))"`. The verdict names the check that
+  fired. To run it against the prod image instead, use the sidecar steps in
+  `docs/content-quality-audits/video.md` §8 (the `lem_assets` mount there is only needed by
+  scripts that read assets). To see the per-comment `Skipping unsafe comment` lines, set
+  `LOG_LEVEL=DEBUG` in the production `.env`, restart the Celery workers so they pick it up, and
+  REVERT it (and restart again) afterwards — prod runs at INFO on purpose
+  (`docs/production-logs.md`).
+- *Tuning a pattern.* Edit the check in `utilities/ai/comment_safety.py` and add the misfiring text
+  as a false-positive guard in `tests/unit/utilities/ai/test_comment_safety.py` in the same change.
+- *Rollback.* Code-only, deliberately not a flag (a safety control is never a flag,
+  `docs/feature-flags.md`): revert the PR and ship through the normal release flow.
+
+### Follow-ups on replies to OUR comments (`sweep_comment_followups`, issue #478)
+
+The follow-up sweep revisits posts we commented on, reacts to replies to our comment and answers the
+ones that ask a question. It applies the **same filter** (`_followup_on_post_comment_replies`): an
+unsafe reply is skipped before the lead flag, the reaction and the answer, counted as `filtered`
+(with per-check `filtered_reasons`) in the sweep summary and the per-run INFO line, and a drafted
+answer passes the same three outbound gates before it is posted. A refused answer is latched in a
+SEPARATE short-lived Redis marker (`linkedin:followup_draft_refused:<user>:<reply key>`, the
+follow-up window plus a day), so an outsider's reply cannot make every sweep re-draft and re-warn
+it into an auto-filed issue. It deliberately does not touch `comment_followups.replied`, which also
+feeds the daily reply cap. Without Redis the marker fails open (re-drafts, as before).
+
 ## Golden-hour presence & second wave (`utilities/golden_hour.py`, issue #622)
 
 The ONE place the first-hour amplifier's timing is decided.
 
-- ONE `golden_hour_report` per swept post (comments found, replies sent, minutes since REAL
+- ONE `golden_hour_report` per swept post (comments found, replies sent, comments the safety
+  filter skipped, minutes since REAL
   publish time from the POST log — not `scheduled_time`, or a late publish reads as a late
   sweep), INFO in-window and WARNING out, shipped via `track_golden_hour_report`.
 - Posts older than a day emit nothing.

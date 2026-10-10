@@ -162,7 +162,7 @@ breaker every lane answers to).
 | Lane | The ONE place | The invariant that bites |
 |---|---|---|
 | **Feed commenting** | `_score_feed_post`; selectors in `linkedin/helper.py` | Recency-dominant. An unsorted scan must NEVER read as recency-sorted (#817) — `_switch_feed_to_recent` reports the run's sort state onto the funnel |
-| **Replies / seed comment** | `automate_reply_commenting`, `auto_seed_comment_on_post` | A seed is the user's own first comment; it counts against `SELF_COMMENT_MAX_PER_POST` |
+| **Replies / seed comment** | `automate_reply_commenting`, `auto_seed_comment_on_post` | Seed = the user's first comment, in `SELF_COMMENT_MAX_PER_POST`. Scam/hostile: SKIPPED, no like (`comment_safety`) |
 | **Golden-hour presence** | `utilities/golden_hour.py` (#622) | ONE report per swept post, measured off REAL publish time from the POST log, never `scheduled_time` — unmeasured is never on-time. Seed + wave never stack (`SELF_COMMENT_MAX_PER_POST=2`) |
 | **Human pacing** | `utilities/human_pacing.py` (#626) | The ONE cadence engine. Every draw is seeded on (user, action, date) and persisted, so a retry never re-rolls. Fails OPEN — the 429 breaker is the separate, harder gate |
 | **DM auto-nurture** | `_nurture_after_reply`, `ai/dm_nurture.py` | Approval-gated (`pending`, `source='nurture'`), ONE open draft per thread; explicit disinterest stops the thread for good |
