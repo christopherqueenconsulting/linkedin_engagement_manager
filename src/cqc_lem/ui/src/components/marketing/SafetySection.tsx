@@ -34,8 +34,8 @@ const CLAIMS: { icon: IconName; title: string; body: string }[] = [
   },
   {
     icon: 'chat',
-    title: 'Approval gates, as a safety mechanism',
-    body: 'Generated DMs land as drafts and posts preview before they publish. A human shipping it is the cheapest protection there is, and no competitor frames it as one.',
+    title: 'Posts wait for your approval',
+    body: 'A generated post is not scheduled until you approve it. Auto-scheduling is off for new accounts until you turn it on. Comments and replies are not queued for approval.',
   },
   {
     icon: 'pen',

@@ -11,8 +11,8 @@ import Section from './Section'
 const PROOF: { icon: IconName; title: string; body: string }[] = [
   {
     icon: 'shield',
-    title: 'Approval before anything ships',
-    body: 'Posts preview before they publish and generated DMs land as drafts.',
+    title: 'Posts wait for your approval',
+    body: 'A generated post is not scheduled until you approve it, unless you turn on auto-scheduling.',
   },
   {
     icon: 'gauge',
