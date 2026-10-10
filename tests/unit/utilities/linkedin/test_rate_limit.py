@@ -795,3 +795,11 @@ class TestEgressStreakEdges:
     def test_clear_without_a_user_is_a_no_op(self):
         from cqc_lem.utilities.linkedin.rate_limit import clear_egress_failures
         assert clear_egress_failures(None) is None
+
+    def test_a_streak_hash_without_a_start_time_counts_nothing(self):
+        """A hash Redis hands back without `first_at` (evicted mid-write) is no streak to judge."""
+        client = MagicMock()
+        client.hgetall.return_value = {b"count": b"4"}
+        with patch(f"{_MOD}._redis_client", return_value=client):
+            from cqc_lem.utilities.linkedin.rate_limit import record_egress_failure
+            assert record_egress_failure(7, now=1000) is None

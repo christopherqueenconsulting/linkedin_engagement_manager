@@ -11,9 +11,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from cqc_lem.utilities import egress_probe as _egress_probe
+
 pytestmark = pytest.mark.unit
 
 _MOD = "cqc_lem.utilities.egress_probe"
+
+# The autouse fixture below patches `_redis` away; keep the real one for `TestRedisHandle`.
+_REAL_REDIS = _egress_probe._redis
 
 
 # Every credential-shaped string in this file (u:p, us%40er:p%3Ass, ...) is a fake placeholder sent
@@ -369,3 +374,61 @@ class TestConfiguredEgressProxies:
         from cqc_lem.utilities.egress_probe import configured_egress_proxies
         with patch("cqc_lem.utilities.db.get_active_user_ids", return_value=[]):
             assert configured_egress_proxies() == []
+
+
+class TestFailOpenEdges:
+    """Every path that cannot measure reads `unknown` (or the local clock) and never raises."""
+
+    def test_a_port_out_of_range_is_unknown(self):
+        from cqc_lem.utilities.egress_probe import probe_proxy
+        assert probe_proxy("http://127.0.0.1:99999", timeout=1) == "unknown"
+
+    def test_an_unexpected_error_mid_probe_is_unknown_and_the_socket_close_cannot_raise(self):
+        from cqc_lem.utilities.egress_probe import probe_proxy
+        sock = MagicMock()
+        sock.sendall.side_effect = RuntimeError("boom")
+        sock.close.side_effect = OSError("already dead")
+        with patch(f"{_MOD}.socket.create_connection", return_value=sock):
+            assert probe_proxy("http://127.0.0.1:8080", timeout=1) == "unknown"
+        sock.close.assert_called_once()
+
+    def test_an_unrecognised_state_summarizes_as_unknown(self):
+        from cqc_lem.utilities.egress_probe import summarize
+        assert summarize(["something-new"]) == "unknown"
+
+    def test_a_bad_cache_seconds_value_falls_back_to_the_default(self, monkeypatch):
+        from cqc_lem.utilities.egress_probe import egress_health
+        monkeypatch.setenv("EGRESS_PROBE_CACHE_SECONDS", "a minute")
+        with patch(f"{_MOD}.configured_egress_proxies", return_value=["http://a:1"]), \
+             patch(f"{_MOD}.probe_proxy", return_value="ok") as probe:
+            egress_health()
+            egress_health()
+        assert probe.call_count == 1
+
+    def test_a_second_failing_reading_keeps_the_first_start_time(self):
+        from cqc_lem.utilities.egress_probe import _CACHE, _note_failing
+        with patch(f"{_MOD}.time.time", return_value=1000.0):
+            _note_failing(True)
+        with patch(f"{_MOD}.time.time", return_value=2000.0):
+            _note_failing(True)
+        assert _CACHE["failing_since"] == 1000.0
+
+    def test_redis_with_no_start_time_falls_back_to_the_local_clock(self):
+        from cqc_lem.utilities.egress_probe import _note_failing, failing_for_seconds
+        with patch(f"{_MOD}.time.time", return_value=1000.0):
+            _note_failing(True)                       # no Redis yet: only the local clock starts
+        with patch(f"{_MOD}._redis", return_value=_FakeRedis()), \
+             patch(f"{_MOD}.time.time", return_value=1060.0):
+            assert failing_for_seconds() == 60.0
+
+
+class TestRedisHandle:
+    def test_returns_the_shared_client(self):
+        with patch("cqc_lem.utilities.linkedin.rate_limit.shared_redis_client",
+                   return_value="client"):
+            assert _REAL_REDIS() == "client"
+
+    def test_an_unavailable_client_is_none_not_a_raise(self):
+        with patch("cqc_lem.utilities.linkedin.rate_limit.shared_redis_client",
+                   side_effect=RuntimeError("no broker")):
+            assert _REAL_REDIS() is None
