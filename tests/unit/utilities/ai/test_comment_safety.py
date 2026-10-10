@@ -62,6 +62,9 @@ SCAM_CASES = [
     ("Visit Cryptofxpro.com/join", cs.CHECK_LINK_PUSH),
     ("Join at Fastgains.VIP", cs.CHECK_LINK_PUSH),
     ("all lowercase quickreturns.com", cs.CHECK_LINK_PUSH),
+    # The brand-prose exception is single-label only: a subdomain is never brand prose.
+    ("Join.Cryptofxpro.com", cs.CHECK_LINK_PUSH),
+    ("Get.Rich.Com", cs.CHECK_LINK_PUSH),
     # profile redirects
     ("Check my profile for more", cs.CHECK_PROFILE_REDIRECT),
     ("Check out my bio", cs.CHECK_PROFILE_REDIRECT),
@@ -298,3 +301,12 @@ class TestOutboundContactOrLink:
     ])
     def test_allows_an_ordinary_reply(self, draft):
         assert not cs.outbound_contact_or_link(draft)
+
+    def test_a_long_hyphen_run_is_linear_and_not_refused(self):
+        import time
+        text = "-".join(["a"] * 2500)[:cs.MAX_CLASSIFY_CHARS]
+        started = time.perf_counter()
+        refused = cs.outbound_contact_or_link(text)
+        verdict = classify_comment(text)
+        assert time.perf_counter() - started < 1.0
+        assert not refused and verdict.is_safe

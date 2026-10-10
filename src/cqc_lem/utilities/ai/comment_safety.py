@@ -87,7 +87,8 @@ _OUTBOUND_CONTACT_OR_LINK_RE = re.compile(
         r"\bhttps?://|\bwww\.",
         # Any domain-shaped token WITH a path, on any TLD ("scam.finance/x", "evil.ai/x"). A false
         # positive here only costs one skipped reply of ours.
-        r"\b[a-z0-9-]+\.[a-z]{2,24}/\S",
+        # Lookbehind + bounded label keep this linear on a long hyphen run.
+        r"(?<![\w@./-])[a-z0-9-]{1,63}\.[a-z]{2,24}/\S",
         *_PHONE_PATTERNS,
     )),
     re.IGNORECASE)
@@ -270,8 +271,11 @@ def _has_bare_domain(body: str) -> bool:
         folded = domain.lower()
         if folded in _SAFE_BARE_DOMAINS:
             continue
-        if domain != folded and folded.rsplit(".", 1)[-1] in _BRAND_PROSE_TLDS:
-            continue  # "Booking.com" named in prose — capitalised, no path, .com/.net/.org
+        if (domain != folded and folded.count(".") == 1
+                and folded.rsplit(".", 1)[-1] in _BRAND_PROSE_TLDS):
+            # "Booking.com" named in prose — capitalised, single label, no path, .com/.net/.org.
+            # A second label ("Join.Cryptofxpro.com") is a subdomain, never brand prose.
+            continue
         return True
     return False
 

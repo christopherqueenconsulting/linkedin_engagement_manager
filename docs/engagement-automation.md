@@ -234,7 +234,7 @@ engaging a hostile one feeds the fight in public.
   a phone-number shape), money-for-nothing promises, crypto/forex "account manager" and
   fund-recovery pitches, any raw URL or link shortener, and any bare domain on a scam-typical TLD
   **in any case** (`cryptofx-pro.io`, `Cryptofxpro.io`, `CRYPTOFX-PRO.IO`). Exactly two shapes stay
-  safe: a bare `linkedin.com` with no path, and a CAPITALISED, path-less brand on .com/.net/.org
+  safe: a bare `linkedin.com` with no path, and a CAPITALISED, path-less, single-label brand on .com/.net/.org
   ("Booking.com", "ASP.NET"). A path (`Cryptofxpro.com/join`, `linkedin.com/in/…`) or any other TLD
   fires whatever the case. Also: "check my profile/bio", hacked-account
   recovery, and prize/giveaway claims. Hostile: profanity (the shared list in
