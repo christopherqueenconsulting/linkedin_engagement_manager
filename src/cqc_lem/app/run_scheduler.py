@@ -57,6 +57,7 @@ from cqc_lem.utilities import golden_hour as _golden
 from cqc_lem.utilities.db import (
     CatchupTouchStatus,
     ConnectionRequestStatus,
+    EngagementMode,
     PostStatus,
     ScheduledDmStatus,
     count_catchup_touches_sent_today,
@@ -88,6 +89,11 @@ from cqc_lem.utilities.db import (
     update_db_post_status,
     update_scheduled_dm_status,
     update_subscription_from_stripe,
+)
+from cqc_lem.utilities.engagement_mode import (
+    read_engagement_mode,
+    resolve_engagement_mode,
+    skip_browser_lane,
 )
 from cqc_lem.utilities.engagement_window import (
     PRE_POST_COMMENT_LEAD_MINUTES,
@@ -173,6 +179,30 @@ def _skip_if_throttled(name: str, measurement_only: bool = False, **context) -> 
     return False
 
 
+def _browser_lane_users(user_ids: list, task_name: str) -> list:
+    """The users a Selenium fan-out may dispatch for — suggest-only accounts dropped (issue #2367).
+
+    The dispatcher half of the suggest-mode guard: each lane task checks `skip_browser_lane` again
+    when it runs, so this only stops a task being queued that would skip anyway. Each dropped user
+    is logged at DEBUG by `skip_browser_lane`.
+    """
+    return [uid for uid in user_ids if not skip_browser_lane(uid, task_name)]
+
+
+def _orphan_is_suggest_only(user_id: int, task_name: str, what: str) -> bool:
+    """True when an orphaned row belongs to a suggest-only account and must not be re-queued (#2367).
+
+    Its send task skips without changing the row, so a re-queue would leave it orphaned and the
+    reaper would warn about it every beat, for working behaviour. The row's status is left alone.
+    `resolve_engagement_mode` fails closed, so an unreadable mode skips too.
+    """
+    if resolve_engagement_mode(user_id) is not EngagementMode.SUGGEST:
+        return False
+    log_debug(f"Orphaned {what} not re-queued — suggest-only account", user_id=user_id,
+              task_name=task_name)
+    return True
+
+
 def _stagger_due(user_id: int, fanout: Tuple[str, int, int], task_name: str) -> bool:
     """True when THIS beat tick owns the user's staggered slot for `fanout` today (issue #554).
 
@@ -248,6 +278,10 @@ def auto_check_scheduled_posts(self):
                 user_id=user_id, post_id=post_id, task_name="auto_check_scheduled_posts",
             )
             record_pre_post_skipped(post_id, user_id, PRE_POST_SKIP_USER_INACTIVE)
+        elif skip_browser_lane(user_id, "auto_check_scheduled_posts"):
+            # Suggest-only account (issue #2367): no pre-post browser warm-up. Deliberately not a
+            # recorded pre-post skip — that marker warns, and this is the mode working.
+            pass
         elif _skip_if_throttled("pre-post Selenium", user_id=user_id, post_id=post_id,
                                 task_name="auto_check_scheduled_posts"):
             record_pre_post_skipped(post_id, user_id, PRE_POST_SKIP_THROTTLED)
@@ -316,6 +350,13 @@ def auto_check_scheduled_posts(self):
     # `SELF_COMMENT_MAX_PER_POST` bounds the pair — so the worst case of a false positive here is a
     # no-op, while the cost of missing one is a post that never got a first comment.
     for post_id, user_id in get_posts_missing_their_seed_comment():
+        if read_engagement_mode(user_id) is EngagementMode.SUGGEST:
+            # A suggest-only account's seed is a stored SUGGESTION, never a COMMENT log row, so this
+            # query would re-find the post on every tick (issue #2367). Only a mode READ as suggest
+            # skips: an unreadable one re-arms as before, and the seed task defers until it reads.
+            log_debug("Seed comment not re-armed — suggest-only account", post_id=post_id,
+                      user_id=user_id, task_name="auto_check_scheduled_posts")
+            continue
         log_warning("Post published but its lifecycle never started — re-arming the seed comment",
                     post_id=post_id, user_id=user_id, task_name="auto_check_scheduled_posts")
         auto_seed_comment_on_post.apply_async(kwargs={'user_id': user_id, 'post_id': post_id})
@@ -394,6 +435,8 @@ def auto_check_scheduled_dms(self):
             log_warning("Skipping scheduled DM — user not active/connected",
                         user_id=user_id, task_name="auto_check_scheduled_dms")
             continue
+        if skip_browser_lane(user_id, "auto_check_scheduled_dms"):
+            continue  # left 'approved' — a suggest-only account never sends (issue #2367)
         if scheduled_dm_is_stale(scheduled_time, now=now):
             update_scheduled_dm_status(dm_id, ScheduledDmStatus.PENDING)
             log_info(f"Scheduled DM {dm_id} is stale (slot {scheduled_time}); returned to pending",
@@ -427,6 +470,8 @@ def auto_check_scheduled_dms(self):
     orphaned = get_orphaned_scheduled_dms(lookback_hours=_DM_ORPHAN_LOOKBACK_HOURS)
     requeued_users: set = set()
     for dm_id, scheduled_time, user_id in orphaned:
+        if _orphan_is_suggest_only(user_id, "auto_check_scheduled_dms", "scheduled DM"):
+            continue
         if user_id in requeued_users:
             log_debug(f"Orphaned scheduled DM {dm_id} held for a later beat — one re-queue per user per run",
                       user_id=user_id, task_name="auto_check_scheduled_dms")
@@ -476,6 +521,8 @@ def auto_check_connection_requests(self):
             log_warning("Skipping connection request — user not active/connected",
                         user_id=user_id, task_name="auto_check_connection_requests")
             continue
+        if skip_browser_lane(user_id, "auto_check_connection_requests"):
+            continue  # left 'approved' — a suggest-only account never sends (issue #2367)
         if is_invites_held(user_id):
             # A named LinkedIn wall, or a run of invites that could not open a dialog (#1733/#1732).
             # Leaving the rows 'approved' is what stops the scanner rediscovering the same wall once
@@ -506,15 +553,19 @@ def auto_check_connection_requests(self):
     # mirrors the orphaned-DM recovery. The lookback gap avoids racing an in-flight task — which is
     # why the dispatch countdown above is clamped to stay inside it.
     orphaned = get_orphaned_connection_requests(lookback_hours=_CONNECTION_ORPHAN_LOOKBACK_HOURS)
+    requeued = 0
     for request_id, user_id in orphaned:
+        if _orphan_is_suggest_only(user_id, "auto_check_connection_requests", "connection request"):
+            continue
         log_warning(f"Re-queueing orphaned connection request {request_id}",
                     user_id=user_id, task_name="auto_check_connection_requests")
         update_connection_request_status(request_id, ConnectionRequestStatus.SENDING)
         send_connection_request.apply_async(kwargs={'request_id': request_id})
+        requeued += 1
 
-    if dispatched == 0 and len(orphaned) == 0:
+    if dispatched == 0 and requeued == 0:
         return "No Connection Requests to Send"
-    return f"Dispatched {dispatched} connection request(s); re-queued {len(orphaned)} orphaned"
+    return f"Dispatched {dispatched} connection request(s); re-queued {requeued} orphaned"
 
 
 @shared_task.task
@@ -532,7 +583,7 @@ def auto_appreciate_dms():
         return "Automation throttled"
     # For each user schedule appreciate DMS — at that user's staggered slot, so the single
     # se_outreach lane isn't handed the whole fleet in one minute (issue #554).
-    users = get_active_user_ids()
+    users = _browser_lane_users(get_active_user_ids(), "auto_appreciate_dms")
     dispatched = 0
 
     for user_id in users:
@@ -576,7 +627,7 @@ def auto_daily_engagement():
     """
     if _skip_if_throttled("auto_daily_engagement"):
         return "Automation throttled"
-    users = get_active_user_ids()
+    users = _browser_lane_users(get_active_user_ids(), "auto_daily_engagement")
     dispatched = 0
     for user_id in users:
         if not has_linkedin_session(user_id):
@@ -645,6 +696,8 @@ def dispatch_scheduled_reply_sweeps():
         nonlocal dispatched
         if not has_linkedin_session(user_id):
             return
+        if skip_browser_lane(user_id, "dispatch_scheduled_reply_sweeps"):
+            return
         due = True
         if client is not None:
             try:
@@ -683,7 +736,7 @@ def dispatch_comment_followups():
     if _skip_if_throttled("dispatch_comment_followups"):
         return "Automation throttled"
     from cqc_lem.utilities.linkedin.rate_limit import _redis_client
-    users = get_active_user_ids()
+    users = _browser_lane_users(get_active_user_ids(), "dispatch_comment_followups")
     if not users:
         return "No active users"
     client = _redis_client()
@@ -715,7 +768,7 @@ def dispatch_comment_outcome_sweeps():
     if _skip_if_throttled("dispatch_comment_outcome_sweeps"):
         return "Automation throttled"
     from cqc_lem.utilities.linkedin.rate_limit import _redis_client
-    users = get_active_user_ids()
+    users = _browser_lane_users(get_active_user_ids(), "dispatch_comment_outcome_sweeps")
     if not users:
         return "No active users"
     client = _redis_client()
@@ -1288,7 +1341,8 @@ def auto_track_newsletter_subscribers():
     from cqc_lem.utilities.db import get_enabled_newsletter_user_ids
 
     dispatched = 0
-    for user_id in get_enabled_newsletter_user_ids():
+    for user_id in _browser_lane_users(get_enabled_newsletter_user_ids(),
+                                       "auto_track_newsletter_subscribers"):
         track_newsletter_subscribers.apply_async(kwargs={"user_id": user_id})
         dispatched += 1
     return f"Dispatched newsletter subscriber tracking for {dispatched} user(s)"
@@ -1599,7 +1653,8 @@ def auto_publish_scheduled_editions():
     from cqc_lem.utilities.db import get_editions_due_to_publish
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     due = get_editions_due_to_publish(now)
-    user_ids = sorted({e["user_id"] for e in due})
+    user_ids = _browser_lane_users(sorted({e["user_id"] for e in due}),
+                                   "auto_publish_scheduled_editions")
     dispatched = 0
     for uid in user_ids:
         dispatched += _publish_next_due_edition_for_user(
@@ -1641,7 +1696,7 @@ def auto_refresh_profile_syntheses():
 def auto_sync_groups():
     """Refresh each active user's joined-groups list (new groups default to enabled)."""
     from cqc_lem.app.engagement.feed import auto_sync_user_groups
-    users = get_active_user_ids()
+    users = _browser_lane_users(get_active_user_ids(), "auto_sync_groups")
     n = 0
     for uid in users:
         if has_linkedin_session(uid):
@@ -1658,7 +1713,7 @@ def auto_group_engagement():
     if _skip_if_throttled("auto_group_engagement"):
         return "Automation throttled"
     from cqc_lem.app.engagement.feed import auto_comment_in_groups
-    users = get_active_user_ids()
+    users = _browser_lane_users(get_active_user_ids(), "auto_group_engagement")
     n = 0
     for uid in users:
         if has_linkedin_session(uid) and _stagger_due(uid, STAGGER_GROUP_ENGAGEMENT,
@@ -1709,7 +1764,7 @@ def auto_group_posts():
         get_post_enabled_group_ids,
         update_group_post_draft,
     )
-    users = get_active_user_ids()
+    users = _browser_lane_users(get_active_user_ids(), "auto_group_posts")
     n = 0
     for uid in users:
         if not has_linkedin_session(uid):
@@ -1743,7 +1798,7 @@ def auto_scrape_stats():
     if _skip_if_throttled("auto_scrape_stats", measurement_only=True):
         return "Automation throttled"
     from cqc_lem.app.engagement.posting import auto_scrape_post_stats
-    users = get_active_user_ids()
+    users = _browser_lane_users(get_active_user_ids(), "auto_scrape_stats")
     n = 0
     for uid in users:
         if has_linkedin_session(uid):
@@ -1761,7 +1816,7 @@ def auto_capture_follower_stats():
     if _skip_if_throttled("auto_capture_follower_stats", measurement_only=True):
         return "Automation throttled"
     from cqc_lem.app.engagement.posting import capture_follower_stats
-    users = get_active_user_ids()
+    users = _browser_lane_users(get_active_user_ids(), "auto_capture_follower_stats")
     n = 0
     for uid in users:
         if has_linkedin_session(uid):
@@ -1779,7 +1834,7 @@ def auto_send_due_followups():
     from cqc_lem.utilities.db import get_due_followups
     # due_at is stored naive-UTC; compare against naive-UTC now (not container-local time).
     due = get_due_followups(datetime.now(timezone.utc).replace(tzinfo=None))
-    user_ids = sorted({f["user_id"] for f in due})
+    user_ids = _browser_lane_users(sorted({f["user_id"] for f in due}), "auto_send_due_followups")
     for uid in user_ids:
         process_user_followups.apply_async(kwargs={"user_id": uid})
     return f"Dispatched follow-ups for {len(user_ids)} user(s)"
@@ -1795,7 +1850,7 @@ def auto_process_outreach_funnel():
         return "Automation throttled"
     from cqc_lem.app.engagement.outreach import process_outreach_funnel
     from cqc_lem.utilities.db import get_users_with_approved_outreach
-    user_ids = get_users_with_approved_outreach()
+    user_ids = _browser_lane_users(get_users_with_approved_outreach(), "auto_process_outreach_funnel")
     for uid in user_ids:
         process_outreach_funnel.apply_async(kwargs={"user_id": uid})
     return f"Dispatched outreach funnel for {len(user_ids)} user(s)"
@@ -1811,7 +1866,7 @@ def auto_scan_connection_candidates():
     if _skip_if_throttled("auto_scan_connection_candidates"):
         return "Automation throttled"
     from cqc_lem.app.engagement.outreach import scan_connection_candidates
-    user_ids = get_active_user_ids()
+    user_ids = _browser_lane_users(get_active_user_ids(), "auto_scan_connection_candidates")
     for uid in user_ids:
         scan_connection_candidates.apply_async(kwargs={"user_id": uid})
     return f"Dispatched connection targeting for {len(user_ids)} user(s)"
@@ -1827,7 +1882,7 @@ def auto_scan_outreach_funnel_targets():
     if _skip_if_throttled("auto_scan_outreach_funnel_targets"):
         return "Automation throttled"
     from cqc_lem.app.engagement.outreach import scan_outreach_funnel_targets
-    user_ids = get_active_user_ids()
+    user_ids = _browser_lane_users(get_active_user_ids(), "auto_scan_outreach_funnel_targets")
     for uid in user_ids:
         scan_outreach_funnel_targets.apply_async(kwargs={"user_id": uid})
     return f"Dispatched outreach funnel sourcing for {len(user_ids)} user(s)"
@@ -1909,7 +1964,7 @@ def auto_scan_catchup_moments():
         return "Automation throttled"
     from cqc_lem.app.engagement.outreach import automate_catchup_touches
     dispatched = 0
-    for user_id in get_active_user_ids():
+    for user_id in _browser_lane_users(get_active_user_ids(), task_name):
         if not (get_engagement_preferences(user_id).get("catchup_event_types") or []):
             continue
         automate_catchup_touches.apply_async(kwargs={'user_id': user_id})
@@ -1967,6 +2022,8 @@ def auto_check_catchup_touches():
             log_debug("Skipping catch-up touch — user not active/connected",
                       user_id=user_id, task_name=task_name)
             continue
+        if skip_browser_lane(user_id, task_name):
+            continue  # left 'approved' — a suggest-only account never sends (issue #2367)
         if user_id not in budgets:
             # 10/day is a premium-plan allowance; every other plan tops out at 5 (see db.py).
             cap = min(int(get_engagement_preferences(user_id).get("max_catchup_touches_per_day") or 0),
@@ -2004,6 +2061,8 @@ def auto_check_catchup_touches():
     orphaned = get_orphaned_catchup_touches(lookback_hours=_CATCHUP_ORPHAN_LOOKBACK_HOURS)
     requeued_users: set = set()
     for touch_id, user_id in orphaned:
+        if _orphan_is_suggest_only(user_id, task_name, "catch-up touch"):
+            continue
         if user_id in requeued_users:
             log_debug(f"Orphaned catch-up touch {touch_id} held for a later beat — one re-queue per user per run",
                       user_id=user_id, task_name=task_name)
@@ -2294,7 +2353,7 @@ def auto_encrypt_secrets_at_rest(self):
 def auto_clean_stale_invites():
     """Cleans up stale invites for each active user"""
     # Get all active users and loop through them
-    users = get_active_user_ids()
+    users = _browser_lane_users(get_active_user_ids(), "auto_clean_stale_invites")
 
     for user_id in users:
         # Clean up stale invites for this user
@@ -2315,7 +2374,7 @@ def auto_clean_stale_invites():
 def auto_clean_stale_profiles():
     """Cleans up stale profiles for each active user"""
     # Get all active users and loop through them
-    users = get_active_user_ids()
+    users = _browser_lane_users(get_active_user_ids(), "auto_clean_stale_profiles")
 
     for user_id in users:
         log_info("Cleaning stale profiles", user_id=user_id, task_name="auto_clean_stale_profiles")
@@ -2352,7 +2411,7 @@ def auto_invite_to_company_pages():
         return "Automation throttled"
 
     # Get all active users and loop through them
-    users = get_active_user_ids()
+    users = _browser_lane_users(get_active_user_ids(), "auto_invite_to_company_pages")
 
     started = 0
     for user_id in users:

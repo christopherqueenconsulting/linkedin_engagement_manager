@@ -338,17 +338,22 @@
     "version": 1
   },
   "post.carousel": {
-    "changed_in": "PR #2385",
+    "changed_in": "issue #2367",
     "content_hash": null,
     "history": [
       {
         "hash": "sha256:8e3fa8ff74e6143ae195906bf32a307891eae9cdad202662ecf6a2400b12dc6c",
         "retired": "2026-10-10",
         "version": 1
+      },
+      {
+        "hash": "sha256:cdfae460131c8646143c9d7216f4bbca6e967e21033dee3f50990cc91ad8ff82",
+        "retired": "2026-10-11",
+        "version": 2
       }
     ],
-    "source_hash": "sha256:cdfae460131c8646143c9d7216f4bbca6e967e21033dee3f50990cc91ad8ff82",
-    "version": 2
+    "source_hash": "sha256:3c47d57e29a33227f0ecfd08713087320c63ae0e197a5040861970f2c57c5021",
+    "version": 3
   },
   "post.engagement_prompt": {
     "changed_in": null,

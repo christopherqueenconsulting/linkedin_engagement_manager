@@ -153,6 +153,7 @@ class TestPassword:
         statements = _executed(cur)
         assert statements[0][0].startswith("INSERT INTO users (email")
         assert "password" not in statements[0][0]
+        assert "engagement_mode" in statements[0][0]
         sealed = statements[1][1][0]
         assert decrypt_secret(sealed, 11, SECRET_FIELD_PASSWORD) == "plain-pw"
 

@@ -147,6 +147,11 @@ def user_with_profile():
     _exec("DELETE FROM profiles WHERE email=%s", (_EMAIL,))
     db.add_user(_EMAIL, "x")
     uid = db.get_user_id(_EMAIL)
+    # A new account is suggest-only (issue #2367) and the refresh is a browser lane, so this models
+    # an existing PAID `automate` account — the one the round trip below is about. A trial account
+    # is suggest-only whatever engagement_mode says, so the subscription is set too.
+    _exec("UPDATE users SET engagement_mode = 'automate', subscription_status = 'active',"
+          " subscription_tier = 'professional' WHERE id = %s", (uid,))
     profile = LinkedInProfile(full_name="Jane Doe", email=_EMAIL,
                               profile_url="https://www.linkedin.com/in/profile-refresh-1076/")
     db.add_linkedin_profile(profile, user_id=uid)

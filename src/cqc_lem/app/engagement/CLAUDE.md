@@ -45,8 +45,7 @@ the per-day caps are unconditional (`utilities/flags.py`, `docs/AUTOMATION_COOLD
 ## Every lane opens a browser through the shared session helper
 
 `get_current_profile` / `browser_session` (`utilities/linkedin/session.py`) are the only way a
-lane gets a driver, and a Selenium slot held past its use is one another lane wanted. A
-rate-limited session returns cleanly rather than raising — see the 429 posture in
-`utilities/linkedin/rate_limit.py`.
+lane gets a driver; a slot held past its use is one another lane wanted. A lane task calls
+`skip_browser_lane` FIRST: a suggest-only account never gets a browser (#2367).
 
 Full posture for every lane: **`docs/engagement-automation.md`**.

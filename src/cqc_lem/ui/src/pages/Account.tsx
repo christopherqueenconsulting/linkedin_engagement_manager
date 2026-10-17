@@ -5,6 +5,7 @@ import { useAccountReadiness } from '../hooks/useAccountReadiness'
 import SuppressionBanner from '../components/SuppressionBanner'
 import AffiliateNotice from '../components/AffiliateNotice'
 import SettingsHub from './account/settings/SettingsHub'
+import EngagementSuggestionsCard from './account/EngagementSuggestionsCard'
 
 export default function Account() {
   const queryClient = useQueryClient()
@@ -56,6 +57,9 @@ export default function Account() {
       {/* Affiliate enrollment notice (issue #737) — default-on enrollment is only fair if it is
           announced, so this shows until the user acknowledges it. */}
       <AffiliateNotice />
+
+      {/* Suggested engagement (issue #2367) — drafts a suggest-only account copies and posts itself */}
+      <EngagementSuggestionsCard />
 
       {/* Account setup checklist — exactly what automation needs, from the readiness API */}
       {readiness && !readiness.ready && (

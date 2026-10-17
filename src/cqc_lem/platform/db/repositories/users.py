@@ -22,6 +22,7 @@ from cqc_lem.platform.db import connection as _connection
 from cqc_lem.platform.db.connection import db_cursor
 from cqc_lem.platform.db.enums import (
     CatchupEventType,
+    EngagementMode,
     OnboardingStep,
     PostStatus,
 )
@@ -227,7 +228,9 @@ def add_user(email: str, password: str):
         # The row has to exist before the password can be encrypted — the ciphertext is bound to
         # users.id (AAD), which auto-increment only hands out on INSERT.
             # auto_schedule_posts=0 (#2366): a new account's generated posts wait for approval.
-            cursor.execute("INSERT INTO users (email, auto_schedule_posts) VALUES (%s, 0)", (email,))
+            # engagement_mode='suggest' (#2367): a new account gets engagement as suggestions only.
+            cursor.execute("INSERT INTO users (email, auto_schedule_posts, engagement_mode)"
+                           " VALUES (%s, 0, %s)", (email, EngagementMode.SUGGEST.value))
             user_id = cursor.lastrowid
             cursor.execute("UPDATE users SET password = %s WHERE id = %s",
                            (encrypt_secret(password, user_id, SECRET_FIELD_PASSWORD), user_id))
@@ -271,17 +274,18 @@ def add_user_with_access_token(email: str, linked_sub_id: str, access_token: str
         # value that was allocated and burned by the failed insert. Sealing the tokens against that
         # id would bind them to a row that does not exist (silently storing no token at all), so
         # the id is pinned explicitly here and still cross-checked by email below.
-        # auto_schedule_posts=0 lives in the INSERT half only (#2366): a new account starts with
-        # approval-before-publish, and the ON DUPLICATE KEY branch leaves an existing user's choice alone.
+        # auto_schedule_posts=0 (#2366) and engagement_mode='suggest' (#2367) live in the INSERT
+        # half only: a new account starts with approval-before-publish and suggestions-only
+        # engagement, and the ON DUPLICATE KEY branch leaves an existing user's choices alone.
         cursor.execute("""INSERT INTO users (email, linked_sub_id, last_login, linkedin_connection_status,
-                                            auto_schedule_posts)
-        VALUES (%s, %s, %s, 'connected', 0)
+                                            auto_schedule_posts, engagement_mode)
+        VALUES (%s, %s, %s, 'connected', 0, %s)
         ON DUPLICATE KEY UPDATE
                 id = LAST_INSERT_ID(id),
                 linked_sub_id = VALUES(linked_sub_id),
                 last_login = VALUES(last_login),
                 linkedin_connection_status = 'connected'
-        """, (email, linked_sub_id, datetime.now(timezone.utc)))
+        """, (email, linked_sub_id, datetime.now(timezone.utc), EngagementMode.SUGGEST.value))
         user_id = cursor.lastrowid
         if not user_id:
             cursor.execute("SELECT id FROM users WHERE email = %s", (email,))
@@ -1052,9 +1056,9 @@ def add_user_by_email(email: str) -> Optional[int]:
         cursor.execute(
             """INSERT INTO users
                (email, public_uid, subscription_status, subscription_tier, trial_started_at,
-                trial_ends_at, auto_schedule_posts)
-               VALUES (%s, %s, 'trial', 'free_trial', %s, %s, 0)""",
-            (email, str(uuid.uuid4()), now, trial_ends),
+                trial_ends_at, auto_schedule_posts, engagement_mode)
+               VALUES (%s, %s, 'trial', 'free_trial', %s, %s, 0, %s)""",
+            (email, str(uuid.uuid4()), now, trial_ends, EngagementMode.SUGGEST.value),
         )
         connection.commit()
         user_id = cursor.lastrowid
@@ -1541,6 +1545,28 @@ def get_users_with_reply_mode(mode: str) -> list:
     except mysql.connector.Error as err:
         log_error(f"Could not get users with reply mode {mode}", exc=err)
         return []
+def get_user_engagement_state(user_id: int) -> Optional[dict]:
+    """What decides a user's engagement mode (issue #2367), read in ONE query — or None.
+
+    Returns `engagement_mode`, `subscription_status` and `subscription_tier` together, because a
+    trial account is suggest-only whatever its stored mode says, and reading the two halves in
+    separate round trips would let them disagree. None covers a missing row as well as a DB fault.
+    This reader does not decide what anything MEANS — `utilities/engagement_mode.py` is the one place
+    that does, and it reads None as `suggest`.
+    """
+    try:
+        with db_cursor() as cursor:
+            cursor.execute("SELECT engagement_mode, subscription_status, subscription_tier"
+                           " FROM users WHERE id = %s", (user_id,))
+            row = cursor.fetchone()
+    except mysql.connector.Error as err:
+        log_warning("Could not read engagement mode", exc=err, user_id=user_id)
+        return None
+    if not row:
+        return None
+    return {"engagement_mode": row[0], "subscription_status": row[1], "subscription_tier": row[2]}
+
+
 def get_user_geo(user_id: int) -> Optional[dict]:
     """Return the user's full geo profile for Selenium spoofing.
 

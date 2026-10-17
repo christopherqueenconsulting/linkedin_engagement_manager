@@ -68,6 +68,7 @@ from cqc_lem.utilities.db import (
     set_target_connect_status,
 )
 from cqc_lem.utilities.demo_mode import DemoModeError
+from cqc_lem.utilities.engagement_mode import SUGGEST_ONLY_SKIP_MESSAGE, skip_browser_lane
 from cqc_lem.utilities.human_pacing import ACTION_INVITE, record_action
 from cqc_lem.utilities.lead_scoring import profile_slug
 from cqc_lem.utilities.linkedin.company_page_inviter import (
@@ -129,6 +130,8 @@ def clean_stale_invites(self, user_id: int):
     discovering that is a slot an engagement lane needed. Returns the run report so a Flower run and
     the `stale_invite_run` event tell the same story.
     """
+    if skip_browser_lane(user_id, "clean_stale_invites"):
+        return SUGGEST_ONLY_SKIP_MESSAGE
     task_name = "clean_stale_invites"
 
     plan = plan_withdrawals(user_id)
@@ -1754,6 +1757,8 @@ def invite_to_connect(self, user_id: int, profile_url: str, message: str = None,
     `source` is the `connection_requests.source` of the ledger row a confirmed send writes. It is
     optional so a message queued before it existed still runs.
     """
+    if skip_browser_lane(user_id, "invite_to_connect"):
+        return SUGGEST_ONLY_SKIP_MESSAGE
     try:
         sent, reason = invite_to_connect_now(user_id, profile_url, message)
     except LinkedInRateLimited as e:
@@ -1790,6 +1795,8 @@ def send_roster_connect_invite(self, user_id: int, profile_url: str, message: st
     move it: a send that could not happen at all — throttled, nothing reached LinkedIn — hands the
     target back to the ladder, and a real failure is terminal ('failed'), never auto-retried.
     """
+    if skip_browser_lane(user_id, "send_roster_connect_invite"):
+        return SUGGEST_ONLY_SKIP_MESSAGE
     try:
         sent, reason = invite_to_connect_now(user_id, profile_url, message)
     except LinkedInRateLimited as e:
@@ -1898,6 +1905,8 @@ def send_connection_request(self, request_id: int):
         return f"Connection request {request_id} not sendable (status={req['status'] if req else 'missing'})"
 
     user_id = req["user_id"]
+    if skip_browser_lane(user_id, "send_connection_request"):
+        return SUGGEST_ONLY_SKIP_MESSAGE
     # Real dispatches this row has already spent. The three defers below add nothing to it — they
     # never reach LinkedIn — which is what makes `attempts == 0` mean "not attempted" on the event.
     attempts_before = int(req.get("attempts") or 0)
@@ -2018,6 +2027,8 @@ def automate_invites_to_company_page_for_user(self, user_id: int):
     discover that is a slot an engagement lane needed. A paused account stands down here too — page
     invites are discretionary amplification, never a response owed to someone.
     """
+    if skip_browser_lane(user_id, "automate_invites_to_company_page_for_user"):
+        return SUGGEST_ONLY_SKIP_MESSAGE
     task_name = "automate_invites_to_company_page_for_user"
 
     if is_automation_paused():

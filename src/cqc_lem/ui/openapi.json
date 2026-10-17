@@ -2098,6 +2098,90 @@
         "title": "EngagementPreferencesRequest",
         "type": "object"
       },
+      "EngagementSuggestion": {
+        "description": "One draft a suggest-mode lane stored instead of sending (#2367) \u2014 the SELECT the reader runs.",
+        "properties": {
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "comment",
+              "reply",
+              "dm"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "target_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Url"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "source",
+          "target_url",
+          "body",
+          "created_at"
+        ],
+        "title": "EngagementSuggestion",
+        "type": "object"
+      },
+      "EngagementSuggestionsDetail": {
+        "description": "`detail` of `GET /user/engagement-suggestions` (#2367): the mode and the newest drafts.",
+        "properties": {
+          "engagement_mode": {
+            "enum": [
+              "suggest",
+              "automate"
+            ],
+            "title": "Engagement Mode",
+            "type": "string"
+          },
+          "suggestions": {
+            "items": {
+              "$ref": "#/components/schemas/EngagementSuggestion"
+            },
+            "title": "Suggestions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "engagement_mode",
+          "suggestions"
+        ],
+        "title": "EngagementSuggestionsDetail",
+        "type": "object"
+      },
       "EngagementTarget": {
         "description": "One account on the curated engagement roster (#616), as `GET /user/engagement-targets` reads it.\n\nThe field list is the SELECT the reader runs (`db._ENGAGEMENT_TARGET_COLS`), so `week_start` \u2014\nthe rolling counter's anchor, which the SPA does not render \u2014 is documented rather than dropped:\nit is on the wire either way, and a payload that documents less than it sends is what this\nmodule exists to stop.\n\nEverything from `comment_blocked_streak` down is automation-owned (#962, #979): the roster PUT\nwrites only the editable fields, so a save can never reset a streak or a follow state.",
         "properties": {
@@ -5210,6 +5294,23 @@
         "title": "ResponseModel[EngagementPreferencesDetail]",
         "type": "object"
       },
+      "ResponseModel_EngagementSuggestionsDetail_": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/EngagementSuggestionsDetail"
+          },
+          "status_code": {
+            "title": "Status Code",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status_code",
+          "detail"
+        ],
+        "title": "ResponseModel[EngagementSuggestionsDetail]",
+        "type": "object"
+      },
       "ResponseModel_EngagementTargetsDetail_": {
         "properties": {
           "detail": {
@@ -6617,7 +6718,7 @@
         "type": "object"
       },
       "UserSettingsDetail": {
-        "description": "`detail` of `GET /user/settings` \u2014 subscription, preferences, blog/sitemap and company page.\n\nThe handler returns one literal with all five keys on every path; `subscription` and\n`preferences` are null for a user who has no such row, which is not the same as missing.",
+        "description": "`detail` of `GET /user/settings` \u2014 subscription, preferences, blog/sitemap and company page.\n\nThe handler returns one literal with all six keys on every path; `subscription` and\n`preferences` are null for a user who has no such row, which is not the same as missing.\n`engagement_mode` (#2367) is read-only here and always a value: an unreadable mode is\nreported as `suggest`, the same fail-closed reading the engagement lanes act on.",
         "properties": {
           "blog_url": {
             "anyOf": [
@@ -6640,6 +6741,14 @@
               }
             ],
             "title": "Company Linked In Url"
+          },
+          "engagement_mode": {
+            "enum": [
+              "suggest",
+              "automate"
+            ],
+            "title": "Engagement Mode",
+            "type": "string"
           },
           "preferences": {
             "anyOf": [
@@ -6678,7 +6787,8 @@
           "preferences",
           "blog_url",
           "sitemap_url",
-          "company_linked_in_url"
+          "company_linked_in_url",
+          "engagement_mode"
         ],
         "title": "UserSettingsDetail",
         "type": "object"
@@ -11594,6 +11704,46 @@
           }
         },
         "summary": "Update Engagement Preferences Endpoint"
+      }
+    },
+    "/api/user/engagement-suggestions": {
+      "get": {
+        "description": "The caller's newest engagement suggestions \u2014 drafts to copy and post by hand (#2367).\n\nA suggest-only account runs no browser automation; the comment and DM drafts its lanes wrote\nare stored instead and listed here. A failed read is 503, never an empty list \u2014 \"you have no\nsuggestions\" is an answer this endpoint only gives when it is true.",
+        "operationId": "get_engagement_suggestions_endpoint_api_user_engagement_suggestions_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "session_token",
+            "required": true,
+            "schema": {
+              "title": "Session Token",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_EngagementSuggestionsDetail_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Engagement Suggestions Endpoint"
       }
     },
     "/api/user/engagement-targets": {

@@ -169,8 +169,10 @@ class UserPreferencesDetail(BaseModel):
 class UserSettingsDetail(BaseModel):
     """`detail` of `GET /user/settings` — subscription, preferences, blog/sitemap and company page.
 
-    The handler returns one literal with all five keys on every path; `subscription` and
+    The handler returns one literal with all six keys on every path; `subscription` and
     `preferences` are null for a user who has no such row, which is not the same as missing.
+    `engagement_mode` (#2367) is read-only here and always a value: an unreadable mode is
+    reported as `suggest`, the same fail-closed reading the engagement lanes act on.
     """
 
     subscription: Optional[SubscriptionSummary]
@@ -178,6 +180,25 @@ class UserSettingsDetail(BaseModel):
     blog_url: Optional[str]
     sitemap_url: Optional[str]
     company_linked_in_url: Optional[str]
+    engagement_mode: Literal["suggest", "automate"]
+
+
+class EngagementSuggestion(BaseModel):
+    """One draft a suggest-mode lane stored instead of sending (#2367) — the SELECT the reader runs."""
+
+    id: int
+    kind: Literal["comment", "reply", "dm"]
+    source: str
+    target_url: Optional[str]
+    body: str
+    created_at: Optional[str]
+
+
+class EngagementSuggestionsDetail(BaseModel):
+    """`detail` of `GET /user/engagement-suggestions` (#2367): the mode and the newest drafts."""
+
+    engagement_mode: Literal["suggest", "automate"]
+    suggestions: List[EngagementSuggestion]
 
 
 class EngagementTarget(BaseModel):
