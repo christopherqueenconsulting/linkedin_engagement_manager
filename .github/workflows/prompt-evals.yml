@@ -113,7 +113,7 @@ jobs:
 
       - name: Keep this run's outputs (re-grades read them; never committed)
         if: hashFiles('outputs.json') != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: prompt-eval-outputs
           path: outputs.json
