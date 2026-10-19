@@ -25,7 +25,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.wait import WebDriverWait
@@ -50,6 +50,9 @@ from cqc_lem.utilities.env_constants import (
     TUTORIAL_TTS_COST_PER_1K_CHARS,
     TUTORIAL_TTS_MODEL,
     TUTORIAL_TTS_PROVIDER,
+    TUTORIAL_TTS_REALTIME_COST_PER_1M_IN,
+    TUTORIAL_TTS_REALTIME_COST_PER_1M_OUT,
+    TUTORIAL_TTS_REALTIME_MODEL,
     TUTORIAL_TTS_VOICE,
     WAIT_DEFAULT_TIMEOUT,
     YOUTUBE_PRIVACY_STATUS,
@@ -608,17 +611,113 @@ def _tts_elevenlabs(text: str, out_path: str) -> None:
         f.write(response.content)
 
 
-def synthesize_segment(text: str, out_path: str) -> str:
-    """One narrated segment to an mp3, with its characters billed to the marketing feature."""
+# A realtime model is conversational: handed bare text it ANSWERS it. These instructions make it
+# a narrator instead. Whether it reads verbatim is what the side-by-side samples check (#2472).
+_REALTIME_NARRATOR_INSTRUCTIONS = (
+    "You are a voice-over narrator for a software tutorial. Read the user's message aloud exactly "
+    "as written, word for word, in a calm, friendly voice. Do not answer it, comment on it, or add, "
+    "drop or change any word.")
+# The realtime API streams raw 16-bit mono PCM at 24 kHz; ffmpeg needs the shape spelled out.
+_REALTIME_PCM_RATE = 24000
+
+
+def realtime_cost_usd(usage: Any) -> float:
+    """USD for one realtime response, from the token usage its `response.done` event reported.
+
+    Every output token is priced at the audio rate, the transcript's text tokens included, so the
+    figure is a slight ceiling rather than an undercount.
+
+    Args:
+        usage: The response's `usage` object (`input_tokens` / `output_tokens`), or None.
+
+    Returns:
+        The cost at `TUTORIAL_TTS_REALTIME_COST_PER_1M_IN` / `_OUT`; 0.0 when usage is missing.
+    """
+    tokens_in = int(getattr(usage, "input_tokens", 0) or 0)
+    tokens_out = int(getattr(usage, "output_tokens", 0) or 0)
+    return round((tokens_in * TUTORIAL_TTS_REALTIME_COST_PER_1M_IN
+                  + tokens_out * TUTORIAL_TTS_REALTIME_COST_PER_1M_OUT) / 1_000_000, 6)
+
+
+def _tts_realtime(text: str, out_path: str) -> float:
+    """Narrate `text` through the realtime API (via LiteLLM's /v1/realtime) into an mp3.
+
+    tts-1's named successor is reachable only over the realtime websocket (#2258). The streamed PCM
+    is encoded to mp3 so `concat_audio` can stream-copy it like every other segment.
+
+    Args:
+        text: The narration to read.
+        out_path: Where the mp3 is written.
+
+    Returns:
+        The USD the response's token usage costs (`realtime_cost_usd`).
+
+    Raises:
+        TutorialRenderError: the server reported an error, the response did not complete, or it
+            carried no audio. Nothing is written to `out_path` in any of those cases.
+    """
+    import base64
+
+    from cqc_lem.utilities.ai.client import client
+    pcm = bytearray()
+    done = None
+    with client.realtime.connect(model=TUTORIAL_TTS_REALTIME_MODEL) as connection:
+        connection.session.update(session={
+            "type": "realtime",
+            "instructions": _REALTIME_NARRATOR_INSTRUCTIONS,
+            "output_modalities": ["audio"],
+            "audio": {"output": {"voice": TUTORIAL_TTS_VOICE,
+                                 "format": {"type": "audio/pcm", "rate": _REALTIME_PCM_RATE}}},
+        })
+        connection.conversation.item.create(item={
+            "type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]})
+        connection.response.create()
+        for event in connection:
+            if event.type == "response.output_audio.delta":
+                pcm.extend(base64.b64decode(event.delta))
+            elif event.type == "error":
+                raise TutorialRenderError(
+                    f"Realtime voice-over failed: {getattr(event.error, 'message', event.error)}")
+            elif event.type == "response.done":
+                done = event.response
+                break
+    status = getattr(done, "status", None)
+    if status != "completed":
+        raise TutorialRenderError(f"Realtime voice-over did not complete (status: {status})")
+    if not pcm:
+        raise TutorialRenderError("Realtime voice-over returned no audio")
+    pcm_path = f"{out_path}.pcm"
+    with open(pcm_path, "wb") as f:
+        f.write(bytes(pcm))
+    _run([_ffmpeg_bin(), "-y", "-f", "s16le", "-ar", str(_REALTIME_PCM_RATE), "-ac", "1",
+          "-i", pcm_path, out_path])
+    return realtime_cost_usd(getattr(done, "usage", None))
+
+
+def synthesize_segment(text: str, out_path: str) -> float:
+    """One narrated segment to an mp3, with its cost billed to the marketing feature.
+
+    Args:
+        text: The segment's narration.
+        out_path: Where the mp3 is written.
+
+    Returns:
+        The USD attributed for this segment: per character for `openai` / `elevenlabs`, from the
+        reported token usage for `openai-realtime`.
+    """
     provider = (TUTORIAL_TTS_PROVIDER or "openai").lower()
-    if provider == "elevenlabs":
-        _tts_elevenlabs(text, out_path)
+    if provider == "openai-realtime":
+        usd = _tts_realtime(text, out_path)
+        model = TUTORIAL_TTS_REALTIME_MODEL
     else:
-        _tts_openai(text, out_path)
-    track_media_cost("audio", provider, tts_cost_usd(len(text), provider),
-                     feature=FEATURE_MARKETING, qty=len(text),
-                     model=ELEVENLABS_MODEL if provider == "elevenlabs" else TUTORIAL_TTS_MODEL)
-    return out_path
+        if provider == "elevenlabs":
+            _tts_elevenlabs(text, out_path)
+        else:
+            _tts_openai(text, out_path)
+        usd = tts_cost_usd(len(text), provider)
+        model = ELEVENLABS_MODEL if provider == "elevenlabs" else TUTORIAL_TTS_MODEL
+    track_media_cost("audio", provider, usd, feature=FEATURE_MARKETING, qty=len(text), model=model)
+    return usd
 
 
 # --- render ----------------------------------------------------------------------------------
@@ -900,9 +999,11 @@ def produce_tutorial(flow_key: Optional[str] = None, driver=None) -> Optional[di
     audio_dir = os.path.join(work_dir, "audio")
     create_folder_if_not_exists(audio_dir)
     audio_paths = []
+    tts_usd = 0.0
     for index, segment in enumerate(segments):
         segment["frame"] = frames[index]
-        audio_path = synthesize_segment(segment["narration"], os.path.join(audio_dir, f"{index:02d}.mp3"))
+        audio_path = os.path.join(audio_dir, f"{index:02d}.mp3")
+        tts_usd += synthesize_segment(segment["narration"], audio_path)
         audio_paths.append(audio_path)
         segment["duration"] = max(float(segment.get("seconds") or 0.0),
                                   audio_duration(audio_path) + SEGMENT_PAD_SECONDS)
@@ -919,7 +1020,8 @@ def produce_tutorial(flow_key: Optional[str] = None, driver=None) -> Optional[di
                      qty=duration_seconds, model="ffmpeg-libx264",
                      meta={"flow": flow.key, "kind": "tutorial"})
     narration_chars = len(script["narration"])
-    total_usd = round(tts_cost_usd(narration_chars) + render_usd, 6)
+    tts_usd = round(tts_usd, 6)
+    total_usd = round(tts_usd + render_usd, 6)
 
     youtube_url = publish_to_youtube(mp4, script["title"], script["description"], list(flow.tags))
 
@@ -932,7 +1034,7 @@ def produce_tutorial(flow_key: Optional[str] = None, driver=None) -> Optional[di
         "duration_seconds": duration_seconds,
         "narration_chars": narration_chars,
         "tts_provider": (TUTORIAL_TTS_PROVIDER or "openai").lower(),
-        "tts_usd": tts_cost_usd(narration_chars),
+        "tts_usd": tts_usd,
         "render_usd": render_usd,
         "total_usd": total_usd,
         "video_url": asset_url(_relative_asset(mp4)),

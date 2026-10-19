@@ -44,13 +44,16 @@ answerable per video:
 | Part | How |
 |---|---|
 | Script tokens | `_call_llm` → `track_llm_call` |
-| TTS characters | `tts_cost_usd` → `track_media_cost` |
+| TTS characters (realtime: tokens) | `tts_cost_usd` / `realtime_cost_usd` → `track_media_cost` |
 | Local render minutes | `TUTORIAL_RENDER_COST_PER_MINUTE` → `track_media_cost` |
 
 ## Voice, captions, publishing
 
 - TTS provider is `TUTORIAL_TTS_PROVIDER` — OpenAI (`lem-tts`, `TUTORIAL_TTS_MODEL` /
-  `TUTORIAL_TTS_VOICE`) by default, ElevenLabs (`ELEVENLABS_*`) as the alternative.
+  `TUTORIAL_TTS_VOICE`) by default, ElevenLabs (`ELEVENLABS_*`) as the alternative, and
+  `openai-realtime` (`lem-tts-realtime`, `TUTORIAL_TTS_REALTIME_*`) for tts-1's websocket-only
+  successor — PCM encoded to mp3, fails closed on an error, an unfinished response or no audio
+  (#2258; `docs/model-benchmarks/README.md`).
 - ffmpeg produces the MP4 with branded intro/outro plus a `.srt`; `TUTORIAL_BURN_CAPTIONS` decides
   whether captions are burned in. A 9:16 clip is derived for shorts, and
   `TUTORIAL_THUMBNAIL_ENABLED` gates thumbnail generation.
