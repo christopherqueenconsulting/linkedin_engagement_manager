@@ -561,13 +561,22 @@ TUTORIAL_SPA_BASE_URL = get_constant_from_env('TUTORIAL_SPA_BASE_URL', default_v
 # flows capture. Without it, auth-only flows are skipped rather than filmed at a login modal.
 TUTORIAL_DEMO_SESSION_TOKEN = get_constant_from_env('TUTORIAL_DEMO_SESSION_TOKEN', default_value='')
 TUTORIAL_DEMO_EMAIL = get_constant_from_env('TUTORIAL_DEMO_EMAIL', default_value='')
-# Voice-over provider: 'openai' (default, cheapest — routed through LiteLLM like every other model)
-# or 'elevenlabs' (premium, needs ELEVENLABS_API_KEY + ELEVENLABS_VOICE_ID).
+# Voice-over provider: 'openai' (default, cheapest — routed through LiteLLM like every other model),
+# 'openai-realtime' (tts-1's realtime-only successor, also through LiteLLM, #2258) or 'elevenlabs'
+# (premium, needs ELEVENLABS_API_KEY + ELEVENLABS_VOICE_ID).
 TUTORIAL_TTS_PROVIDER = get_constant_from_env('TUTORIAL_TTS_PROVIDER', default_value='openai')
 TUTORIAL_TTS_MODEL = get_constant_from_env('TUTORIAL_TTS_MODEL', default_value='lem-tts')
 TUTORIAL_TTS_VOICE = get_constant_from_env('TUTORIAL_TTS_VOICE', default_value='alloy')
 # OpenAI tts-1 list price is $15.00 / 1M characters.
 TUTORIAL_TTS_COST_PER_1K_CHARS = float(get_constant_from_env('TUTORIAL_TTS_COST_PER_1K_CHARS', default_value='0.015'))
+TUTORIAL_TTS_REALTIME_MODEL = get_constant_from_env('TUTORIAL_TTS_REALTIME_MODEL', default_value='lem-tts-realtime')
+# gpt-realtime-2.1-mini is token-billed, not per character: $0.60 / 1M text in, $20.00 / 1M audio
+# out (list price, read 2026-10-09).
+# Pinned beside it in .litellm/model_prices_snapshot.json.
+TUTORIAL_TTS_REALTIME_COST_PER_1M_IN = float(
+    get_constant_from_env('TUTORIAL_TTS_REALTIME_COST_PER_1M_IN', default_value='0.60'))
+TUTORIAL_TTS_REALTIME_COST_PER_1M_OUT = float(
+    get_constant_from_env('TUTORIAL_TTS_REALTIME_COST_PER_1M_OUT', default_value='20.00'))
 ELEVENLABS_API_KEY = get_constant_from_env('ELEVENLABS_API_KEY')
 ELEVENLABS_VOICE_ID = get_constant_from_env('ELEVENLABS_VOICE_ID', default_value='')
 ELEVENLABS_MODEL = get_constant_from_env('ELEVENLABS_MODEL', default_value='eleven_turbo_v2_5')
