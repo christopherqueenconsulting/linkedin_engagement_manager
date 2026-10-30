@@ -404,3 +404,23 @@ def test_dry_run_via_python_dash_m(tmp_path):
     assert proc.returncode == 0, proc.stderr
     assert len(proc.stdout.splitlines()) == 11
     assert not (tmp_path / "t.log").exists() and not (tmp_path / "base").exists()
+
+
+@pytest.mark.parametrize("body", ["{not json", '{"number": 1}', "[1, 2]", None])
+def test_malformed_issues_json_exits_with_one_line_error(tmp_path, monkeypatch, capsys, body):
+    monkeypatch.setattr(lemd_config, "BASE", tmp_path / "base")
+    src = tmp_path / "issues.json"
+    if body is not None:
+        src.write_text(body)
+    with pytest.raises(SystemExit) as exc:
+        score.main(["--dry-run", "--issues-json", str(src)])
+    assert exc.value.code == 2
+    err = capsys.readouterr().err.strip().splitlines()
+    assert "--issues-json" in err[-1] and "Traceback" not in "".join(err)
+
+
+def test_boolean_last_emit_ts_is_not_a_timestamp():
+    """`True` is an int in Python: without the exclusion it would read as 1.0 and delay a REMIND."""
+    state = {"5": {"score": 2, "route": "work", "last_emit_ts": True}}
+    lines, _ = score.plan([_issue(5, ["bug"])], state, 86400.0, 86400)
+    assert [ln.kind for ln in lines] == ["REMIND"]

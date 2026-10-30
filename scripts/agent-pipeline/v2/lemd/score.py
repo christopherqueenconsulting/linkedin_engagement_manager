@@ -41,7 +41,7 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 from . import github
 from .config import Config, load
@@ -77,11 +77,11 @@ class Score:
     reason: str
 
 
-def score_issue(labels: Any) -> Score:
+def score_issue(labels: Iterable[str]) -> Score:
     """Score one open issue from its label names alone.
 
     Args:
-        labels: Label names (any iterable of str).
+        labels: Label names.
 
     Returns:
         The `Score`; the first matching rule wins, then `priority:low` lowers a work score by one.
@@ -102,7 +102,7 @@ def score_issue(labels: Any) -> Score:
     return Score(0, "none", "no scoring label")
 
 
-def sanitise_title(title: Any) -> str:
+def sanitise_title(title: object) -> str:
     """Make a title safe for one log field: single line, no `|`, no control characters, capped."""
     text = _WS.sub(" ", str(title if title is not None else ""))
     text = "".join(ch for ch in text if not unicodedata.category(ch).startswith("C"))
@@ -152,7 +152,7 @@ def plan(issues: list[dict[str, Any]], state: dict[str, Any], now: float,
         prior = state.get(key) if isinstance(state.get(key), dict) else None
         if prior and prior.get("score") == sc.value and prior.get("route") == sc.route:
             last = prior.get("last_emit_ts")
-            last = float(last) if isinstance(last, (int, float)) else 0.0
+            last = float(last) if isinstance(last, (int, float)) and not isinstance(last, bool) else 0.0
             if now - last < remind_seconds:
                 new_state[key] = prior
                 continue
@@ -209,8 +209,8 @@ def save_state(path: Path, state: dict[str, Any]) -> None:
     except BaseException:
         try:
             os.unlink(tmp)
-        except OSError:
-            pass
+        except OSError as exc:
+            LOG.debug("score state temp file not removed: %s", exc)
         raise
 
 
@@ -278,7 +278,12 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     cfg = load()
     if args.issues_json:
-        issues = json.loads(Path(args.issues_json).read_text())
+        try:
+            issues = json.loads(Path(args.issues_json).read_text())
+        except (OSError, ValueError) as exc:
+            ap.error(f"--issues-json {args.issues_json}: {exc}")
+        if not isinstance(issues, list) or not all(isinstance(i, dict) for i in issues):
+            ap.error(f"--issues-json {args.issues_json}: expected a JSON list of objects")
     else:
         issues = fetch_open_issues(cfg.slug)
     lines, _ = plan(issues, load_state(Scorer(cfg).state_path), time.time(), cfg.scorer_remind_seconds)

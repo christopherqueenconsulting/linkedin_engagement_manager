@@ -91,7 +91,7 @@ def _scorer_flag(src: dict[str, str]) -> bool:
 
 def _scorer_seconds(src: dict[str, str], key: str, default: int) -> int:
     """Read a scorer timer: non-integer falls back to `default` (with one warning), minimum 60."""
-    raw = str(os.environ.get(key, src.get(key, ""))).strip()
+    raw = _str(src, key, "")
     if not raw:
         return max(SCORER_MIN_SECONDS, default)
     try:
