@@ -74,6 +74,11 @@ has to. Then check `../status.sh` — a unit that was missed is listed under `st
 A file the box has edited is refused, not overwritten; read the printed `diff` before reaching for
 `--sync --force`.
 
+## Triage scorer (no model, off by default)
+
+`LEMD_SCORER=1` in `../config.env` (then restart `lem-agentd`) appends scored open issues to `LEMD_TRIGGER_LOG`.
+Preview: `python3 -m lemd.score --dry-run [--issues-json FILE]` (writes nothing). Rollback: `LEMD_SCORER=0`.
+
 ## Prerequisite the watchdog needs
 
 `lem-agentd-watchdog.service` runs as root, from the root-owned copy

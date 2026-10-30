@@ -123,6 +123,12 @@ class Config:
     orphan_sweep: bool
     #: Shadow mode: observe and log decisions, mutate nothing. The migration runs here for >=3 days.
     shadow: bool
+    #: The no-model triage scorer (`lemd.score`). Off unless `LEMD_SCORER` is exactly 1, true or yes;
+    #: it only reads GitHub and appends to `trigger_log`, and it runs even while PAUSED.
+    scorer: bool
+    trigger_log: Path
+    scorer_interval: int
+    scorer_remind_seconds: int
     raw: dict[str, str] = field(default_factory=dict, repr=False)
 
     @property
@@ -179,5 +185,9 @@ def load(base: str | Path | None = None) -> Config:
         worktree_sweep_interval=_int(env, "LEMD_WORKTREE_SWEEP_INTERVAL", 3600),
         orphan_sweep=_str(env, "LEMD_ORPHAN_SWEEP", "1") not in ("0", "false", "no"),
         shadow=_str(env, "LEMD_SHADOW", "1") not in ("0", "false", "no"),
+        scorer=_str(env, "LEMD_SCORER", "0") in ("1", "true", "yes"),
+        trigger_log=Path(_str(env, "LEMD_TRIGGER_LOG", "/home/lem/ea/state/lem-triggers.log")),
+        scorer_interval=_int(env, "LEMD_SCORER_INTERVAL", 600),
+        scorer_remind_seconds=_int(env, "LEMD_SCORER_REMIND_SECONDS", 86400),
         raw=env,
     )

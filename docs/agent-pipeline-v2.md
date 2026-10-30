@@ -53,6 +53,8 @@ sweep_worktrees  spawn actions/sweep.sh             ← also while PAUSED; at mo
                                                       locks/.worktree-sweep stamp (#2041)
 sweep_orphans    TERM/KILL orphans in idle work/ trees  ← also while PAUSED; never in shadow mode;
                                                       off: state/ORPHAN_SWEEP_OFF
+score_issues     open issues → state/lem-triggers.log   ← also while PAUSED; off unless LEMD_SCORER=1;
+                                                      read-only, no model (§6, "Triage scorer (P1)")
 ── if PAUSED: stop here ──
 drain_events     webhook rows  → items.dirty=1      (≤200 per pass)
 reconcile        GitHub labels → the queue          (600s; 120s only if silent AND drifting)
@@ -696,6 +698,49 @@ correct when there is feedback to apply. A budget park goes back to `agent:worki
 reset is the fix, and sending it to revise spends two model sessions on an empty lane and re-parks.
 
 The remaining gap is that nothing counts how many times this has happened — see §7.
+
+### Triage scorer (P1)
+
+`lemd/score.py` turns the open-issue list into lines on a trigger log, with **no model**: the score
+is a pure function of an issue's label names. It reads GitHub (one `gh issue list --state open
+--limit 200` per `LEMD_SCORER_INTERVAL`, issues only, no per-issue calls) and appends to a file. It
+starts no work and changes nothing on GitHub, so `Daemon.tick()` runs it before the PAUSED gate, and
+a fault in it is logged (warning) and swallowed. It does not touch dispatch.
+
+First match wins; `priority:low` then lowers a work score (rows 2-4) by one, minimum 0, and never
+touches the needs-chris route:
+
+| # | Labels | Route | Score |
+|---|---|---|---|
+| 1 | `blocked-on-chris`, or `risk:live-linkedin`, or both `agent:blocked` and `needs-human` | needs-chris | 0 |
+| 2 | `risk:security`, `priority:high`, `feedback-loop`, `outbound`, `revenue` | work | 3 |
+| 3 | `bug` | work | 2 |
+| 4 | `infrastructure`, `priority:medium` | work | 1 |
+| 5 | anything else | none | 0 |
+
+A `none` result writes no line. Line shape, the same as `ops-triggers.log`:
+
+```
+<UTC %Y-%m-%dT%H:%M:%SZ> | <KIND> | lem:<issue>:<score> | <title>
+```
+
+`KIND` is `NEW` the first time an issue gets a line or whenever its score or route changes, and
+`REMIND` every `LEMD_SCORER_REMIND_SECONDS` (86400) while it is still open and still scores a line.
+A needs-chris title is prefixed `NEEDS-CHRIS: `. Titles are single-line, `|` becomes `/`, control
+characters are dropped, and they are cut at 160 characters. What was last written per issue lives in
+`<BASE>/state/score-state.json` (atomic replace); a closed issue is dropped from it with no line. The
+log is append-only, mode 0600 in a 0700 directory, and is never written through a symlink.
+
+| Knob (`config.env`) | Default | |
+|---|---|---|
+| `LEMD_SCORER` | `0` | on only for exactly `1`, `true` or `yes` |
+| `LEMD_TRIGGER_LOG` | `/home/lem/ea/state/lem-triggers.log` | |
+| `LEMD_SCORER_INTERVAL` | `600` | seconds between fetches |
+| `LEMD_SCORER_REMIND_SECONDS` | `86400` | |
+
+Preview without writing anything: `cd scripts/agent-pipeline/v2 && python3 -m lemd.score --dry-run
+[--issues-json FILE]`. **Rollback:** set `LEMD_SCORER=0` and restart `lem-agentd`, or delete the log
+and `state/score-state.json` (the next run re-emits every line as `NEW`). Nothing else reads either file.
 
 ---
 
