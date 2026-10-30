@@ -80,7 +80,7 @@ A file the box has edited is refused, not overwritten; read the printed `diff` b
 Reference: [`docs/agent-pipeline-v2.md`](../../../docs/agent-pipeline-v2.md), "Triage scorer (P1)". `$DEST` is the
 install directory (`/home/lem/agent-pipeline`). Accepted flag values are exactly lowercase `1`, `true`, `yes`; a
 non-integer interval falls back to the default, and both timers have a 60 s minimum. An environment variable of the
-same name overrides `$DEST/config.env`, which must exist (create it if absent). Deploy: see "Deploying a change" above.
+same name overrides `$DEST/config.env`, which should exist (create it if absent; it can be empty). Deploy: see "Deploying a change" above.
 
 ```bash
 DEST=/home/lem/agent-pipeline
