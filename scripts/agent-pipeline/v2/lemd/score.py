@@ -50,6 +50,8 @@ LOG = logging.getLogger("lemd.score")
 
 #: Longest title kept on a line, before the `NEEDS-CHRIS: ` prefix.
 TITLE_MAX = 160
+#: `gh issue list --limit`; reaching it means the list may be truncated.
+ISSUE_LIMIT = 200
 
 _NEEDS_CHRIS_ANY = frozenset({"blocked-on-chris", "risk:live-linkedin"})
 _NEEDS_CHRIS_ALL = frozenset({"agent:blocked", "needs-human"})
@@ -215,10 +217,12 @@ def save_state(path: Path, state: dict[str, Any]) -> None:
 def fetch_open_issues(slug: str) -> list[dict[str, Any]]:
     """List open issues (not PRs) with their labels in ONE read-only `gh` call."""
     raw = github.gh_json(
-        ["issue", "list", "--repo", slug, "--state", "open", "--limit", "200",
+        ["issue", "list", "--repo", slug, "--state", "open", "--limit", str(ISSUE_LIMIT),
          "--json", "number,title,labels"],
         timeout=60,
     ) or []
+    if len(raw) >= ISSUE_LIMIT:
+        LOG.warning("triage scorer: open-issue list hit the %d cap; later issues are not scored", ISSUE_LIMIT)
     return [{"number": r.get("number"), "title": r.get("title"),
              "labels": sorted(github.label_names(r))} for r in raw if isinstance(r, dict)]
 
@@ -256,9 +260,11 @@ class Scorer:
         state = load_state(self.state_path)
         lines, new_state = plan(issues, state, now, self.cfg.scorer_remind_seconds)
         rendered = [ln.render() for ln in lines]
+        # Lines first, state second: a crash between the two can duplicate a line, never lose one.
         append_lines(self.cfg.trigger_log, rendered)
         if new_state != state:
             save_state(self.state_path, new_state)
+        LOG.info("triage scorer: %d open issues, %d lines appended", len(issues), len(rendered))
         return rendered
 
 

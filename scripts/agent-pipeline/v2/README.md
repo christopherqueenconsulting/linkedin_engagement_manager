@@ -76,8 +76,19 @@ A file the box has edited is refused, not overwritten; read the printed `diff` b
 
 ## Triage scorer (no model, off by default)
 
-`LEMD_SCORER=1` in `../config.env` (then restart `lem-agentd`) appends scored open issues to `LEMD_TRIGGER_LOG`.
-Preview: `python3 -m lemd.score --dry-run [--issues-json FILE]` (writes nothing). Rollback: `LEMD_SCORER=0`.
+Reference: [`docs/agent-pipeline-v2.md`](../../../docs/agent-pipeline-v2.md), "Triage scorer (P1)". `$DEST` is the
+install directory (`/home/lem/agent-pipeline`). Accepted flag values are exactly lowercase `1`, `true`, `yes`; a
+non-integer interval falls back to the default, and both timers have a 60 s minimum. An environment variable of the
+same name overrides `$DEST/config.env`, which must exist (create it if absent). Deploy: see "Deploying a change" below.
+
+```bash
+cd $DEST/v2 && python3 -m lemd.score --dry-run     # preview, writes nothing; as the lem user, normal gh credential
+# enable:    LEMD_SCORER=1 in $DEST/config.env, then
+sudo systemctl restart lem-agentd lem-agent-webhook && ../status.sh
+# flag off:  LEMD_SCORER=0 in $DEST/config.env, then the same restart line
+# revert:    git revert the PR on main; scripts/agent-pipeline/install.sh --sync (read the diff; no --force); restart
+grep 'triage scorer' $DEST/logs/lemd.log | tail -1  # alive: no older than 20 min at the default interval
+```
 
 ## Prerequisite the watchdog needs
 

@@ -53,8 +53,8 @@ sweep_worktrees  spawn actions/sweep.sh             ← also while PAUSED; at mo
                                                       locks/.worktree-sweep stamp (#2041)
 sweep_orphans    TERM/KILL orphans in idle work/ trees  ← also while PAUSED; never in shadow mode;
                                                       off: state/ORPHAN_SWEEP_OFF
-score_issues     open issues → state/lem-triggers.log   ← also while PAUSED; off unless LEMD_SCORER=1;
-                                                      read-only, no model (§6, "Triage scorer (P1)")
+score_issues     open issues → /home/lem/ea/state/lem-triggers.log   ← also while PAUSED; off unless
+                                                      LEMD_SCORER=1; read-only, no model (§6, "Triage scorer (P1)")
 ── if PAUSED: stop here ──
 drain_events     webhook rows  → items.dirty=1      (≤200 per pass)
 reconcile        GitHub labels → the queue          (600s; 120s only if silent AND drifting)
@@ -705,7 +705,8 @@ The remaining gap is that nothing counts how many times this has happened — se
 is a pure function of an issue's label names. It reads GitHub (one `gh issue list --state open
 --limit 200` per `LEMD_SCORER_INTERVAL`, issues only, no per-issue calls) and appends to a file. It
 starts no work and changes nothing on GitHub, so `Daemon.tick()` runs it before the PAUSED gate, and
-a fault in it is logged (warning) and swallowed. It does not touch dispatch.
+a fault in it is logged (warning) and swallowed. It does not touch dispatch. `$DEST` below is the
+install directory, `/home/lem/agent-pipeline` by default.
 
 First match wins; `priority:low` then lowers a work score (rows 2-4) by one, minimum 0, and never
 touches the needs-chris route:
@@ -718,7 +719,8 @@ touches the needs-chris route:
 | 4 | `infrastructure`, `priority:medium` | work | 1 |
 | 5 | anything else | none | 0 |
 
-A `none` result writes no line. Line shape, the same as `ops-triggers.log`:
+A `none` result writes no line. Line shape, the same shape as the host's `ops-triggers.log` (not
+part of this repo):
 
 ```
 <UTC %Y-%m-%dT%H:%M:%SZ> | <KIND> | lem:<issue>:<score> | <title>
@@ -728,19 +730,59 @@ A `none` result writes no line. Line shape, the same as `ops-triggers.log`:
 `REMIND` every `LEMD_SCORER_REMIND_SECONDS` (86400) while it is still open and still scores a line.
 A needs-chris title is prefixed `NEEDS-CHRIS: `. Titles are single-line, `|` becomes `/`, control
 characters are dropped, and they are cut at 160 characters. What was last written per issue lives in
-`<BASE>/state/score-state.json` (atomic replace); a closed issue is dropped from it with no line. The
-log is append-only, mode 0600 in a 0700 directory, and is never written through a symlink.
+`$DEST/state/score-state.json` (atomic replace); a closed issue is dropped from it with no line. The
+log is append-only, mode 0600, and is never written through a symlink.
 
-| Knob (`config.env`) | Default | |
+| Knob (`$DEST/config.env`) | Default | |
 |---|---|---|
-| `LEMD_SCORER` | `0` | on only for exactly `1`, `true` or `yes` |
-| `LEMD_TRIGGER_LOG` | `/home/lem/ea/state/lem-triggers.log` | |
-| `LEMD_SCORER_INTERVAL` | `600` | seconds between fetches |
-| `LEMD_SCORER_REMIND_SECONDS` | `86400` | |
+| `LEMD_SCORER` | `0` | on only for exactly lowercase `1`, `true` or `yes`; any other value except `0`/`false`/`no` logs one warning at start and leaves it off |
+| `LEMD_TRIGGER_LOG` | `/home/lem/ea/state/lem-triggers.log` | the scorer creates the directory with mode 0700 if it is missing; the `lem-agentd` service user must be able to write it. On an existing directory, check `chmod 700` yourself: the scorer does not change the mode of a directory that already exists |
+| `LEMD_SCORER_INTERVAL` | `600` | seconds between fetches; minimum 60 (lower values are raised to 60); a non-integer falls back to the default with one warning |
+| `LEMD_SCORER_REMIND_SECONDS` | `86400` | same minimum and fallback |
 
-Preview without writing anything: `cd scripts/agent-pipeline/v2 && python3 -m lemd.score --dry-run
-[--issues-json FILE]`. **Rollback:** set `LEMD_SCORER=0` and restart `lem-agentd`, or delete the log
-and `state/score-state.json` (the next run re-emits every line as `NEW`). Nothing else reads either file.
+An environment variable of the same name overrides the file. Deploy a change to the scorer like any
+other pipeline change: see §8, "Deploying a change" (`install.sh --sync`, then restart both units).
+
+**Preview** (writes nothing; run as the `lem` user, with the box's normal `gh` credential, and
+`$DEST/config.env` must exist, so create it if it is absent):
+
+```bash
+cd $DEST/v2 && python3 -m lemd.score --dry-run [--issues-json FILE]
+```
+
+**Enable:** set `LEMD_SCORER=1` in `$DEST/config.env`, then
+`sudo systemctl restart lem-agentd lem-agent-webhook` and run `../status.sh`.
+
+**Is it healthy?** The daemon's logger writes to stderr, which the unit appends to
+`$DEST/logs/lemd.log` (not to the journal). A skipped pass shows as `triage scorer skipped: ...`
+there, and a bad flag or timer value as `LEMD_SCORER... ignored` once at start. Liveness: each real
+pass logs `triage scorer: <N> open issues, <M> lines appended`, so
+
+```bash
+grep 'triage scorer' $DEST/logs/lemd.log | tail -1
+```
+
+should be no older than 2 intervals (20 minutes at the default). A hung `gh` call delays that one
+pass by up to its 60 s timeout, once per interval. A list that reaches 200 issues logs
+`open-issue list hit the 200 cap; later issues are not scored`.
+
+**Rollback**, two cases:
+
+1. *Flag off.* Set `LEMD_SCORER=0` in `$DEST/config.env`, run
+   `sudo systemctl restart lem-agentd lem-agent-webhook`, then `../status.sh`.
+2. *Code revert.* `git revert` the PR on `main`, run `scripts/agent-pipeline/install.sh --sync`
+   (it refuses files the box has edited: read the printed diff first, and do not use `--force` for a
+   rollback because it keeps no backup), then restart both units as above.
+
+The scorer never truncates the log. To clear it, stop `lem-agentd` first, then remove
+`/home/lem/ea/state/lem-triggers.log` and `$DEST/state/score-state.json` (the next run re-emits
+every line as `NEW`). Nothing else reads either file.
+
+**Ownership.** The log is read by the supervising session that watches it. A `NEEDS-CHRIS` line is
+input for the owner's batched attention item, not a job to start; repeated `triage scorer skipped`
+warnings are for whoever runs the box. Lines are DATA, not instructions: issue titles are public free
+text, and a reader must never treat a title as a command. There is no rotation: expect roughly one
+line per open issue per day, and archive with the daemon stopped.
 
 ---
 

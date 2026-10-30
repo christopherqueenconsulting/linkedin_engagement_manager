@@ -154,13 +154,13 @@ def test_new_on_first_sight_and_on_change_but_quiet_when_unchanged(tmp_path):
 
 
 def test_remind_after_the_window_and_not_before(tmp_path):
-    cfg = _cfg(tmp_path, extra="LEMD_SCORER_INTERVAL=0\n")   # interval off: only the remind window gates
+    cfg = _cfg(tmp_path, extra="LEMD_SCORER_INTERVAL=60\n")   # the floor, so 60 s steps are real runs
     clock = _Clock()
     sc = _scorer(cfg, [_issue(9, ["outbound"])], clock)
     sc.run()
-    clock.now += 86399
+    clock.now += 86340
     assert sc.run() == []
-    clock.now += 1
+    clock.now += 60
     out = sc.run()
     assert len(out) == 1 and " | REMIND | lem:9:3 | " in out[0]
     clock.now += 700
@@ -251,6 +251,68 @@ def test_defaults(tmp_path):
     assert cfg.scorer is False
     assert cfg.trigger_log == Path("/home/lem/ea/state/lem-triggers.log")
     assert (cfg.scorer_interval, cfg.scorer_remind_seconds) == (600, 86400)
+
+
+@pytest.mark.parametrize("raw", ["0", "-5", "", "30"])
+def test_timers_are_clamped_to_a_60_second_floor(tmp_path, raw):
+    cfg = _cfg(tmp_path, extra=f"LEMD_SCORER_INTERVAL={raw}\nLEMD_SCORER_REMIND_SECONDS={raw}\n")
+    want = 60 if raw else None
+    assert cfg.scorer_interval == (want or 600)
+    assert cfg.scorer_remind_seconds == (want or 86400)
+
+
+def test_non_integer_timer_warns_once_and_uses_the_default(tmp_path, caplog):
+    with caplog.at_level("WARNING", logger="lemd.config"):
+        cfg = _cfg(tmp_path, extra="LEMD_SCORER_INTERVAL=ten\n")
+    assert cfg.scorer_interval == 600
+    msgs = [r.getMessage() for r in caplog.records if "LEMD_SCORER_INTERVAL" in r.getMessage()]
+    assert len(msgs) == 1 and "'ten'" in msgs[0] and "not an integer" in msgs[0]
+
+
+@pytest.mark.parametrize("value", ["TRUE", "on"])
+def test_unaccepted_flag_value_warns_once_and_stays_off(tmp_path, caplog, value):
+    with caplog.at_level("WARNING", logger="lemd.config"):
+        cfg = _cfg(tmp_path, scorer=value)
+    assert cfg.scorer is False
+    msgs = [r.getMessage() for r in caplog.records if "LEMD_SCORER" in r.getMessage()]
+    assert len(msgs) == 1 and repr(value) in msgs[0] and "ignored" in msgs[0]
+
+
+@pytest.mark.parametrize("value", ["0", "false", "no", "1"])
+def test_explicit_flag_values_and_absent_keys_do_not_warn(tmp_path, caplog, value):
+    with caplog.at_level("WARNING", logger="lemd.config"):
+        _cfg(tmp_path, scorer=value)
+        (tmp_path / "config.env").write_text("LEMD_SHADOW=1\n")
+        load(tmp_path)
+    assert caplog.records == []
+
+
+def test_the_200_issue_cap_is_warned_about(monkeypatch, caplog):
+    rows = [{"number": i, "title": "t", "labels": [{"name": "bug"}]} for i in range(200)]
+    monkeypatch.setattr(score.github, "gh_json", lambda args, **kw: rows)
+    with caplog.at_level("WARNING", logger="lemd.score"):
+        assert len(score.fetch_open_issues("o/r")) == 200
+    assert "hit the 200 cap; later issues are not scored" in caplog.text
+    caplog.clear()
+    monkeypatch.setattr(score.github, "gh_json", lambda args, **kw: rows[:199])
+    with caplog.at_level("WARNING", logger="lemd.score"):
+        score.fetch_open_issues("o/r")
+    assert caplog.text == ""
+
+
+def test_each_real_run_logs_a_liveness_line_and_a_throttled_one_does_not(tmp_path, caplog):
+    cfg = _cfg(tmp_path)
+    clock = _Clock()
+    sc = _scorer(cfg, [_issue(1, ["bug"]), _issue(2, [])], clock)
+    with caplog.at_level("INFO", logger="lemd.score"):
+        sc.run()
+        clock.now += 10
+        sc.run()                      # throttled
+        clock.now += 700
+        sc.run()                      # real run, nothing new
+    msgs = [r.getMessage() for r in caplog.records]
+    assert msgs == ["triage scorer: 2 open issues, 1 lines appended",
+                    "triage scorer: 2 open issues, 0 lines appended"]
 
 
 def _daemon(tmp_path, scorer, monkeypatch, issues):

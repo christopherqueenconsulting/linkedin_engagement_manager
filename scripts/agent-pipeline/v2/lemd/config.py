@@ -12,11 +12,14 @@ accepts exactly the subset that file uses (`KEY=value`, optional `export`, optio
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
+
+LOG = logging.getLogger("lemd.config")
 
 BASE = Path(os.environ.get("BASE", "/home/lem/agent-pipeline"))
 
@@ -65,6 +68,38 @@ def _str(src: dict[str, str], key: str, default: str) -> str:
     raw = os.environ.get(key, src.get(key, ""))
     raw = str(raw).strip()
     return raw or default
+
+
+#: Floor for the scorer's two timers. A 0 or negative value would otherwise hit GitHub on every tick.
+SCORER_MIN_SECONDS = 60
+
+
+def _scorer_flag(src: dict[str, str]) -> bool:
+    """Read `LEMD_SCORER`: on only for exactly `1`, `true` or `yes`.
+
+    An explicit off (`0`, `false`, `no`) is silent. Anything else (`TRUE`, `on`, a typo) leaves the
+    scorer off and says so once, because a flag the operator believes is on but is not is the
+    failure that otherwise goes unnoticed.
+    """
+    raw = _str(src, "LEMD_SCORER", "0")
+    if raw in ("1", "true", "yes"):
+        return True
+    if raw not in ("0", "false", "no"):
+        LOG.warning("LEMD_SCORER=%r ignored: only exactly 1, true or yes turn the scorer on", raw)
+    return False
+
+
+def _scorer_seconds(src: dict[str, str], key: str, default: int) -> int:
+    """Read a scorer timer: non-integer falls back to `default` (with one warning), minimum 60."""
+    raw = str(os.environ.get(key, src.get(key, ""))).strip()
+    if not raw:
+        return max(SCORER_MIN_SECONDS, default)
+    try:
+        value = int(raw)
+    except ValueError:
+        LOG.warning("%s=%r ignored: not an integer, using %s", key, raw, default)
+        value = default
+    return max(SCORER_MIN_SECONDS, value)
 
 
 @dataclass(frozen=True)
@@ -185,9 +220,9 @@ def load(base: str | Path | None = None) -> Config:
         worktree_sweep_interval=_int(env, "LEMD_WORKTREE_SWEEP_INTERVAL", 3600),
         orphan_sweep=_str(env, "LEMD_ORPHAN_SWEEP", "1") not in ("0", "false", "no"),
         shadow=_str(env, "LEMD_SHADOW", "1") not in ("0", "false", "no"),
-        scorer=_str(env, "LEMD_SCORER", "0") in ("1", "true", "yes"),
+        scorer=_scorer_flag(env),
         trigger_log=Path(_str(env, "LEMD_TRIGGER_LOG", "/home/lem/ea/state/lem-triggers.log")),
-        scorer_interval=_int(env, "LEMD_SCORER_INTERVAL", 600),
-        scorer_remind_seconds=_int(env, "LEMD_SCORER_REMIND_SECONDS", 86400),
+        scorer_interval=_scorer_seconds(env, "LEMD_SCORER_INTERVAL", 600),
+        scorer_remind_seconds=_scorer_seconds(env, "LEMD_SCORER_REMIND_SECONDS", 86400),
         raw=env,
     )
