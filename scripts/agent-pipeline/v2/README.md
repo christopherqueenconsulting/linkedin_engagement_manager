@@ -82,12 +82,15 @@ non-integer interval falls back to the default, and both timers have a 60 s mini
 same name overrides `$DEST/config.env`, which must exist (create it if absent). Deploy: see "Deploying a change" below.
 
 ```bash
-cd $DEST/v2 && python3 -m lemd.score --dry-run     # preview, writes nothing; as the lem user, normal gh credential
+# preview, writes nothing (fresh root shell; the daemon's gh login is the lem user's stored one, so unset GH_TOKEN):
+sudo -u lem -H bash -c 'cd /home/lem/agent-pipeline/v2 && env -u GH_TOKEN python3 -m lemd.score --dry-run'
 # enable:    LEMD_SCORER=1 in $DEST/config.env, then
 sudo systemctl restart lem-agentd lem-agent-webhook && ../status.sh
 # flag off:  LEMD_SCORER=0 in $DEST/config.env, then the same restart line
 # revert:    git revert the PR on main; scripts/agent-pipeline/install.sh --sync (read the diff; no --force); restart
-grep 'triage scorer' $DEST/logs/lemd.log | tail -1  # alive: no older than 20 min at the default interval
+# alive (at most 20 min old at the default interval), and failing (a newer `skipped` line means it is failing):
+grep -E 'triage scorer: [0-9]+ open issues' $DEST/logs/lemd.log | tail -1
+grep 'triage scorer skipped' $DEST/logs/lemd.log | tail -3
 ```
 
 ## Prerequisite the watchdog needs
