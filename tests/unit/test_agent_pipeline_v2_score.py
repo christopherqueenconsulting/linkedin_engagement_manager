@@ -424,3 +424,71 @@ def test_boolean_last_emit_ts_is_not_a_timestamp():
     state = {"5": {"score": 2, "route": "work", "last_emit_ts": True}}
     lines, _ = score.plan([_issue(5, ["bug"])], state, 86400.0, 86400)
     assert [ln.kind for ln in lines] == ["REMIND"]
+
+
+def _state_bytes(tmp_path):
+    return (tmp_path / "state" / "score-state.json").read_bytes()
+
+
+@pytest.mark.parametrize("failure", ["raises", "none"])
+def test_failed_fetch_leaves_state_and_log_untouched(tmp_path, monkeypatch, failure):
+    """A failed `gh` read must not look like "no open issues": that would wipe the dedupe state."""
+    cfg = _cfg(tmp_path)
+    clock = _Clock()
+    rows = [{"number": 1, "title": "t", "labels": [{"name": "bug"}]}]
+    monkeypatch.setattr(score.github, "gh_json", lambda args, **kw: rows)
+    sc = score.Scorer(cfg, clock=clock)
+    assert len(sc.run()) == 1
+    state_before, log_before = _state_bytes(tmp_path), cfg.trigger_log.read_bytes()
+
+    def broken(args, **kw):
+        if failure == "raises":
+            raise score.github.GitHubUnavailable("gh issue list rc=1")
+        return None   # empty stdout
+
+    monkeypatch.setattr(score.github, "gh_json", broken)
+    clock.now += 700
+    with pytest.raises(score.github.GitHubUnavailable):
+        sc.run()
+    assert _state_bytes(tmp_path) == state_before
+    assert cfg.trigger_log.read_bytes() == log_before
+    # gh recovers: the issue is unchanged, so nothing is re-emitted as NEW.
+    monkeypatch.setattr(score.github, "gh_json", lambda args, **kw: rows)
+    clock.now += 700
+    assert sc.run() == []
+
+
+def test_genuine_empty_list_clears_the_state(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    clock = _Clock()
+    rows = [{"number": 1, "title": "t", "labels": [{"name": "bug"}]}]
+    monkeypatch.setattr(score.github, "gh_json", lambda args, **kw: rows)
+    sc = score.Scorer(cfg, clock=clock)
+    sc.run()
+    monkeypatch.setattr(score.github, "gh_json", lambda args, **kw: [])
+    clock.now += 700
+    assert sc.run() == []
+    assert json.loads(_state_bytes(tmp_path)) == {}
+
+
+def test_preexisting_loose_log_is_tightened_and_kept(tmp_path):
+    cfg = _cfg(tmp_path)
+    log = cfg.trigger_log
+    log.parent.mkdir(parents=True)
+    log.write_text("old line\n")
+    log.chmod(0o644)
+    _scorer(cfg, [_issue(1, ["bug"])], _Clock()).run()
+    assert stat.S_IMODE(log.stat().st_mode) == 0o600
+    assert log.read_text().startswith("old line\n") and len(log.read_text().splitlines()) == 2
+
+
+def test_dry_run_accepts_raw_gh_label_objects(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(lemd_config, "BASE", tmp_path / "base")
+    src = tmp_path / "issues.json"
+    src.write_text(json.dumps([
+        {"number": 1, "title": "raw", "labels": [{"name": "bug"}, {"name": "priority:high"}]},
+        {"number": 2, "title": "mixed", "labels": ["blocked-on-chris", {"name": "bug"}]},
+    ]))
+    assert score.main(["--dry-run", "--issues-json", str(src)]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[0].endswith("| lem:1:3 | raw") and out[1].endswith("| lem:2:0 | NEEDS-CHRIS: mixed")

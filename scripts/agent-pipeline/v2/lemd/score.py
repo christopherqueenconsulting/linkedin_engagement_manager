@@ -173,6 +173,8 @@ def append_lines(path: Path, lines: list[str]) -> None:
     Raises:
         OSError: If the path is a symlink or cannot be opened for append.
     """
+    # The symlink check precedes the empty-lines return on purpose: a misconfigured path should warn.
+    # Symlinks in PARENT directories are out of scope (same-user ops box).
     if path.is_symlink():
         raise OSError(f"refusing to write through a symlink: {path}")
     if not lines:
@@ -180,6 +182,7 @@ def append_lines(path: Path, lines: list[str]) -> None:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     fd = os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
+        os.fchmod(fd, 0o600)   # `os.open` sets the mode only on creation: tighten a pre-existing file
         for line in lines:
             os.write(fd, (line + "\n").encode("utf-8"))
     finally:
@@ -220,7 +223,11 @@ def fetch_open_issues(slug: str) -> list[dict[str, Any]]:
         ["issue", "list", "--repo", slug, "--state", "open", "--limit", str(ISSUE_LIMIT),
          "--json", "number,title,labels"],
         timeout=60,
-    ) or []
+    )
+    # `gh_json` raises on a failed call but returns None for empty stdout: that is a failure to
+    # read, not "no open issues", and treating it as the latter would wipe the dedupe state.
+    if not isinstance(raw, list):
+        raise github.GitHubUnavailable("gh issue list returned no JSON list")
     if len(raw) >= ISSUE_LIMIT:
         LOG.warning("triage scorer: open-issue list hit the %d cap; later issues are not scored", ISSUE_LIMIT)
     return [{"number": r.get("number"), "title": r.get("title"),
@@ -268,22 +275,41 @@ class Scorer:
         return rendered
 
 
+def read_issues_json(path: Path) -> list[dict[str, Any]]:
+    """Load issues for the dry run; labels may be names or raw `gh --json` `{"name": ...}` objects.
+
+    Raises:
+        OSError: If the file cannot be read.
+        ValueError: If it is not a JSON list of objects.
+    """
+    data = json.loads(path.read_text())
+    if not isinstance(data, list) or not all(isinstance(i, dict) for i in data):
+        raise ValueError("expected a JSON list of objects")
+    out = []
+    for item in data:
+        labels = item.get("labels") or []
+        names = {x for x in labels if isinstance(x, str)}
+        names |= github.label_names({"labels": [x for x in labels if isinstance(x, dict)]})
+        out.append({**item, "labels": sorted(names)})
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI: print what a run would append, without writing the log or the state."""
     ap = argparse.ArgumentParser(prog="python3 -m lemd.score", description=__doc__.split("\n")[0])
     ap.add_argument("--dry-run", action="store_true", required=True,
                     help="print the lines that would be written; write nothing")
     ap.add_argument("--issues-json", metavar="FILE",
-                    help='JSON list of {"number", "title", "labels": [str]}; default: live open issues')
+                    help='JSON list of {"number", "title", "labels": [str or {"name": str}]}; '
+                         "default: live open issues")
     args = ap.parse_args(argv)
     cfg = load()
+    issues: list[dict[str, Any]] = []
     if args.issues_json:
         try:
-            issues = json.loads(Path(args.issues_json).read_text())
+            issues = read_issues_json(Path(args.issues_json))
         except (OSError, ValueError) as exc:
             ap.error(f"--issues-json {args.issues_json}: {exc}")
-        if not isinstance(issues, list) or not all(isinstance(i, dict) for i in issues):
-            ap.error(f"--issues-json {args.issues_json}: expected a JSON list of objects")
     else:
         issues = fetch_open_issues(cfg.slug)
     lines, _ = plan(issues, load_state(Scorer(cfg).state_path), time.time(), cfg.scorer_remind_seconds)
