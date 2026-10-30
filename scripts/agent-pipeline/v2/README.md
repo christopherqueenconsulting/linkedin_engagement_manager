@@ -11,10 +11,11 @@ understand what the daemon does and why. This one is commands.
 ## Is it healthy?
 
 ```bash
+DEST=/home/lem/agent-pipeline
 systemctl status lem-agentd lem-agent-webhook   # alive?
-cat state/lemd.heartbeat                        # ...and not wedged (age < 600s)
-../status.sh                                    # the whole picture
-../status.sh --watch                            # ...refreshed
+cat $DEST/state/lemd.heartbeat                  # ...and not wedged (age < 600s)
+$DEST/status.sh                                 # the whole picture
+$DEST/status.sh --watch                         # ...refreshed
 ```
 
 Liveness and freshness are different questions. A wedged process passes `is-active` and fails the
@@ -73,6 +74,41 @@ has to. Then check `../status.sh` — a unit that was missed is listed under `st
 
 A file the box has edited is refused, not overwritten; read the printed `diff` before reaching for
 `--sync --force`.
+
+## Triage scorer (no model, off by default)
+
+Reference: [`docs/agent-pipeline-v2.md`](../../../docs/agent-pipeline-v2.md), "Triage scorer (P1)". `$DEST` is the
+install directory (`/home/lem/agent-pipeline`). Accepted flag values are exactly lowercase `1`, `true`, `yes`; a
+non-integer interval falls back to the default, and both timers have a 60 s minimum. An environment variable of the
+same name overrides `$DEST/config.env`, which should exist (create it if absent; it can be empty). Deploy: see "Deploying a change" above.
+
+```bash
+DEST=/home/lem/agent-pipeline
+# preview, writes nothing (fresh root shell):
+sudo -u lem -H bash -c 'cd /home/lem/agent-pipeline/v2 && env -u GH_TOKEN python3 -m lemd.score --dry-run'
+# credential check (the stored lem login, not the App token), then the call itself:
+sudo -u lem -H gh auth status
+sudo -u lem -H gh issue list --repo christopherqueenconsulting/linkedin_engagement_manager --state open --limit 1
+$DEST/status.sh
+# enable:    LEMD_SCORER=1 in $DEST/config.env, then
+sudo systemctl restart lem-agentd lem-agent-webhook && $DEST/status.sh
+# flag off:  LEMD_SCORER=0 in $DEST/config.env, then the same restart line
+# revert:    land git revert on main, fast-forward the mirror, sync from it (read the diff; no --force), restart
+git -C /home/lem/agent-pipeline-src fetch origin main && git -C /home/lem/agent-pipeline-src merge --ff-only origin/main
+/home/lem/agent-pipeline-src/scripts/agent-pipeline/install.sh --sync
+sudo systemctl restart lem-agentd lem-agent-webhook
+# alive (at most 20 min old at the default interval), and failing (a newer `skipped` line means it is failing):
+grep -E 'triage scorer: [0-9]+ open issues' $DEST/logs/lemd.log | tail -1
+grep 'triage scorer skipped' $DEST/logs/lemd.log | tail -3
+# no watcher is installed: until a reader is set up, the operator reads the log daily:
+tail -n 50 /home/lem/ea/state/lem-triggers.log
+grep NEEDS-CHRIS /home/lem/ea/state/lem-triggers.log | tail
+# rotate (the daemon may keep running; the next append recreates the log at 0600):
+mv /home/lem/ea/state/lem-triggers.log /home/lem/ea/state/lem-triggers.log.$(date -u +%Y%m%d)
+```
+
+Clearing the log (stop `lem-agentd` first; back up the log and `score-state.json`) and the NEEDS-CHRIS routing are in
+the doc section.
 
 ## Prerequisite the watchdog needs
 

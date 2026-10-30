@@ -24,7 +24,7 @@ import signal
 import time
 from typing import Any
 
-from . import capacity, db, dispatch, github, observe, policy, posthog, spend
+from . import capacity, db, dispatch, github, observe, policy, posthog, score, spend
 from .config import Config, load
 
 LOG = logging.getLogger("lemd")
@@ -125,6 +125,7 @@ class Daemon:
         #: (docs/posthog-pr-takeover.md). In memory on purpose: a restart loses at most what the
         #: next reconcile re-lists, and the action itself is idempotent.
         self._takeover_pending: set[int] = set()
+        self._scorer = score.Scorer(cfg)
 
     # ---------------------------------------------------------------- lifecycle
 
@@ -1008,6 +1009,8 @@ class Daemon:
         # And so do orphaned processes: a lane's tools can start commands in a new session that
         # killpg never reaches, and those hold memory until something terminates them.
         self.sweep_orphans()
+        # The triage scorer only reads GitHub and appends to a log, so it too runs while PAUSED.
+        self.run_scorer()
         if self.cfg.is_paused():
             LOG.info("PAUSED file present — observing nothing this pass")
             return
@@ -1034,6 +1037,19 @@ class Daemon:
             self.sup.sweep_idle_orphans(v1_busy=self.sup.v1_slots_busy())
         except Exception as exc:  # noqa: BLE001 - fail open
             LOG.warning("orphan sweep skipped: %s", exc)
+
+    def run_scorer(self) -> None:
+        """Run the no-model triage scorer when `LEMD_SCORER` is on; never raises.
+
+        Off by default. Any failure (gh down, unwritable log) is logged and dropped: a scoring
+        problem must not be what stops a pass from acting.
+        """
+        if not self.cfg.scorer:
+            return
+        try:
+            self._scorer.run()
+        except Exception as exc:  # noqa: BLE001 - fail open
+            LOG.warning("triage scorer skipped: %s", exc)
 
     #: Minimum seconds between two ATTEMPTS to spawn the sweep. Only matters when a spawn fails or
     #: the action exits without touching its stamp (no gh credential, say): without it the loop

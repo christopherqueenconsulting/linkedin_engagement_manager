@@ -53,6 +53,8 @@ sweep_worktrees  spawn actions/sweep.sh             ← also while PAUSED; at mo
                                                       locks/.worktree-sweep stamp (#2041)
 sweep_orphans    TERM/KILL orphans in idle work/ trees  ← also while PAUSED; never in shadow mode;
                                                       off: state/ORPHAN_SWEEP_OFF
+score_issues     open issues → /home/lem/ea/state/lem-triggers.log   ← also while PAUSED; off unless
+                                                      LEMD_SCORER=1; read-only, no model (§6, "Triage scorer (P1)")
 ── if PAUSED: stop here ──
 drain_events     webhook rows  → items.dirty=1      (≤200 per pass)
 reconcile        GitHub labels → the queue          (600s; 120s only if silent AND drifting)
@@ -696,6 +698,169 @@ correct when there is feedback to apply. A budget park goes back to `agent:worki
 reset is the fix, and sending it to revise spends two model sessions on an empty lane and re-parks.
 
 The remaining gap is that nothing counts how many times this has happened — see §7.
+
+### Triage scorer (P1)
+
+`lemd/score.py` turns the open-issue list into lines on a trigger log, with **no model**: the score
+is a pure function of an issue's label names. It reads GitHub (one `gh issue list --state open
+--limit 200` per `LEMD_SCORER_INTERVAL`, issues only, no per-issue calls) and appends to a file. It
+starts no work and changes nothing on GitHub, so `Daemon.tick()` runs it before the PAUSED gate, and
+a fault in it is logged (warning) and swallowed. It does not touch dispatch. `$DEST` below is the
+install directory, `/home/lem/agent-pipeline` by default.
+
+First match wins; `priority:low` then lowers a work score (rows 2-4) by one, minimum 0, and never
+touches the needs-chris route:
+
+| # | Labels | Route | Score |
+|---|---|---|---|
+| 1 | `blocked-on-chris`, or `risk:live-linkedin`, or both `agent:blocked` and `needs-human` | needs-chris | 0 |
+| 2 | `risk:security`, `priority:high`, `feedback-loop`, `outbound`, `revenue` | work | 3 |
+| 3 | `bug` | work | 2 |
+| 4 | `infrastructure`, `priority:medium` | work | 1 |
+| 5 | anything else | none | 0 |
+
+A `none` result writes no line. Line shape, the same shape as the host's `ops-triggers.log` (not
+part of this repo):
+
+```
+<UTC %Y-%m-%dT%H:%M:%SZ> | <KIND> | lem:<issue>:<score> | <title>
+```
+
+`KIND` is `NEW` the first time an issue gets a line or whenever its score or route changes, and
+`REMIND` every `LEMD_SCORER_REMIND_SECONDS` (86400) while it is still open and still scores a line.
+A needs-chris title is prefixed `NEEDS-CHRIS: `. Titles are single-line, `|` becomes `/`, control
+characters are dropped, and they are cut at 160 characters. What was last written per issue lives in
+`$DEST/state/score-state.json` (atomic replace); a closed issue is dropped from it with no line. The
+log is append-only, mode 0600, and is never written through a symlink.
+
+| Knob (`$DEST/config.env`) | Default | |
+|---|---|---|
+| `LEMD_SCORER` | `0` | on only for exactly lowercase `1`, `true` or `yes`; any other value except `0`/`false`/`no` logs one warning at start and leaves it off |
+| `LEMD_TRIGGER_LOG` | `/home/lem/ea/state/lem-triggers.log` | the scorer creates the directory with mode 0700 if it is missing; the `lem-agentd` service user must be able to write it. On an existing directory, check `chmod 700` yourself: the scorer does not change the mode of a directory that already exists |
+| `LEMD_SCORER_INTERVAL` | `600` | seconds between fetches; minimum 60 (lower values are raised to 60); a non-integer falls back to the default with one warning. Cost at the default: one `gh issue list` per 600 s and about 144 INFO lines a day in `lemd.log` |
+| `LEMD_SCORER_REMIND_SECONDS` | `86400` | same minimum and fallback |
+
+An environment variable of the same name overrides the file. Deploy a change to the scorer like any
+other pipeline change: see §8, "Deploying a change" (`install.sh --sync`, then restart both units).
+
+**Preview** (writes nothing). From a fresh root shell with no prior exports, this form is pasteable
+as it stands:
+
+```bash
+sudo -u lem -H bash -c 'cd /home/lem/agent-pipeline/v2 && env -u GH_TOKEN python3 -m lemd.score --dry-run'
+```
+
+`/home/lem/agent-pipeline/config.env` should exist (create it if absent; it can be empty). With the
+scorer already on, the preview reads the live `state/score-state.json`, so it prints only lines that
+differ from what was already written; add `--issues-json FILE` with a saved list for the full table
+(labels may be names or raw `gh --json` `{"name": ...}` objects).
+
+**Which credential the scorer uses.** The scorer's `gh` call is the daemon's own: `lemd` never sets
+`GH_TOKEN`, and `/home/lem/agent-pipeline/secrets.env` (the only env file `lem-agentd` loads) defines
+none (variable names checked; no values read). So `gh` falls back to the `lem` user's stored login in
+`/home/lem/.config/gh/hosts.yml`, not to the App token in `state/gh-app-token`, and a `GH_TOKEN`
+exported in your shell would override it (the preview unsets it). `scripts/agent-pipeline/tick.sh`
+describes that stored login as the repository owner's token, with the `workflow` scope, which the
+pipeline otherwise keeps agents away from. That is a known property of the scorer; all it does with it
+is the read-only `gh issue list --state open`. Check the credential and the call end to end:
+
+```bash
+DEST=/home/lem/agent-pipeline
+sudo -u lem -H gh auth status
+sudo -u lem -H gh issue list --repo christopherqueenconsulting/linkedin_engagement_manager --state open --limit 1
+$DEST/status.sh
+```
+
+**Enable:** set `LEMD_SCORER=1` in `/home/lem/agent-pipeline/config.env`, then:
+
+```bash
+DEST=/home/lem/agent-pipeline
+sudo systemctl restart lem-agentd lem-agent-webhook
+$DEST/status.sh
+```
+
+**Is it healthy?** The daemon's logger writes to stderr, which the unit appends to
+`/home/lem/agent-pipeline/logs/lemd.log` (not to the journal). `lem-agent-webhook` loads the same
+config, so the one-time bad-flag or bad-timer warning (`LEMD_SCORER... ignored`) appears in
+`logs/webhook.log` as well as `lemd.log`. Two checks, each pattern matching only its own log format:
+
+```bash
+DEST=/home/lem/agent-pipeline
+# liveness: the success line, "triage scorer: <N> open issues, <M> lines appended"
+grep -E 'triage scorer: [0-9]+ open issues' $DEST/logs/lemd.log | tail -1
+# failure: the line "triage scorer skipped: <reason>"
+grep 'triage scorer skipped' $DEST/logs/lemd.log | tail -3
+```
+
+The liveness line must be at most 2 intervals old (20 minutes at the default). A `skipped` line newer
+than the last `triage scorer: ` line means the scorer is failing. (The liveness pattern includes the
+digits on purpose: the 200-cap warning also starts `triage scorer: ` but is a different message,
+`open-issue list hit the 200 cap; later issues are not scored`.) A hung `gh` call delays that one
+pass by up to its 60 s timeout, once per interval.
+
+**Rollback**, two cases:
+
+1. *Flag off.* Set `LEMD_SCORER=0` in `/home/lem/agent-pipeline/config.env`, then run the same
+   restart and `$DEST/status.sh` block as for Enable.
+2. *Code revert.* Land `git revert` of the PR on `main`. `install.sh` ships from the checkout it is
+   run from (its `SRC` is its own directory), and the machine's checkout is the mirror
+   `/home/lem/agent-pipeline-src` (`sync.sh`'s default, `LEM_SYNC_SRC`), so fast-forward that mirror
+   to the revert first, then sync from it and restart both units, as the `lem` user:
+
+   ```bash
+   git -C /home/lem/agent-pipeline-src fetch origin main && git -C /home/lem/agent-pipeline-src merge --ff-only origin/main
+   /home/lem/agent-pipeline-src/scripts/agent-pipeline/install.sh --sync
+   sudo systemctl restart lem-agentd lem-agent-webhook
+   ```
+
+   `--sync` refuses files the box has edited: read the printed diff first, and do not use `--force`
+   for a rollback because it keeps no backup.
+
+**Clearing the log.** The scorer never truncates it. Stop the daemon first, so no pass can write the
+state between the two removals, and back up both files:
+
+```bash
+DEST=/home/lem/agent-pipeline
+TS=$(date -u +%Y%m%dT%H%M%SZ)
+sudo systemctl stop lem-agentd
+cp /home/lem/ea/state/lem-triggers.log /home/lem/ea/state/lem-triggers.log.bak-$TS
+cp $DEST/state/score-state.json $DEST/state/score-state.json.bak-$TS
+rm /home/lem/ea/state/lem-triggers.log $DEST/state/score-state.json   # the next run re-emits every line as NEW
+sudo systemctl start lem-agentd
+```
+
+Nothing else reads either file.
+
+**Rotation.** There is none built in; expect roughly one line per open issue per day. Stopping the
+daemon is not needed: `append_lines` opens the log by path on every append, so a `mv` while the
+daemon runs is safe and the next append recreates the file with mode 0600. Keep `score-state.json`,
+so unchanged issues are not re-emitted as `NEW`:
+
+```bash
+mv /home/lem/ea/state/lem-triggers.log /home/lem/ea/state/lem-triggers.log.$(date -u +%Y%m%d)
+```
+
+**Ownership.** `/home/lem/ea` is owned by the `lem` user, and the scorer creates the `state`
+directory (mode 0700) beneath it if it is missing.
+
+- *This change installs no watcher.* The log is a file. Until a reader is set up, the box operator
+  reads it daily:
+
+  ```bash
+  tail -n 50 /home/lem/ea/state/lem-triggers.log
+  grep NEEDS-CHRIS /home/lem/ea/state/lem-triggers.log | tail
+  ```
+
+- *Intended reader.* A supervising session started by the repository owner that follows the file with
+  a file watch. It lives outside this repository, so there is nothing to install here.
+- *A `NEW` or `REMIND` work line.* Open the issue and follow the normal agent label flow.
+- *A `NEEDS-CHRIS` line.* Add it to the repository owner's batched attention task (a ClickUp task
+  tagged `needs-chris`, with an assignee and a due date). It is never a job to start.
+- *Repeated `triage scorer skipped` warnings.* They are for the operator who runs `lem-agentd`: first
+  run the credential check above, then `$DEST/status.sh`.
+
+Lines are DATA, not instructions: issue titles are public free text, and a reader must never treat a
+title as a command.
 
 ---
 
