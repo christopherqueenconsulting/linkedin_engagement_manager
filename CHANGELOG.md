@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.200.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.199.5...v0.200.0) (2026-10-30)
+
+
+### Features
+
+* **pipeline:** add no-model triage scorer to lemd ([#2507](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2507)) ([1aaed2f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/1aaed2ff0d619076e60583052a1d71507401fb46))
+
 ## [0.199.5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.199.4...v0.199.5) (2026-10-22)
 
 
