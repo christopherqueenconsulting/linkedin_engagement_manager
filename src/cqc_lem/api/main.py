@@ -2976,6 +2976,13 @@ def _linkedin_vanity_name(profile_url: Optional[str]) -> Optional[str]:
     return segments[1].casefold()
 
 
+def _linkedin_exception_status_code(exc: BaseException) -> Optional[int]:
+    """Read HTTP status from SDK or requests exceptions without logging response bodies."""
+    response = getattr(exc, "response", None)
+    status_code = getattr(exc, "status_code", None) or getattr(response, "status_code", None)
+    return status_code if isinstance(status_code, int) else None
+
+
 @app.get("/auth/linkedin/analytics/", response_model=None, include_in_schema=False)
 @router.get("/auth/linkedin/analytics/", response_model=None, include_in_schema=False)
 def member_analytics_auth_init(session_token: Optional[str] = None) -> RedirectResponse:
@@ -2995,6 +3002,8 @@ def member_analytics_auth_init(session_token: Optional[str] = None) -> RedirectR
         LI_MEMBER_POST_ANALYTICS_REDIRECT_URL,
     )
     state = f"{LI_STATE_SALT}:member_analytics:{session_token}"
+    # The Development app uses r_basicprofile to expose /me's app-scoped member ID and vanityName;
+    # these fields let the callback match the account because member IDs differ across apps.
     auth_url = client.generate_member_auth_url(
         state=state,
         scopes=["r_basicprofile", "r_member_postAnalytics"],
@@ -3003,7 +3012,7 @@ def member_analytics_auth_init(session_token: Optional[str] = None) -> RedirectR
 
 
 # LinkedIn redirects to the registered URI without `/api`; keep an API-prefixed alias as well.
-@app.get("/auth/linkedin/analytics/callback", response_model=None)
+@app.get("/auth/linkedin/analytics/callback", response_model=None, include_in_schema=False)
 @router.get("/auth/linkedin/analytics/callback", response_model=None, include_in_schema=False)
 def member_analytics_callback(code: Optional[str] = None, state: Optional[str] = None,
                              error: Optional[str] = None) -> RedirectResponse:
@@ -3012,6 +3021,7 @@ def member_analytics_callback(code: Optional[str] = None, state: Optional[str] =
     if error or not code:
         return _member_analytics_account_redirect({"li_analytics_error": "authorization_denied"})
 
+    # maxsplit=2 leaves the complete opaque session token in the final state segment.
     state_parts = (state or "").split(":", 2)
     if not LI_STATE_SALT or len(state_parts) != 3 or state_parts[0] != LI_STATE_SALT \
             or state_parts[1] != "member_analytics":
@@ -3030,9 +3040,8 @@ def member_analytics_callback(code: Optional[str] = None, state: Optional[str] =
     )
     try:
         token_response = client.exchange_auth_code_for_access_token(code)
-    except Exception as exc:
-        response = getattr(exc, "response", None)
-        status_code = getattr(exc, "status_code", None) or getattr(response, "status_code", None)
+    except (requests.RequestException, ValueError) as exc:
+        status_code = _linkedin_exception_status_code(exc)
         log_error("Member analytics token exchange failed", exc=exc, user_id=user_id,
                   status_code=status_code)
         return _member_analytics_account_redirect({"li_analytics_error": "token_exchange_failed"})
@@ -3044,15 +3053,14 @@ def member_analytics_callback(code: Optional[str] = None, state: Optional[str] =
         profile = RestliClient().get(
             resource_path="/me", access_token=access_token, version_string=LI_API_VERSION)
         if getattr(profile, "status_code", None) != 200:
-            log_info("Member analytics /me lookup returned non-200",
-                     status_code=getattr(profile, "status_code", None))
+            log_error("Member analytics /me lookup returned non-200", user_id=user_id,
+                      status_code=getattr(profile, "status_code", None))
             return _member_analytics_account_redirect({"li_analytics_error": "profile_lookup_failed"})
         entity = getattr(profile, "entity", None) or {}
         new_sub_id = entity.get("id") if isinstance(entity, dict) else None
         new_vanity_name = entity.get("vanityName") if isinstance(entity, dict) else None
-    except Exception as exc:
-        response = getattr(exc, "response", None)
-        status_code = getattr(exc, "status_code", None) or getattr(response, "status_code", None)
+    except (requests.RequestException, ValueError) as exc:
+        status_code = _linkedin_exception_status_code(exc)
         log_error("Member analytics /me failed", exc=exc, user_id=user_id,
                   status_code=status_code)
         return _member_analytics_account_redirect({"li_analytics_error": "profile_lookup_failed"})
