@@ -57,7 +57,7 @@ class TestMemberAnalyticsSweep:
              patch(f"{_POST}.quit_gracefully"):
             result = posting.auto_scrape_post_stats.run(user_id=1)
 
-        assert "Captured stats for 2 post(s)" in result
+        assert "Scraped stats for 2 post(s)" in result
         fetch.assert_called_once()
         assert scraper.call_count == 2
         first_api_token = scraper.call_args_list[0].kwargs["api_access_token"]

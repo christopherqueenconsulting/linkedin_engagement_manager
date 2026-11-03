@@ -2528,6 +2528,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/user/member-post-analytics-connection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Member Post Analytics Connection
+         * @description Status for the allowlisted temporary Community Management OAuth connection.
+         */
+        get: operations["get_member_post_analytics_connection_api_user_member_post_analytics_connection_get"];
+        put?: never;
+        post?: never;
+        /**
+         * Disconnect Member Post Analytics
+         * @description Remove only the separate analytics app token; retain the user's main LinkedIn connection.
+         */
+        delete: operations["disconnect_member_post_analytics_api_user_member_post_analytics_connection_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/user/newsletter-draft": {
         parameters: {
             query?: never;
@@ -3402,6 +3426,26 @@ export interface paths {
          *     quality (Veo + audio), charging credits at render time (refunded on failure).
          */
         post: operations["upgrade_video_api_video_upgrade_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/linkedin/analytics/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Member Analytics Callback
+         * @description Store separate-app analytics credentials without replacing the LEM publishing token.
+         */
+        get: operations["member_analytics_callback_auth_linkedin_analytics_callback_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -10859,6 +10903,68 @@ export interface operations {
             };
         };
     };
+    get_member_post_analytics_connection_api_user_member_post_analytics_connection_get: {
+        parameters: {
+            query: {
+                session_token: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    disconnect_member_post_analytics_api_user_member_post_analytics_connection_delete: {
+        parameters: {
+            query: {
+                session_token: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_str_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_newsletter_draft_endpoint_api_user_newsletter_draft_get: {
         parameters: {
             query: {
@@ -12587,6 +12693,39 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    member_analytics_callback_auth_linkedin_analytics_callback_get: {
+        parameters: {
+            query?: {
+                code?: string | null;
+                state?: string | null;
+                error?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
             };
             /** @description Validation Error */
             422: {

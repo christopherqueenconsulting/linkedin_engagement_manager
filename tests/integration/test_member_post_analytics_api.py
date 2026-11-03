@@ -63,7 +63,8 @@ class TestAnalyticsOAuth:
              patch(f"{_API}.AuthClient", return_value=client) as auth_client, \
              patch(f"{_API}.member_post_analytics_connection_available_for_user", return_value=True):
             response = api_client.get(
-                "/auth/linkedin/analytics/", params={"session_token": "session-token"})
+                "/auth/linkedin/analytics/", params={"session_token": "session-token"},
+                follow_redirects=False)
 
         assert response.status_code == 307
         auth_client.assert_called_once()
@@ -93,7 +94,8 @@ class TestAnalyticsOAuth:
              patch(f"{_API}.upsert_member_analytics_token", return_value=True) as save_token, \
              patch(f"{_API}.update_user_linkedin_token") as publish_token:
             response = api_client.get("/auth/linkedin/analytics/callback", params={
-                "code": "oauth-code", "state": "state-salt:member_analytics:session-token"})
+                "code": "oauth-code", "state": "state-salt:member_analytics:session-token"},
+                follow_redirects=False)
 
         assert response.status_code == 307
         location = response.headers["location"]
@@ -112,7 +114,8 @@ class TestAnalyticsOAuth:
              patch(f"{_API}.AuthClient", return_value=client), \
              patch(f"{_API}.member_post_analytics_enabled_for_user", return_value=True), \
              patch(f"{_API}.member_post_analytics_separate_app_enabled", return_value=False):
-            response = api_client.get("/auth/linkedin/", params={"session_token": "tok"})
+            response = api_client.get("/auth/linkedin/", params={"session_token": "tok"},
+                                      follow_redirects=False)
 
         assert response.status_code == 307
         scopes = client.generate_member_auth_url.call_args.kwargs["scopes"]
@@ -126,7 +129,8 @@ class TestAnalyticsOAuth:
              patch(f"{_API}.AuthClient", return_value=client), \
              patch(f"{_API}.member_post_analytics_enabled_for_user", return_value=True), \
              patch(f"{_API}.member_post_analytics_separate_app_enabled", return_value=True):
-            response = api_client.get("/auth/linkedin/", params={"session_token": "tok"})
+            response = api_client.get("/auth/linkedin/", params={"session_token": "tok"},
+                                      follow_redirects=False)
 
         assert response.status_code == 307
         scopes = client.generate_member_auth_url.call_args.kwargs["scopes"]
