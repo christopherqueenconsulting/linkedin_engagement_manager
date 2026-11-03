@@ -14624,8 +14624,15 @@
             "name": "state",
             "required": false,
             "schema": {
-              "title": "State",
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
             }
           }
         ],

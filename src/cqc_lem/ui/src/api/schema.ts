@@ -12689,7 +12689,7 @@ export interface operations {
         parameters: {
             query: {
                 code: string;
-                state?: string;
+                state?: string | null;
             };
             header?: never;
             path?: never;

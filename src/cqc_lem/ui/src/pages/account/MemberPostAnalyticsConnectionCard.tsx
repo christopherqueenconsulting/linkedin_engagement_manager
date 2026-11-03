@@ -43,7 +43,8 @@ export default function MemberPostAnalyticsConnectionCard() {
       <p className="text-xs text-fg-muted">
         Temporary LI Manage v2 connection for post analytics. It uses a separate encrypted token;
         your existing LinkedIn connection still handles publishing and other LEM actions. Connect
-        the same LinkedIn profile used by LEM.
+        the same LinkedIn profile used by LEM. Matching uses your public profile handle, so update
+        your profile URL in LEM first if your LinkedIn handle changed.
       </p>
       <p className="text-sm text-fg-muted">
         {data.connected

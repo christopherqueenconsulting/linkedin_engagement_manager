@@ -51,6 +51,14 @@ class TestAnalyticsConnectionSettings:
         assert response.status_code == 200
         delete_token.assert_called_once_with(1)
 
+    def test_disconnect_rejects_disallowed_user(self, api_client):
+        with patch(f"{_API}.get_session_user_id", return_value=1), \
+             patch(f"{_USER}.member_post_analytics_user_allowed", return_value=False):
+            response = api_client.delete(
+                "/api/user/member-post-analytics-connection", params={"session_token": "tok"})
+
+        assert response.status_code == 403
+
 
 class TestAnalyticsOAuth:
     def test_start_requests_only_cma_scopes_for_allowlisted_account(self, api_client):
@@ -129,6 +137,81 @@ class TestAnalyticsOAuth:
         restli_client.assert_not_called()
         save_token.assert_not_called()
         log_warning.assert_called_once()
+
+    def test_cma_callback_logs_denial_for_authenticated_user(self, api_client):
+        with patch(f"{_API}.guard_linkedin"), \
+             patch(f"{_API}.LI_STATE_SALT", "state-salt"), \
+             patch(f"{_API}.LI_MEMBER_POST_ANALYTICS_REDIRECT_URL",
+                   "https://lem.test/auth/linkedin/analytics/callback"), \
+             patch(f"{_API}.get_session_user_id", return_value=1), \
+             patch(f"{_API}.log_warning") as log_warning:
+            response = api_client.get("/auth/linkedin/analytics/callback", params={
+                "error": "access_denied",
+                "state": "state-salt:member_analytics:session-token"}, follow_redirects=False)
+
+        assert response.status_code == 307
+        assert parse_qs(urlparse(response.headers["location"]).query) == {
+            "li_analytics_error": ["authorization_denied"]}
+        log_warning.assert_called_once_with(
+            "Member analytics OAuth authorization denied or code missing", user_id=1,
+            has_error=True, has_code=False, status_code=None)
+
+    def test_cma_callback_logs_invalid_state(self, api_client):
+        with patch(f"{_API}.guard_linkedin"), \
+             patch(f"{_API}.LI_STATE_SALT", "state-salt"), \
+             patch(f"{_API}.LI_MEMBER_POST_ANALYTICS_REDIRECT_URL",
+                   "https://lem.test/auth/linkedin/analytics/callback"), \
+             patch(f"{_API}.log_warning") as log_warning:
+            response = api_client.get("/auth/linkedin/analytics/callback", params={
+                "code": "oauth-code", "state": "forged:member_analytics:session-token"},
+                follow_redirects=False)
+
+        assert response.status_code == 307
+        assert parse_qs(urlparse(response.headers["location"]).query) == {
+            "li_analytics_error": ["invalid_state"]}
+        log_warning.assert_called_once_with("Member analytics OAuth state invalid")
+
+    def test_cma_callback_logs_expired_session(self, api_client):
+        with patch(f"{_API}.guard_linkedin"), \
+             patch(f"{_API}.LI_STATE_SALT", "state-salt"), \
+             patch(f"{_API}.LI_MEMBER_POST_ANALYTICS_REDIRECT_URL",
+                   "https://lem.test/auth/linkedin/analytics/callback"), \
+             patch(f"{_API}.get_session_user_id", return_value=None), \
+             patch(f"{_API}.log_warning") as log_warning:
+            response = api_client.get("/auth/linkedin/analytics/callback", params={
+                "code": "oauth-code", "state": "state-salt:member_analytics:expired"},
+                follow_redirects=False)
+
+        assert response.status_code == 307
+        assert parse_qs(urlparse(response.headers["location"]).query) == {
+            "li_analytics_error": ["invalid_session"]}
+        log_warning.assert_called_once_with("Member analytics OAuth session is invalid")
+
+    def test_cma_callback_redirects_on_unexpected_linkedin_sdk_exception(self, api_client):
+        client = Mock()
+        client.exchange_auth_code_for_access_token.return_value = SimpleNamespace(
+            access_token="cma-token", expires_in=3600, scope="r_member_postAnalytics")
+        with patch(f"{_API}.guard_linkedin"), \
+             patch(f"{_API}.LI_STATE_SALT", "state-salt"), \
+             patch(f"{_API}.LI_MEMBER_POST_ANALYTICS_REDIRECT_URL",
+                   "https://lem.test/auth/linkedin/analytics/callback"), \
+             patch(f"{_API}.LI_API_VERSION", "202606"), \
+             patch(f"{_API}.get_session_user_id", return_value=1), \
+             patch(f"{_API}.member_post_analytics_connection_available_for_user", return_value=True), \
+             patch(f"{_API}.AuthClient", return_value=client), \
+             patch(f"{_API}.RestliClient") as restli_client, \
+             patch(f"{_API}.log_error") as log_error, \
+             patch(f"{_API}.upsert_member_analytics_token") as save_token:
+            restli_client.return_value.get.side_effect = RuntimeError("SDK failure")
+            response = api_client.get("/auth/linkedin/analytics/callback", params={
+                "code": "oauth-code", "state": "state-salt:member_analytics:session-token"},
+                follow_redirects=False)
+
+        assert response.status_code == 307
+        assert parse_qs(urlparse(response.headers["location"]).query) == {
+            "li_analytics_error": ["profile_lookup_failed"]}
+        log_error.assert_called_once()
+        save_token.assert_not_called()
 
     def test_main_app_only_requests_cma_scope_when_separate_app_bridge_is_off(self, api_client):
         client = Mock()

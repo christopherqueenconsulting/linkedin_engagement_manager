@@ -1245,7 +1245,7 @@ def disconnect_member_post_analytics(session_token: str) -> ResponseModel[str]:
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     if not member_post_analytics_user_allowed(user_id):
-        raise HTTPException(status_code=404, detail="Analytics connection is unavailable")
+        raise HTTPException(status_code=403, detail="Analytics connection is unavailable")
     if not delete_member_analytics_token(user_id):
         raise HTTPException(status_code=500, detail="Could not remove analytics connection")
     return ResponseModel(status_code=200, detail="Analytics app connection removed")

@@ -2839,7 +2839,7 @@ def _verify_assertion_for_user(credential: Dict[str, Any], challenge: str,
 def _linkedin_account_redirect(callback_url: str, params: dict[str, str]) -> RedirectResponse:
     """Build an account-page redirect from the host registered for one LinkedIn app."""
     parsed_url = urlparse(callback_url)
-    base_host = f"{parsed_url.scheme}://{parsed_url.netloc.split(':')[0]}"
+    base_host = f"{parsed_url.scheme}://{parsed_url.netloc}"
     if NGROK_CUSTOM_DOMAIN:
         base_host = "https://" + NGROK_CUSTOM_DOMAIN
     return RedirectResponse(url=f"{base_host}/account?{urlencode(params)}")
@@ -2875,7 +2875,7 @@ def linkedin_auth_init(session_token: Optional[str] = None) -> RedirectResponse:
 
 # LinkedIn OAuth callback lives outside /api since LinkedIn redirects here
 @app.get("/auth/linkedin/callback", response_model=None)
-def linkedin_callback(code: str, state: str = None) -> Union[ResponseModel, RedirectResponse]:
+def linkedin_callback(code: str, state: Optional[str] = None) -> Union[ResponseModel, RedirectResponse]:
     """LinkedIn's OAuth redirect target. Lives OUTSIDE `/api` because LinkedIn sends the browser here.
 
     `state` is `"<salt>:<session_token>"`, and the session it carries is what identifies the user —
@@ -3019,19 +3019,23 @@ def member_analytics_callback(code: Optional[str] = None, state: Optional[str] =
                              error: Optional[str] = None) -> RedirectResponse:
     """Store separate-app analytics credentials without replacing the LEM publishing token."""
     guard_linkedin("api.member_analytics_callback")
-    if error or not code:
-        return _member_analytics_account_redirect({"li_analytics_error": "authorization_denied"})
-
     # maxsplit=2 leaves the complete opaque session token in the final state segment.
     state_parts = (state or "").split(":", 2)
     if not LI_STATE_SALT or len(state_parts) != 3 or state_parts[0] != LI_STATE_SALT \
             or state_parts[1] != "member_analytics":
+        log_warning("Member analytics OAuth state invalid")
         return _member_analytics_account_redirect({"li_analytics_error": "invalid_state"})
     session_token = state_parts[2]
     user_id = get_session_user_id(session_token)
     if user_id is None:
+        log_warning("Member analytics OAuth session is invalid")
         return _member_analytics_account_redirect({"li_analytics_error": "invalid_session"})
+    if error or not code:
+        log_warning("Member analytics OAuth authorization denied or code missing", user_id=user_id,
+                    has_error=bool(error), has_code=bool(code), status_code=None)
+        return _member_analytics_account_redirect({"li_analytics_error": "authorization_denied"})
     if not member_post_analytics_connection_available_for_user(user_id):
+        log_warning("Member analytics OAuth connection is unavailable", user_id=user_id)
         return _member_analytics_account_redirect({"li_analytics_error": "connection_unavailable"})
 
     client = AuthClient(
@@ -3041,7 +3045,7 @@ def member_analytics_callback(code: Optional[str] = None, state: Optional[str] =
     )
     try:
         token_response = client.exchange_auth_code_for_access_token(code)
-    except (requests.RequestException, ValueError) as exc:
+    except Exception as exc:
         status_code = _linkedin_exception_status_code(exc)
         log_error("Member analytics token exchange failed", exc=exc, user_id=user_id,
                   status_code=status_code)
@@ -3066,7 +3070,7 @@ def member_analytics_callback(code: Optional[str] = None, state: Optional[str] =
         entity = getattr(profile, "entity", None) or {}
         new_sub_id = entity.get("id") if isinstance(entity, dict) else None
         new_vanity_name = entity.get("vanityName") if isinstance(entity, dict) else None
-    except (requests.RequestException, ValueError) as exc:
+    except Exception as exc:
         status_code = _linkedin_exception_status_code(exc)
         log_error("Member analytics /me failed", exc=exc, user_id=user_id,
                   status_code=status_code)
