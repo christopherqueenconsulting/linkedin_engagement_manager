@@ -172,6 +172,7 @@ from cqc_lem.utilities.env_constants import (
     LI_MEMBER_POST_ANALYTICS_REDIRECT_URL,
     LI_REDIRECT_URL,
     LI_STATE_SALT,
+    NGROK_CUSTOM_DOMAIN,
     SESSION_COOKIE_NAME,
 )
 from cqc_lem.utilities.linkedin.member_post_analytics import (
@@ -2839,8 +2840,8 @@ def _linkedin_account_redirect(callback_url: str, params: dict[str, str]) -> Red
     """Build an account-page redirect from the host registered for one LinkedIn app."""
     parsed_url = urlparse(callback_url)
     base_host = f"{parsed_url.scheme}://{parsed_url.netloc.split(':')[0]}"
-    if os.environ.get("NGROK_CUSTOM_DOMAIN"):
-        base_host = "https://" + os.environ["NGROK_CUSTOM_DOMAIN"]
+    if NGROK_CUSTOM_DOMAIN:
+        base_host = "https://" + NGROK_CUSTOM_DOMAIN
     return RedirectResponse(url=f"{base_host}/account?{urlencode(params)}")
 
 
@@ -2859,7 +2860,7 @@ def linkedin_auth_init(session_token: Optional[str] = None) -> RedirectResponse:
     # separate-app bridge mode a dedicated OAuth route stores a second token and leaves the
     # existing publishing token bound to the original app.
     user_id = get_session_user_id(session_token)
-    if (member_post_analytics_enabled_for_user(user_id)
+    if (user_id is not None and member_post_analytics_enabled_for_user(user_id)
             and not member_post_analytics_separate_app_enabled()):
         scopes.append("r_member_postAnalytics")
     # Embed the session_token in state so the callback can find the right user,
@@ -3049,6 +3050,12 @@ def member_analytics_callback(code: Optional[str] = None, state: Optional[str] =
     access_token = getattr(token_response, "access_token", None)
     if not access_token:
         return _member_analytics_account_redirect({"li_analytics_error": "no_access_token"})
+    granted_scopes = set(
+        (getattr(token_response, "scope", None) or "").replace(",", " ").split())
+    if "r_member_postAnalytics" not in granted_scopes:
+        log_warning("Member analytics OAuth scope was not granted", user_id=user_id,
+                    required_scope="r_member_postAnalytics")
+        return _member_analytics_account_redirect({"li_analytics_error": "scope_missing"})
     try:
         profile = RestliClient().get(
             resource_path="/me", access_token=access_token, version_string=LI_API_VERSION)
@@ -3065,6 +3072,7 @@ def member_analytics_callback(code: Optional[str] = None, state: Optional[str] =
                   status_code=status_code)
         return _member_analytics_account_redirect({"li_analytics_error": "profile_lookup_failed"})
 
+    # TODO(#2513): replace vanity-name bridge with a verified OIDC/subject identity bridge.
     # LinkedIn's member IDs are app-specific, so /me.id cannot bridge these apps. The public
     # vanity name is the only comparable field available without adding OIDC to the CMA app. This
     # catches accidental account mismatches, but is not cryptographic identity proof: handles can

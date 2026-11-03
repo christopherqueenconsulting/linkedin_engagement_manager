@@ -105,6 +105,31 @@ class TestAnalyticsOAuth:
         save_token.assert_called_once_with(1, "cma-member-id", "cma-token", 3600)
         publish_token.assert_not_called()
 
+    def test_cma_callback_rejects_token_without_analytics_scope(self, api_client):
+        client = Mock()
+        client.exchange_auth_code_for_access_token.return_value = SimpleNamespace(
+            access_token="cma-token", expires_in=3600, scope="r_basicprofile")
+        with patch(f"{_API}.guard_linkedin"), \
+             patch(f"{_API}.LI_STATE_SALT", "state-salt"), \
+             patch(f"{_API}.LI_MEMBER_POST_ANALYTICS_REDIRECT_URL",
+                   "https://lem.test/auth/linkedin/analytics/callback"), \
+             patch(f"{_API}.get_session_user_id", return_value=1), \
+             patch(f"{_API}.member_post_analytics_connection_available_for_user", return_value=True), \
+             patch(f"{_API}.AuthClient", return_value=client), \
+             patch(f"{_API}.RestliClient") as restli_client, \
+             patch(f"{_API}.upsert_member_analytics_token") as save_token, \
+             patch(f"{_API}.log_warning") as log_warning:
+            response = api_client.get("/auth/linkedin/analytics/callback", params={
+                "code": "oauth-code", "state": "state-salt:member_analytics:session-token"},
+                follow_redirects=False)
+
+        assert response.status_code == 307
+        assert parse_qs(urlparse(response.headers["location"]).query) == {
+            "li_analytics_error": ["scope_missing"]}
+        restli_client.assert_not_called()
+        save_token.assert_not_called()
+        log_warning.assert_called_once()
+
     def test_main_app_only_requests_cma_scope_when_separate_app_bridge_is_off(self, api_client):
         client = Mock()
         client.generate_member_auth_url.return_value = "https://linkedin.test/authorize"
