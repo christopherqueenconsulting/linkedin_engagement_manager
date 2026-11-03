@@ -134,6 +134,7 @@ from cqc_lem.utilities.db import (
     get_user_subscription_info,
     get_video_credit_balance,
     insert_connection_request,
+    get_linkedin_profile_url_by_user_id,
     insert_feedback,
     insert_post,
     insert_scheduled_dm,
@@ -155,6 +156,7 @@ from cqc_lem.utilities.db import (
     update_scheduled_dm,
     update_scheduled_dm_status,
     update_user_linkedin_token,
+    upsert_member_analytics_token,
     user_approver,
     user_owns_posts,
 )
@@ -165,6 +167,9 @@ from cqc_lem.utilities.env_constants import (
     LI_CLIENT_ID,
     LI_CLIENT_SECRET,
     LI_REDIRECT_URL,
+    LI_MEMBER_POST_ANALYTICS_CLIENT_ID,
+    LI_MEMBER_POST_ANALYTICS_CLIENT_SECRET,
+    LI_MEMBER_POST_ANALYTICS_REDIRECT_URL,
     LI_STATE_SALT,
     SESSION_COOKIE_NAME,
 )
@@ -2834,12 +2839,22 @@ def linkedin_auth_init(session_token: str = None) -> RedirectResponse:
     """
     guard_linkedin("api.linkedin_auth_init")
     client = AuthClient(LI_CLIENT_ID, LI_CLIENT_SECRET, LI_REDIRECT_URL)
+    scopes = ["openid", "profile", "email", "w_member_social"]
+    # CMA access is an explicit, allowlisted canary. In main-app mode it is requested here; in
+    # separate-app bridge mode a dedicated OAuth route stores a second token and leaves the
+    # existing publishing token bound to the original app.
+    from cqc_lem.utilities.linkedin.member_post_analytics import \
+        member_post_analytics_enabled_for_user, member_post_analytics_separate_app_enabled
+    user_id = get_session_user_id(session_token)
+    if (member_post_analytics_enabled_for_user(user_id)
+            and not member_post_analytics_separate_app_enabled()):
+        scopes.append("r_member_postAnalytics")
     # Embed the session_token in state so the callback can find the right user,
     # even when the LinkedIn account email differs from the login email.
     state = f"{LI_STATE_SALT}:{session_token}" if session_token else LI_STATE_SALT
     auth_url = client.generate_member_auth_url(
         state=state,
-        scopes=["openid", "profile", "email", "w_member_social"]
+        scopes=scopes,
     )
     return RedirectResponse(url=auth_url)
 
@@ -2938,6 +2953,122 @@ def linkedin_callback(code: str, state: str = None) -> Union[ResponseModel, Redi
         )
 
     return _account_redirect({'email': user_email, 'li_connected': '1'})
+
+
+def _member_analytics_account_redirect(params: dict) -> RedirectResponse:
+    """Return OAuth results to the account page using the Dev-app callback's host."""
+    from urllib.parse import urlencode
+
+    parsed_url = urlparse(LI_MEMBER_POST_ANALYTICS_REDIRECT_URL)
+    base_host = f"{parsed_url.scheme}://{parsed_url.netloc.split(':')[0]}"
+    if os.environ.get('NGROK_CUSTOM_DOMAIN'):
+        base_host = "https://" + os.environ.get('NGROK_CUSTOM_DOMAIN')
+    return RedirectResponse(url=f"{base_host}/account?{urlencode(params)}")
+
+
+def _linkedin_vanity_name(profile_url: Optional[str]) -> Optional[str]:
+    """Extract the public /in/{vanityName} handle stored for a LEM user."""
+    parsed = urlparse(profile_url or "")
+    segments = [segment for segment in parsed.path.split("/") if segment]
+    if len(segments) < 2 or segments[0].casefold() != "in":
+        return None
+    return segments[1].casefold()
+
+
+@app.get("/auth/linkedin/analytics/", response_model=None, include_in_schema=False)
+@router.get("/auth/linkedin/analytics/", response_model=None, include_in_schema=False)
+def member_analytics_auth_init(session_token: str = None) -> RedirectResponse:
+    """Begin the user-1-only OAuth flow for the temporary separate Development-tier app."""
+    guard_linkedin("api.member_analytics_auth_init")
+    from cqc_lem.utilities.linkedin.member_post_analytics import \
+        member_post_analytics_connection_available_for_user
+
+    user_id = get_session_user_id(session_token)
+    if not member_post_analytics_connection_available_for_user(user_id):
+        raise HTTPException(status_code=404, detail="Analytics connection is unavailable")
+    if not LI_STATE_SALT:
+        raise HTTPException(status_code=503, detail="LinkedIn OAuth state is not configured")
+
+    client = AuthClient(
+        LI_MEMBER_POST_ANALYTICS_CLIENT_ID,
+        LI_MEMBER_POST_ANALYTICS_CLIENT_SECRET,
+        LI_MEMBER_POST_ANALYTICS_REDIRECT_URL,
+    )
+    state = f"{LI_STATE_SALT}:member_analytics:{session_token}"
+    auth_url = client.generate_member_auth_url(
+        state=state,
+        scopes=["r_basicprofile", "r_member_postAnalytics"],
+    )
+    return RedirectResponse(url=auth_url)
+
+
+@app.get("/auth/linkedin/analytics/callback", response_model=None)
+def member_analytics_callback(code: Optional[str] = None, state: Optional[str] = None,
+                             error: Optional[str] = None) -> RedirectResponse:
+    """Store separate-app analytics credentials without replacing the LEM publishing token."""
+    guard_linkedin("api.member_analytics_callback")
+    if error or not code:
+        return _member_analytics_account_redirect({"li_analytics_error": "authorization_denied"})
+
+    state_parts = (state or "").split(":", 2)
+    if not LI_STATE_SALT or len(state_parts) != 3 or state_parts[0] != LI_STATE_SALT \
+            or state_parts[1] != "member_analytics":
+        return _member_analytics_account_redirect({"li_analytics_error": "invalid_state"})
+    session_token = state_parts[2]
+    user_id = get_session_user_id(session_token)
+    from cqc_lem.utilities.linkedin.member_post_analytics import \
+        member_post_analytics_connection_available_for_user
+    if not member_post_analytics_connection_available_for_user(user_id):
+        return _member_analytics_account_redirect({"li_analytics_error": "connection_unavailable"})
+
+    client = AuthClient(
+        LI_MEMBER_POST_ANALYTICS_CLIENT_ID,
+        LI_MEMBER_POST_ANALYTICS_CLIENT_SECRET,
+        LI_MEMBER_POST_ANALYTICS_REDIRECT_URL,
+    )
+    try:
+        token_response = client.exchange_auth_code_for_access_token(code)
+    except Exception as exc:
+        log_info(f"Member analytics token exchange failed: {type(exc).__name__}")
+        return _member_analytics_account_redirect({"li_analytics_error": "token_exchange_failed"})
+
+    access_token = getattr(token_response, "access_token", None)
+    if not access_token:
+        return _member_analytics_account_redirect({"li_analytics_error": "no_access_token"})
+    try:
+        profile = RestliClient().get(resource_path="/me", access_token=access_token)
+        if getattr(profile, "status_code", None) != 200:
+            return _member_analytics_account_redirect({"li_analytics_error": "profile_lookup_failed"})
+        entity = getattr(profile, "entity", None) or {}
+        new_sub_id = entity.get("id") if isinstance(entity, dict) else None
+        new_vanity_name = entity.get("vanityName") if isinstance(entity, dict) else None
+    except Exception as exc:
+        log_info(f"Member analytics /me failed: {type(exc).__name__}")
+        return _member_analytics_account_redirect({"li_analytics_error": "profile_lookup_failed"})
+
+    # LinkedIn's member IDs are app-specific. Compare the public vanity name instead; the CMA
+    # product grants r_basicprofile, so this does not require adding the separate OIDC product.
+    stored_vanity_name = _linkedin_vanity_name(get_linkedin_profile_url_by_user_id(user_id))
+    if not new_sub_id or not new_vanity_name or not stored_vanity_name:
+        log_info("Member analytics OAuth profile could not be matched", user_id=user_id)
+        return _member_analytics_account_redirect({"li_analytics_error": "identity_unverified"})
+    if new_vanity_name.casefold() != stored_vanity_name:
+        log_info("Member analytics OAuth profile did not match the existing LEM account",
+                 user_id=user_id)
+        return _member_analytics_account_redirect({"li_analytics_error": "account_mismatch"})
+
+    stored = upsert_member_analytics_token(
+        user_id,
+        new_sub_id,
+        access_token,
+        getattr(token_response, "expires_in", None),
+    )
+    if not stored:
+        return _member_analytics_account_redirect({"li_analytics_error": "token_store_failed"})
+    log_info("Member analytics OAuth connection stored", user_id=user_id,
+             expires_in=getattr(token_response, "expires_in", None),
+             scope=getattr(token_response, "scope", None))
+    return _member_analytics_account_redirect({"li_analytics_connected": "1"})
 
 
 # --- Occasion / milestone posts (issue #1074) --------------------------------------------------

@@ -6,6 +6,7 @@ import { useAccountReadiness } from '../../hooks/useAccountReadiness'
 import { useSuggestOnly } from '../../hooks/useEngagementMode'
 import LinkedInSessionCard from '../../components/LinkedInSessionCard'
 import LinkedInSignInStatusCard from './LinkedInSignInStatusCard'
+import MemberPostAnalyticsConnectionCard from './MemberPostAnalyticsConnectionCard'
 import { useStepUp } from '../../hooks/useStepUp'
 
 const LI_AUTH_URL = '/api/auth/linkedin/'
@@ -184,6 +185,8 @@ export default function LinkedInLoginCard() {
           approval the user was emailed about (issue #933). A saved session says only that a
           credential exists — this says whether it worked. */}
       <LinkedInSignInStatusCard />
+
+      <MemberPostAnalyticsConnectionCard />
 
       {/* LinkedIn Automation Password — DEPRECATED, collapsed behind a disclosure so the cookie
           path above is the one users take. Kept working for accounts that already rely on it. */}

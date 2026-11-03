@@ -136,6 +136,7 @@ from cqc_lem.utilities.db import (
     create_auth_challenge,
     create_pin_for_email,
     create_session,
+    delete_member_analytics_token,
     delete_auth_factor,
     delete_engagement_target,
     delete_pin_for_email,
@@ -153,6 +154,8 @@ from cqc_lem.utilities.db import (
     get_follower_stats,
     get_latest_edition_scheduled_for,
     get_lead_magnet_settings,
+    get_member_analytics_access_token,
+    get_member_analytics_token_info,
     get_linkedin_profile_url_by_user_id,
     get_newsletter_edition,
     get_newsletter_settings,
@@ -223,7 +226,7 @@ from cqc_lem.utilities.geocoding import GeocodeError, geocode_city
 from cqc_lem.utilities.group_post_slot import group_skip_undo_open, skip_undo_deadline
 from cqc_lem.utilities.linkedin.helper import load_profile_for_user
 from cqc_lem.utilities.linkedin.login_status import get_login_status
-from cqc_lem.utilities.linkedin.token_refresh import resolve_token_status
+from cqc_lem.utilities.linkedin.token_refresh import get_token_expiry, resolve_token_status
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
 from cqc_lem.utilities.observability import FEATURE_CONTENT, llm_trace
 from cqc_lem.utilities.post_image import (
@@ -1195,6 +1198,58 @@ def get_user_token_status(session_token: str) -> ResponseModel[dict[str, Any]]:
     # One decision core shared with the daily renewal beat (issue #600), so the countdown the SPA
     # renders and the one that triggers the reconnect email can never disagree.
     return ResponseModel(status_code=200, detail=resolve_token_status(user_id))
+
+
+@router.get("/member-post-analytics-connection")
+def get_member_post_analytics_connection(session_token: str) -> ResponseModel[dict[str, Any]]:
+    """Status for the allowlisted temporary Community Management OAuth connection."""
+    user_id = _main.get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    from cqc_lem.utilities.linkedin.member_post_analytics import (
+        member_post_analytics_connection_available_for_user,
+        member_post_analytics_enabled_for_user,
+        member_post_analytics_separate_app_enabled,
+        member_post_analytics_user_allowed,
+    )
+    allowed = member_post_analytics_user_allowed(user_id)
+    connect_available = member_post_analytics_connection_available_for_user(user_id)
+    if not allowed:
+        return ResponseModel(status_code=200, detail={
+            "available": False, "connect_available": False,
+            "analytics_enabled": False, "separate_app": False,
+            "connected": False, "saved_token": False, "expired": False, "expires_at": None,
+        })
+    info = get_member_analytics_token_info(user_id)
+    expiry = get_token_expiry(info or {})
+    access_token = get_member_analytics_access_token(user_id)
+    saved_token = bool(info and info.get("access_token"))
+    return ResponseModel(status_code=200, detail={
+        # Keep disconnect controls visible after cutover, while OAuth reconnect remains available
+        # only when the separate-app bridge is actively configured.
+        "available": connect_available or saved_token,
+        "connect_available": connect_available,
+        "analytics_enabled": member_post_analytics_enabled_for_user(user_id),
+        "separate_app": member_post_analytics_separate_app_enabled(),
+        "connected": bool(access_token),
+        "saved_token": saved_token,
+        "expired": bool(saved_token and not access_token),
+        "expires_at": expiry.isoformat() if expiry else None,
+    })
+
+
+@router.delete("/member-post-analytics-connection")
+def disconnect_member_post_analytics(session_token: str) -> ResponseModel[str]:
+    """Remove only the separate analytics app token; retain the user's main LinkedIn connection."""
+    user_id = _main.get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    from cqc_lem.utilities.linkedin.member_post_analytics import member_post_analytics_user_allowed
+    if not member_post_analytics_user_allowed(user_id):
+        raise HTTPException(status_code=404, detail="Analytics connection is unavailable")
+    if not delete_member_analytics_token(user_id):
+        raise HTTPException(status_code=500, detail="Could not remove analytics connection")
+    return ResponseModel(status_code=200, detail="Analytics app connection removed")
 
 
 @router.get("/linkedin-signin-status")

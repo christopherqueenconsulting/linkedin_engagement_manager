@@ -20,6 +20,11 @@ It is a token probe, not a browser session, so it holds no Selenium lane and is 
         < scripts/linkedin_post_stats_api_probe.py
 
 One JSON report on stdout — paste it into the issue. No token or response header is ever echoed.
+For a token minted by a separate Development-tier app, an operator with approved host access
+must provide it through a mode-0600 token file and pass that file with ``--token-file``. If host
+sudo policy denies Docker copy or execution, stop and ask an authorized host administrator to run
+the probe using the deployment's approved procedure. Do not try alternate Docker command forms or
+change sudoers policy.
 
 Three facts the report is built to separate, because they demand different fixes:
 
@@ -41,7 +46,9 @@ touch the network.
 
 import argparse
 import json
+import os
 import re
+import stat
 import sys
 import urllib.error
 import urllib.parse
@@ -398,6 +405,21 @@ def _resolve_from_db(args, need_url: bool) -> tuple[Optional[str], Optional[str]
     return token, post_url, stored
 
 
+def _read_token_file(path: str) -> str:
+    """Read a temporary secret file only when group/other permissions are absent."""
+    try:
+        metadata = os.stat(path)
+        if stat.S_IMODE(metadata.st_mode) & 0o077:
+            raise ProbeError("token file must have mode 0600 or stricter")
+        with open(path, encoding="utf-8") as token_file:
+            token = token_file.read().strip()
+    except OSError as exc:
+        raise ProbeError("could not read token file") from exc
+    if not token:
+        raise ProbeError("token file was empty")
+    return token
+
+
 def main(argv: Optional[list] = None) -> int:
     parser = argparse.ArgumentParser(description="Probe LinkedIn member post stats (read-only)")
     parser.add_argument("--user-id", type=int, default=1, help="whose stored token to probe with")
@@ -405,7 +427,8 @@ def main(argv: Optional[list] = None) -> int:
                                                     "stored scrape row to compare against")
     parser.add_argument("--post-url", help="post permalink (skips the log lookup)")
     parser.add_argument("--entity-urn", help="share/ugcPost URN (skips URL parsing entirely)")
-    parser.add_argument("--token", help="access token (default: the user's, from the DB)")
+    parser.add_argument("--token", help="access token (visible in process arguments; avoid for real credentials)")
+    parser.add_argument("--token-file", help="mode-0600 file holding a one-off access token")
     parser.add_argument("--version", help="LinkedIn-Version (default: LI_API_VERSION)")
     parser.add_argument("--metrics", nargs="+", default=list(DEFAULT_METRICS),
                         choices=list(METRIC_COLUMNS))
@@ -425,6 +448,10 @@ def main(argv: Optional[list] = None) -> int:
         version = LI_API_VERSION
 
     try:
+        if args.token and args.token_file:
+            raise ProbeError("choose either --token or --token-file")
+        if args.token_file:
+            args.token = _read_token_file(args.token_file)
         token, post_url, stored = _resolve_from_db(args, need_url=not args.entity_urn)
         if not token:
             raise ProbeError(f"no LinkedIn access token for user {args.user_id}")

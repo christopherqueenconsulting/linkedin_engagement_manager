@@ -95,6 +95,7 @@ from cqc_lem.utilities.db import (
     get_comment_outcome_targets,
     get_engagement_preferences,
     get_lead_magnet_settings,
+    get_latest_post_stats,
     get_linkedin_profile_url_by_user_id,
     get_post_archetype,
     get_post_content,
@@ -136,6 +137,7 @@ from cqc_lem.utilities.db import (
 from cqc_lem.utilities.demo_mode import DemoModeError
 from cqc_lem.utilities.dm_templates import render_dm_placeholders
 from cqc_lem.utilities.engagement_mode import SUGGEST_ONLY_SKIP_MESSAGE, skip_browser_lane
+from cqc_lem.utilities.env_constants import LI_API_VERSION
 from cqc_lem.utilities.flags import OCCASION_NATIVE_PUBLISH, flag_enabled
 from cqc_lem.utilities.golden_hour import _record_golden_hour_report, _reply_outcome
 from cqc_lem.utilities.human_pacing import (
@@ -151,6 +153,13 @@ from cqc_lem.utilities.lead_scoring import (
 # The native occasion composer's mechanics (#1088). Imported as a MODULE so its state constants and
 # its drive function are one patch target — the task here owns the policy and nothing else.
 from cqc_lem.utilities.linkedin import share_composer as _occasion, zero_walk as _zw
+from cqc_lem.utilities.linkedin.member_post_analytics import (
+    fetch_member_post_analytics,
+    get_member_post_analytics_access_token,
+    log_member_post_analytics_failure,
+    member_post_analytics_enabled_for_user,
+    member_post_analytics_max_posts_per_sweep,
+)
 
 # The SDUI mechanics every engagement cluster shares moved down to `utilities/linkedin/*` (#1154).
 # They are imported by their ORIGINAL names, underscore and all: the bodies moved verbatim, so one
@@ -438,7 +447,8 @@ def _swap_post_stats_session(user_id: int, old_driver) -> Tuple[Optional[object]
 
 
 def _scrape_one_post_stats(driver, user_id: int, pid: int, url: str, post_types: dict,
-                           shipped_variants: dict) -> bool:
+                           shipped_variants: dict, api_access_token: Optional[str] = None,
+                           api_state: Optional[dict] = None) -> bool:
     """Read one post's detail + analytics pages and record its stats. True when a row was written.
 
     A crashed tab raises out of here (from either navigation) so the sweep can reopen the session
@@ -457,6 +467,16 @@ def _scrape_one_post_stats(driver, user_id: int, pid: int, url: str, post_types:
     # the analytics view doesn't render can't zero out one the detail page did.
     for key, val in _post_analytics_counts(driver, url).items():
         counts[key] = max(counts.get(key) or 0, val)
+    api_counts = {}
+    if api_access_token and not (api_state or {}).get("disabled", False):
+        api_counts, api_failure = fetch_member_post_analytics(
+            url, api_access_token, LI_API_VERSION)
+        for key, val in api_counts.items():
+            counts[key] = max(counts.get(key) or 0, val)
+        if api_failure:
+            log_member_post_analytics_failure(api_failure, user_id, pid)
+            if api_state is not None:
+                api_state["disabled"] = True
     # WHICH signals the two pages put a number against, as opposed to what those numbers
     # were (issue #2023). `_post_social_counts` flattens a label it never found to 0, which
     # is right for scoring and wrong for a stored reading: "the analytics page rendered no
@@ -465,7 +485,8 @@ def _scrape_one_post_stats(driver, user_id: int, pid: int, url: str, post_types:
     # text is readable here without navigating again — the same thing the zero-walk
     # cross-check below already relies on.
     seen = (_rendered_signal_labels(detail_text)
-            | _rendered_signal_labels(_main_text(driver)))
+            | _rendered_signal_labels(_main_text(driver))
+            | set(api_counts))
     # NOTHING parsed (a readable page always yields the full zero-filled dict) means the page
     # never rendered — auth wall, 429, dead permalink — not that the post earned nothing.
     # Recording those zeros publishes a fabricated row to the analytics panel, and for a
@@ -479,7 +500,7 @@ def _scrape_one_post_stats(driver, user_id: int, pid: int, url: str, post_types:
     # layout score identically. Ask the page — the analytics view is the one on screen now,
     # so both texts are cross-checked — and leave a drifted read uncaptured for the same
     # reason an unreadable one is left: a written zero is permanent for a backfilled post.
-    if not any(counts.values()):
+    if not any(counts.values()) and not api_counts:
         texts = [text for text in (detail_text, _main_text(driver)) if text is not None]
         native = sum(_rendered_count_signals(text) for text in texts) if texts else None
         if _grade_zero_walk(native, "Post social-count parse", user_id=user_id,
@@ -507,14 +528,42 @@ def _scrape_one_post_stats(driver, user_id: int, pid: int, url: str, post_types:
     return True
 
 
+def _record_member_api_post_stats(user_id: int, post_id: int, post_url: str,
+                                  post_types: dict, shipped_variants: dict,
+                                  api_counts: dict) -> bool:
+    """Persist a complete API read, preserving any previously higher cumulative values."""
+    previous = get_latest_post_stats(user_id, post_id) or {}
+    counts = {}
+    for name in ("impressions", "reactions", "comments", "reposts", "saves"):
+        current = api_counts.get(name)
+        if current is None:
+            return False
+        prior = previous.get(name)
+        counts[name] = max(current, prior if isinstance(prior, int) else 0)
+
+    own_comments = own_comment_count_or_none(user_id, post_url)
+    recorded = record_post_stats(
+        user_id, post_id, counts["reactions"], counts["comments"],
+        reposts=counts["reposts"], impressions=counts["impressions"],
+        saves=counts["saves"], own_comments=own_comments)
+    if not recorded:
+        return False
+    track_post_outcome(
+        post_id=post_id, reactions=counts["reactions"], comments=counts["comments"],
+        reposts=counts["reposts"], impressions=counts["impressions"] or None,
+        saves=counts["saves"], own_comments=own_comments, user_id=user_id,
+        post_type=post_types.get(post_id), variant_key=shipped_variants.get(post_id))
+    return True
+
+
 @shared_task.task(name='cqc_lem.app.run_automation.auto_scrape_post_stats',
                   bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
                   queue='se_content')
 def auto_scrape_post_stats(self, user_id: int):
     """Capture reactions/comments/reposts/impressions/saves for each of the user's recent posts
-    (feeds personalized post-time recommendations + the content feedback loop). Reuses the
-    social-count extraction on each post's detail page, then on its analytics page for the
-    signals the detail page never renders (saves, impressions).
+    (feeds personalized post-time recommendations + the content feedback loop). An allowlisted
+    Community API token captures up to the configured post cap first; Selenium handles the
+    remaining posts and serves as fallback when an API read fails.
     """
     if skip_browser_lane(user_id, "auto_scrape_post_stats"):
         return SUGGEST_ONLY_SKIP_MESSAGE
@@ -535,6 +584,41 @@ def auto_scrape_post_stats(self, user_id: int):
     # Same one-query-per-sweep reason: every outcome event names the FORMAT its post shipped as
     # (issue #1513), so reach and saves are readable per format instead of pooled.
     post_types = get_post_types_for_user(user_id)
+    api_access_token = None
+    api_state = {"disabled": False}
+    api_max_posts = 0
+    api_posts_attempted = 0
+    api_captured = 0
+    if member_post_analytics_enabled_for_user(user_id):
+        api_max_posts = member_post_analytics_max_posts_per_sweep()
+        if api_max_posts:
+            # In the temporary Dev-app bridge this is a separately encrypted OAuth token; the
+            # normal users.access_token remains bound to the existing LEM app.
+            api_access_token = get_member_post_analytics_access_token(user_id)
+    if api_access_token and api_max_posts:
+        api_only_ids = set()
+        for pid in post_ids:
+            if api_posts_attempted >= api_max_posts:
+                break
+            url = get_post_url_from_log_for_user(user_id, pid)
+            if not url:
+                continue
+            api_posts_attempted += 1
+            api_counts, api_failure = fetch_member_post_analytics(
+                url, api_access_token, LI_API_VERSION)
+            if api_failure:
+                log_member_post_analytics_failure(api_failure, user_id, pid)
+                api_state["disabled"] = True
+                break
+            if _record_member_api_post_stats(
+                    user_id, pid, url, post_types, shipped_variants, api_counts):
+                api_only_ids.add(pid)
+                api_captured += 1
+        if api_only_ids:
+            post_ids = [pid for pid in post_ids if pid not in api_only_ids]
+    if not post_ids:
+        return lane_result(landed_or_no_op(api_captured),
+                           f"Captured stats for {api_captured} post(s) through Community API")
     try:
         # needs_images=True — the fastboot exemption noted at the top of this module (#2020).
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Post Stats",
@@ -549,9 +633,14 @@ def auto_scrape_post_stats(self, user_id: int):
         # its next scheduled beat.
         log_warning("Post stats scrape skipped — LinkedIn rate-limited", exc=e, user_id=user_id,
                     task_name="auto_scrape_post_stats")
-        return lane_result(TaskOutcome.NO_OP, "Skipped — rate limited")
+        return lane_result(landed_or_no_op(api_captured),
+                           "Skipped browser fallback — rate limited" if api_captured else
+                           "Skipped — rate limited")
     except Exception as e:
         log_error("Error getting profile for post stats", exc=e, user_id=user_id, task_name="auto_scrape_post_stats")
+        if api_captured:
+            return lane_result(landed_or_no_op(api_captured),
+                               f"Community API updated {api_captured} post(s); browser fallback failed")
         return lane_result(TaskOutcome.FAILED, f"Failed: {e}", cause=e)
     # One renderer reading post after post is what the node memcg OOM-kills (#2112, same fault as
     # #1746): recycle the session every `recycle_every` posts, and when a tab still crashes, reopen
@@ -569,12 +658,20 @@ def auto_scrape_post_stats(self, user_id: int):
             if recycle_every and read_on_session >= recycle_every:
                 driver, rate_limited = _swap_post_stats_session(user_id, driver)
                 if driver is None:
-                    return lane_result(landed_or_no_op(scraped) if rate_limited else TaskOutcome.FAILED,
-                                       f"Scraped stats for {scraped} post(s) before the session could "
+                    return lane_result(landed_or_no_op(scraped + api_captured)
+                                       if rate_limited else TaskOutcome.FAILED,
+                                       f"Captured stats for {scraped + api_captured} post(s) before "
+                                       f"the session could "
                                        f"not be reopened")
                 read_on_session = 0
             try:
-                recorded = _scrape_one_post_stats(driver, user_id, pid, url, post_types, shipped_variants)
+                post_api_token = (api_access_token if api_access_token
+                                  and api_posts_attempted < api_max_posts else None)
+                if post_api_token:
+                    api_posts_attempted += 1
+                recorded = _scrape_one_post_stats(
+                    driver, user_id, pid, url, post_types, shipped_variants,
+                    api_access_token=post_api_token, api_state=api_state)
             except Exception as e:
                 if not is_tab_crashed(e):
                     raise
@@ -601,7 +698,10 @@ def auto_scrape_post_stats(self, user_id: int):
             read_on_session += 1
             scraped += int(recorded)
             i += 1
-        return lane_result(landed_or_no_op(scraped), f"Scraped stats for {scraped} post(s)")
+        total_captured = scraped + api_captured
+        return lane_result(landed_or_no_op(total_captured),
+                           f"Captured stats for {total_captured} post(s) "
+                           f"({api_captured} through Community API)")
     finally:
         if driver is not None:
             quit_gracefully(driver)

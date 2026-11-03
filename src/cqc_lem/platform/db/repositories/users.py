@@ -332,6 +332,8 @@ def get_user_linked_sub_id(user_id: int):
         linked_sub_id = None
 
     return linked_sub_id['linked_sub_id'] if linked_sub_id else None
+
+
 def get_user_access_token(user_id: int):
     """The user's decrypted LinkedIn access token, or None when it is missing, expired or unreadable.
 
