@@ -383,3 +383,25 @@ class TestMain:
         probe.main(["--entity-urn", "urn:li:share:7", "--token", "s3cr3t-token",
                     "--version", "202606", "--metrics", "REACTION"])
         assert "s3cr3t-token" not in capsys.readouterr().out
+
+
+@pytest.mark.unit
+class TestTokenFilePermissions:
+    def test_bad_mode_error_names_path_and_actual_mode_without_token(self, tmp_path):
+        token_file = tmp_path / "private-token"
+        token_file.write_text("secret-token", encoding="utf-8")
+        token_file.chmod(0o640)
+
+        with pytest.raises(probe.ProbeError) as error:
+            probe._read_token_file(str(token_file))
+
+        assert str(token_file) in str(error.value)
+        assert "0640" in str(error.value)
+        assert "secret-token" not in str(error.value)
+
+    def test_private_mode_reads_token(self, tmp_path):
+        token_file = tmp_path / "private-token"
+        token_file.write_text("probe-token", encoding="utf-8")
+        token_file.chmod(0o600)
+
+        assert probe._read_token_file(str(token_file)) == "probe-token"

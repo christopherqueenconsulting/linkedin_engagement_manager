@@ -482,6 +482,7 @@ def _unguarded_calls(path: Path, matches) -> list:
 # Adding a file here is a review decision, not a formality.
 _LINKEDIN_HTTP_CLIENTS = {
     "src/cqc_lem/api/main.py",
+    "src/cqc_lem/utilities/linkedin/member_post_analytics.py",
     "src/cqc_lem/utilities/linkedin/poster.py",
     "src/cqc_lem/utilities/linkedin/reshare.py",
     "src/cqc_lem/utilities/linkedin/token_refresh.py",

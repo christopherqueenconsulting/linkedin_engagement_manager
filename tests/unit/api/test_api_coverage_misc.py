@@ -267,7 +267,8 @@ class TestLinkedInOAuth:
     def test_auth_init_redirects_to_linkedin(self, api_client):
         auth_client = MagicMock()
         auth_client.generate_member_auth_url.return_value = "https://linkedin.com/oauth/x"
-        with patch(f"{_M}.AuthClient", return_value=auth_client):
+        with patch(f"{_M}.get_session_user_id", return_value=None), \
+             patch(f"{_M}.AuthClient", return_value=auth_client):
             resp = api_client.get("/api/auth/linkedin/?session_token=tok",
                               follow_redirects=False)
         assert resp.status_code in (302, 307)

@@ -7,6 +7,7 @@
 **Probe:** `scripts/linkedin_post_stats_api_probe.py` (read-only, no browser)
 **Updated:** 2026-07-27 (#644) — C1's live document-render check ran; §1, §3 and §5 carry the result
 **Updated:** 2026-07-31 (#804) — the article-editor ladder ran live; §3, §4 and §6 carry the result
+**Updated:** 2026-11-03 — LI Manage v2 Development-tier member post-analytics probe ran; §2a carries the result
 
 ## TL;DR
 
@@ -17,12 +18,12 @@
 | Does a published document render as a **document card**? | **CONFIRMED 2026-07-27** — verdict `document`; carousel control `image`. | **CLOSED** (#644) |
 | Are **saves** scrapeable? | **Yes**, own posts only, on `/analytics/post-summary/<activity-urn>/`. | **Live grab 2026-07-23** (encoded in `_stacked_counts`) |
 | Are **impressions** scrapeable? | **Yes**, same page (Discovery hero, value-first layout). Blank on the post detail view. | **Live grab 2026-07-23** |
-| Can an **API** replace that scrape? | **The endpoint exists** (`memberCreatorPostAnalytics`, impressions + saves + more) — but it needs `r_member_postAnalytics`, which **LEM's token does not request**. Scrape stays. | **Documented** (`li-lms-2026-07`) + **in-repo verified** (§2a) |
+| Can an **API** replace that scrape? | **Endpoint works.** Dev-tier token returned all five existing metrics; existing LEM app is pending Standard access. The scrape stays as fallback. | **Live Dev-tier probe** (§2a) |
 
-**Net scope change: none.** Both features are built and merged; this spike's job was to say whether
-their assumptions hold, and they do. The one act that could not be done headless — publish one
-native document and look at it — was carried out with the owner on 2026-07-27 and came back
-`document` (§5).
+**Scope update (2026-11-03):** the allowlisted user-1 analytics pilot adds a separate LI Manage v2
+OAuth connection while Standard access for the existing LEM app is pending. Publishing remains on
+the existing app. The one act that could not be done headless — publish one native document and
+look at it — was carried out with the owner on 2026-07-27 and came back `document` (§5).
 
 > **Honesty note.** The original pass (2026-07-26) was written headless: no LinkedIn session was
 > driven, every row carried its evidence grade, and no DOM selector appeared here that was not
@@ -122,14 +123,11 @@ The same surface also exposes `MEMBERS_REACHED`, `POST_SEND`, `LINK_CLICKS`,
 which the scrape can reach, and the last two of which would answer questions #627 currently
 approximates from the profile-analytics pages.
 
-**Why it does not replace the scrape today.** The endpoint requires the
-**`r_member_postAnalytics`** permission (a Community Management API product permission). LEM's
-authorize call asks for `openid profile email w_member_social` (`api/main.py`, `linkedin_auth_init`),
-so **the stored member token has no claim on this endpoint and will answer `403`** — a
-scope-and-app-provisioning fact, verifiable in-repo, not a code defect. Granting it needs two
-things LEM cannot do for itself: the LinkedIn app approved for the Community Management API, and
-**every connected user re-consenting**, because a scope change invalidates the existing grant.
-That is an owner decision, tracked as the follow-up below.
+**Why the scrape remains active.** The endpoint requires
+**`r_member_postAnalytics`** (a Community Management API permission). The existing LEM app's current
+token does not include it. LI Manage v2 now has Development-tier access and can supply a separate
+user-1-only token while the existing app's Standard request is reviewed. Production use on the
+existing app still requires Standard access and user 1 re-consenting to the added scope.
 
 **Five details that will bite whoever does the cutover:**
 
@@ -163,16 +161,94 @@ sudo docker exec -i celery_worker python - --user-id 1 --post-id <post id> \
     < scripts/linkedin_post_stats_api_probe.py
 ```
 
-> **Honesty note.** The rows above are graded **Documented** and **in-repo verified**; the live
-> HTTP status is **not recorded here** because this pass ran headless with no access to a member
-> token. The instrument is what shipped, so the moment the permission question is answered the
-> probe records the real status, response shape and scrape-vs-API deltas in one command — and if
-> the answer is "no", it records the `403` as evidence rather than as a hunch.
+> **Live probes — 2026-11-03.** A member token from the new LI Manage v2 Development-tier app
+> returned HTTP 200 for all five metrics at `LinkedIn-Version: 202606`; LinkedIn returned
+> `metricType` as a string. Post 144 had no stored scrape row. Two comparison posts matched on
+> reactions, comments, reshares and saves:
+>
+> | Post | API: impressions / reactions / comments / reshares / saves | Scrape | Delta |
+> |---:|---|---|---|
+> | 157 | 68 / 0 / 2 / 0 / 0 | 67 / 0 / 2 / 0 / 0 | +1 impression |
+> | 141 | 84 / 3 / 3 / 0 / 0 | 82 / 3 / 3 / 0 / 0 | +2 impressions |
+>
+> The scrape rows were captured on 2026-11-02; probes ran on 2026-11-03. The small positive
+> impression deltas are consistent with the older scrape snapshots, but same-time parity has not
+> been measured. This confirms access for the Development-tier app token; it does not establish
+> Community Management Standard access on the existing LI Engagement Manager app.
 
-**Outcome: the scrape stays.** It is the only source available under the permissions LEM actually
-holds, and it works. Tracked forward as **#695** (request `r_member_postAnalytics`, then run the
-probe and cut over behind the existing merge-by-max), with the analytics-page rows folded into the
-F2 (#403) selector-liveness sweep so drift is caught by cron rather than by a run of zeroes.
+**Outcome: Selenium remains default for users outside the canary and fallback for user 1.** Issue
+**#695** closed under the 2026-10 beta ruling to keep scraping until permission is granted. The new
+Development-tier app proves the endpoint and token scope, but does not provision the existing app.
+The shipped probe accepts a mode-0600 token file without changing
+`users.access_token` or logging the token.
+
+**Host access note:** if sudo policy denies `docker cp` or the approved probe execution command,
+stop there and ask an authorized host administrator to run the read-only probe for `user_id=1`,
+`post_id=141` with the Development-tier token supplied through a mode-0600 token file. Share only
+the sanitized JSON report. Do not send the token or try alternate Docker command forms.
+
+The application path is implemented behind fail-closed settings, all off by default:
+
+- `LI_MEMBER_POST_ANALYTICS_ENABLED=true`
+- `LI_MEMBER_POST_ANALYTICS_USER_IDS=1` (comma-separated user IDs)
+- `LI_MEMBER_POST_ANALYTICS_SEPARATE_APP_ENABLED=true` to use LI Manage v2 during the Standard review
+- `LI_MEMBER_POST_ANALYTICS_CLIENT_ID`, `LI_MEMBER_POST_ANALYTICS_CLIENT_SECRET`, and the registered
+  `LI_MEMBER_POST_ANALYTICS_REDIRECT_URL` for that app
+
+With the separate-app switch on, only allowlisted users see a second OAuth connection in Settings;
+its token is encrypted in `linkedin_member_analytics_tokens`, while the existing LEM token keeps
+publishing. The daily sweep uses the API first for up to five posts (25 requests), parses both
+LinkedIn `metricType` shapes, and merges against any higher previously captured value. Selenium
+handles remaining posts and falls back when an API read fails. The app-specific Client ID/secret must stay separate from
+`LI_CLIENT_ID`/`LI_CLIENT_SECRET`, and the callback URI must be registered on LI Manage v2.
+
+To start the user-1 bridge: register
+`https://<LEM host>/auth/linkedin/analytics/callback` on LI Manage v2; confirm that app has
+`r_basicprofile` and `r_member_postAnalytics`; ensure LEM has the user's own `/in/<vanityName>` profile
+URL stored; set the
+separate-app client ID, client secret and redirect URL in the server environment; set the global
+analytics switch, user allowlist `1`, and separate-app switch; restart API and worker; then open
+Settings as user 1 and choose **Connect analytics app**. The callback uses CMA `r_basicprofile` to
+read the new app's `/v2/me` vanity name and compares it with LEM's stored profile URL. LinkedIn member
+IDs remain app-specific; the connection never writes over `users.access_token`.
+
+**Product rule:** LinkedIn requires a new app with no other API products to request CMA Development
+access. That restriction is for Development-tier onboarding. The migration guide then gives an
+existing Marketing Developer Platform app this route: first obtain CMA Standard on the new app; next,
+open Products on the existing LEM app, request CMA Standard, and enter the new app's OAuth client ID.
+Both apps must use the same company page. If use case stays the same, LinkedIn says most of the second
+form is skipped. LinkedIn still reviews and approves that second request. If the Standard request
+already submitted is on the existing LEM app, confirm its status/target with LinkedIn support; the
+documented sequence expects Standard on the new app first. The shortcut is documented for an existing
+MDP app; if the LI Engagement Manager app does not show CMA under Products after the new app reaches
+Standard, ask support to confirm eligibility before submitting another full application. The guide
+does not call out the Sign In with LinkedIn OpenID Connect product specifically.
+
+**OAuth rule:** CMA itself grants `r_basicprofile`, which lets this bridge call `/v2/me` and read
+`vanityName`. No Sign In with LinkedIn using OpenID Connect product is needed for this separate
+connection. `/v2/me` member IDs are app-specific, so the bridge compares the public vanity name
+against LEM's stored profile URL and stores the new app's ID only alongside its own token.
+
+**Scope boundary:** `r_member_postAnalytics` covers the five post metrics currently saved by LEM;
+LinkedIn documents additional post metrics and a separate member-video analytics endpoint; those need
+separate schema/dashboard work. CMA's `r_member_profileAnalytics` also enables member follower
+analytics; LinkedIn documents
+`memberFollowersCount` for lifetime and date-range follower counts. The scope table describes profile
+viewers and search appearances too, but the docs consulted here describe only the follower endpoint.
+Keep Selenium capture for profile views and search appearances until endpoint details and response
+are verified. CMA also lists `r_1st_connections_size` and `w_member_social`; the latter can authorize
+member social actions, but the Development-tier bridge routes analytics reads only. Keep existing
+publishing and browser-session workflows on their current paths.
+
+When Community Management Standard is granted to the existing LEM app, set the separate-app switch
+to `false` and have user 1 reconnect through the usual LinkedIn connection to grant the scope to the
+main app. The sweep then uses the main app's token; the test connection can be removed in Settings.
+For rollback before then, set the global feature switch to `false`; Selenium stats remain active.
+Restart API and worker processes after changing settings. Previously written API snapshots remain
+in the stats history; the next successful Selenium sweep writes a fresh scrape row. The independent
+`LI_API_VERSION` pin must meet each metric's version floor. This increment reads five metrics already
+stored by LEM; reached, click, follower-gain, profile-view, video, and organization metrics need
+separate schema and dashboard work.
 
 ## 3. Selector map (with provenance)
 
@@ -334,6 +410,15 @@ names the dialog step honestly if it fails.
 - `docs/FORMAT_API_FEASIBILITY.md` (R3 / #406) — API surface for documents, articles, newsletters.
 - [Member Post Statistics — Microsoft Learn (`li-lms-2026-07`)](https://learn.microsoft.com/en-us/linkedin/marketing/community-management/members/post-statistics?view=li-lms-2026-07)
   — the `memberCreatorPostAnalytics` finders, permission, metric list and error table behind §2a.
+- [Community Management API migration guide — Microsoft Learn](https://learn.microsoft.com/en-us/linkedin/marketing/community-management/community-management-api-migration-guide?view=li-lms-2026-09)
+  — new-app Development-tier rule and Standard-tier migration onto an existing MDP app.
+- [Increasing access — Microsoft Learn](https://learn.microsoft.com/en-us/linkedin/marketing/increasing-access?view=li-lms-2026-04)
+  — CMA permission list, including `r_basicprofile`, `w_member_social`, `r_member_postAnalytics`,
+  `r_member_profileAnalytics`, and `r_1st_connections_size`.
+- [Profile API — Microsoft Learn](https://learn.microsoft.com/en-us/linkedin/shared/integrations/people/profile-api?view=li-lms-2025-04)
+  — `/v2/me`, app-specific member IDs, and the public profile `vanityName`.
+- [Member Follower Statistics — Microsoft Learn](https://learn.microsoft.com/en-us/linkedin/marketing/community-management/members/follower-statistics?view=li-lms-2026-07)
+  — lifetime and daily/date-range member follower counts under `r_member_profileAnalytics`.
 - [Recent Marketing API Changes — Microsoft Learn](https://learn.microsoft.com/en-us/linkedin/marketing/integrations/recent-changes)
   — `202506` added the `q=entity` finder; `202605` changed `metricType` from object to string.
 - In-repo: `utilities/linkedin/article_editor.py` (the §6 ladder + the two-screen rule),

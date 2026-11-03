@@ -12667,6 +12667,84 @@
         "summary": "Set User Location By City Endpoint"
       }
     },
+    "/api/user/member-post-analytics-connection": {
+      "delete": {
+        "description": "Remove only the separate analytics app token; retain the user's main LinkedIn connection.",
+        "operationId": "disconnect_member_post_analytics_api_user_member_post_analytics_connection_delete",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "session_token",
+            "required": true,
+            "schema": {
+              "title": "Session Token",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_str_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Disconnect Member Post Analytics"
+      },
+      "get": {
+        "description": "Status for the allowlisted temporary Community Management OAuth connection.",
+        "operationId": "get_member_post_analytics_connection_api_user_member_post_analytics_connection_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "session_token",
+            "required": true,
+            "schema": {
+              "title": "Session Token",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Member Post Analytics Connection"
+      }
+    },
     "/api/user/newsletter-draft": {
       "get": {
         "description": "The newsletter review queue.\n\n`next_publish` is the slot AFTER the last edition already queued, so it answers \"when would a NEW draft go out\",\nnot \"when is the next send\".\n\nA cover leaves here as a URL and its filesystem path is popped \u2014 the SPA must never be handed\na server path for an asset it only ever renders.",
@@ -14546,8 +14624,15 @@
             "name": "state",
             "required": false,
             "schema": {
-              "title": "State",
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
             }
           }
         ],

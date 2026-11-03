@@ -21,6 +21,7 @@ from cqc_lem.utilities.db import (
     clear_user_linkedin_password,
     encrypt_secrets_at_rest,
     get_cookies,
+    get_member_analytics_access_token,
     get_user_access_token,
     get_user_password_pair_by_id,
     get_user_token_info,
@@ -29,6 +30,7 @@ from cqc_lem.utilities.db import (
     update_user_access_token,
     update_user_linkedin_password,
     update_user_linkedin_token,
+    upsert_member_analytics_token,
 )
 
 pytestmark = pytest.mark.unit
@@ -184,6 +186,28 @@ class TestPassword:
 
 
 class TestOAuthTokens:
+    def test_member_analytics_token_is_encrypted_at_rest(self, keyed, mock_database_connection):
+        cur = mock_database_connection["cursor"]
+        cur.rowcount = 1
+
+        assert upsert_member_analytics_token(9, "cma-sub", "cma-access", 3600)
+
+        query, params = cur.execute.call_args[0]
+        assert "INSERT INTO linkedin_member_analytics_tokens" in query
+        sealed = params[2]
+        field = "linkedin_member_analytics_tokens.access_token"
+        assert sealed != "cma-access" and is_encrypted(sealed)
+        assert "cma-access" not in str(params)
+        assert decrypt_secret(sealed, 9, field) == "cma-access"
+
+    def test_member_analytics_token_read_decrypts_at_repository_boundary(
+            self, keyed, mock_database_connection):
+        field = "linkedin_member_analytics_tokens.access_token"
+        sealed = encrypt_secret("cma-access", 9, field)
+        mock_database_connection["cursor"].fetchone.return_value = {"access_token": sealed}
+
+        assert get_member_analytics_access_token(9) == "cma-access"
+
     def test_access_token_is_encrypted_on_write_and_decrypted_on_read(
             self, keyed, mock_database_connection):
         cur = mock_database_connection["cursor"]
