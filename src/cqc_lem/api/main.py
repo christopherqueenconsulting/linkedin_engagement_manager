@@ -3033,8 +3033,8 @@ def member_analytics_callback(code: Optional[str] = None, state: Optional[str] =
     except Exception as exc:
         response = getattr(exc, "response", None)
         status_code = getattr(exc, "status_code", None) or getattr(response, "status_code", None)
-        log_info("Member analytics token exchange failed", exception_type=type(exc).__name__,
-                 status_code=status_code)
+        log_error("Member analytics token exchange failed", exc=exc, user_id=user_id,
+                  status_code=status_code)
         return _member_analytics_account_redirect({"li_analytics_error": "token_exchange_failed"})
 
     access_token = getattr(token_response, "access_token", None)
@@ -3053,8 +3053,8 @@ def member_analytics_callback(code: Optional[str] = None, state: Optional[str] =
     except Exception as exc:
         response = getattr(exc, "response", None)
         status_code = getattr(exc, "status_code", None) or getattr(response, "status_code", None)
-        log_info("Member analytics /me failed", exception_type=type(exc).__name__,
-                 status_code=status_code)
+        log_error("Member analytics /me failed", exc=exc, user_id=user_id,
+                  status_code=status_code)
         return _member_analytics_account_redirect({"li_analytics_error": "profile_lookup_failed"})
 
     # LinkedIn's member IDs are app-specific, so /me.id cannot bridge these apps. The public
