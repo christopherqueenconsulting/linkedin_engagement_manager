@@ -395,8 +395,7 @@ def _resolve_from_db(args, need_url: bool) -> tuple[Optional[str], Optional[str]
     token, post_url, stored = args.token, args.post_url, None
     if token and (post_url or not need_url) and args.post_id is None:
         return token, post_url, None
-    from cqc_lem.utilities.db import get_latest_post_stats, get_post_url_from_log_for_user, \
-        get_user_access_token
+    from cqc_lem.utilities.db import get_latest_post_stats, get_post_url_from_log_for_user, get_user_access_token
     if not token:
         token = get_user_access_token(args.user_id)
     if args.post_id is not None:
@@ -409,8 +408,10 @@ def _read_token_file(path: str) -> str:
     """Read a temporary secret file only when group/other permissions are absent."""
     try:
         metadata = os.stat(path)
-        if stat.S_IMODE(metadata.st_mode) & 0o077:
-            raise ProbeError("token file must have mode 0600 or stricter")
+        mode = stat.S_IMODE(metadata.st_mode)
+        if mode & 0o077:
+            raise ProbeError(
+                f"token file {path!r} has mode {mode:04o}; group/other access must be disabled")
         with open(path, encoding="utf-8") as token_file:
             token = token_file.read().strip()
     except OSError as exc:

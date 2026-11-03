@@ -40,11 +40,13 @@ def member_post_analytics_user_allowed(user_id: Optional[int]) -> bool:
 
 
 def member_post_analytics_max_posts_per_sweep() -> int:
+    """Return configured per-sweep API post cap."""
     from cqc_lem.utilities.env_constants import LI_MEMBER_POST_ANALYTICS_MAX_POSTS_PER_SWEEP
     return LI_MEMBER_POST_ANALYTICS_MAX_POSTS_PER_SWEEP
 
 
 def member_post_analytics_separate_app_enabled() -> bool:
+    """Report whether CMA credentials use the separate-app bridge."""
     from cqc_lem.utilities.env_constants import LI_MEMBER_POST_ANALYTICS_SEPARATE_APP_ENABLED
     return LI_MEMBER_POST_ANALYTICS_SEPARATE_APP_ENABLED
 

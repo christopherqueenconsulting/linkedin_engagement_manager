@@ -23,7 +23,7 @@ from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from enum import IntEnum
 from typing import Any, Awaitable, Callable, Dict, Iterator, List, NoReturn, Optional, Union
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 import requests
 from celery import chain as celery_chain
@@ -118,6 +118,7 @@ from cqc_lem.utilities.db import (
     get_lead_signal,
     get_lead_signals,
     get_leads,
+    get_linkedin_profile_url_by_user_id,
     get_passkey_by_credential_id,
     get_planned_tasks,
     get_post_type,
@@ -134,7 +135,6 @@ from cqc_lem.utilities.db import (
     get_user_subscription_info,
     get_video_credit_balance,
     insert_connection_request,
-    get_linkedin_profile_url_by_user_id,
     insert_feedback,
     insert_post,
     insert_scheduled_dm,
@@ -164,14 +164,20 @@ from cqc_lem.utilities.demo_mode import DemoModeError, guard_linkedin, is_demo_m
 from cqc_lem.utilities.env_constants import (
     API_ACCESS_TOKENS,
     AUTH_CHALLENGE_TTL_SECONDS,
+    LI_API_VERSION,
     LI_CLIENT_ID,
     LI_CLIENT_SECRET,
-    LI_REDIRECT_URL,
     LI_MEMBER_POST_ANALYTICS_CLIENT_ID,
     LI_MEMBER_POST_ANALYTICS_CLIENT_SECRET,
     LI_MEMBER_POST_ANALYTICS_REDIRECT_URL,
+    LI_REDIRECT_URL,
     LI_STATE_SALT,
     SESSION_COOKIE_NAME,
+)
+from cqc_lem.utilities.linkedin.member_post_analytics import (
+    member_post_analytics_connection_available_for_user,
+    member_post_analytics_enabled_for_user,
+    member_post_analytics_separate_app_enabled,
 )
 from cqc_lem.utilities.linkedin.verification_pin import (
     extract_pin_from_text,
@@ -2829,9 +2835,18 @@ def _verify_assertion_for_user(credential: Dict[str, Any], challenge: str,
     return stored
 
 
+def _linkedin_account_redirect(callback_url: str, params: dict[str, str]) -> RedirectResponse:
+    """Build an account-page redirect from the host registered for one LinkedIn app."""
+    parsed_url = urlparse(callback_url)
+    base_host = f"{parsed_url.scheme}://{parsed_url.netloc.split(':')[0]}"
+    if os.environ.get("NGROK_CUSTOM_DOMAIN"):
+        base_host = "https://" + os.environ["NGROK_CUSTOM_DOMAIN"]
+    return RedirectResponse(url=f"{base_host}/account?{urlencode(params)}")
+
+
 @app.get("/auth/linkedin/", response_model=None, include_in_schema=False)
 @router.get("/auth/linkedin/", response_model=None, include_in_schema=False)
-def linkedin_auth_init(session_token: str = None) -> RedirectResponse:
+def linkedin_auth_init(session_token: Optional[str] = None) -> RedirectResponse:
     """The `email` parameter is gone (issue #914). It was already dead — the user comes from the
     `session_token` carried in the OAuth `state` — but it left the last handler in this file whose
     signature named an account it did not use, and it put the address in a URL (browser history,
@@ -2843,8 +2858,6 @@ def linkedin_auth_init(session_token: str = None) -> RedirectResponse:
     # CMA access is an explicit, allowlisted canary. In main-app mode it is requested here; in
     # separate-app bridge mode a dedicated OAuth route stores a second token and leaves the
     # existing publishing token bound to the original app.
-    from cqc_lem.utilities.linkedin.member_post_analytics import \
-        member_post_analytics_enabled_for_user, member_post_analytics_separate_app_enabled
     user_id = get_session_user_id(session_token)
     if (member_post_analytics_enabled_for_user(user_id)
             and not member_post_analytics_separate_app_enabled()):
@@ -2872,16 +2885,10 @@ def linkedin_callback(code: str, state: str = None) -> Union[ResponseModel, Redi
     Every failure path REDIRECTS to /account with an `li_error` rather than rendering an error: the
     caller is a browser mid-flow, and an API error page strands the user outside the app.
     """
-    from urllib.parse import urlencode
-
     guard_linkedin("api.linkedin_callback")
 
-    def _account_redirect(params: dict) -> RedirectResponse:
-        parsed_url = urlparse(LI_REDIRECT_URL)
-        base_host = f"{parsed_url.scheme}://{parsed_url.netloc.split(':')[0]}"
-        if os.environ.get('NGROK_CUSTOM_DOMAIN'):
-            base_host = "https://" + os.environ.get('NGROK_CUSTOM_DOMAIN')
-        return RedirectResponse(url=f"{base_host}/account?{urlencode(params)}")
+    def _account_redirect(params: dict[str, str]) -> RedirectResponse:
+        return _linkedin_account_redirect(LI_REDIRECT_URL, params)
 
     # State format: "{LI_STATE_SALT}:{session_token}" or just "{LI_STATE_SALT}"
     session_token_from_state: Optional[str] = None
@@ -2957,13 +2964,7 @@ def linkedin_callback(code: str, state: str = None) -> Union[ResponseModel, Redi
 
 def _member_analytics_account_redirect(params: dict) -> RedirectResponse:
     """Return OAuth results to the account page using the Dev-app callback's host."""
-    from urllib.parse import urlencode
-
-    parsed_url = urlparse(LI_MEMBER_POST_ANALYTICS_REDIRECT_URL)
-    base_host = f"{parsed_url.scheme}://{parsed_url.netloc.split(':')[0]}"
-    if os.environ.get('NGROK_CUSTOM_DOMAIN'):
-        base_host = "https://" + os.environ.get('NGROK_CUSTOM_DOMAIN')
-    return RedirectResponse(url=f"{base_host}/account?{urlencode(params)}")
+    return _linkedin_account_redirect(LI_MEMBER_POST_ANALYTICS_REDIRECT_URL, params)
 
 
 def _linkedin_vanity_name(profile_url: Optional[str]) -> Optional[str]:
@@ -2977,12 +2978,9 @@ def _linkedin_vanity_name(profile_url: Optional[str]) -> Optional[str]:
 
 @app.get("/auth/linkedin/analytics/", response_model=None, include_in_schema=False)
 @router.get("/auth/linkedin/analytics/", response_model=None, include_in_schema=False)
-def member_analytics_auth_init(session_token: str = None) -> RedirectResponse:
+def member_analytics_auth_init(session_token: Optional[str] = None) -> RedirectResponse:
     """Begin the user-1-only OAuth flow for the temporary separate Development-tier app."""
     guard_linkedin("api.member_analytics_auth_init")
-    from cqc_lem.utilities.linkedin.member_post_analytics import \
-        member_post_analytics_connection_available_for_user
-
     user_id = get_session_user_id(session_token)
     if not member_post_analytics_connection_available_for_user(user_id):
         raise HTTPException(status_code=404, detail="Analytics connection is unavailable")
@@ -3016,8 +3014,6 @@ def member_analytics_callback(code: Optional[str] = None, state: Optional[str] =
         return _member_analytics_account_redirect({"li_analytics_error": "invalid_state"})
     session_token = state_parts[2]
     user_id = get_session_user_id(session_token)
-    from cqc_lem.utilities.linkedin.member_post_analytics import \
-        member_post_analytics_connection_available_for_user
     if not member_post_analytics_connection_available_for_user(user_id):
         return _member_analytics_account_redirect({"li_analytics_error": "connection_unavailable"})
 
@@ -3036,7 +3032,8 @@ def member_analytics_callback(code: Optional[str] = None, state: Optional[str] =
     if not access_token:
         return _member_analytics_account_redirect({"li_analytics_error": "no_access_token"})
     try:
-        profile = RestliClient().get(resource_path="/me", access_token=access_token)
+        profile = RestliClient().get(
+            resource_path="/me", access_token=access_token, version_string=LI_API_VERSION)
         if getattr(profile, "status_code", None) != 200:
             return _member_analytics_account_redirect({"li_analytics_error": "profile_lookup_failed"})
         entity = getattr(profile, "entity", None) or {}
@@ -3046,8 +3043,10 @@ def member_analytics_callback(code: Optional[str] = None, state: Optional[str] =
         log_info(f"Member analytics /me failed: {type(exc).__name__}")
         return _member_analytics_account_redirect({"li_analytics_error": "profile_lookup_failed"})
 
-    # LinkedIn's member IDs are app-specific. Compare the public vanity name instead; the CMA
-    # product grants r_basicprofile, so this does not require adding the separate OIDC product.
+    # LinkedIn's member IDs are app-specific, so /me.id cannot bridge these apps. The public
+    # vanity name is the only comparable field available without adding OIDC to the CMA app. This
+    # catches accidental account mismatches, but is not cryptographic identity proof: handles can
+    # change or be reassigned. Keep the analytics connection allowlisted and user-confirmed.
     stored_vanity_name = _linkedin_vanity_name(get_linkedin_profile_url_by_user_id(user_id))
     if not new_sub_id or not new_vanity_name or not stored_vanity_name:
         log_info("Member analytics OAuth profile could not be matched", user_id=user_id)

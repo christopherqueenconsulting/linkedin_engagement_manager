@@ -136,9 +136,9 @@ from cqc_lem.utilities.db import (
     create_auth_challenge,
     create_pin_for_email,
     create_session,
-    delete_member_analytics_token,
     delete_auth_factor,
     delete_engagement_target,
+    delete_member_analytics_token,
     delete_pin_for_email,
     delete_story_bank_entry,
     get_auth_audit_events,
@@ -154,9 +154,9 @@ from cqc_lem.utilities.db import (
     get_follower_stats,
     get_latest_edition_scheduled_for,
     get_lead_magnet_settings,
+    get_linkedin_profile_url_by_user_id,
     get_member_analytics_access_token,
     get_member_analytics_token_info,
-    get_linkedin_profile_url_by_user_id,
     get_newsletter_edition,
     get_newsletter_settings,
     get_next_group_for_post,
@@ -226,6 +226,12 @@ from cqc_lem.utilities.geocoding import GeocodeError, geocode_city
 from cqc_lem.utilities.group_post_slot import group_skip_undo_open, skip_undo_deadline
 from cqc_lem.utilities.linkedin.helper import load_profile_for_user
 from cqc_lem.utilities.linkedin.login_status import get_login_status
+from cqc_lem.utilities.linkedin.member_post_analytics import (
+    member_post_analytics_connection_available_for_user,
+    member_post_analytics_enabled_for_user,
+    member_post_analytics_separate_app_enabled,
+    member_post_analytics_user_allowed,
+)
 from cqc_lem.utilities.linkedin.token_refresh import get_token_expiry, resolve_token_status
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
 from cqc_lem.utilities.observability import FEATURE_CONTENT, llm_trace
@@ -1206,12 +1212,6 @@ def get_member_post_analytics_connection(session_token: str) -> ResponseModel[di
     user_id = _main.get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
-    from cqc_lem.utilities.linkedin.member_post_analytics import (
-        member_post_analytics_connection_available_for_user,
-        member_post_analytics_enabled_for_user,
-        member_post_analytics_separate_app_enabled,
-        member_post_analytics_user_allowed,
-    )
     allowed = member_post_analytics_user_allowed(user_id)
     connect_available = member_post_analytics_connection_available_for_user(user_id)
     if not allowed:
@@ -1244,7 +1244,6 @@ def disconnect_member_post_analytics(session_token: str) -> ResponseModel[str]:
     user_id = _main.get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
-    from cqc_lem.utilities.linkedin.member_post_analytics import member_post_analytics_user_allowed
     if not member_post_analytics_user_allowed(user_id):
         raise HTTPException(status_code=404, detail="Analytics connection is unavailable")
     if not delete_member_analytics_token(user_id):

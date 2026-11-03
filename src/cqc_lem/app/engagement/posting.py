@@ -42,6 +42,7 @@ from urllib.parse import urlparse
 import pytz
 from selenium.webdriver import ActionChains
 from selenium.webdriver.common.by import By
+from selenium.webdriver.remote.webdriver import WebDriver
 
 # `post_to_linkedin` dispatches both self-comments into the feed cluster (#1154) by `.apply_async` —
 # a name on a message, not a call — and feed imports nothing back, so the edge runs one way.
@@ -94,8 +95,8 @@ from cqc_lem.utilities.db import (
     get_comment_followup,
     get_comment_outcome_targets,
     get_engagement_preferences,
-    get_lead_magnet_settings,
     get_latest_post_stats,
+    get_lead_magnet_settings,
     get_linkedin_profile_url_by_user_id,
     get_post_archetype,
     get_post_content,
@@ -153,13 +154,6 @@ from cqc_lem.utilities.lead_scoring import (
 # The native occasion composer's mechanics (#1088). Imported as a MODULE so its state constants and
 # its drive function are one patch target — the task here owns the policy and nothing else.
 from cqc_lem.utilities.linkedin import share_composer as _occasion, zero_walk as _zw
-from cqc_lem.utilities.linkedin.member_post_analytics import (
-    fetch_member_post_analytics,
-    get_member_post_analytics_access_token,
-    log_member_post_analytics_failure,
-    member_post_analytics_enabled_for_user,
-    member_post_analytics_max_posts_per_sweep,
-)
 
 # The SDUI mechanics every engagement cluster shares moved down to `utilities/linkedin/*` (#1154).
 # They are imported by their ORIGINAL names, underscore and all: the bodies moved verbatim, so one
@@ -191,6 +185,13 @@ from cqc_lem.utilities.linkedin.composer import (
     comment_author_identity,
 )
 from cqc_lem.utilities.linkedin.helper import can_open_dm_thread
+from cqc_lem.utilities.linkedin.member_post_analytics import (
+    fetch_member_post_analytics,
+    get_member_post_analytics_access_token,
+    log_member_post_analytics_failure,
+    member_post_analytics_enabled_for_user,
+    member_post_analytics_max_posts_per_sweep,
+)
 from cqc_lem.utilities.linkedin.poster import (
     object_urn_from_post_url,
     share_animated_image_on_linkedin,
@@ -446,7 +447,7 @@ def _swap_post_stats_session(user_id: int, old_driver) -> Tuple[Optional[object]
         return None, isinstance(e, LinkedInRateLimited)
 
 
-def _scrape_one_post_stats(driver, user_id: int, pid: int, url: str, post_types: dict,
+def _scrape_one_post_stats(driver: WebDriver, user_id: int, pid: int, url: str, post_types: dict,
                            shipped_variants: dict, api_access_token: Optional[str] = None,
                            api_state: Optional[dict] = None) -> bool:
     """Read one post's detail + analytics pages and record its stats. True when a row was written.
@@ -541,6 +542,7 @@ def _record_member_api_post_stats(user_id: int, post_id: int, post_url: str,
         prior = previous.get(name)
         counts[name] = max(current, prior if isinstance(prior, int) else 0)
 
+    # This helper reads the saved post comments from MySQL; it never opens Selenium.
     own_comments = own_comment_count_or_none(user_id, post_url)
     recorded = record_post_stats(
         user_id, post_id, counts["reactions"], counts["comments"],
@@ -559,9 +561,10 @@ def _record_member_api_post_stats(user_id: int, post_id: int, post_url: str,
 @shared_task.task(name='cqc_lem.app.run_automation.auto_scrape_post_stats',
                   bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
                   queue='se_content')
-def auto_scrape_post_stats(self, user_id: int):
-    """Capture reactions/comments/reposts/impressions/saves for each of the user's recent posts
-    (feeds personalized post-time recommendations + the content feedback loop). An allowlisted
+def auto_scrape_post_stats(self, user_id: int) -> str:
+    """Capture post metrics for the user's recent posts.
+
+    Feeds personalized post-time recommendations and the content feedback loop. An allowlisted
     Community API token captures up to the configured post cap first; Selenium handles the
     remaining posts and serves as fallback when an API read fails.
     """
