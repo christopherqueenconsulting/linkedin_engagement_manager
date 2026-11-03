@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.201.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.200.0...v0.201.0) (2026-11-03)
+
+
+### Features
+
+* **linkedin:** add member post analytics ([#2512](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2512)) ([2f175fd](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2f175fd862fb2dad8203016dd1e8fbb75fca09ce)), closes [#2513](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2513)
+
 ## [0.200.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.199.5...v0.200.0) (2026-10-30)
 
 
