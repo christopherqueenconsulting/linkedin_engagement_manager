@@ -421,7 +421,7 @@ def _read_token_file(path: str) -> str:
     return token
 
 
-def main(argv: Optional[list] = None) -> int:
+def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Probe LinkedIn member post stats (read-only)")
     parser.add_argument("--user-id", type=int, default=1, help="whose stored token to probe with")
     parser.add_argument("--post-id", type=int, help="LEM post id — resolves the URL and the "

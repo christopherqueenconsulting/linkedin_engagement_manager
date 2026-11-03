@@ -36,7 +36,7 @@ import re
 import time
 from collections import Counter
 from datetime import datetime, timezone
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 from urllib.parse import urlparse
 
 import pytz
@@ -447,9 +447,10 @@ def _swap_post_stats_session(user_id: int, old_driver) -> Tuple[Optional[object]
         return None, isinstance(e, LinkedInRateLimited)
 
 
-def _scrape_one_post_stats(driver: WebDriver, user_id: int, pid: int, url: str, post_types: dict,
-                           shipped_variants: dict, api_access_token: Optional[str] = None,
-                           api_state: Optional[dict] = None) -> bool:
+def _scrape_one_post_stats(driver: WebDriver, user_id: int, pid: int, url: str,
+                           post_types: dict[int, Any], shipped_variants: dict[int, Any],
+                           api_access_token: Optional[str] = None,
+                           api_state: Optional[dict[str, Any]] = None) -> bool:
     """Read one post's detail + analytics pages and record its stats. True when a row was written.
 
     A crashed tab raises out of here (from either navigation) so the sweep can reopen the session
@@ -530,11 +531,13 @@ def _scrape_one_post_stats(driver: WebDriver, user_id: int, pid: int, url: str, 
 
 
 def _record_member_api_post_stats(user_id: int, post_id: int, post_url: str,
-                                  post_types: dict, shipped_variants: dict,
-                                  api_counts: dict) -> bool:
-    """Persist a complete API read, preserving any previously higher cumulative values."""
+                                  post_types: dict[int, Any], shipped_variants: dict[int, Any],
+                                  api_counts: dict[str, Optional[int]]) -> bool:
+    """Persist complete API totals; reject partial reads because missing is not zero."""
     previous = get_latest_post_stats(user_id, post_id) or {}
     counts = {}
+    # API totals must be complete before one snapshot is written; Selenium reads visible card
+    # values and preserves absent metrics as NULL, so its capture path has different semantics.
     for name in ("impressions", "reactions", "comments", "reposts", "saves"):
         current = api_counts.get(name)
         if current is None:

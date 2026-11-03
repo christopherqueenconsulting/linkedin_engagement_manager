@@ -2962,7 +2962,7 @@ def linkedin_callback(code: str, state: str = None) -> Union[ResponseModel, Redi
     return _account_redirect({'email': user_email, 'li_connected': '1'})
 
 
-def _member_analytics_account_redirect(params: dict) -> RedirectResponse:
+def _member_analytics_account_redirect(params: dict[str, str]) -> RedirectResponse:
     """Return OAuth results to the account page using the Dev-app callback's host."""
     return _linkedin_account_redirect(LI_MEMBER_POST_ANALYTICS_REDIRECT_URL, params)
 
@@ -2979,9 +2979,11 @@ def _linkedin_vanity_name(profile_url: Optional[str]) -> Optional[str]:
 @app.get("/auth/linkedin/analytics/", response_model=None, include_in_schema=False)
 @router.get("/auth/linkedin/analytics/", response_model=None, include_in_schema=False)
 def member_analytics_auth_init(session_token: Optional[str] = None) -> RedirectResponse:
-    """Begin the user-1-only OAuth flow for the temporary separate Development-tier app."""
+    """Begin the allowlisted-user OAuth flow for the temporary separate Development-tier app."""
     guard_linkedin("api.member_analytics_auth_init")
     user_id = get_session_user_id(session_token)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="A valid LEM session is required")
     if not member_post_analytics_connection_available_for_user(user_id):
         raise HTTPException(status_code=404, detail="Analytics connection is unavailable")
     if not LI_STATE_SALT:
@@ -3000,7 +3002,9 @@ def member_analytics_auth_init(session_token: Optional[str] = None) -> RedirectR
     return RedirectResponse(url=auth_url)
 
 
+# LinkedIn redirects to the registered URI without `/api`; keep an API-prefixed alias as well.
 @app.get("/auth/linkedin/analytics/callback", response_model=None)
+@router.get("/auth/linkedin/analytics/callback", response_model=None, include_in_schema=False)
 def member_analytics_callback(code: Optional[str] = None, state: Optional[str] = None,
                              error: Optional[str] = None) -> RedirectResponse:
     """Store separate-app analytics credentials without replacing the LEM publishing token."""
@@ -3014,6 +3018,8 @@ def member_analytics_callback(code: Optional[str] = None, state: Optional[str] =
         return _member_analytics_account_redirect({"li_analytics_error": "invalid_state"})
     session_token = state_parts[2]
     user_id = get_session_user_id(session_token)
+    if user_id is None:
+        return _member_analytics_account_redirect({"li_analytics_error": "invalid_session"})
     if not member_post_analytics_connection_available_for_user(user_id):
         return _member_analytics_account_redirect({"li_analytics_error": "connection_unavailable"})
 
@@ -3025,7 +3031,10 @@ def member_analytics_callback(code: Optional[str] = None, state: Optional[str] =
     try:
         token_response = client.exchange_auth_code_for_access_token(code)
     except Exception as exc:
-        log_info(f"Member analytics token exchange failed: {type(exc).__name__}")
+        response = getattr(exc, "response", None)
+        status_code = getattr(exc, "status_code", None) or getattr(response, "status_code", None)
+        log_info("Member analytics token exchange failed", exception_type=type(exc).__name__,
+                 status_code=status_code)
         return _member_analytics_account_redirect({"li_analytics_error": "token_exchange_failed"})
 
     access_token = getattr(token_response, "access_token", None)
@@ -3035,12 +3044,17 @@ def member_analytics_callback(code: Optional[str] = None, state: Optional[str] =
         profile = RestliClient().get(
             resource_path="/me", access_token=access_token, version_string=LI_API_VERSION)
         if getattr(profile, "status_code", None) != 200:
+            log_info("Member analytics /me lookup returned non-200",
+                     status_code=getattr(profile, "status_code", None))
             return _member_analytics_account_redirect({"li_analytics_error": "profile_lookup_failed"})
         entity = getattr(profile, "entity", None) or {}
         new_sub_id = entity.get("id") if isinstance(entity, dict) else None
         new_vanity_name = entity.get("vanityName") if isinstance(entity, dict) else None
     except Exception as exc:
-        log_info(f"Member analytics /me failed: {type(exc).__name__}")
+        response = getattr(exc, "response", None)
+        status_code = getattr(exc, "status_code", None) or getattr(response, "status_code", None)
+        log_info("Member analytics /me failed", exception_type=type(exc).__name__,
+                 status_code=status_code)
         return _member_analytics_account_redirect({"li_analytics_error": "profile_lookup_failed"})
 
     # LinkedIn's member IDs are app-specific, so /me.id cannot bridge these apps. The public
