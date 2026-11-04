@@ -2102,7 +2102,8 @@ def _store_gmail_forward_confirmation(user_id: int, record: "dict", quiet: bool 
         # A repeated log_warning is re-emitted at ERROR and files a defect (utilities/CLAUDE.md), so
         # the path that runs on every inbound email must not warn per email.
         (log_debug if quiet else log_warning)(
-            "Could not store Gmail forwarding confirmation result", exc=e, user_id=user_id)
+            "Could not store Gmail forwarding confirmation result", user_id=user_id,
+            error_type=type(e).__name__)
         return False
 
 
@@ -2214,8 +2215,16 @@ def _reply_sweep_debounced(user_id: int, window_s: int = 120) -> bool:
         return True
 
 
-_INBOUND_TRACE_ENABLED = os.getenv("LI_REPLY_INBOUND_TRACE_ENABLED", "").strip().lower() \
-    in {"1", "true", "yes"}
+_INBOUND_TRACE_ENV = "LI_REPLY_INBOUND_TRACE_ENABLED"
+
+
+def _env_flag(name: str) -> bool:
+    """True when the environment variable is 1, true or yes (case and spaces ignored)."""
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes"}
+
+
+# Read once at process start: changing the variable needs an API restart or recreate.
+_INBOUND_TRACE_ENABLED = _env_flag(_INBOUND_TRACE_ENV)
 
 
 def _log_inbound_verdict(verdict: str, form: Mapping[str, Any],
@@ -2230,6 +2239,10 @@ def _log_inbound_verdict(verdict: str, form: Mapping[str, Any],
     envelope = str(form.get("envelope") or "")
     token = extract_reply_token_from_address(to_field) or extract_reply_token_from_address(envelope)
     from_domain = sender_domain(str(form.get("from") or "")) or "unknown"
+    # The From header is attacker-controlled on a public webhook: keep only a plain hostname
+    # so it cannot add lines or fields to the log.
+    if not re.fullmatch(r"[a-z0-9.-]{1,253}", from_domain):
+        from_domain = "invalid"
     details = (f"Inbound parse email verdict={verdict} class={classification} "
                f"sender_domain={from_domain} token_present={bool(token)}")
     if _INBOUND_TRACE_ENABLED:
@@ -2246,7 +2259,8 @@ def _log_inbound_verdict(verdict: str, form: Mapping[str, Any],
     try:
         track_inbound_email(verdict, user_id=user_id, classification=classification)
     except Exception as e:
-        log_debug("Could not track inbound email verdict", exc=e, user_id=user_id)
+        log_debug("Could not track inbound email verdict", user_id=user_id,
+                  error_type=type(e).__name__)
 
 
 def _process_reply_inbound(form: Mapping[str, Any]) -> ResponseModel[str]:

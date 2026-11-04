@@ -59,23 +59,45 @@ covers event-mode users too — far below `scheduled` mode's cadence, so it does
 
 ## Observability — how to tell the chain is working
 
-Every inbound parse POST (both endpoints) logs one redacted decision and emits one
-`inbound_parse_email` PostHog event carrying `verdict`, `classification`, and `user_id`. Verdicts
+Every inbound parse POST that parses as a form (both endpoints) logs one redacted decision and
+emits one `inbound_parse_email` PostHog event carrying `verdict`, `classification`, and `user_id`.
+A POST whose form cannot be parsed returns `ignored` with no log line and no event. Verdicts
 include `comment_accepted`, `debounced`, `gmail_confirmation`, `linkedin_not_comment`, `unrelated`,
 `unknown_reply_token`, `no_reply_token`, `no_pin_token`, `no_pin_in_text`, `pin_accepted`, and
-`pin_ignored`. These logs never include forwarding addresses, tokens, subjects, message bodies,
-verification codes, confirmation URLs, or exception messages that may contain them. Gmail
-confirmation logs record only whether a URL and code were found.
+`pin_ignored`. Each decision line carries the verdict, a classifier label, `token_present=` and
+`sender_domain=` (the lowercased From domain, limited to letters, digits, dots and hyphens;
+`unknown` when the From header has no domain and `invalid` when the value is not a plain hostname;
+it can belong to a third party when unrelated mail reaches the parse host).
+These logs never include forwarding addresses, tokens, subjects, message bodies, verification
+codes or confirmation URLs, and the exception logs written by the inbound handlers in
+`api/main.py` carry only the exception type (database helpers they call may log their own
+errors). The Gmail confirmation handler logs `url_present` and `code_present` when the mail is
+received, and its result line records `url_found`, `confirmed`, `code=yes|no` and
+`forwarded_to_user` (never the code or the URL).
 
-For temporary SendGrid retry correlation, set `LI_REPLY_INBOUND_TRACE_ENABLED=true`; this adds only
-truncated SHA-256 fingerprints of the token and RFC Message-ID. Turn it off after diagnosis. A
-forwarding-confirmed badge proves at least one LinkedIn notification arrived, not that comment
+For temporary SendGrid retry correlation, set `LI_REPLY_INBOUND_TRACE_ENABLED=true` in the `.env`
+file the API containers load, then recreate both API colours (the flag is read once at process
+start, and `docker compose restart` keeps the old environment, see `docs/demo-mode.md`):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --no-deps --pull never \
+  --force-recreate web_api_blue web_api_green
+```
+
+Check it with `docker exec web_api_blue printenv LI_REPLY_INBOUND_TRACE_ENABLED` and by searching
+the API logs for `trace_token=` after a test POST. Each decision line then ends with `trace_token=` and `trace_message=`: the first 12 hex
+characters of the SHA-256 of the reply token and of the full `<Message-ID>` string including the
+angle brackets, or `none` when no `Message-ID: <...>` header is found in the first 8000 characters
+of the headers. Keep the flag on only as long as the diagnosis needs: remove it from `.env`, run
+the same recreate command, and no `trace_` fields appear. A forwarding-confirmed badge
+proves a LinkedIn notification arrived only when its source is `forwarded_email`; a badge from
+`auto_click` only proves Gmail's verify link was clicked. Neither proves that comment
 notifications are being forwarded. Healthy comment flow includes `comment_accepted`; repeated
 `linkedin_not_comment` means messages arrived but were correctly ignored as non-comment mail.
 
 ## Related code
 
-- `src/cqc_lem/utilities/linkedin/notification_email.py` — address + comment-vs-reaction classifier.
+- `src/cqc_lem/integrations/linkedin/notification_email.py` — address + comment-vs-reaction classifier.
 - `src/cqc_lem/api/main.py` — `linkedin_comment_notification_inbound` (+ debounce).
 - `src/cqc_lem/app/engagement/posting.py` — `sweep_reply_comments`, `post_to_linkedin` mode
   branch (moved out of `run_automation.py` in #1154; both still answer to their
