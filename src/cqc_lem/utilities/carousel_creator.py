@@ -26,7 +26,6 @@ layout rather than crashing carousel generation.
 import os
 import random
 import re
-import secrets
 import tempfile
 import urllib.request
 from collections.abc import Iterator
@@ -3098,9 +3097,6 @@ def create_carousel_slide_images(
     layout       = tmpl.get("layout", "listicle")
 
     os.makedirs(output_dir, exist_ok=True)
-    # /api/assets is cached by URL. Re-rendering slide_01.png at the same path leaves
-    # the browser/edge free to serve the old bytes, so each render gets a new asset name.
-    render_id = secrets.token_hex(8)
 
     # ── Font loader ───────────────────────────────────────────────────────────
     _load_font = load_slide_font
@@ -3228,7 +3224,7 @@ def create_carousel_slide_images(
             # cover "?" sat over "Model" in "Prevent AI Model Failures").
             marks["accents_skipped"] = draw.finish_decor()
             slide_ctx["draw"] = None
-        out = os.path.join(output_dir, f"slide_{idx:02d}_{render_id}.png")
+        out = os.path.join(output_dir, f"slide_{idx:02d}.png")
         img.convert("RGB").save(out, "PNG", optimize=True)
         return out
 

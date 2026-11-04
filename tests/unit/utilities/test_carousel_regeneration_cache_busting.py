@@ -1,5 +1,6 @@
 """A regenerated carousel must publish new asset URLs so cached slide bytes cannot stick."""
 
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -32,5 +33,5 @@ def test_each_render_uses_distinct_slide_asset_names(tmp_path) -> None:
     assert all("first-render" in path for path in first)
     assert all("second-render" in path for path in second)
     assert set(first).isdisjoint(second)
-    assert all(tmp_path.joinpath(path.rsplit("/", 1)[-1]).is_file()
+    assert all((tmp_path / Path(path).name).is_file()
                for path in [*first, *second])
