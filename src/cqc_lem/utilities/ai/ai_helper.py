@@ -3647,7 +3647,7 @@ def _record_avatar_media(image_path: str, post_id: "int | None", user_id: "int |
 MAX_MOTION_PROMPT_CHARS = 512
 
 
-def _audio_direction(model: str, language: str = DEFAULT_CONTENT_LANGUAGE) -> str:
+def _audio_direction(model: str) -> str:
     """Request instrumental music and forbid vocals in native-audio video prompts.
 
     Veo exposes no speech/voice API parameter, so the prompt is the only control. A prior
@@ -3801,7 +3801,7 @@ def get_runway_ml_video_prompt_from_ai(post_content: str, image_prompt: str, *,
     Raises:
         MotionPromptHeld: enforcement is on and the last attempt still violates the contract.
     """
-    audio_direction = _audio_direction(model, language)
+    audio_direction = _audio_direction(model)
     audio_note = ("\n        - Say NOTHING about audio, speech, dialogue or narration — an audio "
                   "direction is appended automatically." if audio_direction else "")
 
