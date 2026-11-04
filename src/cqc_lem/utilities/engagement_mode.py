@@ -135,6 +135,23 @@ def is_suggest_only(user_id: Optional[int]) -> bool:
     return not browser_automation_allowed(user_id)
 
 
+#: The machine-readable reason the API gives when it refuses to store a LinkedIn password, session
+#: cookie or verification PIN for a suggest-only account (issue #2368). A stable wire value.
+CREDENTIAL_WRITE_REFUSAL_CODE = "suggest_mode_oauth_only"
+
+
+def credential_collection_allowed(user_id: Optional[int]) -> bool:
+    """True when LEM may store a LinkedIn password, session cookie or verification PIN for the user.
+
+    Those credentials exist only for browser automation, so they follow the same rule: allowed
+    only for a readable, non-trial `automate` account. A suggest-only account connects through
+    LinkedIn sign-in (OAuth) alone, and an unreadable mode refuses (fail closed) — the cost of a
+    wrong refusal is a retry once the database answers, while the cost of a wrong store is a
+    LinkedIn credential held for an account that never agreed to automation.
+    """
+    return browser_automation_allowed(user_id)
+
+
 def _claim_daily_skip_log(user_id: Optional[int]) -> bool:
     """True when this is the first lane skip logged for the account today (a Redis claim).
 

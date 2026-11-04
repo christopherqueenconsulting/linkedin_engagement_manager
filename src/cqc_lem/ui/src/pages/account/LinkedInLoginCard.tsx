@@ -16,6 +16,7 @@ export default function LinkedInLoginCard() {
   const { guard, stepUpModal } = useStepUp()
   const { data: readiness } = useAccountReadiness()
   const suggestOnly = useSuggestOnly()
+  const oauthOnly = suggestOnly
   const sessionOk = readiness?.items.find((i) => i.key === 'linkedin_session')?.ok ?? false
   const cookieMigrationNeeded = readiness?.cookie_migration_needed ?? false
 
@@ -178,19 +179,28 @@ export default function LinkedInLoginCard() {
         </div>
       )}
 
+      {oauthOnly && (
+        <p data-testid="oauth-only-note" className="text-xs text-fg-muted">
+          LinkedIn sign-in only. Suggest-mode accounts connect through OAuth; LEM does not collect
+          browser passwords, session cookies, or verification PINs.
+        </p>
+      )}
+
       {/* LinkedIn Session (cookie) — the DEFAULT engagement login (issue #745, decision 2A) */}
-      <LinkedInSessionCard connected={sessionOk} migrationNeeded={cookieMigrationNeeded} />
+      {!oauthOnly && (
+        <LinkedInSessionCard connected={sessionOk} migrationNeeded={cookieMigrationNeeded} />
+      )}
 
       {/* Whether the automation's last sign-in landed, and whether it is waiting on the device
           approval the user was emailed about (issue #933). A saved session says only that a
           credential exists — this says whether it worked. */}
-      <LinkedInSignInStatusCard />
+      {!oauthOnly && <LinkedInSignInStatusCard />}
 
       <MemberPostAnalyticsConnectionCard />
 
       {/* LinkedIn Automation Password — DEPRECATED, collapsed behind a disclosure so the cookie
           path above is the one users take. Kept working for accounts that already rely on it. */}
-      {isLinkedInConnected && !tokenExpired && (
+      {!oauthOnly && isLinkedInConnected && !tokenExpired && (
         <details className="bg-raised rounded-panel shadow-panel border border-hairline p-6 space-y-4">
           <summary className="cursor-pointer text-sm font-medium text-fg-muted">
             Use a LinkedIn password instead (not recommended)
