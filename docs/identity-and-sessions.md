@@ -602,6 +602,13 @@ Guarding only the first left the other two open, and the second is the one that 
 to a real person**. The third is worse in a quieter way — it is the guarantee broken by the agent
 doing nothing at all, on nearly every account, because the account default is permissive.
 
+**The guard has to run after the session is resolved.** Each guard reads the scope the resolver stamps
+on the request. `act_on_curated_source` once called `_refuse_agent_approval` *before* resolving the
+caller, so the guard saw no scope and refused nobody: an `agent` token could approve a curated post, and
+an operator on a `standard` account could have too. It now resolves the session first.
+`test_role_surface_invariants.py::TestTheGuardRunsAfterTheSessionIsResolved` fails if any guarded
+handler runs its guard ahead of its session lookup.
+
 **`PUT /user/engagement-preferences` is refused for an agent** (403 `agent_may_not_configure`; the
 read still works). The scope surface matches on PATH, not method, so the entry added so the agent
 could *read* whether automation was safe granted the write along with it — and that write sets the
@@ -725,8 +732,17 @@ each and what each cannot do: [`agent-roles.md`](agent-roles.md).
 An operations agent that does maintenance — look at the queues, re-score the leads, pause the
 automation, check a job — should not need the owner's session or the shared `X-Admin-Secret` either.
 `POST /api/user/operator-token` mints it exactly as it mints an agent token (human session, step-up,
-`extension_scope_ok` not passed, `ttl_days` 1–365 default 90, fixed TTL never slid, audited as
-`operator_token_minted`, no migration for the scope itself).
+`extension_scope_ok` not passed, fixed TTL never slid, audited as `operator_token_minted`, no
+migration for the scope itself), with two differences that come from what the seat can do:
+
+- **Only an internal or sandbox account, or an admin, can mint one**, and only such an account can use
+  one on the admin routes. The seat includes `POST /admin/automation-pause`, which is **global**: it
+  stops automation for every user, and only the owner's secret can lift it. A token on an ordinary
+  account would be able to switch everyone's automation off and could not switch it back on, so the
+  mint answers 403 `operator_not_permitted` (before asking for a step-up) and `_operator_session` re-checks
+  the account on every use, failing closed. The pause is also capped for an operator at a finite 0–24
+  hours. See [`agent-roles.md`](agent-roles.md#operator-who-may-hold-one-data-exposure-access-record-and-rollback).
+- **`ttl_days` is 1–90, default 30**, shorter than the agent's and observer's, for the same reason.
 
 **Surface.** `_OPERATOR_SESSION_SURFACE` is `_AGENT_SESSION_SURFACE` — so every agent guard applies —
 plus `_OPERATOR_MAINTENANCE_SURFACE`:
@@ -735,8 +751,8 @@ plus `_OPERATOR_MAINTENANCE_SURFACE`:
 |---|---|
 | `POST /leads/refresh` | re-scores the caller's own lead pipeline from rows already stored; no LinkedIn call, no send |
 | `GET /admin/automation-status` | read the pause and 429-breaker state |
-| `POST /admin/automation-pause` | the SAFE direction of the kill switch: it stops automation and is reversible |
-| `GET /admin/task-status/{id}` | read a queued task's state (the one templated entry: `_SCOPE_PATTERNS`, anchored full-match, one path segment) |
+| `POST /admin/automation-pause` | the SAFE direction of the kill switch (it stops automation rather than starting it), but **global across all users** and liftable only with the secret, so internal/sandbox/admin accounts only and capped at 24 hours |
+| `GET /admin/task-status/{id}` | read a queued task's state (the one templated entry: `_SCOPE_PATTERNS`, anchored full-match, one path segment). Not scoped to the caller's tasks: the result backend does not record a task's owner, so the limit is documented rather than enforced; the result text is withheld |
 
 Left out on purpose, each because it sends, deletes, spends, rewrites data, or touches a credential:
 `/admin/automation-resume` (re-starts what a human may have halted for account safety), every
@@ -751,8 +767,9 @@ neither is on the surface.
 that resolves as `operator` exactly. `_operator_session()` answers False for a full session of a
 non-admin user, an agent, an observer, or no session, and those fall through to the secret check
 unchanged. The secret works exactly as before on these and on every other admin route; it stays the
-owner's break-glass. A non-browser operator presents its token as `session_token` (or the
-`lem_session` cookie, which is what clears the edge filter when `API_ACCESS_TOKENS` is set).
+owner's break-glass. A non-browser operator should present its token as the `lem_session` cookie (with
+`X-LEM-Client` on a state-changing call), not as a `session_token` query parameter, which can reach an
+access log; the cookie is also what clears the edge filter when `API_ACCESS_TOKENS` is set.
 
 ### The fourth approval guard — `users.account_kind`
 

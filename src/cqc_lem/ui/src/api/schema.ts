@@ -899,7 +899,13 @@ export interface paths {
          * @description Approve or reject the PENDING post a drafted source became.
          *
          *     `approve` records the CALLER as the approver (`user:<id>`), which is the only approval the
-         *     curated publisher accepts. An agent session is refused before anything is read.
+         *     curated publisher accepts. A queue-only machine session is refused before anything is read.
+         *
+         *     The session is resolved FIRST (`_caller`) and the approval guard runs second, on purpose. The
+         *     guard reads the scope the resolver stamps on the request; called before the resolver it saw no
+         *     scope at all and let EVERY caller through, an `agent` token included. Resolving first costs one
+         *     extra session lookup on a request that is about to be refused, and nothing is read from the
+         *     curated tables until the guard has passed.
          */
         put: operations["act_on_curated_source_api_curated_source_put"];
         /**
@@ -5524,7 +5530,7 @@ export interface components {
             session_token?: string | null;
             /**
              * Ttl Days
-             * @default 90
+             * @default 30
              */
             ttl_days: number;
         };

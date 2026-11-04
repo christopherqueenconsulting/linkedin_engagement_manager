@@ -455,3 +455,66 @@ def patch_audit(main_mod: ModuleType) -> Any:
     from unittest.mock import patch
 
     return patch.object(main_mod, "record_auth_event", return_value=True)
+
+
+class TestTheGuardRunsAfterTheSessionIsResolved:
+    """A guard must run after the resolver, because it reads the scope the resolver stamps.
+
+    Called BEFORE the resolver it sees no scope and refuses nobody, which is how an `agent` could once
+    approve a curated post. Presence of the guard in a handler is not enough; its ORDER is part of the
+    guarantee.
+    """
+
+    _RESOLVERS = ("get_session_user_id(", "_caller(", "require_session_user_id(")
+
+    def test_every_guarded_handler_resolves_the_session_before_it_guards(
+            self, route_table: list[tuple[str, str, Any]]) -> None:
+        offenders = []
+        seen = set()
+        for _m, _p, route in route_table:
+            name = getattr(route.endpoint, "__name__", "")
+            if name not in HANDLER_GUARDED_ROUTES or name in seen:
+                continue
+            seen.add(name)
+            source = inspect.getsource(route.endpoint)
+            guard_at = min(source.index(g) for g in HANDLER_GUARDED_ROUTES[name][0])
+            resolver_at = min((source.index(r) for r in self._RESOLVERS if r in source), default=-1)
+            if resolver_at < 0 or resolver_at > guard_at:
+                offenders.append(f"  {name}: guard at {guard_at}, session resolved at {resolver_at}")
+        assert seen == set(HANDLER_GUARDED_ROUTES), "a guarded handler matched no route"
+        assert not offenders, ("\n\nThese handlers run an approval guard BEFORE resolving the session, "
+                               "so the guard sees no scope:\n" + "\n".join(offenders) + "\n")
+
+
+class TestOperatorEligibilityGatesStayInPlace:
+    """An operator token must only exist on, and act for, an internal, sandbox or admin account.
+
+    The operator surface includes a GLOBAL automation pause. Both ends are pinned from their source.
+    """
+
+    def test_the_mint_checks_eligibility_before_it_asks_for_a_step_up(self) -> None:
+        from cqc_lem.api.routers import user
+
+        source = inspect.getsource(user.mint_operator_token)
+        assert "_operator_account_eligible(" in source
+        assert source.index("_operator_account_eligible(") < source.index("_require_step_up(")
+
+    def test_every_use_of_the_admin_routes_re_checks_eligibility(self) -> None:
+        from cqc_lem.api.routers import admin
+
+        assert "_operator_account_eligible(" in inspect.getsource(admin._operator_session)
+
+    def test_the_eligible_kinds_are_exactly_internal_and_sandbox(self, main_mod: ModuleType) -> None:
+        from unittest.mock import patch
+
+        with patch.object(main_mod, "is_user_admin", return_value=False):
+            for kind, expected in (("internal", True), ("sandbox", True), ("standard", False),
+                                   ("", False), (None, None), ("admin", False)):
+                if kind is None:  # an unreadable kind is resolved by the reader, which fails closed
+                    with patch.object(main_mod, "get_user_account_kind", return_value="standard"):
+                        assert main_mod._operator_account_eligible(5) is False
+                else:
+                    assert main_mod._operator_account_eligible(5, kind) is expected, kind
+            assert main_mod._operator_account_eligible(None, "internal") is False
+        with patch.object(main_mod, "is_user_admin", return_value=True):
+            assert main_mod._operator_account_eligible(5, "standard") is True

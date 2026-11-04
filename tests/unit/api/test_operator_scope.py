@@ -60,6 +60,7 @@ def _no_access_record():
     from cqc_lem.api import main
 
     with patch(f"{_M}.claim_operator_access", return_value=False), \
+         patch.object(main, "is_user_admin", return_value=False), \
          patch.object(main, "get_session_id", return_value=1):
         yield
 
@@ -369,7 +370,7 @@ class TestOperatorAdminRoutes:
             yield
 
     def test_an_operator_reads_automation_status_without_the_secret(self, api_client, audit):
-        with _session("operator"), _kind("standard"), \
+        with _session("operator"), _kind("internal"), \
              patch("cqc_lem.utilities.linkedin.rate_limit.automation_pause_remaining",
                    return_value=0), \
              patch("cqc_lem.utilities.linkedin.rate_limit.rate_limit_cooldown_remaining",
@@ -380,7 +381,7 @@ class TestOperatorAdminRoutes:
 
     def test_an_operator_may_pause_and_the_action_is_audited_with_the_role(self, api_client, audit):
         from cqc_lem.utilities.db import AuthAuditEvent
-        with _session("operator"), _kind("standard"), \
+        with _session("operator"), _kind("internal"), \
              patch("cqc_lem.utilities.linkedin.rate_limit.pause_automation",
                    return_value=True) as pause:
             resp = api_client.post("/api/admin/automation-pause",
@@ -392,7 +393,7 @@ class TestOperatorAdminRoutes:
         assert row[0]["details"]["path"] == "/admin/automation-pause"
 
     def test_an_operator_cannot_resume_automation(self, api_client, audit):
-        with _session("operator"), _kind("standard"), \
+        with _session("operator"), _kind("internal"), \
              patch("cqc_lem.utilities.linkedin.rate_limit.resume_automation") as resume:
             resp = api_client.post("/api/admin/automation-resume",
                                    params={"session_token": _TOKEN})
@@ -405,7 +406,7 @@ class TestOperatorAdminRoutes:
     ])
     def test_an_operator_cannot_reach_any_other_secret_route(self, api_client, audit, route, body):
         """Valid bodies, so a 403 is the gate speaking and not the validator."""
-        with _session("operator"), _kind("standard"):
+        with _session("operator"), _kind("internal"):
             resp = api_client.post(route, params={"session_token": _TOKEN}, json=body)
         assert resp.status_code == 403
 
@@ -418,7 +419,7 @@ class TestOperatorAdminRoutes:
             def ready():
                 return True
 
-        with _session("operator"), _kind("standard"), \
+        with _session("operator"), _kind("internal"), \
              patch("cqc_lem.app.my_celery.app.AsyncResult", return_value=_Result()):
             resp = api_client.get("/api/admin/task-status/abc-123", params={"session_token": _TOKEN})
         assert resp.status_code == 200
@@ -427,7 +428,7 @@ class TestOperatorAdminRoutes:
     @pytest.mark.parametrize("scope", ["agent", "observer", "full"])
     def test_no_other_session_gets_in_without_the_secret(self, api_client, audit, scope):
         """`full` is a signed-in, non-admin human: a session is not admin."""
-        with _session(scope), _kind("standard"):
+        with _session(scope), _kind("internal"):
             resp = api_client.get("/api/admin/automation-status", params={"session_token": _TOKEN})
         assert resp.status_code == 403
 
@@ -515,10 +516,10 @@ class TestOperatorTokenMint:
                 user_mod.mint_operator_token(user_mod.OperatorTokenRequest(session_token="nope"))
         assert exc.value.status_code == 401
 
-    def test_ttl_defaults_to_90_days_and_is_bounded(self, user_mod):
+    def test_ttl_defaults_to_30_days_and_is_bounded_at_90(self, user_mod):
         f = user_mod.OperatorTokenRequest.model_fields["ttl_days"]
-        assert f.default == 90
-        assert "1" in str(f.metadata) and "365" in str(f.metadata)
+        assert f.default == 30
+        assert "1" in str(f.metadata) and "90" in str(f.metadata)
 
     def test_minting_is_step_up_gated_and_never_exempts_the_operator_scope(self, user_mod):
         import ast
@@ -534,7 +535,7 @@ class TestOperatorTokenMint:
 
     def test_a_mint_creates_a_fixed_ttl_operator_row_and_audits_it(self, api_client):
         from cqc_lem.utilities.db import AuthAuditEvent
-        with _session("full"), \
+        with _session("full"), _kind("internal"), \
              patch(f"{_USER}.step_up_satisfied", return_value=True), \
              patch(f"{_USER}.create_session", return_value="minted") as create_session, \
              patch(f"{_USER}.record_auth_event") as recorded:
@@ -550,7 +551,7 @@ class TestOperatorTokenMint:
         assert recorded.call_args.kwargs["details"]["scope"] == "operator"
 
     def test_a_mint_without_a_fresh_factor_mints_nothing(self, api_client):
-        with _session("full"), \
+        with _session("full"), _kind("internal"), \
              patch(f"{_USER}.step_up_satisfied", return_value=False), \
              patch(f"{_USER}.create_session") as create_session:
             resp = api_client.post("/api/user/operator-token", json={"session_token": _TOKEN})

@@ -4549,8 +4549,8 @@
             "title": "Session Token"
           },
           "ttl_days": {
-            "default": 90,
-            "maximum": 365.0,
+            "default": 30,
+            "maximum": 90.0,
             "minimum": 1.0,
             "title": "Ttl Days",
             "type": "integer"
@@ -9058,7 +9058,7 @@
         "summary": "Create Curated Source"
       },
       "put": {
-        "description": "Approve or reject the PENDING post a drafted source became.\n\n`approve` records the CALLER as the approver (`user:<id>`), which is the only approval the\ncurated publisher accepts. An agent session is refused before anything is read.",
+        "description": "Approve or reject the PENDING post a drafted source became.\n\n`approve` records the CALLER as the approver (`user:<id>`), which is the only approval the\ncurated publisher accepts. A queue-only machine session is refused before anything is read.\n\nThe session is resolved FIRST (`_caller`) and the approval guard runs second, on purpose. The\nguard reads the scope the resolver stamps on the request; called before the resolver it saw no\nscope at all and let EVERY caller through, an `agent` token included. Resolving first costs one\nextra session lookup on a request that is about to be refused, and nothing is read from the\ncurated tables until the guard has passed.",
         "operationId": "act_on_curated_source_api_curated_source_put",
         "requestBody": {
           "content": {

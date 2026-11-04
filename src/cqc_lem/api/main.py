@@ -153,6 +153,7 @@ from cqc_lem.utilities.db import (
     insert_feedback,
     insert_post,
     insert_scheduled_dm,
+    is_user_admin,
     record_auth_event,
     release_enrollment_scope,
     resolve_session as _db_resolve_session,
@@ -1131,7 +1132,8 @@ def _stamp_operator(user_id: int, path: Optional[str], token: Optional[str] = No
     _safe_auth_event(AuthAuditEvent.OPERATOR_ACTION, user_id=user_id,
                      ip=_client_ip(http_request), user_agent=_user_agent(http_request),
                      details={"role": SESSION_SCOPE_OPERATOR, "method": method or None,
-                              "path": _scope_path(path), "account_kind": kind})
+                              "path": _access_path(SESSION_SCOPE_OPERATOR, path),
+                              "account_kind": kind})
 
 
 def _safe_auth_event(event: "AuthAuditEvent", **kwargs) -> None:
@@ -3049,6 +3051,21 @@ def _agent_scoped() -> bool:
     return _request_session_scope.get() in _QUEUE_ONLY_SCOPES
 
 
+def _operator_account_eligible(user_id: Optional[int], account_kind: Optional[str] = None) -> bool:
+    """May this account hold, or act on, an `operator` token? internal/sandbox accounts and admins.
+
+    The operator surface includes `POST /admin/automation-pause`, which pauses automation for EVERY
+    user, not only the token's owner. A token minted on an ordinary customer or owner account must
+    not be able to do that, so both the mint and every use of the admin routes ask this question.
+    `get_user_account_kind` and `is_user_admin` both fail CLOSED, so a database fault answers False.
+    `account_kind` may be passed when the resolver has already read it for this request.
+    """
+    if not user_id:
+        return False
+    kind = account_kind if account_kind is not None else get_user_account_kind(user_id)
+    return kind in INTERNAL_ACCOUNT_KINDS or is_user_admin(user_id)
+
+
 def _operator_may_approve() -> bool:
     """The FOURTH approval guard: an operator may approve only on an internal or sandbox account.
 
@@ -3073,7 +3090,7 @@ def _audit_operator_approval(vector: str) -> None:
     _safe_auth_event(AuthAuditEvent.OPERATOR_APPROVAL, user_id=state.get("user_id"),
                      ip=_client_ip(http_request), user_agent=_user_agent(http_request),
                      details={"role": SESSION_SCOPE_OPERATOR, "via": vector,
-                              "path": _scope_path(_request_path.get()),
+                              "path": _access_path(SESSION_SCOPE_OPERATOR, _request_path.get()),
                               "account_kind": state.get("account_kind")})
 
 

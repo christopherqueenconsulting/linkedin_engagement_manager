@@ -44,6 +44,7 @@ def _quiet() -> Any:
     with patch(f"{_USER}.record_auth_event", return_value=True), \
          patch.object(_kernel(), "record_auth_event", return_value=True), \
          patch(f"{_M}.claim_operator_access", return_value=False), \
+         patch.object(_kernel(), "is_user_admin", return_value=False), \
          patch.object(_kernel(), "get_session_id", return_value=1):
         yield
 
@@ -178,7 +179,7 @@ class TestOperatorAccessRecord:
                 return False
 
         with patch.object(_kernel(), "record_auth_event", return_value=True) as recorded, \
-             _session("operator"), _kind("standard"), \
+             _session("operator"), _kind("internal"), \
              patch("cqc_lem.app.my_celery.app.AsyncResult", return_value=_Result()):
             resp = api_client.get("/api/admin/task-status/secret-task-id-9",
                                   params={"session_token": _TOKEN})
@@ -263,7 +264,7 @@ class TestNoOperatorOnlyRouteReturnsContactDetails:
             def ready() -> bool:
                 return True
 
-        with _session("operator"), _kind("standard"), \
+        with _session("operator"), _kind("internal"), \
              patch("cqc_lem.app.my_celery.app.AsyncResult", return_value=_Result()):
             resp = api_client.get("/api/admin/task-status/abc", params={"session_token": _TOKEN})
         assert resp.status_code == 200
@@ -290,7 +291,7 @@ class TestNoOperatorOnlyRouteReturnsContactDetails:
 
     def test_the_other_operator_only_routes_return_counters_and_fixed_text(
             self, api_client: Any) -> None:
-        with _session("operator"), _kind("standard"), \
+        with _session("operator"), _kind("internal"), \
              patch(f"{_ADMIN}.ADMIN_SECRET", "x"), \
              patch("cqc_lem.utilities.linkedin.rate_limit.automation_pause_remaining", return_value=0), \
              patch("cqc_lem.utilities.linkedin.rate_limit.rate_limit_cooldown_remaining", return_value=0), \
@@ -315,7 +316,7 @@ class TestNoOperatorOnlyRouteReturnsContactDetails:
 
 class TestOperatorTokenLabel:
     def _post(self, api_client: Any, body: dict[str, Any]) -> tuple[Any, Any]:
-        with _session("full"), \
+        with _session("full"), _kind("internal"), \
              patch(f"{_USER}.step_up_satisfied", return_value=True), \
              patch(f"{_USER}.create_session", return_value="minted") as create_session:
             resp = api_client.post("/api/user/operator-token", json={"session_token": _TOKEN, **body})
@@ -336,8 +337,8 @@ class TestOperatorTokenLabel:
         assert resp.status_code == 200
         assert create_session.call_args.kwargs["label"] == (label or "Maintenance operator")
 
-    @pytest.mark.parametrize("ttl_days", [0, 366])
-    def test_a_ttl_outside_1_to_365_is_a_422(self, api_client: Any, ttl_days: int) -> None:
+    @pytest.mark.parametrize("ttl_days", [0, 91, 366])
+    def test_a_ttl_outside_1_to_90_is_a_422(self, api_client: Any, ttl_days: int) -> None:
         resp, create_session = self._post(api_client, {"ttl_days": ttl_days})
         assert resp.status_code == 422
         create_session.assert_not_called()

@@ -47,7 +47,10 @@ class TestAgentScope:
 
     def test_an_agent_may_never_approve_a_curated_draft(self, main_mod, as_agent):
         from cqc_lem.api.routers.curated import CuratedSourceActionRequest, act_on_curated_source
-        with patch(f"{_R}.update_db_post_status") as approve, \
+        # The session resolves first now (the guard needs the scope the resolver stamps); the
+        # `as_agent` fixture stands in for that stamp, since `get_session_user_id` is patched out.
+        with patch(f"{_MAIN}.get_session_user_id", return_value=SESSION_USER_ID), \
+             patch(f"{_R}.update_db_post_status") as approve, \
              patch(f"{_R}.get_curated_source") as read, \
              pytest.raises(HTTPException) as exc:
             act_on_curated_source(CuratedSourceActionRequest(session_token="t", source_id=5,

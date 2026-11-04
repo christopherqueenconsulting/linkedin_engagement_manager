@@ -363,7 +363,8 @@ class OperatorTokenRequest(BaseModel):
         description="Free text shown on the Security card and kept in the audit log. Letters, "
                     "digits, space and . _ : - only, 120 characters at most. It must not hold "
                     "personal data (no names or email addresses).")
-    ttl_days: int = Field(default=90, ge=1, le=365)
+    # Shorter than the agent's and observer's 90/365: this seat can pause automation for every user.
+    ttl_days: int = Field(default=30, ge=1, le=90)
 
 
 class EmailChangeInitRequest(BaseModel):
@@ -1525,6 +1526,18 @@ def mint_operator_token(request: OperatorTokenRequest,
     user_id = _main.get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
+    # Eligibility BEFORE the step-up ceremony: an ordinary account is refused outright, with no
+    # ceremony to wait for and no token to revoke. The operator surface includes a GLOBAL automation
+    # pause that only the owner's secret can lift, so only an internal/sandbox account or an admin
+    # may hold one. The same check runs again on every use of the admin routes.
+    if not _main._operator_account_eligible(user_id):
+        log_warning("Operator token refused: account is not internal, sandbox or admin",
+                    user_id=user_id)
+        raise HTTPException(status_code=403, detail={
+            "code": "operator_not_permitted",
+            "message": "Operator tokens can only be minted on an internal or sandbox account, "
+                       "or by an admin.",
+        })
     # Step-up ONCE, here, where a passkey ceremony is possible. `extension_scope_ok` is NOT passed:
     # an operator token must never be able to mint its own successor without a fresh human ceremony.
     _require_step_up(user_id, request.session_token, "mint_operator_token",
