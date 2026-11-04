@@ -51,6 +51,19 @@ def _quiet():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _no_access_record():
+    """Keep the once-a-day access record out of the tests here that are not about it.
+
+    `test_operator_hardening.py::TestOperatorAccessRecord` runs the real claim over a fake Redis.
+    """
+    from cqc_lem.api import main
+
+    with patch(f"{_M}.claim_operator_access", return_value=False), \
+         patch.object(main, "get_session_id", return_value=1):
+        yield
+
+
 def _kernel():
     """The `main` MODULE object. Operator audit rows are written by the auth kernel's own binding of
     the audit function, not by the router serving the path, so patching the module OBJECT says which

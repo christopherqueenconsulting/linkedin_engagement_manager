@@ -776,13 +776,27 @@ account's item is a 404 before it is a question.
 `V20261104170555__add_users_account_kind.sql`, rollback noted in the file). The default means nobody
 changes behaviour until a row is set by hand; there is deliberately no API or SPA control to set it.
 
-### Every operator action is audited
+### Operator audit, access record and refusals
 
 An operator request that is not a read writes one `auth_audit_log` row before the handler runs
 (`operator_action`: role, method, path, account kind, client), and an approval writes an
 `operator_approval` row (role, whether it came by `action` or `status`, account kind). Reads are not
-audited: the Security card shows the account's last 20 events, and a row per poll would bury every
-human sign-in. The audit write is best effort and never turns an action into a 500.
+audited one by one: the Security card shows the account's last 20 events, and a row per poll would
+bury every human sign-in. Instead the first successful operator request of each UTC day, per session,
+**reads included**, writes one `operator_access` row (scope, path, account kind, session row id; no
+body, no address) through the same fail-open Redis window as the observer's. The path it stores is
+the literal surface path, or the template `/admin/task-status/{id}` for the one templated entry —
+never a concrete task id. Every audit write is best effort and never turns a request into a 500.
+
+An operator refusal is **403 `session_scope_forbidden`** and a **WARNING log line** (the same
+`Machine session refused outside its scope` template as the agent and observer, with a salted hash
+of the session, never the token), not an audit row.
+
+`POST /user/operator-token` validates `label` like the observer's: letters, digits, space and
+`._:-` only, 120 characters at most, because it is shown on the Security card and kept in the audit
+log. `GET /admin/task-status/{id}` **withholds the task's result text from an operator**
+(`result_withheld: true`): a task's return value can carry whatever the task touched, and an operator
+needs to know the job finished, not what it returned. The owner's bearer + secret pair still gets it.
 
 ## The docs surface lives inside `/api` (issue #1020)
 

@@ -356,3 +356,102 @@ class TestWriteCapableRolesCannotApprove:
         stale = [n for n in (*HANDLER_GUARDED_ROUTES, *NOT_AN_APPROVAL_VECTOR)
                  if n not in reachable_names]
         assert not stale, f"classified but no longer reachable by {role!r}: {stale}"
+
+
+class TestOperatorApprovesOnlyOnInternalOrSandboxAccounts:
+    """The fourth approval guard, asserted from the guards themselves rather than from one route.
+
+    `HANDLER_GUARDED_ROUTES` proves every approval-capable route still calls `_refuse_agent_approval`
+    / `_refuse_agent_approved_status` / `_agent_scoped()`; this proves what those guards DO for the
+    operator, for every account kind, so a loosening of the guard fails here even if no route moved.
+    """
+
+    @staticmethod
+    def _as_operator(main_mod: ModuleType, kind: Any) -> Any:
+        scope_reset = main_mod._request_session_scope.set(main_mod.SESSION_SCOPE_OPERATOR)
+        state_reset = main_mod._request_operator.set({"account_kind": kind, "user_id": 1})
+        return scope_reset, state_reset
+
+    @staticmethod
+    def _restore(main_mod: ModuleType, resets: Any) -> None:
+        main_mod._request_operator.reset(resets[1])
+        main_mod._request_session_scope.reset(resets[0])
+
+    @pytest.mark.parametrize("kind", ["internal", "sandbox"])
+    @pytest.mark.parametrize("guard,arg", [("_refuse_agent_approval", "approve"),
+                                           ("_refuse_agent_approval", "retry"),
+                                           ("_refuse_agent_approved_status", "approved")])
+    def test_an_operator_may_approve_on_an_internal_or_sandbox_account(
+            self, main_mod: ModuleType, kind: str, guard: str, arg: str) -> None:
+        resets = self._as_operator(main_mod, kind)
+        try:
+            with patch_audit(main_mod):
+                getattr(main_mod, guard)(arg)  # must not raise
+        finally:
+            self._restore(main_mod, resets)
+
+    @pytest.mark.parametrize("kind", ["standard", "", None, "INTERNAL", "internal ", "admin", 0])
+    @pytest.mark.parametrize("guard,arg", [("_refuse_agent_approval", "approve"),
+                                           ("_refuse_agent_approval", "retry"),
+                                           ("_refuse_agent_approved_status", "approved")])
+    def test_every_other_account_kind_is_refused_with_a_403(
+            self, main_mod: ModuleType, kind: Any, guard: str, arg: str) -> None:
+        from fastapi import HTTPException
+
+        resets = self._as_operator(main_mod, kind)
+        try:
+            with pytest.raises(HTTPException) as exc:
+                getattr(main_mod, guard)(arg)
+        finally:
+            self._restore(main_mod, resets)
+        assert exc.value.status_code == 403
+        assert exc.value.detail["code"] == "agent_may_not_approve"
+
+    def test_an_operator_with_no_account_state_is_refused(self, main_mod: ModuleType) -> None:
+        """No resolver stamp at all (a direct call) must read as 'standard', never as 'internal'."""
+        from fastapi import HTTPException
+
+        reset = main_mod._request_session_scope.set(main_mod.SESSION_SCOPE_OPERATOR)
+        try:
+            with pytest.raises(HTTPException):
+                main_mod._refuse_agent_approval("approve")
+        finally:
+            main_mod._request_session_scope.reset(reset)
+
+    def test_the_only_kinds_that_grant_approval_are_internal_and_sandbox(self) -> None:
+        from cqc_lem.utilities.db import INTERNAL_ACCOUNT_KINDS
+
+        assert INTERNAL_ACCOUNT_KINDS == frozenset({"internal", "sandbox"})
+
+    def test_the_passive_default_and_the_preferences_write_never_open_for_an_operator(
+            self, main_mod: ModuleType) -> None:
+        """`_agent_scoped()` stays True for the operator on every account kind.
+
+        It is what keeps the passive `auto_approve` default and the caps closed.
+        """
+        for kind in ("standard", "internal", "sandbox"):
+            resets = self._as_operator(main_mod, kind)
+            try:
+                assert main_mod._agent_scoped() is True, kind
+            finally:
+                self._restore(main_mod, resets)
+
+    def test_the_operator_reaches_the_same_guarded_routes_as_the_agent(
+            self, main_mod: ModuleType, route_table: list[tuple[str, str, Any]]) -> None:
+        """The operator reaches the same approval-capable routes as the agent, and no others.
+
+        It is the same handler, so the same guards; nothing approval-capable is operator-only.
+        """
+        def names(role: str) -> set[str]:
+            return {getattr(r.endpoint, "__name__", "")
+                    for (_m, _p, r) in _reachable(main_mod, route_table, ROLE_SCOPES[role])
+                    if getattr(r.endpoint, "__name__", "") in HANDLER_GUARDED_ROUTES}
+
+        assert names("operator") == names("agent") != set()
+
+
+def patch_audit(main_mod: ModuleType) -> Any:
+    """Silence the operator-approval audit row, which the guard writes when it allows an approval."""
+    from unittest.mock import patch
+
+    return patch.object(main_mod, "record_auth_event", return_value=True)

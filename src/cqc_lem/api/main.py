@@ -209,7 +209,7 @@ from cqc_lem.utilities.observability import (
     track_api_call,
     track_inbound_email,
 )
-from cqc_lem.utilities.observer_access import claim_observer_access
+from cqc_lem.utilities.observer_access import claim_observer_access, claim_operator_access
 from cqc_lem.utilities.post_image import (
     owns_post_image_url,
 )
@@ -1002,22 +1002,48 @@ def _session_log_id(token: Optional[str]) -> Optional[str]:
     return hashlib.sha256(b"lem-session-log:" + token.encode()).hexdigest()[:16]
 
 
-def _record_observer_access(user_id: int, token: Optional[str], path: Optional[str]) -> None:
-    """Write the observer's once-a-day `observer_access` audit row. Never raises.
+# Paths that are a TEMPLATE, not a literal, are stored in an access row as the template: a concrete
+# task id (or any future path parameter) must never ride into the audit log through the path.
+_SCOPE_PATTERN_LABELS: Dict[str, str] = {r"/admin/task-status/[^/]+": "/admin/task-status/{id}"}
 
-    Scope, path and the session row id; no body, no query string, no client address. The claim
-    (`claim_observer_access`, Redis, fails open) is what keeps this to one row per session per UTC
-    day. Everything here is best effort: an access record must never turn a read into an error.
+
+def _access_path(scope: str, path: Optional[str]) -> Optional[str]:
+    """The path an access row stores: the literal surface path, or the pattern's template."""
+    key = _scope_path(path)
+    surface = _SCOPE_SURFACES.get(scope, frozenset())
+    if key in surface:
+        return key
+    for pattern in _SCOPE_PATTERNS.get(scope, ()):
+        if key is not None and pattern.fullmatch(key):
+            return _SCOPE_PATTERN_LABELS.get(pattern.pattern, "(templated path)")
+    return None
+
+
+def _record_daily_access(event: "AuthAuditEvent", scope: str, claim: Any, user_id: int,
+                         token: Optional[str], path: Optional[str],
+                         extra: Optional[Dict[str, Any]] = None) -> None:
+    """Write a machine seat's once-a-day access row. Never raises.
+
+    Scope, a path that can only be a literal surface path or a template, and the session row id; no
+    body, no query string, no client address. `claim` (Redis, fails open) keeps it to one row per
+    session per UTC day. Everything here is best effort: an access record must never turn a request
+    into an error.
     """
     try:
         session_key = _session_log_id(token)
-        if not session_key or not claim_observer_access(session_key):
+        if not session_key or not claim(session_key):
             return
-        _safe_auth_event(AuthAuditEvent.OBSERVER_ACCESS, user_id=user_id,
+        _safe_auth_event(event, user_id=user_id,
                          session_id=get_session_id(token) if token else None,
-                         details={"scope": SESSION_SCOPE_OBSERVER, "path": _scope_path(path)})
+                         details={"scope": scope, "path": _access_path(scope, path), **(extra or {})})
     except Exception as e:
-        log_debug(f"Could not record observer access: {e}")
+        log_debug(f"Could not record {scope} access: {e}")
+
+
+def _record_observer_access(user_id: int, token: Optional[str], path: Optional[str]) -> None:
+    """Write the observer's once-a-day `observer_access` audit row. Never raises."""
+    _record_daily_access(AuthAuditEvent.OBSERVER_ACCESS, SESSION_SCOPE_OBSERVER,
+                         claim_observer_access, user_id, token, path)
 
 
 # Machine seats whose refusal is a WARNING: a held token of one of these only reaches a path it was
@@ -1049,7 +1075,7 @@ def _scope_checked(resolved: Dict[str, Any], token: Optional[str]) -> int:
         if scope == SESSION_SCOPE_OBSERVER:
             _record_observer_access(user_id, token, path)
         if scope == SESSION_SCOPE_OPERATOR:
-            _stamp_operator(user_id, path)
+            _stamp_operator(user_id, path, token)
         return user_id
     if scope == SESSION_SCOPE_EXTENSION:
         # Audited AND warned, for the extension scope only. The extension calls exactly one path
@@ -1078,15 +1104,17 @@ def _scope_checked(resolved: Dict[str, Any], token: Optional[str]) -> int:
     raise _scope_refusal(scope)
 
 
-def _stamp_operator(user_id: int, path: Optional[str]) -> None:
-    """Learn the acting account's kind ONCE per request and audit a non-read operator action.
+def _stamp_operator(user_id: int, path: Optional[str], token: Optional[str] = None) -> None:
+    """Learn the acting account's kind ONCE per request and audit operator access and actions.
 
     The kind is what the approval guard reads (`_operator_may_approve`). `get_user_account_kind`
     fails closed to 'standard', so an unreadable account is never treated as internal.
 
     Every operator request that is not a read writes one `auth_audit_log` row carrying the role.
-    Reads are not audited: an operator polls the queues all day, and the Security card shows the
-    account's last 20 events — a row per poll would bury every human sign-in under machine noise.
+    Reads are not audited one by one: an operator polls the queues all day, and the Security card
+    shows the account's last 20 events — a row per poll would bury every human sign-in under machine
+    noise. Instead the first successful request of each UTC day, per session, reads included, writes
+    one `operator_access` row, so "was this token used, and when" has a durable answer.
     The row is written before the handler runs, so it records the attempt, not the outcome; an
     approval writes its own `operator_approval` row (`_operator_may_approve`).
     """
@@ -1096,6 +1124,8 @@ def _stamp_operator(user_id: int, path: Optional[str]) -> None:
     method = http_request.method.upper() if http_request is not None else ""
     kind = get_user_account_kind(user_id)
     _request_operator.set({"account_kind": kind, "user_id": user_id})
+    _record_daily_access(AuthAuditEvent.OPERATOR_ACCESS, SESSION_SCOPE_OPERATOR,
+                         claim_operator_access, user_id, token, path, {"account_kind": kind})
     if method in _READ_ONLY_METHODS:
         return
     _safe_auth_event(AuthAuditEvent.OPERATOR_ACTION, user_id=user_id,

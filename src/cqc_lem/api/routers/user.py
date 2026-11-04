@@ -358,7 +358,11 @@ class OperatorTokenRequest(BaseModel):
     deciding which machine to revoke.
     """
     session_token: SessionTokenField = None
-    label: Optional[str] = Field(default=None, max_length=120)
+    label: Optional[str] = Field(
+        default=None, max_length=120, pattern=_TOKEN_LABEL_PATTERN,
+        description="Free text shown on the Security card and kept in the audit log. Letters, "
+                    "digits, space and . _ : - only, 120 characters at most. It must not hold "
+                    "personal data (no names or email addresses).")
     ttl_days: int = Field(default=90, ge=1, le=365)
 
 
@@ -1505,8 +1509,10 @@ def mint_observer_token(request: ObserverTokenRequest,
                          detail={"session_token": token, "expires_in_days": request.ttl_days})
 
 
+# `http_request: Request = None`, not `Optional[Request]`: see the note above `mint_observer_token`.
 @router.post("/operator-token")
-def mint_operator_token(request: OperatorTokenRequest, http_request: Request = None) -> ResponseModel[dict[str, Any]]:
+def mint_operator_token(request: OperatorTokenRequest,
+                        http_request: Request = None) -> ResponseModel[dict[str, Any]]:  # type: ignore[assignment]
     """Mint a long-lived session for an operations agent that does maintenance.
 
     Mirrors `mint_agent_token`: human session only, step-up gated, `extension_scope_ok` NOT passed,

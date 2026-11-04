@@ -165,6 +165,62 @@ An observer cannot reach `/health/deep` (it is not on the surface). That endpoin
 unauthenticated — it returns counts only — so an operations agent should call it **with no
 credential at all**, not with its observer token.
 
+## Operator data exposure, access record and rollback
+
+**Data.** An operator reads what an agent reads — the review queues, which contain third parties'
+names, profile URLs and message text — plus the automation pause state and a job's state. The
+observer's per-route field whitelist is observer-only, so an operator's queue responses are the
+agent's. No route the operator gained returns a contact detail: `POST /leads/refresh` returns fixed
+text, the two automation routes return counters, and `GET /admin/task-status/{id}` withholds the
+task's result text from an operator. The owner's obligations in § Observer data exposure apply to
+whatever agent or vendor holds an operator token, and the data must not be exported to a public
+surface.
+
+**Access record.** Operator actions that are not reads write one `operator_action` row each and every
+approval writes `operator_approval`; reads are not logged one by one. The first successful operator
+request of each UTC day, per session, writes one `operator_access` row (scope, path, account kind,
+session row id), fail-open on Redis. A refusal is a WARNING log line (same template and escalation as
+the observer's), not an audit row. `label` on the mint is limited to letters, digits, space and
+`._:-` (120 max).
+
+**Rotate, detect, store.** As for the observer (§ Observer incident and rollback), with
+`operator_token_minted`, `operator_access`, `operator_action` and `operator_approval` as the audit
+events to read, and the same rule that a token never goes in a URL.
+
+### Operator rollback, in this order
+
+Reverting leaves any minted operator session an unknown scope (every request refused, fail closed),
+but it would slide its expiry like a browser session and work again the day the code is redeployed.
+So revoke first.
+
+1. **Revoke every active operator session** — run by the owner (or the operator who deploys), on the
+   production database:
+
+   ```sql
+   UPDATE sessions SET revoked_at = NOW() WHERE scope = 'operator' AND revoked_at IS NULL;
+   ```
+
+   or one token at a time: Account → Security, or `POST /api/user/sessions/revoke` with
+   `{"session_id": <id>}` (step-up required). **A bulk SQL revoke writes no audit row**; record what
+   was run, when and how many rows changed in the incident note.
+2. **Revert** the change: `git revert <merge sha>`.
+3. **Verify none remain**:
+
+   ```sql
+   SELECT COUNT(*) FROM sessions WHERE scope = 'operator' AND revoked_at IS NULL;
+   ```
+
+   It must return `0`; a former operator token must answer `401` or `403`.
+
+**The `account_kind` column.** The migration `V20261104170555__add_users_account_kind.sql` adds
+`users.account_kind VARCHAR(16) NOT NULL DEFAULT 'standard'`. It is harmless to leave in place after a
+revert: every row reads `standard` and nothing else reads it. To remove it, after the code is
+reverted: `ALTER TABLE users DROP COLUMN account_kind;` (rollback note in the migration file). Revert
+the code first — until then each operator request would log a read error for the missing column,
+though the reader fails closed to `standard`. If any account was set to `internal` or `sandbox` by
+hand, list them first (`SELECT id FROM users WHERE account_kind <> 'standard';`) so the owner knows
+which accounts lose operator approval.
+
 ## Where the roles differ on approval
 
 | Account kind (`users.account_kind`) | `agent` | `operator` | `observer` |

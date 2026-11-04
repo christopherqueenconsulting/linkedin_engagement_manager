@@ -590,13 +590,20 @@ def admin_task_status(
     Read-only; also open to an `operator` session; the owner's bearer + secret pair works exactly
     as before.
     """
-    if not _operator_session(session_token):
+    as_operator = _operator_session(session_token)
+    if not as_operator:
         _require_api_and_admin(credentials, x_admin_secret)
     from cqc_lem.app.my_celery import app as celery_app
     res = celery_app.AsyncResult(task_id)
     detail = {"task_id": task_id, "state": res.state}
     if res.ready():
-        detail["result"] = str(res.result)[:500]
+        if as_operator:
+            # A task's return text can carry anything the task touched — a profile URL, a name, an
+            # address. An operator needs to know the job FINISHED, not what it returned, so the text
+            # is withheld for that seat; the owner's bearer + secret pair still gets it.
+            detail["result_withheld"] = True
+        else:
+            detail["result"] = str(res.result)[:500]
     return ResponseModel(status_code=200, detail=detail)
 
 
