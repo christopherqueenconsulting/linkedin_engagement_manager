@@ -76,7 +76,7 @@ import json
 import re
 import sys
 import time
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import parse_qs, urlparse
 
 from selenium.webdriver.common.by import By
@@ -6287,7 +6287,9 @@ def card_urn_evidence(driver, card) -> dict:
     return reading
 
 
-def _visible_editable_candidates(driver, scope=None) -> list[dict]:
+def _visible_editable_candidates(
+    driver: Any, scope: Optional[Any] = None,
+) -> Optional[list[dict[str, Any]]]:
     """Read editable DOM candidates without returning labels or user-entered values."""
     script = """
 const start = arguments[0] || document;
@@ -6320,7 +6322,10 @@ return out;
 """
     try:
         return driver.execute_script(script, scope if scope is not None else None) or []
-    except Exception:
+    except Exception as error:
+        from cqc_lem.utilities.logger import log_debug
+
+        log_debug("Editable candidate census failed", error_type=type(error).__name__)
         return None
 
 
@@ -6331,6 +6336,11 @@ def _walk_feed_composers(driver, feed: str, url: str, max_cards: int = 3,
     Read-only in the sense `--permalink-comment` already is: it clicks each card's own Comment
     button so the composer mounts, describes what mounted, and presses Escape. Nothing is typed and
     nothing is submitted, so no comment can be left.
+
+    The read-only editable census records page candidates before, while, and after clicks using
+    `page_editable_candidates_before`, `page_comment_editables_before`, per-card
+    `page_editable_candidate_shapes`, and `editable_candidate_scan_readable`. This distinguishes a
+    mounted but unresolved comment editor from a surface where no editor appeared.
 
     It calls the SHIPPED chain (`_card_for_textbox` → `_COMMENT_ACTION_LOCATORS` →
     `_post_composer_for_card`), never a copy of it: an inlined duplicate grounds whatever the
@@ -6424,7 +6434,10 @@ def _walk_feed_composers(driver, feed: str, url: str, max_cards: int = 3,
         scope = _single_post_scope(driver, card)
         entry["scope_widened"] = bool(scope is not None and scope != card)
         entry["textboxes_in_scope"] = len(_visible_composers(scope)) if scope is not None else 0
-        entry["editable_candidates_in_scope"] = len(_visible_editable_candidates(driver, scope))
+        scoped_editables = _visible_editable_candidates(driver, scope)
+        entry["editable_candidates_in_scope"] = (
+            len(scoped_editables) if scoped_editables is not None else None)
+        editable_scans_readable = editable_scans_readable and scoped_editables is not None
         entry["composer"] = element_evidence(composer) if composer is not None else None
         entry["composer_source"] = ("none" if composer is None else
                                     "in_card" if any(composer == box for box in in_card) else
@@ -6637,8 +6650,8 @@ def probe_group_feed_composer(driver, user_id: int = 1, group_id: Optional[str] 
     return graded(reading, group_feed_composer_state(reading), group_feed_composer_verdict(reading))
 
 
-def probe_home_feed_composer(driver, user_id: int = 1, max_cards: int = 3,
-                             sleep: Callable[[float], None] = time.sleep) -> dict:
+def probe_home_feed_composer(driver: Any, user_id: int = 1, max_cards: int = 3,
+                             sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
     """Grade home-feed Comment → composer independently (#2467)."""
     return _walk_feed_composers(driver, "home", FEED_URL, max_cards=max_cards, sleep=sleep)
 
@@ -7154,7 +7167,11 @@ def probe_message_thread(driver, profile_url: str, person_name: str = "", self_n
     from selenium.webdriver.support.ui import WebDriverWait
 
     from cqc_lem.utilities.linkedin.message_thread import (
-        ROUTE_MESSAGING_SEARCH, open_message_thread, profile_urn_from_page, read_last_sender)
+        ROUTE_MESSAGING_SEARCH,
+        open_message_thread,
+        profile_urn_from_page,
+        read_last_sender,
+    )
 
     wait = WebDriverWait(driver, 10)
     windows_before = _window_count(driver)
