@@ -3510,9 +3510,9 @@ def _log_content_plan_terminal_state(user_id: int, post_id: int, status: PostSta
 
 def _log_content_plan_failure(user_id: int, post_id: int, reason: str) -> None:
     """Record a content-plan slot that ended before it could reach review or scheduling."""
-    log_info("Content plan terminal state", user_id=user_id, post_id=post_id,
-             terminal_state="failed", status=PostStatus.ERROR.value, reason=reason,
-             gate_reasons=[])
+    log_error("Content plan terminal state", user_id=user_id, post_id=post_id,
+              terminal_state="failed", status=PostStatus.ERROR.value, reason=reason,
+              gate_reasons=[])
 
 
 def _carousel_numeric_claims(carousel: Optional[dict]) -> list[dict]:
