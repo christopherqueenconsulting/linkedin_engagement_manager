@@ -4437,6 +4437,45 @@
         "title": "NpsSurveyRequest",
         "type": "object"
       },
+      "ObserverTokenRequest": {
+        "description": "Body of `POST /user/observer-token`: a READ-ONLY token for an operations agent.\n\nSame shape as `AgentTokenRequest`; `label` is what the owner will read on the Security card when\ndeciding which machine to revoke.",
+        "properties": {
+          "label": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "pattern": "^[A-Za-z0-9 ._:\\-]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Free text shown on the Security card and kept in the audit log. Letters, digits, space and . _ : - only, 120 characters at most. It must not hold personal data (no names or email addresses).",
+            "title": "Label"
+          },
+          "session_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Token"
+          },
+          "ttl_days": {
+            "default": 90,
+            "maximum": 365.0,
+            "minimum": 1.0,
+            "title": "Ttl Days",
+            "type": "integer"
+          }
+        },
+        "title": "ObserverTokenRequest",
+        "type": "object"
+      },
       "OccasionPostRequest": {
         "description": "Body of `POST /user/post/occasion` \u2014 seed one occasion/milestone draft (issue #1074).\n\n`occasion` is the author's own account of the real event, and it is the ONLY specific the writer\nis allowed to state about it, so it is required rather than defaulted. `archetype` is validated\nagainst the framework's occasion family in the handler (400), not here, so the menu stays in one\nplace.",
         "properties": {
@@ -13123,6 +13162,45 @@
           }
         },
         "summary": "Get Newsletter Subscribers Endpoint"
+      }
+    },
+    "/api/user/observer-token": {
+      "post": {
+        "description": "Mint a long-lived, READ-ONLY session for an operations agent.\n\nMirrors `mint_agent_token` line for line, for the same reasons: a non-browser client needs a\ncredential it can hold, and the ceremony that makes minting safe can only happen HERE, in the\nSPA, with a human present. The observer never runs one.\n\nWhat differs is the surface, not the mint. `scope='observer'` reaches `_OBSERVER_SESSION_SURFACE`\n(the queue reads, preferences, automation state, dashboard, boot payloads, the account's own\naudit history) and only on `GET`/`HEAD`/`OPTIONS` \u2014 `_SCOPE_METHODS`, enforced in the one\nresolver \u2014 so it can create nothing, approve nothing, and change nothing.\n\nThe TTL is fixed at mint and never slid (`FIXED_TTL_SCOPES`). The row is listed and revocable\nper-device on the Security card, so revoking it stops the observer and signs nobody out.",
+        "operationId": "mint_observer_token_api_user_observer_token_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ObserverTokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Mint Observer Token"
       }
     },
     "/api/user/onboarding": {

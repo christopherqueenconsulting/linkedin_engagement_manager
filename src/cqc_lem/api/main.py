@@ -97,6 +97,7 @@ from cqc_lem.utilities.db import (
     SESSION_SCOPE_ENROLL,
     SESSION_SCOPE_EXTENSION,
     SESSION_SCOPE_FULL,
+    SESSION_SCOPE_OBSERVER,
     SESSION_SCOPE_RECOVERY,
     AuthAuditEvent,
     CatchupTouchStatus,
@@ -140,6 +141,7 @@ from cqc_lem.utilities.db import (
     get_scheduled_dm,
     get_scheduled_dm_user_id,
     get_scheduled_dms,
+    get_session_id,
     get_session_user_id as _db_get_session_user_id,
     get_user_email,
     get_user_subscription_info,
@@ -204,6 +206,7 @@ from cqc_lem.utilities.observability import (
     track_api_call,
     track_inbound_email,
 )
+from cqc_lem.utilities.observer_access import claim_observer_access
 from cqc_lem.utilities.post_image import (
     owns_post_image_url,
 )
@@ -603,10 +606,43 @@ _AGENT_SESSION_SURFACE = frozenset({
     "/curated/sources", "/curated/source",
 })
 
+# What a read-only operations agent may SEE: the queue reads, the settings and state that say whether
+# automation is safe, the dashboard counters, the boot payloads, and the account's own recent auth
+# history (`/user/security` — device list + audit events, never a token or an IP hash). It is the
+# read half of `_AGENT_SESSION_SURFACE` plus those few, so it has NO create route at all. Paths grant
+# every verb (see `_SCOPE_METHODS`), so every entry here is also held to read verbs by the resolver.
+# Absent by design, exactly as for the agent: every credential path, the account mover, session
+# revocation, and every minting endpoint — an observer cannot mint a successor, or anything else.
+# `/health/deep` is not listed: it is public and has no session-gated variant to widen.
+_OBSERVER_SESSION_SURFACE = frozenset({
+    # read the queues
+    "/connection_requests", "/outreach/targets", "/dms", "/lead_signals", "/leads",
+    "/catchup/touches",
+    # read the state that decides whether automation is running safely
+    "/user/engagement-preferences", "/user/automation-status", "/dashboard/stats",
+    "/user/linkedin-profile-skills",
+    # curated outside sources: list candidates (the queue-a-URL write is a different path)
+    "/curated/sources",
+    # who am I, what build, what flags, and the account's own device + audit history
+    "/auth/session", "/app-info", "/flags", "/user/security",
+})
+
 _SCOPE_SURFACES: Dict[str, frozenset[str]] = {
     SESSION_SCOPE_EXTENSION: _EXTENSION_SESSION_SURFACE,
     SESSION_SCOPE_ENROLL: _ENROLL_SESSION_SURFACE,
     SESSION_SCOPE_AGENT: _AGENT_SESSION_SURFACE,
+    SESSION_SCOPE_OBSERVER: _OBSERVER_SESSION_SURFACE,
+}
+
+# Surfaces match on PATH, so granting a path grants every verb on it (see the engagement-preferences
+# note on `_AGENT_SESSION_SURFACE`). A scope listed HERE is additionally limited to these verbs on
+# every path it reaches, decided in the same resolver. A scope with no entry is path-only — which is
+# exactly what extension, enroll and agent are, and must stay byte-identical. The method is read off
+# the request ContextVar; if there is no request to read it from, a scope listed here is REFUSED
+# (fail closed), never waved through.
+_READ_ONLY_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+_SCOPE_METHODS: Dict[str, frozenset[str]] = {
+    SESSION_SCOPE_OBSERVER: _READ_ONLY_METHODS,
 }
 
 # The browser's own two sessions, and the ONLY scopes that reach everything. A NULL scope — every
@@ -616,6 +652,7 @@ _UNRESTRICTED_SCOPES = frozenset({SESSION_SCOPE_FULL, SESSION_SCOPE_RECOVERY})
 _SCOPE_REFUSAL_CODE = {
     SESSION_SCOPE_EXTENSION: "session_scope_forbidden",
     SESSION_SCOPE_AGENT: "session_scope_forbidden",
+    SESSION_SCOPE_OBSERVER: "session_scope_forbidden",
     # The SPA reads this one and renders the enrolment gate instead of a dead page.
     SESSION_SCOPE_ENROLL: "enrollment_required",
 }
@@ -638,15 +675,21 @@ def _scope_path(path: Optional[str]) -> Optional[str]:
     return path.rstrip("/") or "/"
 
 
-def _scope_allows(scope: Optional[str], path: Optional[str]) -> bool:
-    """Pure path check. Whether an `enroll` hold is still WARRANTED is a separate question with a
-    different input (the account, not the path) and is answered in `_scope_checked`.
+def _scope_allows(scope: Optional[str], path: Optional[str],
+                  method: Optional[str] = None) -> bool:
+    """Path check, plus the verb check for a scope listed in `_SCOPE_METHODS`. Whether an `enroll`
+    hold is still WARRANTED is a separate question with a different input (the account, not the
+    path) and is answered in `_scope_checked`.
+
+    `method` defaults to the current request's, read off the ContextVar the middleware stamped —
+    that is how `_scope_checked` calls it. A scope with no verb limit never looks at it.
 
     Both unknowns fail CLOSED, and for the same reason. An unknown PATH means a restricted token
     reached a handler by a route this middleware never saw. An unknown SCOPE means a value nobody
     taught this table about — a typo, a hand-edited row, or a scope some later phase added and
     only half wired up — and granting it everything by omission would make the table itself the
-    opt-in thing this design exists to avoid.
+    opt-in thing this design exists to avoid. A verb-limited scope with NO readable method is the
+    same shape and is refused too.
     """
     effective = scope or SESSION_SCOPE_FULL
     if effective in _UNRESTRICTED_SCOPES:
@@ -655,6 +698,15 @@ def _scope_allows(scope: Optional[str], path: Optional[str]) -> bool:
     if surface is None:
         log_warning("Session carries an unrecognised scope — refusing", scope=effective)
         return False
+    verbs = _SCOPE_METHODS.get(effective)
+    if verbs is not None:
+        if method is None:
+            # `.get(None)` and `getattr` rather than trusting the ContextVar: a missing request
+            # context (a Celery or direct caller, a request object without a method) must be a
+            # REFUSAL here, never an AttributeError that surfaces as a 500.
+            method = getattr(_request_object.get(None), "method", None)
+        if not isinstance(method, str) or method.upper() not in verbs:
+            return False
     return _scope_path(path) in surface
 
 
@@ -858,6 +910,85 @@ def _release_hold(token: str) -> bool:
         return False
 
 
+# The ONLY fields an observer is shown on each list route, written out literally. The list readers
+# already SELECT an explicit column tuple, so for real rows this changes nothing; it is the second
+# lock. A row reaching a handler with a column nobody listed here (a phone, an email, a credential)
+# is stripped before it can leave the process, for an observer. Adding a field to a response is a
+# deliberate edit to THIS table, which `test_observer_route_bodies.py` pins key for key.
+_OBSERVER_ROW_FIELDS: Dict[str, frozenset] = {
+    "dms": frozenset({"id", "user_id", "recipient_profile_url", "recipient_name", "message", "source",
+                      "scheduled_time", "status", "created_at", "updated_at"}),
+    "connection_requests": frozenset({
+        "id", "user_id", "recipient_profile_url", "recipient_name", "message", "source", "icp_score",
+        "reasons", "failure_reason", "status", "attempts", "created_at", "updated_at",
+        # A boolean saying whether an address exists — never the address.
+        "has_recipient_email"}),
+    "outreach_targets": frozenset({"id", "user_id", "target_profile_url", "target_name", "stage", "status",
+                                   "context_url", "draft_text", "notes", "created_at", "updated_at"}),
+    "catchup_touches": frozenset({"id", "user_id", "profile_url", "person_name", "event_type",
+                                  "event_detail", "event_period", "score", "message", "status",
+                                  "created_at", "updated_at"}),
+    "lead_signals": frozenset({
+        "id", "user_id", "source", "channel", "person_name", "person_profile_url", "thread_key",
+        "snippet", "score", "matched_signals", "post_id", "context_url", "draft_response", "status",
+        "delivery_attempts", "created_at", "updated_at"}),
+    "leads": frozenset({
+        "id", "user_id", "person_key", "person_name", "person_profile_url", "score", "icp_score",
+        "engagement_score", "stage", "signals", "signal_count", "reasons", "next_action",
+        "first_signal_at", "last_signal_at", "manual_stage", "notes", "dismissed", "created_at",
+        "updated_at"}),
+}
+
+
+def _observer_rows(kind: str, rows: Any) -> Any:
+    """Reduce an observer's list rows to the whitelisted fields; every other scope is untouched.
+
+    For an observer each row keeps only the fields `_OBSERVER_ROW_FIELDS[kind]` names. A non-list is
+    returned as it came.
+    """
+    if _request_session_scope.get() != SESSION_SCOPE_OBSERVER or not isinstance(rows, list):
+        return rows
+    allowed = _OBSERVER_ROW_FIELDS[kind]
+    return [{k: v for k, v in row.items() if k in allowed} if isinstance(row, dict) else row
+            for row in rows]
+
+
+def _session_log_id(token: Optional[str]) -> Optional[str]:
+    """A short, stable, non-reversible label for a session, safe to put in a log line.
+
+    Deliberately NOT `sessions.session_token`: that column holds the plain SHA-256 of the token, and
+    a log line that carried it would be a second copy of the database's lookup key. This is a
+    separately-salted digest, truncated, so a line can be matched to another line about the same
+    session (and to the access claim) and to nothing else.
+    """
+    if not token:
+        return None
+    return hashlib.sha256(b"lem-session-log:" + token.encode()).hexdigest()[:16]
+
+
+def _record_observer_access(user_id: int, token: Optional[str], path: Optional[str]) -> None:
+    """Write the observer's once-a-day `observer_access` audit row. Never raises.
+
+    Scope, path and the session row id; no body, no query string, no client address. The claim
+    (`claim_observer_access`, Redis, fails open) is what keeps this to one row per session per UTC
+    day. Everything here is best effort: an access record must never turn a read into an error.
+    """
+    try:
+        session_key = _session_log_id(token)
+        if not session_key or not claim_observer_access(session_key):
+            return
+        _safe_auth_event(AuthAuditEvent.OBSERVER_ACCESS, user_id=user_id,
+                         session_id=get_session_id(token) if token else None,
+                         details={"scope": SESSION_SCOPE_OBSERVER, "path": _scope_path(path)})
+    except Exception as e:
+        log_debug(f"Could not record observer access: {e}")
+
+
+# Machine seats whose refusal is a WARNING: a held token of one of these only reaches a path it was
+# not given when its holder is misconfigured or the token is stolen, so each refusal is worth seeing.
+_WARN_ON_REFUSAL_SCOPES = frozenset({SESSION_SCOPE_AGENT, SESSION_SCOPE_OBSERVER})
+
+
 def _scope_checked(resolved: Dict[str, Any], token: Optional[str]) -> int:
     scope = resolved.get("scope") or SESSION_SCOPE_FULL
     path = _request_path.get()
@@ -878,6 +1009,8 @@ def _scope_checked(resolved: Dict[str, Any], token: Optional[str]) -> int:
 
     if _scope_allows(scope, path):
         _request_session_scope.set(scope)
+        if scope == SESSION_SCOPE_OBSERVER:
+            _record_observer_access(user_id, token, path)
         return user_id
     if scope == SESSION_SCOPE_EXTENSION:
         # Audited AND warned, for the extension scope only. The extension calls exactly one path
@@ -892,6 +1025,15 @@ def _scope_checked(resolved: Dict[str, Any], token: Optional[str]) -> int:
         _safe_auth_event(AuthAuditEvent.SESSION_SCOPE_DENIED, user_id=user_id, success=False,
                          ip=_client_ip(http_request), user_agent=_user_agent(http_request),
                          details={"scope": scope, "path": _scope_path(path)})
+    elif scope in _WARN_ON_REFUSAL_SCOPES:
+        # WARNING, not audited. A machine seat reaching a path or verb it was not given means a
+        # misconfigured agent or a stolen token, and nobody reads a DEBUG line. The message is a
+        # stable template so the recurrence escalation groups every refusal into one issue; the
+        # variable parts ride as keyword context. No audit row: an agent probing a path would
+        # otherwise fill the account's last-20 events list.
+        log_warning("Machine session refused outside its scope", user_id=user_id, scope=scope,
+                    method=getattr(_request_object.get(None), "method", None),
+                    path=_scope_path(path), session=_session_log_id(token))
     else:
         log_debug("Session refused outside its scope", user_id=user_id, scope=scope)
     raise _scope_refusal(scope)
@@ -3197,6 +3339,7 @@ def list_scheduled_dms_endpoint(session_token: str, status_filter: Optional[str]
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     result = get_scheduled_dms(user_id, status_filter=status_filter, page=page,
                                page_size=page_size, sort_order=sort_order)
+    result["dms"] = _observer_rows("dms", result.get("dms", []))
     for dm in result.get("dms", []):
         for key in ("scheduled_time", "created_at", "updated_at"):
             if dm.get(key) is not None:
@@ -3303,6 +3446,7 @@ def list_connection_requests_endpoint(session_token: str, status_filter: Optiona
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     result = get_connection_requests(user_id, status_filter=status_filter, page=page,
                                      page_size=page_size, sort_order=sort_order)
+    result["requests"] = _observer_rows("connection_requests", result.get("requests", []))
     return ResponseModel(status_code=200, detail=result)
 
 
@@ -3405,6 +3549,7 @@ def list_lead_signals_endpoint(session_token: str, status_filter: Optional[str] 
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     result = get_lead_signals(user_id, status_filter=status_filter, page=page,
                               page_size=page_size, sort_order=sort_order)
+    result["signals"] = _observer_rows("lead_signals", result.get("signals", []))
     result["new_count"] = count_new_lead_signals(user_id)
     return ResponseModel(status_code=200, detail=result)
 
@@ -3481,6 +3626,7 @@ def list_leads_endpoint(session_token: str, stage_filter: Optional[str] = None,
         raise HTTPException(status_code=422, detail=f"Unknown stage '{stage_filter}'")
     result = get_leads(user_id, stage_filter=stage_filter, include_dismissed=include_dismissed,
                        page=page, page_size=page_size)
+    result["leads"] = _observer_rows("leads", result.get("leads", []))
     result["hot_count"] = count_hot_leads(user_id)
     return ResponseModel(status_code=200, detail=result)
 
@@ -3541,10 +3687,12 @@ def list_catchup_touches_endpoint(
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
-    return ResponseModel(status_code=200, detail=get_catchup_touches(
+    result = get_catchup_touches(
         user_id, status_filter=status_filter, event_type_filter=event_type_filter,
         page=page, page_size=page_size, sort_order=sort_order, sort_by=sort_by,
-        start_date=start_date, end_date=end_date))
+        start_date=start_date, end_date=end_date)
+    result["touches"] = _observer_rows("catchup_touches", result.get("touches", []))
+    return ResponseModel(status_code=200, detail=result)
 
 
 @router.put("/catchup/touch")
