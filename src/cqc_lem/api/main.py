@@ -93,11 +93,13 @@ from cqc_lem.utilities.content_generation_status import clear_generation_status,
 from cqc_lem.utilities.curated_sources import credit_line
 from cqc_lem.utilities.db import (
     EMAIL_VERIFICATION_REQUIRED_MESSAGE,
+    INTERNAL_ACCOUNT_KINDS,
     SESSION_SCOPE_AGENT,
     SESSION_SCOPE_ENROLL,
     SESSION_SCOPE_EXTENSION,
     SESSION_SCOPE_FULL,
     SESSION_SCOPE_OBSERVER,
+    SESSION_SCOPE_OPERATOR,
     SESSION_SCOPE_RECOVERY,
     AuthAuditEvent,
     CatchupTouchStatus,
@@ -143,6 +145,7 @@ from cqc_lem.utilities.db import (
     get_scheduled_dms,
     get_session_id,
     get_session_user_id as _db_get_session_user_id,
+    get_user_account_kind,
     get_user_email,
     get_user_subscription_info,
     get_video_credit_balance,
@@ -511,6 +514,10 @@ _request_object: ContextVar[Optional[Request]] = ContextVar("lem_request", defau
 # The scope this request actually resolved on, stamped by the resolver. `/auth/session` reports the
 # enrolment hold off THIS, so the browser is never told something the server would then contradict.
 _request_session_scope: ContextVar[Optional[str]] = ContextVar("lem_session_scope", default=None)
+# What the resolver learned about an `operator` request, stamped ONCE per request: the acting
+# account's `account_kind` (the fourth approval guard reads it) and that the action was audited.
+# None for every other scope.
+_request_operator: ContextVar[Optional[Dict[str, Any]]] = ContextVar("lem_operator", default=None)
 
 _guard_canonical_module()
 
@@ -530,6 +537,7 @@ async def session_cookie_middleware(request: Request, call_next):
     path_reset = _request_path.set(request.url.path)
     request_reset = _request_object.set(request)
     scope_reset = _request_session_scope.set(None)
+    operator_reset = _request_operator.set(None)
     try:
         return await call_next(request)
     finally:
@@ -537,6 +545,7 @@ async def session_cookie_middleware(request: Request, call_next):
         _request_path.reset(path_reset)
         _request_object.reset(request_reset)
         _request_session_scope.reset(scope_reset)
+        _request_operator.reset(operator_reset)
 
 
 # Registered LAST on purpose, which makes it the OUTERMOST middleware: Starlette runs the most
@@ -627,11 +636,34 @@ _OBSERVER_SESSION_SURFACE = frozenset({
     "/auth/session", "/app-info", "/flags", "/user/security",
 })
 
+# The maintenance seat: the agent's queueing surface (so it inherits every agent guard) plus a short,
+# reviewed list of operational, non-destructive routes. Nothing here sends to a person, deletes data
+# or touches a credential; see `docs/agent-roles.md` for why each one is in and which were left out.
+#   /leads/refresh              re-score the caller's own lead pipeline (reads engagement rows, writes
+#                               scores; no LinkedIn call, no send)
+#   /admin/automation-status    read the pause + 429-breaker state
+#   /admin/automation-pause     the SAFE direction of the kill switch — stops automation, reversible
+#   /admin/task-status/{id}     read a queued task's state (templated, see `_SCOPE_PATTERNS`)
+# Deliberately NOT here: /admin/automation-resume (re-starts automation a human may have halted for
+# account safety), every other /admin/* route, and any route that sends, deletes or regenerates.
+_OPERATOR_MAINTENANCE_SURFACE = frozenset({
+    "/leads/refresh", "/admin/automation-status", "/admin/automation-pause",
+})
+_OPERATOR_SESSION_SURFACE = _AGENT_SESSION_SURFACE | _OPERATOR_MAINTENANCE_SURFACE
+
+# The one templated entry. Surfaces are exact path literals, and a path parameter cannot be one, so
+# a scope may ALSO list anchored full-match patterns. `[^/]+` crosses no segment, so
+# `/admin/task-status/{id}` cannot open anything beneath or beside it.
+_SCOPE_PATTERNS: Dict[str, tuple] = {
+    SESSION_SCOPE_OPERATOR: (re.compile(r"/admin/task-status/[^/]+"),),
+}
+
 _SCOPE_SURFACES: Dict[str, frozenset[str]] = {
     SESSION_SCOPE_EXTENSION: _EXTENSION_SESSION_SURFACE,
     SESSION_SCOPE_ENROLL: _ENROLL_SESSION_SURFACE,
     SESSION_SCOPE_AGENT: _AGENT_SESSION_SURFACE,
     SESSION_SCOPE_OBSERVER: _OBSERVER_SESSION_SURFACE,
+    SESSION_SCOPE_OPERATOR: _OPERATOR_SESSION_SURFACE,
 }
 
 # Surfaces match on PATH, so granting a path grants every verb on it (see the engagement-preferences
@@ -653,6 +685,7 @@ _SCOPE_REFUSAL_CODE = {
     SESSION_SCOPE_EXTENSION: "session_scope_forbidden",
     SESSION_SCOPE_AGENT: "session_scope_forbidden",
     SESSION_SCOPE_OBSERVER: "session_scope_forbidden",
+    SESSION_SCOPE_OPERATOR: "session_scope_forbidden",
     # The SPA reads this one and renders the enrolment gate instead of a dead page.
     SESSION_SCOPE_ENROLL: "enrollment_required",
 }
@@ -707,7 +740,10 @@ def _scope_allows(scope: Optional[str], path: Optional[str],
             method = getattr(_request_object.get(None), "method", None)
         if not isinstance(method, str) or method.upper() not in verbs:
             return False
-    return _scope_path(path) in surface
+    key = _scope_path(path)
+    if key in surface:
+        return True
+    return key is not None and any(p.fullmatch(key) for p in _SCOPE_PATTERNS.get(effective, ()))
 
 
 def _scope_refusal(scope: str) -> HTTPException:
@@ -986,7 +1022,8 @@ def _record_observer_access(user_id: int, token: Optional[str], path: Optional[s
 
 # Machine seats whose refusal is a WARNING: a held token of one of these only reaches a path it was
 # not given when its holder is misconfigured or the token is stolen, so each refusal is worth seeing.
-_WARN_ON_REFUSAL_SCOPES = frozenset({SESSION_SCOPE_AGENT, SESSION_SCOPE_OBSERVER})
+_WARN_ON_REFUSAL_SCOPES = frozenset({SESSION_SCOPE_AGENT, SESSION_SCOPE_OBSERVER,
+                                     SESSION_SCOPE_OPERATOR})
 
 
 def _scope_checked(resolved: Dict[str, Any], token: Optional[str]) -> int:
@@ -1011,6 +1048,8 @@ def _scope_checked(resolved: Dict[str, Any], token: Optional[str]) -> int:
         _request_session_scope.set(scope)
         if scope == SESSION_SCOPE_OBSERVER:
             _record_observer_access(user_id, token, path)
+        if scope == SESSION_SCOPE_OPERATOR:
+            _stamp_operator(user_id, path)
         return user_id
     if scope == SESSION_SCOPE_EXTENSION:
         # Audited AND warned, for the extension scope only. The extension calls exactly one path
@@ -1037,6 +1076,32 @@ def _scope_checked(resolved: Dict[str, Any], token: Optional[str]) -> int:
     else:
         log_debug("Session refused outside its scope", user_id=user_id, scope=scope)
     raise _scope_refusal(scope)
+
+
+def _stamp_operator(user_id: int, path: Optional[str]) -> None:
+    """Learn the acting account's kind ONCE per request and audit a non-read operator action.
+
+    The kind is what the approval guard reads (`_operator_may_approve`). `get_user_account_kind`
+    fails closed to 'standard', so an unreadable account is never treated as internal.
+
+    Every operator request that is not a read writes one `auth_audit_log` row carrying the role.
+    Reads are not audited: an operator polls the queues all day, and the Security card shows the
+    account's last 20 events — a row per poll would bury every human sign-in under machine noise.
+    The row is written before the handler runs, so it records the attempt, not the outcome; an
+    approval writes its own `operator_approval` row (`_operator_may_approve`).
+    """
+    if _request_operator.get() is not None:
+        return
+    http_request = _request_object.get()
+    method = http_request.method.upper() if http_request is not None else ""
+    kind = get_user_account_kind(user_id)
+    _request_operator.set({"account_kind": kind, "user_id": user_id})
+    if method in _READ_ONLY_METHODS:
+        return
+    _safe_auth_event(AuthAuditEvent.OPERATOR_ACTION, user_id=user_id,
+                     ip=_client_ip(http_request), user_agent=_user_agent(http_request),
+                     details={"role": SESSION_SCOPE_OPERATOR, "method": method or None,
+                              "path": _scope_path(path), "account_kind": kind})
 
 
 def _safe_auth_event(event: "AuthAuditEvent", **kwargs) -> None:
@@ -2939,11 +3004,47 @@ def _challenge_expiry() -> datetime:
     return datetime.now(timezone.utc) + timedelta(seconds=AUTH_CHALLENGE_TTL_SECONDS)
 
 
+_QUEUE_ONLY_SCOPES = frozenset({SESSION_SCOPE_AGENT, SESSION_SCOPE_OPERATOR})
+
+
 def _agent_scoped() -> bool:
-    """Is THIS request being served on an agent token? Read off the ContextVar the resolver stamped,
-    never a fresh lookup — same argument as `_enrollment_held`.
+    """Is THIS request being served on a queue-only machine seat (`agent` or `operator`)?
+
+    Read off the ContextVar the resolver stamped, never a fresh lookup — same argument as
+    `_enrollment_held`. The name is kept because every guard below calls it; for an `agent` it is
+    exactly what it always was. An `operator` is queue-only too: it never gets the passive
+    `auto_approve` default and can never configure the account, on ANY account kind. Only the
+    explicit approval verbs have an exception for it — see `_operator_may_approve`.
     """
-    return _request_session_scope.get() == SESSION_SCOPE_AGENT
+    return _request_session_scope.get() in _QUEUE_ONLY_SCOPES
+
+
+def _operator_may_approve() -> bool:
+    """The FOURTH approval guard: an operator may approve only on an internal or sandbox account.
+
+    True only for an `operator` request whose acting account's `account_kind` is in
+    `INTERNAL_ACCOUNT_KINDS` (read once by `_stamp_operator`; unreadable reads 'standard'). The
+    acting account IS the item's owner: every approving handler scopes the item to the caller's own
+    user id (a foreign id is a 404), so there is no way to name another account's item.
+
+    An approval it allows writes its own `operator_approval` audit row. On a 'standard' account this
+    is False and the operator is refused exactly as an `agent` is.
+    """
+    if _request_session_scope.get() != SESSION_SCOPE_OPERATOR:
+        return False
+    state = _request_operator.get() or {}
+    return state.get("account_kind") in INTERNAL_ACCOUNT_KINDS
+
+
+def _audit_operator_approval(vector: str) -> None:
+    """Record that an operator just approved something. `vector` is `action` or `status`."""
+    http_request = _request_object.get()
+    state = _request_operator.get() or {}
+    _safe_auth_event(AuthAuditEvent.OPERATOR_APPROVAL, user_id=state.get("user_id"),
+                     ip=_client_ip(http_request), user_agent=_user_agent(http_request),
+                     details={"role": SESSION_SCOPE_OPERATOR, "via": vector,
+                              "path": _scope_path(_request_path.get()),
+                              "account_kind": state.get("account_kind")})
 
 
 def _agent_approval_refusal() -> HTTPException:
@@ -2971,6 +3072,9 @@ def _refuse_agent_approval(action: Optional[str]) -> None:
         return
     if not _agent_scoped():
         return
+    if _operator_may_approve():
+        _audit_operator_approval("action")
+        return
     raise _agent_approval_refusal()
 
 
@@ -2987,6 +3091,9 @@ def _refuse_agent_approved_status(status: Optional[str]) -> None:
     if status != "approved":
         return
     if not _agent_scoped():
+        return
+    if _operator_may_approve():
+        _audit_operator_approval("status")
         return
     raise _agent_approval_refusal()
 

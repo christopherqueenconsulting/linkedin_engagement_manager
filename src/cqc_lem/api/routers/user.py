@@ -119,6 +119,7 @@ from cqc_lem.utilities.db import (
     SESSION_SCOPE_EXTENSION,
     SESSION_SCOPE_FULL,
     SESSION_SCOPE_OBSERVER,
+    SESSION_SCOPE_OPERATOR,
     STORY_BANK_KINDS,
     STORY_BANK_TARGET_ENTRIES,
     VALID_CATCHUP_MESSAGE_SOURCES,
@@ -347,6 +348,17 @@ class ObserverTokenRequest(BaseModel):
         description="Free text shown on the Security card and kept in the audit log. Letters, "
                     "digits, space and . _ : - only, 120 characters at most. It must not hold "
                     "personal data (no names or email addresses).")
+    ttl_days: int = Field(default=90, ge=1, le=365)
+
+
+class OperatorTokenRequest(BaseModel):
+    """Body of `POST /user/operator-token`: the maintenance seat for an operations agent.
+
+    Same shape as `AgentTokenRequest`; `label` is what the owner will read on the Security card when
+    deciding which machine to revoke.
+    """
+    session_token: SessionTokenField = None
+    label: Optional[str] = Field(default=None, max_length=120)
     ttl_days: int = Field(default=90, ge=1, le=365)
 
 
@@ -1489,6 +1501,40 @@ def mint_observer_token(request: ObserverTokenRequest,
                       ip=_main._client_ip(http_request), user_agent=_main._user_agent(http_request),
                       details={"scope": SESSION_SCOPE_OBSERVER, "ttl_days": request.ttl_days,
                                "label": request.label or "Read-only observer"})
+    return ResponseModel(status_code=200,
+                         detail={"session_token": token, "expires_in_days": request.ttl_days})
+
+
+@router.post("/operator-token")
+def mint_operator_token(request: OperatorTokenRequest, http_request: Request = None) -> ResponseModel[dict[str, Any]]:
+    """Mint a long-lived session for an operations agent that does maintenance.
+
+    Mirrors `mint_agent_token`: human session only, step-up gated, `extension_scope_ok` NOT passed,
+    fixed TTL that is never slid, revocable per device. `scope='operator'` reaches the agent's
+    queueing surface plus a short reviewed list of non-destructive maintenance routes
+    (`_OPERATOR_MAINTENANCE_SURFACE`), and may approve queued work ONLY on an account whose
+    `users.account_kind` is internal or sandbox; on any other account it behaves exactly like an
+    agent. It can never configure the account, touch a credential, revoke a session or mint a token.
+    """
+    user_id = _main.get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    # Step-up ONCE, here, where a passkey ceremony is possible. `extension_scope_ok` is NOT passed:
+    # an operator token must never be able to mint its own successor without a fresh human ceremony.
+    _require_step_up(user_id, request.session_token, "mint_operator_token",
+                     http_request=http_request)
+
+    token = create_session(user_id, user_agent=_main._user_agent(http_request),
+                           ip=_main._client_ip(http_request),
+                           label=(request.label or "Maintenance operator"),
+                           scope=SESSION_SCOPE_OPERATOR,
+                           ttl_hours=request.ttl_days * 24)
+    if not token:
+        raise HTTPException(status_code=500, detail="Could not create session")
+    record_auth_event(AuthAuditEvent.OPERATOR_TOKEN_MINTED, user_id=user_id,
+                      ip=_main._client_ip(http_request), user_agent=_main._user_agent(http_request),
+                      details={"scope": SESSION_SCOPE_OPERATOR, "ttl_days": request.ttl_days,
+                               "label": request.label or "Maintenance operator"})
     return ResponseModel(status_code=200,
                          detail={"session_token": token, "expires_in_days": request.ttl_days})
 

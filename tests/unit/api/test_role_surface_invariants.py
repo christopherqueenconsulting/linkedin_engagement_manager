@@ -67,6 +67,7 @@ FORBIDDEN_ROLE_ROUTES: tuple[Forbidden, ...] = (
     Forbidden("/user/extension-token", _ANY, "mints an extension-scoped session"),
     Forbidden("/user/agent-token", _ANY, "mints an agent-scoped session"),
     Forbidden("/user/observer-token", _ANY, "mints an observer-scoped session"),
+    Forbidden("/user/operator-token", _ANY, "mints an operator-scoped session"),
     # -- caps and approval modes: the config that decides what runs without a human ---------------
     # The agent legitimately reaches this PATH (to read it), and refuses the write in the handler —
     # see HANDLER_GUARDED_ROUTES. So at the resolver it is forbidden only for the read-only role,
@@ -117,8 +118,24 @@ _APPROVAL_FIELDS = frozenset({"action", "status"})
 
 def _scopes() -> Any:
     from cqc_lem.api import main
-    return {"observer": main.SESSION_SCOPE_OBSERVER, "agent": main.SESSION_SCOPE_AGENT}
+    return {"observer": main.SESSION_SCOPE_OBSERVER, "agent": main.SESSION_SCOPE_AGENT,
+            "operator": main.SESSION_SCOPE_OPERATOR}
 
+
+# The ONLY /admin routes any role may reach, by role. Every other /admin route stays behind
+# `X-Admin-Secret` or an admin human session, which a machine role never holds. The operator's are
+# the operational, non-destructive ones: two reads and the SAFE direction of the kill switch.
+# `automation-resume` is deliberately absent — it re-starts what a human may have halted.
+ALLOWED_ADMIN_REACH: dict[str, frozenset] = {
+    "operator": frozenset({
+        ("GET", "/admin/automation-status"),
+        ("POST", "/admin/automation-pause"),
+        ("GET", "/admin/task-status/{task_id}"),
+    }),
+}
+
+# Every non-admin route reachable by the operator that the agent cannot reach. One entry today.
+OPERATOR_EXTRA_NON_ADMIN_ROUTES = frozenset({("POST", "/leads/refresh")})
 
 # A new restricted machine role is one more entry here.
 ROLE_SCOPES = _scopes()
@@ -218,6 +235,31 @@ class TestNoRoleReachesAForbiddenRoute:
             if not any(_matches(e, m, p) for e in FORBIDDEN_ROLE_ROUTES)]
         assert not unclassified, (
             "token-minting routes with no FORBIDDEN_ROLE_ROUTES entry:\n" + "\n".join(unclassified))
+
+
+class TestAdminAndMaintenanceReach:
+    @pytest.mark.parametrize("role", sorted(ROLE_SCOPES))
+    def test_a_role_reaches_exactly_its_reviewed_admin_routes(self, main_mod, route_table, role):
+        reached = {(m, p) for (m, p, _r) in _reachable(main_mod, route_table, ROLE_SCOPES[role])
+                   if p.startswith("/admin")}
+        allowed = ALLOWED_ADMIN_REACH.get(role, frozenset())
+        extra = sorted(reached - allowed)
+        missing = sorted(allowed - reached)
+        assert not extra, (
+            f"\n\nThe {role!r} role reaches /api/admin routes nobody reviewed for it (add to "
+            "ALLOWED_ADMIN_REACH only after arguing the route is operational and non-destructive):\n"
+            + "\n".join(f"  {role:<9} {m:<7} /api{p}" for (m, p) in extra) + "\n")
+        assert not missing, f"reviewed admin routes the {role!r} role can no longer reach: {missing}"
+
+    def test_the_operator_reaches_nothing_beyond_the_agent_but_the_reviewed_extras(
+            self, main_mod, route_table):
+        agent = {(m, p) for (m, p, _r) in _reachable(main_mod, route_table, ROLE_SCOPES["agent"])}
+        operator = {(m, p) for (m, p, _r) in _reachable(main_mod, route_table,
+                                                         ROLE_SCOPES["operator"])}
+        assert agent <= operator, "the operator must inherit the whole agent surface"
+        extra = operator - agent
+        assert extra == (ALLOWED_ADMIN_REACH["operator"] | OPERATOR_EXTRA_NON_ADMIN_ROUTES), (
+            f"operator reach beyond the agent changed: {sorted(extra)}")
 
 
 class TestReadOnlyRolesReachNoWriteVerb:

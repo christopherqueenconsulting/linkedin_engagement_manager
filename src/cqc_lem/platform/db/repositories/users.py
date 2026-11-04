@@ -1297,6 +1297,27 @@ def change_user_email(user_id: int, new_email: str,
     finally:
         cursor.close()
         connection.close()
+ACCOUNT_KIND_STANDARD = "standard"
+ACCOUNT_KIND_INTERNAL = "internal"
+ACCOUNT_KIND_SANDBOX = "sandbox"
+# The only kinds on which an `operator` session may approve queued work. Everything else — including
+# a value nobody recognises — is 'standard'.
+INTERNAL_ACCOUNT_KINDS = frozenset({ACCOUNT_KIND_INTERNAL, ACCOUNT_KIND_SANDBOX})
+def get_user_account_kind(user_id: int) -> str:
+    """The account's `account_kind`, failing CLOSED to 'standard'.
+
+    A DB fault, a missing row and an unrecognised value all read 'standard', because the caller
+    grants approval authority on anything else: "could not tell" must never spell "internal".
+    """
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute("SELECT account_kind FROM users WHERE id = %s", (user_id,))
+            row = cursor.fetchone()
+    except mysql.connector.Error as err:
+        log_error("Could not read account kind", exc=err, user_id=user_id)
+        return ACCOUNT_KIND_STANDARD
+    kind = (row or {}).get('account_kind')
+    return kind if kind in INTERNAL_ACCOUNT_KINDS else ACCOUNT_KIND_STANDARD
 def get_user_email(user_id: int) -> Optional[str]:
     """The account's current email address — an attribute of the account, not its identity (issue #745)."""
     try:

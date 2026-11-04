@@ -200,6 +200,22 @@ _admin_secret_scheme = APIKeyHeader(
 )
 
 
+def _operator_session(session_token: Optional[str]) -> bool:
+    """Is this request an `operator` session on a route the operator surface lists?
+
+    The role-based alternative to `X-Admin-Secret` for the FEW admin routes the operator seat was
+    given (`_OPERATOR_MAINTENANCE_SURFACE`). It is `operator` EXACTLY: a full session of a
+    non-admin user, an `agent`, an `observer` and no session at all all answer False, so they fall
+    through to the secret check and are refused there. The resolver already refused an `operator`
+    token on any path its surface does not list, so this cannot widen to a route nobody reviewed.
+    """
+    try:
+        user_id = _main.get_session_user_id(session_token)
+    except HTTPException:
+        return False
+    return bool(user_id) and _main._request_session_scope.get() == _main.SESSION_SCOPE_OPERATOR
+
+
 def _require_api_and_admin(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
     x_admin_secret: Optional[str] = Depends(_admin_secret_scheme),
@@ -217,11 +233,17 @@ def _require_api_and_admin(
 @router.post("/automation-pause", responses={200: {"description": "Automation paused"},
                                                     403: {"description": "Forbidden"}})
 def admin_pause_automation(hours: float = 24,
-                           x_admin_secret: Optional[str] = Header(default=None)) -> ResponseModel[dict[str, Any]]:
+                           x_admin_secret: Optional[str] = Header(default=None),
+                           session_token: Optional[str] = None) -> ResponseModel[dict[str, Any]]:
     """Kill-switch: pause ALL Selenium automation (comments/replies/DMs/stats/invites) for `hours` so
     a 429-rate-limited account/IP can recover. Posting (API) is unaffected. Default 24h.
+
+    Also open to an `operator` session: pausing is the safe direction and is reversible. Resuming is
+    not (it re-starts what a human may have halted for account safety), so `automation-resume`
+    stays secret-only.
     """
-    _require_admin(x_admin_secret)
+    if not _operator_session(session_token):
+        _require_admin(x_admin_secret)
     from cqc_lem.utilities.linkedin.rate_limit import pause_automation
     seconds = int(max(0.0, hours) * 3600) or 3600
     ok = pause_automation(seconds, reason="admin")
@@ -239,9 +261,14 @@ def admin_resume_automation(x_admin_secret: Optional[str] = Header(default=None)
 
 @router.get("/automation-status", responses={200: {"description": "Automation status"},
                                                    403: {"description": "Forbidden"}})
-def admin_automation_status(x_admin_secret: Optional[str] = Header(default=None)) -> ResponseModel[dict[str, Any]]:
-    """Current pause + 429-breaker state (seconds remaining on each)."""
-    _require_admin(x_admin_secret)
+def admin_automation_status(x_admin_secret: Optional[str] = Header(default=None),
+                            session_token: Optional[str] = None) -> ResponseModel[dict[str, Any]]:
+    """Current pause + 429-breaker state (seconds remaining on each).
+
+    Read-only; also open to an `operator` session.
+    """
+    if not _operator_session(session_token):
+        _require_admin(x_admin_secret)
     from cqc_lem.utilities.linkedin.rate_limit import automation_pause_remaining, rate_limit_cooldown_remaining
     pause_s = automation_pause_remaining()
     return ResponseModel(status_code=200, detail={
@@ -554,9 +581,17 @@ def admin_test_dm_direct(
 })
 def admin_task_status(
     task_id: str,
-    _: None = Depends(_require_api_and_admin),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
+    x_admin_secret: Optional[str] = Depends(_admin_secret_scheme),
+    session_token: Optional[str] = None,
 ) -> ResponseModel[dict[str, Any]]:
-    """Poll a queued test task's state (PENDING/STARTED/SUCCESS/FAILURE)."""
+    """Poll a queued task's state (PENDING/STARTED/SUCCESS/FAILURE).
+
+    Read-only; also open to an `operator` session; the owner's bearer + secret pair works exactly
+    as before.
+    """
+    if not _operator_session(session_token):
+        _require_api_and_admin(credentials, x_admin_secret)
     from cqc_lem.app.my_celery import app as celery_app
     res = celery_app.AsyncResult(task_id)
     detail = {"task_id": task_id, "state": res.state}

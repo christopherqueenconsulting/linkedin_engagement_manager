@@ -138,9 +138,13 @@ SESSION_SCOPE_AGENT = "agent"
 # change nothing. Same mint ceremony as `agent` (human, step-up, fixed TTL, cannot mint a
 # successor); the difference is enforced in the one API resolver, which limits it to read verbs.
 SESSION_SCOPE_OBSERVER = "observer"
+# An `operator` session is the maintenance seat: the agent's queueing surface plus a short reviewed
+# list of non-destructive maintenance routes, and approval authority ONLY on an account whose
+# `users.account_kind` is internal or sandbox. Same mint ceremony as `agent`.
+SESSION_SCOPE_OPERATOR = "operator"
 # Scopes whose expiry is fixed at mint and never slid by `resolve_session`. Every one of them is a
 # credential a machine holds on a schedule, so a sliding window would make it renew forever.
-FIXED_TTL_SCOPES = frozenset({SESSION_SCOPE_AGENT, SESSION_SCOPE_OBSERVER})
+FIXED_TTL_SCOPES = frozenset({SESSION_SCOPE_AGENT, SESSION_SCOPE_OBSERVER, SESSION_SCOPE_OPERATOR})
 def resolve_session(token: str) -> Optional[dict]:
     """Validate a session token and, if live, slide its expiry forward — returning WHO it is and
     WHAT it may do in one read.
