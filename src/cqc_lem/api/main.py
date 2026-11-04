@@ -11,6 +11,7 @@ The bearer gate in `api_token_middleware` is an edge filter and NOT authorisatio
 comment above `_API_ACCESS_TOKEN_SET`. Authorisation happens in the handler, which fails closed.
 """
 
+import hashlib
 import io
 import json
 import math
@@ -22,7 +23,7 @@ import zipfile
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from enum import IntEnum
-from typing import Any, Awaitable, Callable, Dict, Iterator, List, NoReturn, Optional, Union
+from typing import Any, Awaitable, Callable, Dict, Iterator, List, Mapping, NoReturn, Optional, Union
 from urllib.parse import urlencode, urlparse
 
 import requests
@@ -75,6 +76,15 @@ from cqc_lem.app.engagement.invites import automate_invites_to_company_page_for_
 from cqc_lem.app.engagement.outreach import scheduled_dm_is_stale, send_lead_response
 from cqc_lem.app.engagement.posting import automate_reply_commenting, sweep_reply_comments
 from cqc_lem.app.run_content_plan import auto_create_weekly_content, plan_content_for_user
+from cqc_lem.integrations.linkedin.notification_email import (
+    extract_gmail_confirmation_code,
+    extract_gmail_confirmation_url,
+    extract_reply_token_from_address,
+    is_comment_notification,
+    is_gmail_forwarding_confirmation,
+    is_linkedin_notification,
+    sender_domain,
+)
 from cqc_lem.utilities.ai_spend_cap import DailyAICapReached
 from cqc_lem.utilities.auth_factors import (
     enrollment_required,
@@ -192,6 +202,7 @@ from cqc_lem.utilities.observability import (
     capture_exception,
     llm_trace,
     track_api_call,
+    track_inbound_email,
 )
 from cqc_lem.utilities.post_image import (
     owns_post_image_url,
@@ -2043,7 +2054,6 @@ def _handle_inbound_parse(form) -> ResponseModel[str]:
     # SendGrid Inbound Parse routes ALL mail for the parse host to this ONE URL, so this endpoint
     # must also handle the reply+<token> traffic (Gmail forwarding confirmations + comment
     # notifications), not only pin+<token> PIN replies. Dispatch by the address prefix.
-    from cqc_lem.integrations.linkedin.notification_email import extract_reply_token_from_address
     if extract_reply_token_from_address(to_field) or extract_reply_token_from_address(envelope):
         return _process_reply_inbound(form)
     text = str(form.get("text") or form.get("html") or "")
@@ -2117,10 +2127,6 @@ def _handle_gmail_forwarding_confirmation(user_id: int, subject: str, text: str,
     and stash the numeric code + status so the UI can show it as a fallback if the auto-click didn't
     take. Always 200.
     """
-    from cqc_lem.integrations.linkedin.notification_email import (
-        extract_gmail_confirmation_code,
-        extract_gmail_confirmation_url,
-    )
     # Prefer the HTML href — the plain-text part wraps the long verify URL across lines and breaks it.
     url = extract_gmail_confirmation_url(html) or extract_gmail_confirmation_url(text)
     code = (extract_gmail_confirmation_code(subject) or extract_gmail_confirmation_code(text)
@@ -2208,38 +2214,25 @@ def _reply_sweep_debounced(user_id: int, window_s: int = 120) -> bool:
         return True
 
 
-def _log_inbound_verdict(verdict: str, form, user_id: "Optional[int]" = None) -> None:
+_INBOUND_TRACE_ENABLED = os.getenv("LI_REPLY_INBOUND_TRACE_ENABLED", "").strip().lower() \
+    in {"1", "true", "yes"}
+
+
+def _log_inbound_verdict(verdict: str, form: Mapping[str, Any],
+                         user_id: Optional[int] = None,
+                         classification: str = "unknown") -> None:
     """Log inbound decisions without exposing tokenized addresses or email content.
 
     Optional trace mode adds stable, non-reversible fingerprints for correlating SendGrid retries.
     """
-    import hashlib
-    import os
-
-    from cqc_lem.integrations.linkedin.notification_email import (
-        _sender_domain,
-        extract_reply_token_from_address,
-        is_comment_notification,
-        is_linkedin_notification,
-    )
-
     to_field = str(form.get("to") or "")
     envelope = str(form.get("envelope") or "")
-    from_field = str(form.get("from") or "")
-    subject = str(form.get("subject") or "")
-    text = str(form.get("text") or form.get("html") or "")
     token = extract_reply_token_from_address(to_field) or extract_reply_token_from_address(envelope)
-    classification = (
-        "gmail_confirmation" if verdict == "gmail_confirmation"
-        else "comment" if is_comment_notification(subject, text)
-        else "linkedin_other" if is_linkedin_notification(from_field, subject, text)
-        else "unrecognized"
-    )
-    sender_domain = _sender_domain(from_field) or "unknown"
+    from_domain = sender_domain(str(form.get("from") or "")) or "unknown"
     details = (f"Inbound parse email verdict={verdict} class={classification} "
-               f"sender_domain={sender_domain} token_present={bool(token)}")
-    if os.getenv("LI_REPLY_INBOUND_TRACE_ENABLED", "").strip().lower() in {"1", "true", "yes"}:
-        headers = str(form.get("headers") or "")
+               f"sender_domain={from_domain} token_present={bool(token)}")
+    if _INBOUND_TRACE_ENABLED:
+        headers = str(form.get("headers") or "")[:8000]
         message_id = re.search(r"(?im)^message-id:\s*(<[^>]+>)", headers)
 
         def fingerprint(value: str) -> str:
@@ -2250,24 +2243,17 @@ def _log_inbound_verdict(verdict: str, form, user_id: "Optional[int]" = None) ->
         details += f" trace_token={token_fp} trace_message={message_fp}"
     log_info(details, user_id=user_id)
     try:
-        from cqc_lem.utilities.observability import track_inbound_email
         track_inbound_email(verdict, user_id=user_id, classification=classification)
     except Exception as e:
         log_debug("Could not track inbound email verdict", exc=e, user_id=user_id)
 
 
-def _process_reply_inbound(form) -> ResponseModel[str]:
+def _process_reply_inbound(form: Mapping[str, Any]) -> ResponseModel[str]:
     """Handle inbound mail sent to a reply+<token>@parse-domain address: a Gmail forwarding
     confirmation (auto-click the verify link) or a forwarded LinkedIn comment notification (trigger a
     debounced recent-posts reply sweep). Reactions/unknown tokens are ignored. Always 200. Called
     from BOTH inbound endpoints because SendGrid Inbound Parse posts all parse-host mail to one URL.
     """
-    from cqc_lem.integrations.linkedin.notification_email import (
-        extract_reply_token_from_address,
-        is_comment_notification,
-        is_gmail_forwarding_confirmation,
-        is_linkedin_notification,
-    )
     from cqc_lem.utilities.db import get_user_id_by_reply_token
     to_field = str(form.get("to") or "")
     envelope = str(form.get("envelope") or "")
@@ -2275,36 +2261,43 @@ def _process_reply_inbound(form) -> ResponseModel[str]:
     subject = str(form.get("subject") or "")
     text = str(form.get("text") or "")
     html = str(form.get("html") or "")
+    notification_text = text or html
     token = extract_reply_token_from_address(to_field) or extract_reply_token_from_address(envelope)
+    gmail_confirmation = is_gmail_forwarding_confirmation(from_field, subject, notification_text)
+    comment = is_comment_notification(subject, notification_text)
+    linkedin_notification = is_linkedin_notification(from_field, subject, notification_text)
+    classification = ("gmail_confirmation" if gmail_confirmation else "comment" if comment
+                      else "linkedin_other" if linkedin_notification else "unrecognized")
     if not token:
-        _log_inbound_verdict("no_reply_token", form)
+        _log_inbound_verdict("no_reply_token", form, classification=classification)
         return ResponseModel(status_code=200, detail="ignored")
     user_id = get_user_id_by_reply_token(token)
     if not user_id:
-        _log_inbound_verdict("unknown_reply_token", form)
+        _log_inbound_verdict("unknown_reply_token", form, classification=classification)
         return ResponseModel(status_code=200, detail="ignored")
     # Gmail forwarding confirmation: the address is ours + token-gated, so auto-click the verify link.
-    if is_gmail_forwarding_confirmation(from_field, subject, text or html):
-        _log_inbound_verdict("gmail_confirmation", form, user_id=user_id)
+    if gmail_confirmation:
+        _log_inbound_verdict("gmail_confirmation", form, user_id=user_id,
+                             classification=classification)
         return _handle_gmail_forwarding_confirmation(user_id, subject, text, html)
-    comment = is_comment_notification(subject, text or html)
     # Record the proof BEFORE the comment/reaction split — a forwarded reaction email shows the
     # forwarding rule is live just as well as a comment one does, and the status chip is about the
     # chain working, not about this particular email being actionable (issue #813).
-    if comment or is_linkedin_notification(from_field, subject, text or html):
+    if comment or linkedin_notification:
         _record_forwarding_confirmed_by_delivery(user_id)
     if not comment:
-        _log_inbound_verdict("linkedin_not_comment" if is_linkedin_notification(
-            from_field, subject, text or html) else "unrelated", form, user_id=user_id)
+        verdict = "linkedin_not_comment" if linkedin_notification else "unrelated"
+        _log_inbound_verdict(verdict, form, user_id=user_id, classification=classification)
         return ResponseModel(status_code=200, detail="ignored")
     if not _reply_sweep_debounced(user_id):
-        _log_inbound_verdict("debounced", form, user_id=user_id)
+        _log_inbound_verdict("debounced", form, user_id=user_id, classification=classification)
         return ResponseModel(status_code=200, detail="debounced")
     # slot 0 is the single-shot trigger (the golden-hour amplifier owns the other slots). Omitting it
     # once raised KeyError at enqueue and 500'd every forwarded notification; cqc_lem.app.queue_once
     # now fills the default into the dedup key, so this stays explicit for meaning, not for safety.
     sweep_reply_comments.apply_async(kwargs={"user_id": user_id, "sweep_slot": 0}, countdown=120)
-    _log_inbound_verdict("comment_accepted", form, user_id=user_id)
+    _log_inbound_verdict("comment_accepted", form, user_id=user_id,
+                         classification=classification)
     log_info("Triggered reply sweep from comment notification", user_id=user_id)
     return ResponseModel(status_code=200, detail="accepted")
 

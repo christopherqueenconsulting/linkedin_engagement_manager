@@ -1,7 +1,7 @@
 """Unit tests for general FastAPI endpoints in cqc_lem.api.main."""
 
-import time
 import re
+import time
 from datetime import datetime
 from unittest.mock import patch
 
@@ -13,6 +13,8 @@ _MAIN = "cqc_lem.api.main"
 _AUTH = "cqc_lem.api.routers.auth"
 _USER = "cqc_lem.api.routers.user"
 
+from cqc_lem.api import main as api_main  # noqa: E402
+from cqc_lem.api.main import _log_inbound_verdict  # noqa: E402
 from tests.unit.api.conftest import SESSION_TOKEN, SESSION_USER_ID  # noqa: E402
 
 
@@ -438,8 +440,8 @@ class TestCommentNotificationInbound:
 
     _TRACK = "cqc_lem.utilities.observability.track_inbound_email"
 
-    def test_inbound_trace_redacts_email_and_logs_classifier_result(self, monkeypatch):
-        monkeypatch.setenv("LI_REPLY_INBOUND_TRACE_ENABLED", "true")
+    def test_inbound_trace_redacts_email_and_logs_classifier_result(self, monkeypatch) -> None:
+        monkeypatch.setattr(api_main, "_INBOUND_TRACE_ENABLED", True)
         form = {
             "to": "reply+privatetoken123@parse.example.com",
             "envelope": '{"to":["reply+privatetoken123@parse.example.com"]}',
@@ -449,8 +451,8 @@ class TestCommentNotificationInbound:
             "headers": "Message-ID: <private-message-id@example.com>\n",
         }
         with patch(f"{_MAIN}.log_info") as logged, patch(self._TRACK):
-            __import__(_MAIN, fromlist=["_log_inbound_verdict"])._log_inbound_verdict(
-                "linkedin_not_comment", form, user_id=7)
+            _log_inbound_verdict("linkedin_not_comment", form, user_id=7,
+                                 classification="linkedin_other")
 
         message = logged.call_args.args[0]
         assert "class=linkedin_other" in message
@@ -461,23 +463,23 @@ class TestCommentNotificationInbound:
                               "private-message-id", "hit-reply@linkedin.com"):
             assert private_value not in message
 
-    def test_inbound_trace_without_message_id_logs_none(self, monkeypatch):
-        monkeypatch.setenv("LI_REPLY_INBOUND_TRACE_ENABLED", "true")
+    def test_inbound_trace_without_message_id_logs_none(self, monkeypatch) -> None:
+        monkeypatch.setattr(api_main, "_INBOUND_TRACE_ENABLED", True)
         form = {"to": "reply+privatetoken123@parse.example.com", "headers": "Subject: x\n"}
         with patch(f"{_MAIN}.log_info") as logged, patch(self._TRACK):
-            __import__(_MAIN, fromlist=["_log_inbound_verdict"])._log_inbound_verdict(
-                "unrelated", form, user_id=7)
+            _log_inbound_verdict("unrelated", form, user_id=7,
+                                 classification="unrecognized")
         message = logged.call_args.args[0]
         assert re.search(r"trace_token=[0-9a-f]{12}\b", message)
         assert "trace_message=none" in message
 
-    def test_inbound_trace_disabled_adds_no_fingerprints(self, monkeypatch):
-        monkeypatch.delenv("LI_REPLY_INBOUND_TRACE_ENABLED", raising=False)
+    def test_inbound_trace_disabled_adds_no_fingerprints(self, monkeypatch) -> None:
+        monkeypatch.setattr(api_main, "_INBOUND_TRACE_ENABLED", False)
         form = {"to": "reply+privatetoken123@parse.example.com",
                 "headers": "Message-ID: <private-message-id@example.com>\n"}
         with patch(f"{_MAIN}.log_info") as logged, patch(self._TRACK):
-            __import__(_MAIN, fromlist=["_log_inbound_verdict"])._log_inbound_verdict(
-                "unrelated", form, user_id=7)
+            _log_inbound_verdict("unrelated", form, user_id=7,
+                                 classification="unrecognized")
         assert "trace_" not in logged.call_args.args[0]
 
     def test_accepted_comment_logs_verdict(self, api_client):

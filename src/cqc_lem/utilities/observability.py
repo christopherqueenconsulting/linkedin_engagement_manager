@@ -2411,8 +2411,8 @@ def track_inbound_email(verdict: str, user_id: Optional[int] = None,
     """One event per SendGrid Inbound Parse POST, carrying the dispatch verdict (comment_accepted /
     debounced / unknown_reply_token / …). The webhook drops most mail BY DESIGN, so without this a
     broken forwarding chain is indistinguishable from no mail arriving at all — weeks of 100%-ignored
-    traffic left no signal anywhere. `verdict` is a STRING prop so alert tiles can filter on it
-    (docs/kpi-dashboards.md).
+    traffic left no signal anywhere. `verdict` and `classification` are string props; `user_id`
+    attributes the webhook to its LEM account (docs/REPLY_NOTIFICATIONS.md).
     """
     _emit(EVENTS["inbound_parse_email"], {
         "verdict": verdict, "classification": classification, "user_id": user_id,

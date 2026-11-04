@@ -75,7 +75,7 @@ def is_comment_notification(subject: str, text: str = "") -> bool:
     return False
 
 
-def _sender_domain(sender: str) -> str:
+def sender_domain(sender: str) -> str:
     """The lowercased domain of an RFC5322 `From` value, or `""` when it doesn't carry one.
 
     Handles both shapes a From header arrives in — bare `news@linkedin.com` and the display-name
@@ -90,10 +90,14 @@ def _sender_domain(sender: str) -> str:
     return domain.strip().rstrip(".").lower()
 
 
+# Private spelling kept for callers that still use the original internal helper.
+_sender_domain = sender_domain
+
+
 def _sender_local_part(sender: str) -> str:
     """The lowercased local part of an RFC5322 `From` value, or `""` when it doesn't carry one.
 
-    The mirror of _sender_domain: everything BEFORE the last `@`, so a quoted local part that itself
+    The mirror of sender_domain: everything BEFORE the last `@`, so a quoted local part that itself
     contains an `@` stays whole. A value parseaddr can't read yields `""`.
     """
     _, address = parseaddr(sender or "")
@@ -122,7 +126,7 @@ def _is_linkedin_sender(sender: str) -> bool:
     contain "linkedin.com" while being sent by neither. Only an exact match or a `.linkedin.com`
     suffix counts, so the dot boundary is what a lookalike has to get past.
     """
-    return _domain_matches(_sender_domain(sender), _LINKEDIN_SENDER_DOMAINS)
+    return _domain_matches(sender_domain(sender), _LINKEDIN_SENDER_DOMAINS)
 
 
 def _is_gmail_forwarding_sender(sender: str) -> bool:
@@ -135,7 +139,7 @@ def _is_gmail_forwarding_sender(sender: str) -> bool:
     From fails closed — this decides whether we auto-click a forwarding verify link.
     """
     return (_sender_local_part(sender) in _GMAIL_FORWARDING_LOCAL_PARTS
-            and _domain_matches(_sender_domain(sender), _GMAIL_FORWARDING_SENDER_DOMAINS))
+            and _domain_matches(sender_domain(sender), _GMAIL_FORWARDING_SENDER_DOMAINS))
 
 
 def is_linkedin_notification(sender: str, subject: str, text: str = "") -> bool:
