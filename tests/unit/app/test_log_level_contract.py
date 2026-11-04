@@ -372,10 +372,10 @@ class TestFailuresAHumanHasToFixAreErrors:
             assert _create_content_for_planned_post(post, {}) is False
             lv.only("error")
         assert failed.called
-        assert any(call.kwargs.get("exc") is not None for call in lv.error.call_args_list)
-        assert any(call.kwargs.get("terminal_state") == "failed" and
-                   call.kwargs.get("reason") == "generation_exception"
-                   for call in lv.error.call_args_list)
+        error_context = lv.error.call_args.kwargs
+        assert error_context.get("exc") is not None
+        assert error_context["terminal_state"] == "failed"
+        assert error_context["reason"] == "generation_exception"
 
     def test_generation_returning_nothing_errors_without_an_exception(self):
         """A loud log line, not a filed $exception — there is no exception to attach."""

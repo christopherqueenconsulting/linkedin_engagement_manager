@@ -22,6 +22,7 @@ def test_content_plan_terminal_log_names_queued_held_and_ready_states() -> None:
         assert context["status"] == status.value
         assert context["reason"] == reason
         assert context["gate_reasons"] == gate_reasons
+        assert {"post_copy", "text", "context", "explanation"}.isdisjoint(context)
 
 
 def test_carousel_claim_log_records_each_kept_and_removed_number() -> None:
@@ -33,7 +34,9 @@ def test_carousel_claim_log_records_each_kept_and_removed_number() -> None:
     audits = [call.kwargs for call in log.call_args_list]
     assert [(audit["figure"], audit["outcome"]) for audit in audits] == [
         ("40%", "kept"), ("12", "removed")]
-    assert all("context" not in audit and "slide_title" not in audit for audit in audits)
+    pii_fields = {"post_copy", "text", "context", "explanation"}
+    assert all(pii_fields.isdisjoint(audit) for audit in audits)
+    assert all("slide_title" not in audit for audit in audits)
 
 
 def test_carousel_claim_log_records_added_figures() -> None:
@@ -47,6 +50,8 @@ def test_carousel_claim_log_records_added_figures() -> None:
         ("40%", "removed", "removed_by_finalizer"),
         ("60%", "added", "introduced_by_finalizer"),
     ]
+    pii_fields = {"post_copy", "text", "context", "explanation"}
+    assert all(pii_fields.isdisjoint(audit) for audit in audits)
 
 
 def test_carousel_claim_log_handles_none_and_partial_slides() -> None:
