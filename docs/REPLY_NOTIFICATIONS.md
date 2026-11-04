@@ -63,9 +63,9 @@ Every inbound parse POST (both endpoints) logs one redacted decision and emits o
 `inbound_parse_email` PostHog event carrying `verdict`, `classification`, and `user_id`. Verdicts
 include `comment_accepted`, `debounced`, `gmail_confirmation`, `linkedin_not_comment`, `unrelated`,
 `unknown_reply_token`, `no_reply_token`, `no_pin_token`, `no_pin_in_text`, `pin_accepted`, and
-`pin_ignored`. The per-email verdict log never includes forwarding addresses, tokens, subjects, or
-message bodies. The Gmail forwarding-confirmation path is the exception: it still logs the first 120 characters of the
-subject and the first 500 characters of the body (which can contain the verify link and code), so treat those log lines as sensitive.
+`pin_ignored`. These logs never include forwarding addresses, tokens, subjects, message bodies,
+verification codes, confirmation URLs, or exception messages that may contain them. Gmail
+confirmation logs record only whether a URL and code were found.
 
 For temporary SendGrid retry correlation, set `LI_REPLY_INBOUND_TRACE_ENABLED=true`; this adds only
 truncated SHA-256 fingerprints of the token and RFC Message-ID. Turn it off after diagnosis. A

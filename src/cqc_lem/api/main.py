@@ -2125,9 +2125,9 @@ def _handle_gmail_forwarding_confirmation(user_id: int, subject: str, text: str,
     url = extract_gmail_confirmation_url(html) or extract_gmail_confirmation_url(text)
     code = (extract_gmail_confirmation_code(subject) or extract_gmail_confirmation_code(text)
             or extract_gmail_confirmation_code(html))
-    # Log the shape so we can see Gmail's exact format when extraction misses.
-    log_info(f"Gmail forwarding confirmation received: url={'yes' if url else 'no'} code={code or 'none'} "
-             f"subject={subject[:120]!r} text_head={(text or '')[:500]!r}", user_id=user_id)
+    # Log extraction shape only. Subject, code, URL and body can contain private credentials.
+    log_info("Gmail forwarding confirmation received", user_id=user_id,
+             url_present=bool(url), code_present=bool(code))
     confirmed = False
     if url:
         try:
@@ -2140,9 +2140,11 @@ def _handle_gmail_forwarding_confirmation(user_id: int, subject: str, text: str,
                 try:
                     confirmed = requests.get(nested, timeout=15).status_code < 400 or confirmed
                 except Exception as e:
-                    log_debug("Nested Gmail confirmation check failed", exc=e, user_id=user_id)
+                    log_debug("Nested Gmail confirmation check failed", user_id=user_id,
+                              error_type=type(e).__name__)
         except Exception as e:
-            log_warning("Gmail forwarding auto-confirm click failed", exc=e, user_id=user_id)
+            log_warning("Gmail forwarding auto-confirm click failed", user_id=user_id,
+                        error_type=type(e).__name__)
     # Server-side clicking may not complete Gmail's flow (interstitial / datacenter IP). Forward the
     # verify link + code to the user's real inbox so they can finish it from their own signed-in
     # browser — the reliable path. The confirmation went to our reply+ address, so they never saw it.
@@ -2158,7 +2160,8 @@ def _handle_gmail_forwarding_confirmation(user_id: int, subject: str, text: str,
                 forwarded = send_reply_forward_confirmation_email(user_email, url, code,
                                                                   trial=trial)
         except Exception as e:
-            log_warning("Could not forward Gmail confirmation to user", exc=e, user_id=user_id)
+            log_warning("Could not forward Gmail confirmation to user", user_id=user_id,
+                        error_type=type(e).__name__)
     _store_gmail_forward_confirmation(user_id, {
         "code": code, "confirmed": confirmed, "url_found": bool(url),
         "forwarded_to_user": forwarded, **({"source": "auto_click"} if confirmed else {}),

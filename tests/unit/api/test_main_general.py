@@ -849,6 +849,46 @@ class TestSharedInboundRouting:
                 "subject": "Gmail Forwarding Confirmation", "text": body})
         assert resp.json()["detail"] == "confirmed"
 
+    def test_gmail_confirmation_log_excludes_subject_body_code_and_url(self, api_client):
+        """Confirmation observability must not leak email content or one-time secrets."""
+        got = type("R", (), {"status_code": 200})()
+        private_subject = "PRIVATE SUBJECT MARKER"
+        private_url = "https://mail.google.com/mail/vf-PRIVATE-URL-MARKER"
+        private_code = "PRIVATE-CODE-MARKER-481516"
+        private_body = f"Confirm {private_url} with code {private_code}; PRIVATE BODY MARKER"
+        with patch("cqc_lem.utilities.db.get_user_id_by_reply_token", return_value=7), \
+             patch(f"{_MAIN}.requests.get", return_value=got), \
+             patch(f"{_MAIN}.log_info") as log:
+            resp = api_client.post(self.PIN, data={
+                "to": "reply+tok9@parse.example.com",
+                "from": "forwarding-noreply@google.com",
+                "subject": private_subject, "text": private_body})
+
+        assert resp.json()["detail"] == "confirmed"
+        logged = repr(log.call_args_list)
+        for private_value in (private_subject, private_url, private_code, "PRIVATE BODY MARKER"):
+            assert private_value not in logged
+        assert any(call.args[0] == "Gmail forwarding confirmation received"
+                   and call.kwargs["url_present"] is True
+                   and call.kwargs["code_present"] is True
+                   for call in log.call_args_list)
+
+    def test_gmail_confirmation_failure_log_excludes_secret_url_from_exception(self, api_client):
+        """Requests errors can echo secret verification URLs; log only exception type."""
+        private_url = "https://mail.google.com/mail/vf-PRIVATE-URL-MARKER"
+        body = f"Confirm {private_url} with code 4815162342"
+        with patch("cqc_lem.utilities.db.get_user_id_by_reply_token", return_value=7), \
+             patch("cqc_lem.utilities.db.get_user_email", return_value=None), \
+             patch(f"{_MAIN}.requests.get", side_effect=RuntimeError(private_url)), \
+             patch(f"{_MAIN}.log_warning") as warning:
+            resp = api_client.post(self.PIN, data={
+                "to": "reply+tok9@parse.example.com",
+                "from": "forwarding-noreply@google.com",
+                "subject": "Gmail Forwarding Confirmation", "text": body})
+
+        assert resp.json()["detail"] == "code_stored"
+        assert private_url not in repr(warning.call_args_list)
+
     def test_pin_url_still_handles_pin(self, api_client):
         with patch(f"{_MAIN}.submit_pin_by_token", return_value=1) as m:
             resp = api_client.post(self.PIN, data={
