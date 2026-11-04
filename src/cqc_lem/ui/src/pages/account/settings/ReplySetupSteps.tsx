@@ -66,7 +66,11 @@ export default function ReplySetupSteps() {
           address</span> (paste the address above and confirm it). Then <span className="text-fg-muted">Settings →
           Filters and Blocked Addresses → Create a new filter</span> with
           From <code className="bg-page rounded-control px-1">linkedin.com</code> and
-          Subject <code className="bg-page rounded-control px-1">commented OR &quot;replied to your comment&quot;</code>, click
+          Subject{" "}
+          <code className="bg-page rounded-control px-1">
+            commented OR &quot;replied to your comment&quot;
+          </code>
+          , click
           <span className="italic"> Create filter</span>, then check
           <span className="italic"> "Forward it to"</span> and pick your address. Using another provider?
           Any rule that forwards LinkedIn comment emails to the address works.
