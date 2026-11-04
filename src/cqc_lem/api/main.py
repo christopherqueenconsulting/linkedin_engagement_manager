@@ -11,6 +11,7 @@ The bearer gate in `api_token_middleware` is an edge filter and NOT authorisatio
 comment above `_API_ACCESS_TOKEN_SET`. Authorisation happens in the handler, which fails closed.
 """
 
+import hashlib
 import io
 import json
 import math
@@ -131,6 +132,7 @@ from cqc_lem.utilities.db import (
     get_scheduled_dm,
     get_scheduled_dm_user_id,
     get_scheduled_dms,
+    get_session_id,
     get_session_user_id as _db_get_session_user_id,
     get_user_email,
     get_user_subscription_info,
@@ -194,6 +196,7 @@ from cqc_lem.utilities.observability import (
     llm_trace,
     track_api_call,
 )
+from cqc_lem.utilities.observer_access import claim_observer_access
 from cqc_lem.utilities.post_image import (
     owns_post_image_url,
 )
@@ -688,9 +691,11 @@ def _scope_allows(scope: Optional[str], path: Optional[str],
     verbs = _SCOPE_METHODS.get(effective)
     if verbs is not None:
         if method is None:
-            http_request = _request_object.get()
-            method = http_request.method if http_request is not None else None
-        if not method or method.upper() not in verbs:
+            # `.get(None)` and `getattr` rather than trusting the ContextVar: a missing request
+            # context (a Celery or direct caller, a request object without a method) must be a
+            # REFUSAL here, never an AttributeError that surfaces as a 500.
+            method = getattr(_request_object.get(None), "method", None)
+        if not isinstance(method, str) or method.upper() not in verbs:
             return False
     return _scope_path(path) in surface
 
@@ -895,6 +900,42 @@ def _release_hold(token: str) -> bool:
         return False
 
 
+def _session_log_id(token: Optional[str]) -> Optional[str]:
+    """A short, stable, non-reversible label for a session, safe to put in a log line.
+
+    Deliberately NOT `sessions.session_token`: that column holds the plain SHA-256 of the token, and
+    a log line that carried it would be a second copy of the database's lookup key. This is a
+    separately-salted digest, truncated, so a line can be matched to another line about the same
+    session (and to the access claim) and to nothing else.
+    """
+    if not token:
+        return None
+    return hashlib.sha256(b"lem-session-log:" + token.encode()).hexdigest()[:16]
+
+
+def _record_observer_access(user_id: int, token: Optional[str], path: Optional[str]) -> None:
+    """Write the observer's once-a-day `observer_access` audit row. Never raises.
+
+    Scope, path and the session row id; no body, no query string, no client address. The claim
+    (`claim_observer_access`, Redis, fails open) is what keeps this to one row per session per UTC
+    day. Everything here is best effort: an access record must never turn a read into an error.
+    """
+    try:
+        session_key = _session_log_id(token)
+        if not session_key or not claim_observer_access(session_key):
+            return
+        _safe_auth_event(AuthAuditEvent.OBSERVER_ACCESS, user_id=user_id,
+                         session_id=get_session_id(token) if token else None,
+                         details={"scope": SESSION_SCOPE_OBSERVER, "path": _scope_path(path)})
+    except Exception as e:
+        log_debug(f"Could not record observer access: {e}")
+
+
+# Machine seats whose refusal is a WARNING: a held token of one of these only reaches a path it was
+# not given when its holder is misconfigured or the token is stolen, so each refusal is worth seeing.
+_WARN_ON_REFUSAL_SCOPES = frozenset({SESSION_SCOPE_AGENT, SESSION_SCOPE_OBSERVER})
+
+
 def _scope_checked(resolved: Dict[str, Any], token: Optional[str]) -> int:
     scope = resolved.get("scope") or SESSION_SCOPE_FULL
     path = _request_path.get()
@@ -915,6 +956,8 @@ def _scope_checked(resolved: Dict[str, Any], token: Optional[str]) -> int:
 
     if _scope_allows(scope, path):
         _request_session_scope.set(scope)
+        if scope == SESSION_SCOPE_OBSERVER:
+            _record_observer_access(user_id, token, path)
         return user_id
     if scope == SESSION_SCOPE_EXTENSION:
         # Audited AND warned, for the extension scope only. The extension calls exactly one path
@@ -929,6 +972,15 @@ def _scope_checked(resolved: Dict[str, Any], token: Optional[str]) -> int:
         _safe_auth_event(AuthAuditEvent.SESSION_SCOPE_DENIED, user_id=user_id, success=False,
                          ip=_client_ip(http_request), user_agent=_user_agent(http_request),
                          details={"scope": scope, "path": _scope_path(path)})
+    elif scope in _WARN_ON_REFUSAL_SCOPES:
+        # WARNING, not audited. A machine seat reaching a path or verb it was not given means a
+        # misconfigured agent or a stolen token, and nobody reads a DEBUG line. The message is a
+        # stable template so the recurrence escalation groups every refusal into one issue; the
+        # variable parts ride as keyword context. No audit row: an agent probing a path would
+        # otherwise fill the account's last-20 events list.
+        log_warning("Machine session refused outside its scope", user_id=user_id, scope=scope,
+                    method=getattr(_request_object.get(None), "method", None),
+                    path=_scope_path(path), session=_session_log_id(token))
     else:
         log_debug("Session refused outside its scope", user_id=user_id, scope=scope)
     raise _scope_refusal(scope)

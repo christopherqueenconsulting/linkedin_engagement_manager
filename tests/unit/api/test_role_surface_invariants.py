@@ -24,7 +24,8 @@ To extend: a new restricted role is one more entry in `ROLE_SCOPES`.
 """
 
 import inspect
-from typing import NamedTuple, Optional
+from types import ModuleType
+from typing import Any, NamedTuple, Optional
 
 import pytest
 
@@ -114,7 +115,7 @@ NOT_AN_APPROVAL_VECTOR: dict[str, str] = {
 _APPROVAL_FIELDS = frozenset({"action", "status"})
 
 
-def _scopes():
+def _scopes() -> Any:
     from cqc_lem.api import main
     return {"observer": main.SESSION_SCOPE_OBSERVER, "agent": main.SESSION_SCOPE_AGENT}
 
@@ -126,13 +127,13 @@ READ_ONLY_ROLES = ("observer",)
 
 
 @pytest.fixture(scope="module")
-def main_mod():
+def main_mod() -> Any:
     from cqc_lem.api import main
     return main
 
 
 @pytest.fixture(scope="module")
-def route_table(main_mod):
+def route_table(main_mod: ModuleType) -> Any:
     """Every (method, scope-path, route) the app serves, `/api` stripped the way a request is.
 
     Built from the live app, never from a hand-kept list.
@@ -156,16 +157,16 @@ def _matches(entry: Forbidden, method: str, path: str) -> bool:
     return path == entry.path
 
 
-def _reachable(main_mod, route_table, scope: str):
+def _reachable(main_mod: ModuleType, route_table: list[tuple[str, str, Any]], scope: str) -> Any:
     return [(m, p, r) for (m, p, r) in route_table if main_mod._scope_allows(scope, p, m)]
 
 
-def _describe(role, method, path, route, why=""):
+def _describe(role: str, method: str, path: str, route: Any, why: Any="") -> Any:
     return (f"  {role:<9} {method:<7} /api{path}  (handler: "
             f"{getattr(route.endpoint, '__name__', '?')})" + (f"  — {why}" if why else ""))
 
 
-def _body_fields(route) -> set:
+def _body_fields(route: Any) -> set:
     fields = set()
     for param in getattr(getattr(route, "dependant", None), "body_params", []) or []:
         model_fields = getattr(param.field_info.annotation, "model_fields", None)
@@ -178,7 +179,12 @@ def _body_fields(route) -> set:
 
 class TestNoRoleReachesAForbiddenRoute:
     @pytest.mark.parametrize("role", sorted(ROLE_SCOPES))
-    def test_no_forbidden_route_is_reachable(self, main_mod, route_table, role):
+    def test_no_forbidden_route_is_reachable(
+            self,
+            main_mod: ModuleType,
+            route_table: list[tuple[str, str, Any]],
+            role: str,
+    ) -> None:
         offenders = []
         for method, path, route in _reachable(main_mod, route_table, ROLE_SCOPES[role]):
             for entry in FORBIDDEN_ROLE_ROUTES:
@@ -189,14 +195,14 @@ class TestNoRoleReachesAForbiddenRoute:
             "role. Remove the path from its surface (api/main.py), do not edit FORBIDDEN_ROLE_ROUTES:\n"
             + "\n".join(offenders) + "\n")
 
-    def test_every_forbidden_entry_matches_a_real_route(self, route_table):
+    def test_every_forbidden_entry_matches_a_real_route(self, route_table: list[tuple[str, str, Any]]) -> None:
         """Otherwise a renamed or removed route turns the entry into a check that cannot fail."""
         dead = [e for e in FORBIDDEN_ROLE_ROUTES
                 if not any(_matches(e, m, p) for (m, p, _r) in route_table)]
         assert not dead, "FORBIDDEN_ROLE_ROUTES entries matching no route:\n" + "\n".join(
             f"  {e.path}  ({e.why})" for e in dead)
 
-    def test_every_token_minting_route_is_classified_forbidden(self, route_table):
+    def test_every_token_minting_route_is_classified_forbidden(self, route_table: list[tuple[str, str, Any]]) -> None:
         """A new `/user/<x>-token` mint endpoint with no FORBIDDEN entry fails here.
 
         That is before anyone has to remember that roles must not reach it. Scoped to `/user/`: that
@@ -216,7 +222,12 @@ class TestNoRoleReachesAForbiddenRoute:
 
 class TestReadOnlyRolesReachNoWriteVerb:
     @pytest.mark.parametrize("role", READ_ONLY_ROLES)
-    def test_no_write_verb_is_reachable(self, main_mod, route_table, role):
+    def test_no_write_verb_is_reachable(
+            self,
+            main_mod: ModuleType,
+            route_table: list[tuple[str, str, Any]],
+            role: str,
+    ) -> None:
         offenders = [_describe(role, m, p, r)
                      for (m, p, r) in _reachable(main_mod, route_table, ROLE_SCOPES[role])
                      if m not in READ_VERBS]
@@ -224,7 +235,12 @@ class TestReadOnlyRolesReachNoWriteVerb:
             f"\n\nThe read-only {role!r} role can reach WRITE verbs:\n" + "\n".join(offenders) + "\n")
 
     @pytest.mark.parametrize("role", READ_ONLY_ROLES)
-    def test_it_reaches_none_of_the_handler_guarded_routes(self, main_mod, route_table, role):
+    def test_it_reaches_none_of_the_handler_guarded_routes(
+            self,
+            main_mod: ModuleType,
+            route_table: list[tuple[str, str, Any]],
+            role: str,
+    ) -> None:
         """A read-only role has no business on an approval-capable route in ANY verb."""
         offenders = [_describe(role, m, p, r, "approval-capable")
                      for (m, p, r) in _reachable(main_mod, route_table, ROLE_SCOPES[role])
@@ -233,7 +249,12 @@ class TestReadOnlyRolesReachNoWriteVerb:
         assert not offenders, "\n" + "\n".join(offenders)
 
     @pytest.mark.parametrize("role", READ_ONLY_ROLES)
-    def test_the_role_reaches_something(self, main_mod, route_table, role):
+    def test_the_role_reaches_something(
+            self,
+            main_mod: ModuleType,
+            route_table: list[tuple[str, str, Any]],
+            role: str,
+    ) -> None:
         """A scope that reaches nothing passes every 'cannot reach' check for the wrong reason."""
         assert _reachable(main_mod, route_table, ROLE_SCOPES[role])
 
@@ -243,7 +264,7 @@ class TestWriteCapableRolesCannotApprove:
 
     @pytest.mark.parametrize("role", WRITE_ROLES)
     def test_every_reachable_approval_capable_route_refuses_in_its_handler(
-            self, main_mod, route_table, role):
+            self, main_mod: ModuleType, route_table: list[tuple[str, str, Any]], role: str) -> None:
         offenders = []
         for method, path, route in _reachable(main_mod, route_table, ROLE_SCOPES[role]):
             name = getattr(route.endpoint, "__name__", "")
@@ -261,7 +282,7 @@ class TestWriteCapableRolesCannotApprove:
 
     @pytest.mark.parametrize("role", WRITE_ROLES)
     def test_no_reachable_write_route_with_an_approval_field_is_unclassified(
-            self, main_mod, route_table, role):
+            self, main_mod: ModuleType, route_table: list[tuple[str, str, Any]], role: str) -> None:
         """The net for the NEXT route.
 
         Reaching a write route whose body has an `action` or a `status` means a draft can be moved
@@ -281,7 +302,12 @@ class TestWriteCapableRolesCannotApprove:
             + "\n".join(offenders) + "\n")
 
     @pytest.mark.parametrize("role", WRITE_ROLES)
-    def test_every_classification_entry_is_still_a_reachable_route(self, main_mod, route_table, role):
+    def test_every_classification_entry_is_still_a_reachable_route(
+            self,
+            main_mod: ModuleType,
+            route_table: list[tuple[str, str, Any]],
+            role: str,
+    ) -> None:
         """Stale entries hide a route that moved out from under its guard check."""
         reachable_names = {getattr(r.endpoint, "__name__", "")
                            for (_m, _p, r) in _reachable(main_mod, route_table, ROLE_SCOPES[role])}

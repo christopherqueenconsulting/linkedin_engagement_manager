@@ -593,7 +593,7 @@ there are three ways a row reaches APPROVED and only the first one says "approve
 
 | Route shape | Reaches APPROVED via | Guard |
 |---|---|---|
-| the five PUTs (`/dm`, `/connection_request`, `/outreach/target`, `/lead_signal`, `/catchup/touch`) | `action="approve"` | `_refuse_agent_approval` |
+| the PUTs (`/connection_request`, `/outreach/target`, `/lead_signal`, `/curated/source` are on the agent surface; `/dm` and `/catchup/touch` carry the same guard but are not) | `action="approve"` | `_refuse_agent_approval` |
 | the creates (`/schedule_dm`, `/connection_request`, `/outreach/target`) | `status="approved"` at insert time — no `action` field anywhere | `_refuse_agent_approved_status` |
 | `POST /connection_request` with no status at all | the account's `connection_request_mode`, which is `auto_approve` **out of the box** | `_agent_scoped()` in the handler |
 
@@ -685,9 +685,29 @@ Three details are load-bearing:
   `PUT /user/engagement-preferences`, which the verb rule refuses; the rule is what keeps the next
   route that shares a path with a read from becoming a write.
 
-A refusal is **403 `session_scope_forbidden`** before the handler runs, logged at DEBUG and not
-audited — the agent's pattern. (Only the `extension` scope audits, because its surface is one path
-and a refusal there cannot be an accident.)
+A refusal is **403 `session_scope_forbidden`** before the handler runs. What is recorded differs by
+scope: an `extension` refusal is **audited** (`session_scope_denied`) and warned, because its surface
+is one path and a refusal there cannot be an accident; an `observer` or `agent` refusal is a
+**WARNING log line, not an audit row** (`Machine session refused outside its scope`, with `scope`,
+`method`, `path` and a salted hash of the session — never the token); an enrolment hold stays DEBUG.
+A machine seat reaching something it was not given is a misconfigured agent or a stolen token, and
+nobody reads a DEBUG line. No audit row, so a probing agent cannot fill the account's recent-events
+list.
+
+### What an observer can read, and the access record
+
+The observer's reads are the owner's queues, so they include **third parties' names, profile URLs
+and message text** — see [`agent-roles.md` § Observer data exposure](agent-roles.md#observer-data-exposure)
+for the record types, retention (the code purges nothing), and the owner's obligations to any agent or
+vendor that receives the data. `GET /user/security` is bounded to the 50 most recent events for every
+scope and drops `user_agent` for an observer. `label` on `POST /user/observer-token` takes letters,
+digits, space and `._:-` only (max 120): it is shown on the Security card and kept in the audit log.
+
+Reads are not logged one by one. The first successful observer request of each UTC day, per session,
+writes one `observer_access` audit row (`utilities/observer_access.py`: a Redis `SET NX` window, fail
+open, so an outage records the access rather than failing the read). `last_seen_at` alone says when a
+token was last used, not what it read. Rotation, leak detection and the ordered rollback are in
+[`agent-roles.md` § Observer incident and rollback](agent-roles.md#observer-incident-and-rollback).
 
 ### The route-table invariant
 

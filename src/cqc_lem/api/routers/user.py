@@ -329,6 +329,12 @@ class AgentTokenRequest(BaseModel):
     ttl_days: int = Field(default=90, ge=1, le=365)
 
 
+# Letters, digits, space and `._:-` only. The label is shown on the Security card and kept in the
+# audit log, so it must not be able to carry an email address, a name with punctuation, or a newline
+# that forges a second line in a log. Rust-regex semantics: `$` is end-of-input, not before a final \n.
+_TOKEN_LABEL_PATTERN = r"^[A-Za-z0-9 ._:\-]*$"
+
+
 class ObserverTokenRequest(BaseModel):
     """Body of `POST /user/observer-token`: a READ-ONLY token for an operations agent.
 
@@ -336,7 +342,11 @@ class ObserverTokenRequest(BaseModel):
     deciding which machine to revoke.
     """
     session_token: SessionTokenField = None
-    label: Optional[str] = Field(default=None, max_length=120)
+    label: Optional[str] = Field(
+        default=None, max_length=120, pattern=_TOKEN_LABEL_PATTERN,
+        description="Free text shown on the Security card and kept in the audit log. Letters, "
+                    "digits, space and . _ : - only, 120 characters at most. It must not hold "
+                    "personal data (no names or email addresses).")
     ttl_days: int = Field(default=90, ge=1, le=365)
 
 
@@ -1287,6 +1297,10 @@ def get_linkedin_signin_status(session_token: str) -> ResponseModel[dict[str, An
     })
 
 
+# The most recent auth events `GET /user/security` returns, whoever asks.
+_SECURITY_EVENTS_LIMIT = 50
+
+
 @router.get("/security")
 def get_user_security(session_token: Optional[str] = None) -> ResponseModel[dict[str, Any]]:
     """Everything the account page's Security card shows (issue #745, 2b): the devices signed in,
@@ -1307,12 +1321,21 @@ def get_user_security(session_token: Optional[str] = None) -> ResponseModel[dict
         "is_current": s["is_current"],
         "scope": s.get("scope") or SESSION_SCOPE_FULL,
     } for s in list_user_sessions(user_id, current_token=token)]
-    events = [{
-        "event": e.get("event"),
-        "success": bool(e.get("success")),
-        "user_agent": e.get("user_agent"),
-        "created_at": _main._utc_iso(e.get("created_at")),
-    } for e in get_auth_audit_events(user_id)]
+    # Bounded for EVERY scope, in the query and again here: the list is an account-history view,
+    # and an unbounded read is the wrong default for a page a read-only token can fetch.
+    # An observer is a machine reading the owner's history, and a user agent string identifies the
+    # owner's browsers and tools — it adds nothing a monitor needs, so it is left out for that scope.
+    include_user_agent = _main._request_session_scope.get() != SESSION_SCOPE_OBSERVER
+    events = []
+    for e in get_auth_audit_events(user_id, limit=_SECURITY_EVENTS_LIMIT)[:_SECURITY_EVENTS_LIMIT]:
+        entry = {
+            "event": e.get("event"),
+            "success": bool(e.get("success")),
+            "created_at": _main._utc_iso(e.get("created_at")),
+        }
+        if include_user_agent:
+            entry["user_agent"] = e.get("user_agent")
+        events.append(entry)
 
     return ResponseModel(status_code=200, detail={
         "public_uid": get_user_public_uid(user_id),
@@ -1426,8 +1449,13 @@ def mint_agent_token(request: AgentTokenRequest, http_request: Request = None) -
                          detail={"session_token": token, "expires_in_days": request.ttl_days})
 
 
+# `http_request: Request = None`, not `Optional[Request]`: FastAPI injects a parameter annotated
+# exactly `Request`, but reads `Optional[Request]` as a body field and fails to build the route. The
+# `= None` only lets a direct (non-HTTP) call omit it; every handler here already passes it through
+# helpers that accept None.
 @router.post("/observer-token")
-def mint_observer_token(request: ObserverTokenRequest, http_request: Request = None) -> ResponseModel[dict[str, Any]]:
+def mint_observer_token(request: ObserverTokenRequest,
+                        http_request: Request = None) -> ResponseModel[dict[str, Any]]:  # type: ignore[assignment]
     """Mint a long-lived, READ-ONLY session for an operations agent.
 
     Mirrors `mint_agent_token` line for line, for the same reasons: a non-browser client needs a

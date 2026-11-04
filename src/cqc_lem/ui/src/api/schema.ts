@@ -5448,7 +5448,10 @@ export interface components {
          *     deciding which machine to revoke.
          */
         ObserverTokenRequest: {
-            /** Label */
+            /**
+             * Label
+             * @description Free text shown on the Security card and kept in the audit log. Letters, digits, space and . _ : - only, 120 characters at most. It must not hold personal data (no names or email addresses).
+             */
             label?: string | null;
             /** Session Token */
             session_token?: string | null;

@@ -4444,12 +4444,14 @@
             "anyOf": [
               {
                 "maxLength": 120,
+                "pattern": "^[A-Za-z0-9 ._:\\-]*$",
                 "type": "string"
               },
               {
                 "type": "null"
               }
             ],
+            "description": "Free text shown on the Security card and kept in the audit log. Letters, digits, space and . _ : - only, 120 characters at most. It must not hold personal data (no names or email addresses).",
             "title": "Label"
           },
           "session_token": {
