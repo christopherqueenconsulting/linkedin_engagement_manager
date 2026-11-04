@@ -175,9 +175,8 @@ class TestReplyInboundParseEndpoint:
                 "/api/linkedin/verification-pin/inbound",
                 data={
                     "to": "reply+abc123@parse.example.com",
-                    "from": "notifications-noreply@linkedin.com",
-                    "subject": "Message replied",
-                    "text": "Someone replied to your LinkedIn message.",
+                    "from": "Sparsh <hit-reply@linkedin.com>",
+                    "subject": "Message replied: Opportunity to explore",
                 },
             )
 
