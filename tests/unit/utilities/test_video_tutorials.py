@@ -389,6 +389,104 @@ class TestVoiceOver:
         assert vt.tts_cost_usd(1000, "elevenlabs") == pytest.approx(0.15)
         assert vt.tts_cost_usd(0) == 0.0
 
+    def test_synthesize_segment_returns_what_it_billed(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(vt, "TUTORIAL_TTS_PROVIDER", "openai")
+        with patch("cqc_lem.utilities.ai.client.client.audio.speech.create",
+                   return_value=SimpleNamespace(content=b"x")), \
+             patch(f"{_MOD}.track_media_cost") as track:
+            usd = vt.synthesize_segment("hello", str(tmp_path / "seg.mp3"))
+        assert usd == track.call_args[0][2] == pytest.approx(0.015 * 5 / 1000)
+
+
+def _realtime_events(*events):
+    """A mocked `client.realtime` whose connection streams `events`, recording what was sent."""
+    connection = MagicMock()
+    connection.__iter__.return_value = iter(events)
+    realtime = MagicMock()
+    realtime.connect.return_value.__enter__.return_value = connection
+    return realtime, connection
+
+
+def _audio(data: bytes):
+    import base64
+    return SimpleNamespace(type="response.output_audio.delta",
+                           delta=base64.b64encode(data).decode())
+
+
+def _done(status="completed", input_tokens=100, output_tokens=1000):
+    return SimpleNamespace(type="response.done", response=SimpleNamespace(
+        status=status, usage=SimpleNamespace(input_tokens=input_tokens,
+                                             output_tokens=output_tokens)))
+
+
+class TestRealtimeVoiceOver:
+    """`TUTORIAL_TTS_PROVIDER=openai-realtime` (#2258): tts-1's successor is websocket-only."""
+
+    @pytest.fixture(autouse=True)
+    def _realtime(self, monkeypatch):
+        monkeypatch.setattr(vt, "TUTORIAL_TTS_PROVIDER", "openai-realtime")
+        monkeypatch.setattr(vt.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    def test_streams_pcm_encodes_mp3_and_bills_the_tokens(self, tmp_path):
+        realtime, connection = _realtime_events(
+            SimpleNamespace(type="session.updated"), _audio(b"\x01\x02"), _audio(b"\x03\x04"),
+            _done(input_tokens=100, output_tokens=1000))
+        out = str(tmp_path / "seg.mp3")
+        with patch("cqc_lem.utilities.ai.client.client.realtime", realtime), \
+             patch("subprocess.run", side_effect=_fake_ffmpeg()) as run, \
+             patch(f"{_MOD}.track_media_cost") as track:
+            usd = vt.synthesize_segment("Open the Account page.", out)
+
+        assert realtime.connect.call_args.kwargs["model"] == "lem-tts-realtime"
+        session = connection.session.update.call_args.kwargs["session"]
+        assert session["output_modalities"] == ["audio"]
+        assert session["audio"]["output"]["voice"] == vt.TUTORIAL_TTS_VOICE
+        item = connection.conversation.item.create.call_args.kwargs["item"]
+        assert item["content"][0]["text"] == "Open the Account page."
+        connection.response.create.assert_called_once()
+        assert Path(f"{out}.pcm").read_bytes() == b"\x01\x02\x03\x04"
+        cmd = run.call_args[0][0]
+        assert cmd[cmd.index("-f") + 1] == "s16le" and cmd[-1] == out
+        expected = (100 * 0.60 + 1000 * 20.00) / 1_000_000
+        assert usd == pytest.approx(expected)
+        kind, provider, billed = track.call_args[0]
+        assert (kind, provider, billed) == ("audio", "openai-realtime", pytest.approx(expected))
+        assert track.call_args.kwargs["model"] == "lem-tts-realtime"
+
+    def test_server_error_fails_closed(self, tmp_path):
+        realtime, _ = _realtime_events(
+            SimpleNamespace(type="error", error=SimpleNamespace(message="model not found")))
+        with patch("cqc_lem.utilities.ai.client.client.realtime", realtime), \
+             patch("subprocess.run") as run, patch(f"{_MOD}.track_media_cost") as track:
+            with pytest.raises(vt.TutorialRenderError, match="model not found"):
+                vt.synthesize_segment("hi", str(tmp_path / "seg.mp3"))
+        run.assert_not_called()
+        track.assert_not_called()
+
+    @pytest.mark.parametrize("events", [
+        (_audio(b"\x01"), _done(status="incomplete")),
+        (_audio(b"\x01"),),  # the socket closed before response.done
+    ])
+    def test_an_unfinished_response_fails_closed(self, tmp_path, events):
+        realtime, _ = _realtime_events(*events)
+        with patch("cqc_lem.utilities.ai.client.client.realtime", realtime), \
+             patch("subprocess.run") as run:
+            with pytest.raises(vt.TutorialRenderError, match="did not complete"):
+                vt.synthesize_segment("hi", str(tmp_path / "seg.mp3"))
+        run.assert_not_called()
+
+    def test_no_audio_fails_closed(self, tmp_path):
+        realtime, _ = _realtime_events(_done())
+        with patch("cqc_lem.utilities.ai.client.client.realtime", realtime), \
+             patch("subprocess.run") as run:
+            with pytest.raises(vt.TutorialRenderError, match="no audio"):
+                vt.synthesize_segment("hi", str(tmp_path / "seg.mp3"))
+        run.assert_not_called()
+
+    def test_missing_usage_costs_zero(self):
+        assert vt.realtime_cost_usd(None) == 0.0
+        assert vt.realtime_cost_usd(SimpleNamespace(input_tokens=None, output_tokens=0)) == 0.0
+
 
 def _fake_ffmpeg(duration: str = "4.0"):
     """Stand-in for ffmpeg/ffprobe that also CREATES its output file, so callers that read the

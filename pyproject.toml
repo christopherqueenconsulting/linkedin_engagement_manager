@@ -37,7 +37,7 @@ linkedin-api-client = "^0.3.0"
 beautifulsoup4 = "^4.12"
 
 # --- AI / external APIs ---
-openai = ">=1.52.2,<4.0.0"
+openai = {version = ">=1.52.2,<4.0.0", extras = ["realtime"]}
 # Content research uses the official MCP SDK's Streamable HTTP client. Also powers
 # the optional Selenium debugging server, so keep the mcp group alias below.
 mcp = ">=2.3.0,<3.0.0"

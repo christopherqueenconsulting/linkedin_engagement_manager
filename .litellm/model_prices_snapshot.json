@@ -160,6 +160,13 @@
       "mode": "chat",
       "shadow_reference": "openai/gpt-4o-mini"
     },
+    "openai/gpt-realtime-2.1-mini": {
+      "input_cost_per_token": 6e-07,
+      "output_cost_per_token": 2e-05,
+      "deprecation_date": null,
+      "mode": "realtime",
+      "_source": "curated from https://developers.openai.com/api/docs/pricing on 2026-10-09 (#2258): $0.60 / 1M text input tokens and $20.00 / 1M AUDIO output tokens - the voice-over reads audio out only, so the audio rate is the output rate. Mirrors TUTORIAL_TTS_REALTIME_COST_PER_1M_IN / _OUT in env_constants.py."
+    },
     "openai/kimi-k2.5": {
       "input_cost_per_token": 0.0,
       "output_cost_per_token": 0.0,

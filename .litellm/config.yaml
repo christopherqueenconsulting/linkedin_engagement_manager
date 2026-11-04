@@ -274,6 +274,14 @@ model_list:
       model: openai/tts-1
       api_key: os.environ/OPENAI_API_KEY
 
+  # tts-1's named successor, reachable ONLY over /v1/realtime (a websocket), never /audio/speech.
+  # Read by TUTORIAL_TTS_PROVIDER=openai-realtime (#2258); lem-tts stays on tts-1 until the owner
+  # has listened to side-by-side samples (#2472).
+  - model_name: lem-tts-realtime
+    litellm_params:
+      model: openai/gpt-realtime-2.1-mini
+      api_key: os.environ/OPENAI_API_KEY
+
   # ── EMBEDDING: cheap vectors for feedback dedup/clustering (issue #498) ──────
   # DO NOT move this to Ollama Cloud "for consistency": Ollama Cloud serves ZERO embedding models
   # (it is a chat/completions roster only), so there is nothing to move it to — every roster
