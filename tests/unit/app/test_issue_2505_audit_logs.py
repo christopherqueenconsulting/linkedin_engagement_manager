@@ -23,7 +23,7 @@ def test_content_plan_terminal_log_names_queued_held_and_ready_states():
 
 
 def test_content_plan_failure_log_records_terminal_reason():
-    with patch.object(rcp, "log_info") as log:
+    with patch.object(rcp, "log_error") as log:
         rcp._log_content_plan_failure(1, 42, "generation_exception")
 
     context = log.call_args.kwargs
