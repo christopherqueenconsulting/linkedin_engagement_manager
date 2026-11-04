@@ -82,6 +82,8 @@ from urllib.parse import parse_qs, urlparse
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 
+from cqc_lem.utilities.logger import log_debug
+
 SIGNALS = ("reactions", "comments", "reposts", "impressions", "saves")
 ANALYTICS_URL = "https://www.linkedin.com/analytics/post-summary/{urn}/"
 FEED_URL = "https://www.linkedin.com/feed/"
@@ -6307,10 +6309,12 @@ function visit(root, depth) {
     if (!(rect.width && rect.height)) continue;
     const labels = [node.getAttribute('aria-label'), node.getAttribute('title'),
       node.getAttribute('placeholder'), node.getAttribute('data-placeholder')].filter(Boolean);
+    const hasComment = labels.some(s => /comment/i.test(s));
+    const hasReply = labels.some(s => /reply/i.test(s));
     out.push({tag: node.tagName.toLowerCase(), role: node.getAttribute('role') || '',
       contenteditable: node.getAttribute('contenteditable') || '',
       testid_present: !!(node.getAttribute('data-testid') || node.getAttribute('data-test-id')),
-      comment_labelled: labels.some(s => /comment|reply/i.test(s))});
+      comment_labelled: hasComment && !hasReply, reply_labelled: hasReply});
     if (node.shadowRoot) visit(node.shadowRoot, depth + 1);
   }
   let all = [];
@@ -6323,10 +6327,13 @@ return out;
     try:
         return driver.execute_script(script, scope if scope is not None else None) or []
     except Exception as error:
-        from cqc_lem.utilities.logger import log_debug
-
         log_debug("Editable candidate census failed", error_type=type(error).__name__)
         return None
+
+
+def _is_post_comment_editable_candidate(candidate: dict[str, Any]) -> bool:
+    """True for a comment composer label, never a reply box beneath an existing comment."""
+    return bool(candidate.get("comment_labelled")) and not bool(candidate.get("reply_labelled"))
 
 
 def _walk_feed_composers(driver, feed: str, url: str, max_cards: int = 3,
@@ -6408,7 +6415,7 @@ def _walk_feed_composers(driver, feed: str, url: str, max_cards: int = 3,
     initial_editables = initial_editables or []
     reading["page_editable_candidates_before"] = len(initial_editables)
     reading["page_comment_editables_before"] = sum(
-        bool(candidate.get("comment_labelled")) for candidate in initial_editables)
+        _is_post_comment_editable_candidate(candidate) for candidate in initial_editables)
 
     for index, card in enumerate(cards):
         entry: dict = {"index": index, "locator_hits": _locator_hits(card, _COMMENT_ACTION_LOCATORS)}
@@ -6493,7 +6500,7 @@ def _walk_feed_composers(driver, feed: str, url: str, max_cards: int = 3,
         0, reading["page_editable_candidates_after_click"]
         - reading["page_editable_candidates_before"])
     reading["new_page_comment_editable_candidates"] = max(
-        [0] + [sum(bool(candidate.get("comment_labelled"))
+        [0] + [sum(_is_post_comment_editable_candidate(candidate)
                 for candidate in (c.get("page_editable_candidate_shapes") or []))
                - reading["page_comment_editables_before"] for c in reading["cards"]])
     reading["visible_controls"] = visible_button_labels(driver, limit=30)
