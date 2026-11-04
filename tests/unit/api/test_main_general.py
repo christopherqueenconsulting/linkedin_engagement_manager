@@ -437,6 +437,28 @@ class TestCommentNotificationInbound:
 
     _TRACK = "cqc_lem.utilities.observability.track_inbound_email"
 
+    def test_inbound_trace_redacts_email_and_logs_classifier_result(self, monkeypatch):
+        monkeypatch.setenv("LI_REPLY_INBOUND_TRACE_ENABLED", "true")
+        form = {
+            "to": "reply+private-token@parse.example.com",
+            "envelope": '{"to":["reply+private-token@parse.example.com"]}',
+            "from": "LinkedIn <hit-reply@linkedin.com>",
+            "subject": "Message replied: private subject",
+            "text": "private message body",
+            "headers": "Message-ID: <private-message-id@example.com>\n",
+        }
+        with patch(f"{_MAIN}.log_info") as logged, patch(self._TRACK):
+            __import__(_MAIN, fromlist=["_log_inbound_verdict"])._log_inbound_verdict(
+                "linkedin_not_comment", form, user_id=7)
+
+        message = logged.call_args.args[0]
+        assert "class=linkedin_other" in message
+        assert "sender_domain=linkedin.com" in message
+        assert "trace_token=" in message and "trace_message=" in message
+        for private_value in ("private-token", "private subject", "private message body",
+                              "private-message-id", "hit-reply@linkedin.com"):
+            assert private_value not in message
+
     def test_accepted_comment_logs_verdict(self, api_client):
         with patch(self._DB, return_value=7), \
              patch(f"{_MAIN}._reply_sweep_debounced", return_value=True), \
@@ -445,7 +467,7 @@ class TestCommentNotificationInbound:
             api_client.post(self.BASE, data={
                 "to": "reply+tok9@parse.example.com",
                 "subject": "Chris, Jane commented on your post"})
-        track.assert_called_once_with("comment_accepted", user_id=7)
+        track.assert_called_once_with("comment_accepted", user_id=7, classification="comment")
 
     def test_unknown_token_logs_verdict(self, api_client):
         with patch(self._DB, return_value=None), \
@@ -454,7 +476,7 @@ class TestCommentNotificationInbound:
             api_client.post(self.BASE, data={
                 "to": "reply+stale@parse.example.com",
                 "subject": "someone commented on your post"})
-        track.assert_called_once_with("unknown_reply_token", user_id=None)
+        track.assert_called_once_with("unknown_reply_token", user_id=None, classification="unrecognized")
 
     def test_linkedin_reaction_logs_verdict(self, api_client):
         with patch(self._DB, return_value=7), \
@@ -464,7 +486,20 @@ class TestCommentNotificationInbound:
                 "to": "reply+tok9@parse.example.com",
                 "from": "notifications-noreply@linkedin.com",
                 "subject": "Jane liked your post", "text": ""})
-        track.assert_called_once_with("linkedin_not_comment", user_id=7)
+        track.assert_called_once_with("linkedin_not_comment", user_id=7, classification="linkedin_other")
+
+    def test_linkedin_direct_message_reply_is_not_post_comment(self, api_client):
+        with patch(self._DB, return_value=7), \
+             patch(f"{_MAIN}.sweep_reply_comments") as sweep, \
+             patch(self._TRACK) as track:
+            response = api_client.post(self.BASE, data={
+                "to": "reply+tok9@parse.example.com",
+                "from": "Sparsh <hit-reply@linkedin.com>",
+                "subject": "Message replied: Opportunity to explore",
+            })
+        assert response.json()["detail"] == "ignored"
+        sweep.apply_async.assert_not_called()
+        track.assert_called_once_with("linkedin_not_comment", user_id=7, classification="linkedin_other")
 
     def test_unrelated_mail_logs_verdict(self, api_client):
         with patch(self._DB, return_value=7), \
@@ -473,7 +508,7 @@ class TestCommentNotificationInbound:
             api_client.post(self.BASE, data={
                 "to": "reply+tok9@parse.example.com",
                 "from": "spam@example.com", "subject": "hello", "text": "buy now"})
-        track.assert_called_once_with("unrelated", user_id=7)
+        track.assert_called_once_with("unrelated", user_id=7, classification="unrecognized")
 
     def test_pin_endpoint_spam_logs_verdict(self, api_client):
         with patch(self._TRACK) as track:

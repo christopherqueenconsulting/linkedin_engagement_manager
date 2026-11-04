@@ -33,9 +33,16 @@ describe('ReplySetupSteps forwarding status', () => {
     expect(chip.textContent).not.toContain('not confirmed')
   })
 
-  it('confirms and says why when a forwarded LinkedIn email arrived', () => {
+  it('confirms forwarding without claiming every LinkedIn email triggers a reply', () => {
     expect(show({ confirmed: true, source: 'forwarded_email' }).textContent).toContain('Forwarding confirmed')
     expect(screen.getByText(/reached your forwarding address/)).toBeTruthy()
+    expect(screen.getByText(/Only comment and reply notifications trigger/)).toBeTruthy()
+  })
+
+  it('targets comment notifications instead of all LinkedIn message replies', () => {
+    show({ confirmed: true, source: 'forwarded_email' })
+    expect(screen.getByText(/replied to your comment/)).toBeTruthy()
+    expect(screen.queryByText('commented OR replied')).toBeNull()
   })
 
   it('confirms without the delivery note when the auto-click did it', () => {

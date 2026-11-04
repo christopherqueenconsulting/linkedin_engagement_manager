@@ -2206,20 +2206,50 @@ def _reply_sweep_debounced(user_id: int, window_s: int = 120) -> bool:
 
 
 def _log_inbound_verdict(verdict: str, form, user_id: "Optional[int]" = None) -> None:
-    """One log line + one PostHog event per inbound parse email saying what we did with it. The
-    webhook ignores most mail BY DESIGN, which made a broken forwarding chain indistinguishable from
-    no mail at all — weeks of 100%-silently-dropped traffic looked like "feature never used". The
-    raw (truncated) address fields are included so a token/format mismatch is visible from the log.
+    """Log inbound decisions without exposing tokenized addresses or email content.
+
+    Optional trace mode adds stable, non-reversible fingerprints for correlating SendGrid retries.
     """
-    to_field = str(form.get("to") or "")[:160]
-    envelope = str(form.get("envelope") or "")[:240]
-    from_field = str(form.get("from") or "")[:120]
-    subject = str(form.get("subject") or "")[:120]
-    log_info(f"Inbound parse email verdict={verdict} to={to_field!r} envelope={envelope!r} "
-             f"from={from_field!r} subject={subject!r}", user_id=user_id)
+    import hashlib
+    import os
+    import re
+
+    from cqc_lem.integrations.linkedin.notification_email import (
+        _sender_domain,
+        extract_reply_token_from_address,
+        is_comment_notification,
+        is_linkedin_notification,
+    )
+
+    to_field = str(form.get("to") or "")
+    envelope = str(form.get("envelope") or "")
+    from_field = str(form.get("from") or "")
+    subject = str(form.get("subject") or "")
+    text = str(form.get("text") or form.get("html") or "")
+    token = extract_reply_token_from_address(to_field) or extract_reply_token_from_address(envelope)
+    classification = (
+        "gmail_confirmation" if verdict == "gmail_confirmation"
+        else "comment" if is_comment_notification(subject, text)
+        else "linkedin_other" if is_linkedin_notification(from_field, subject, text)
+        else "unrecognized"
+    )
+    sender_domain = _sender_domain(from_field) or "unknown"
+    details = (f"Inbound parse email verdict={verdict} class={classification} "
+               f"sender_domain={sender_domain} token_present={bool(token)}")
+    if os.getenv("LI_REPLY_INBOUND_TRACE_ENABLED", "").strip().lower() in {"1", "true", "yes"}:
+        headers = str(form.get("headers") or "")
+        message_id = re.search(r"(?im)^message-id:\\s*(<[^>]+>)", headers)
+
+        def fingerprint(value: str) -> str:
+            return hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()[:12]
+
+        token_fp = fingerprint(token) if token else "none"
+        message_fp = fingerprint(message_id.group(1)) if message_id else "none"
+        details += f" trace_token={token_fp} trace_message={message_fp}"
+    log_info(details, user_id=user_id)
     try:
         from cqc_lem.utilities.observability import track_inbound_email
-        track_inbound_email(verdict, user_id=user_id)
+        track_inbound_email(verdict, user_id=user_id, classification=classification)
     except Exception as e:
         log_debug("Could not track inbound email verdict", exc=e, user_id=user_id)
 

@@ -241,9 +241,11 @@ class TestLabelledEventsEndToEnd:
 
     def test_inbound_email_verdict_is_a_string(self):
         with patch(f"{_MOD}.posthog") as mock_ph:
-            observability.track_inbound_email("comment_accepted", user_id=2)
+            observability.track_inbound_email("comment_accepted", user_id=2, classification="comment")
         kwargs = mock_ph.capture.call_args.kwargs
-        assert kwargs["properties"] == {"verdict": "comment_accepted"}
+        assert kwargs["properties"] == {
+            "verdict": "comment_accepted", "classification": "comment", "user_id": 2,
+        }
         assert kwargs["distinct_id"] == "2"
 
     def test_celery_task_state_is_a_string_the_failure_alert_can_match(self):
