@@ -90,7 +90,7 @@ describe('LinkedInLoginCard engagement mode', () => {
     serve('suggest')
     harness()
     await waitFor(() => expect(screen.getByTestId('oauth-only-note')).toBeTruthy())
-    expect(screen.getByRole('link', { name: /Reconnect/ }).getAttribute('href'))
+    expect(screen.getByRole('link', { name: /LinkedIn/ }).getAttribute('href'))
       .toMatch(/^\/api\/auth\/linkedin\//)
   })
 
@@ -112,9 +112,10 @@ describe('LinkedInLoginCard engagement mode', () => {
     expect(screen.queryByText(/Use a LinkedIn password instead/)).toBeNull()
   })
 
-  it('keeps full-automation wording for an automate account', () => {
+  it('keeps full-automation wording for an automate account', async () => {
     serve('automate', false)
     harness()
+    await waitFor(() => expect(screen.getByTestId('session-card')).toBeTruthy())
     expect(screen.getByTestId('linkedin-connect-purpose').textContent)
       .toMatch(/post on your behalf, send DMs/)
   })
