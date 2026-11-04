@@ -564,7 +564,9 @@ EVENTS = {spec.event: spec for spec in (
     EventSpec("api_call", (
         label("route"), label("method"), prop("status_code"), prop("latency_ms"),
     ), DISTINCT_ANONYMOUS),
-    EventSpec("inbound_parse_email", (label("verdict"),), DISTINCT_ANONYMOUS),
+    EventSpec("inbound_parse_email", (
+        label("verdict"), label("classification"), prop("user_id"),
+    ), DISTINCT_ANONYMOUS),
     EventSpec("youtube_token_check", (
         label("status"), label("reason"), text("error"), text("scope"), prop("checked_at"),
         prop("http_status"),
@@ -2404,14 +2406,17 @@ def track_curated_source(stage: str, status: str, user_id: Optional[int] = None,
                                      "blocked": blocked, "user_id": user_id})
 
 
-def track_inbound_email(verdict: str, user_id: Optional[int] = None) -> None:
+def track_inbound_email(verdict: str, user_id: Optional[int] = None,
+                        classification: str = "unknown") -> None:
     """One event per SendGrid Inbound Parse POST, carrying the dispatch verdict (comment_accepted /
     debounced / unknown_reply_token / …). The webhook drops most mail BY DESIGN, so without this a
     broken forwarding chain is indistinguishable from no mail arriving at all — weeks of 100%-ignored
-    traffic left no signal anywhere. `verdict` is a STRING prop so alert tiles can filter on it
-    (docs/kpi-dashboards.md).
+    traffic left no signal anywhere. `verdict` and `classification` are string props; `user_id`
+    attributes the webhook to its LEM account (docs/REPLY_NOTIFICATIONS.md).
     """
-    _emit(EVENTS["inbound_parse_email"], {"verdict": verdict, "user_id": user_id})
+    _emit(EVENTS["inbound_parse_email"], {
+        "verdict": verdict, "classification": classification, "user_id": user_id,
+    })
 
 
 def track_api_call(

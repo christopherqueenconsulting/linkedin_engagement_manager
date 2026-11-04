@@ -136,19 +136,19 @@ class TestLinkedInSenderDomain:
 
     def test_domain_extraction_takes_the_last_at(self):
         """A quoted local part may itself contain an `@` — only the last one starts the domain."""
-        from cqc_lem.integrations.linkedin.notification_email import _sender_domain
-        assert _sender_domain('"news@linkedin.com"@evil.test') == "evil.test"
-        assert _sender_domain("notlinkedin.com@evil.test") == "evil.test"
-        assert _sender_domain('"LinkedIn" <notifications-noreply@linkedin.com>') == "linkedin.com"
-        assert _sender_domain("garbage") == ""
+        from cqc_lem.integrations.linkedin.notification_email import sender_domain
+        assert sender_domain('"news@linkedin.com"@evil.test') == "evil.test"
+        assert sender_domain("notlinkedin.com@evil.test") == "evil.test"
+        assert sender_domain('"LinkedIn" <notifications-noreply@linkedin.com>') == "linkedin.com"
+        assert sender_domain("garbage") == ""
 
     def test_unparseable_sender_fails_closed(self):
         """A malformed address is rejected outright — an unreadable From is never evidence."""
         from cqc_lem.integrations.linkedin.notification_email import (
             _is_linkedin_sender,
-            _sender_domain,
+            sender_domain,
         )
-        assert _sender_domain("news@evil.test <news@linkedin.com>") == ""
+        assert sender_domain("news@evil.test <news@linkedin.com>") == ""
         assert _is_linkedin_sender("news@evil.test <news@linkedin.com>") is False
 
 

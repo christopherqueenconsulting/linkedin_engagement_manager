@@ -36,9 +36,11 @@ covers event-mode users too — far below `scheduled` mode's cadence, so it does
 1. **Enable LinkedIn email notifications** for comments: LinkedIn → Settings & Privacy →
    Notifications → *Comments on your posts* (and *replies*) → ensure **Email** is on.
 2. **Gmail auto-forward filter**: Settings → Filters and Blocked Addresses → *Create a new filter* →
-   From `notifications-noreply@linkedin.com`, Subject `commented OR replied` → *Forward it to*
+   From `linkedin.com`, Subject `commented OR "replied to your comment"` → *Forward it to*
    `reply+<token>@parse.<domain>` (add/verify the forwarding address first under Settings →
-   Forwarding). Copy the exact address from the account page.
+   Forwarding). Copy the exact address from the account page. Do not use a broad `replied` subject
+   term: it also matches LinkedIn direct-message alerts such as “Message replied”. Editing the filter
+   does not require adding the forwarding address again.
 
 ## Modes (per user, `engagement_preferences.reply_check_mode`)
 
@@ -57,15 +59,19 @@ covers event-mode users too — far below `scheduled` mode's cadence, so it does
 
 ## Observability — how to tell the chain is working
 
-Every inbound parse POST (both endpoints) now logs ONE line and emits ONE `inbound_parse_email`
-PostHog event carrying a `verdict` string: `comment_accepted` / `debounced` / `gmail_confirmation` /
-`linkedin_not_comment` / `unrelated` / `unknown_reply_token` / `no_reply_token` / `no_pin_token` /
-`no_pin_in_text` / `pin_accepted` / `pin_ignored`. The log line includes the truncated raw
-`to`/`envelope`/`from`/`subject` so a token or format mismatch is visible without payload capture.
-The webhook ignores most mail BY DESIGN, so before this a broken chain was indistinguishable from no
-mail arriving: prod silently dropped 100% of inbound mail for weeks (wrong/missing token upstream)
-and separately 500'd on every valid comment notification (the `sweep_slot` QueueOnce KeyError, fixed
-alongside). Healthy = a steady share of `comment_accepted`; broken = mail volume with zero accepts.
+Every inbound parse POST (both endpoints) logs one redacted decision and emits one
+`inbound_parse_email` PostHog event carrying `verdict`, `classification`, and `user_id`. Verdicts
+include `comment_accepted`, `debounced`, `gmail_confirmation`, `linkedin_not_comment`, `unrelated`,
+`unknown_reply_token`, `no_reply_token`, `no_pin_token`, `no_pin_in_text`, `pin_accepted`, and
+`pin_ignored`. These logs never include forwarding addresses, tokens, subjects, message bodies,
+verification codes, confirmation URLs, or exception messages that may contain them. Gmail
+confirmation logs record only whether a URL and code were found.
+
+For temporary SendGrid retry correlation, set `LI_REPLY_INBOUND_TRACE_ENABLED=true`; this adds only
+truncated SHA-256 fingerprints of the token and RFC Message-ID. Turn it off after diagnosis. A
+forwarding-confirmed badge proves at least one LinkedIn notification arrived, not that comment
+notifications are being forwarded. Healthy comment flow includes `comment_accepted`; repeated
+`linkedin_not_comment` means messages arrived but were correctly ignored as non-comment mail.
 
 ## Related code
 
