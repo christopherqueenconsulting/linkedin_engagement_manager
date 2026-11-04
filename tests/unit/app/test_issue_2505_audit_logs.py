@@ -6,12 +6,13 @@ from cqc_lem.utilities.db import PostStatus
 
 def test_content_plan_terminal_log_names_queued_held_and_ready_states() -> None:
     cases = [
-        (PostStatus.APPROVED, True, [], "queued", "gates_passed_and_auto_schedule_enabled"),
+        (PostStatus.APPROVED, True, [], "queued", "gates_passed_and_auto_schedule_enabled", []),
         (PostStatus.PENDING, True, [{"gate": "missing_asset", "demoted": True}], "held",
-         "quality_gate_findings"),
-        (PostStatus.PENDING, False, [], "ready", "auto_schedule_disabled"),
+         "quality_gate_findings", ["missing_asset"]),
+        (PostStatus.PENDING, False, [], "ready", "auto_schedule_disabled", []),
+        (PostStatus.ERROR, True, None, "failed", "post_status_error", []),
     ]
-    for status, auto_schedule, findings, state, reason in cases:
+    for status, auto_schedule, findings, state, reason, gate_reasons in cases:
         with patch.object(rcp, "log_info") as log:
             rcp._log_content_plan_terminal_state(1, 42, status, auto_schedule, findings)
 
@@ -20,6 +21,7 @@ def test_content_plan_terminal_log_names_queued_held_and_ready_states() -> None:
         assert context["terminal_state"] == state
         assert context["status"] == status.value
         assert context["reason"] == reason
+        assert context["gate_reasons"] == gate_reasons
 
 
 def test_carousel_claim_log_records_each_kept_and_removed_number() -> None:

@@ -3497,8 +3497,11 @@ def _log_content_plan_terminal_state(user_id: int, post_id: int, status: PostSta
 
     Emits stable state and reason codes without logging post copy or gate explanations.
     """
-    held_by = demoting_findings(findings)
-    if held_by:
+    held_by = demoting_findings(findings if isinstance(findings, list) else [])
+    if status == PostStatus.ERROR:
+        state = "failed"
+        reason = "post_status_error"
+    elif held_by:
         state = "held"
         reason = "quality_gate_findings"
     elif status == PostStatus.APPROVED:
