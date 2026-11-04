@@ -439,7 +439,7 @@ class TestCommentNotificationInbound:
         assert resp.json()["detail"] == "debounced"
         sweep.apply_async.assert_not_called()
 
-    _TRACK = "cqc_lem.utilities.observability.track_inbound_email"
+    _TRACK = "cqc_lem.api.main.track_inbound_email"
 
     def test_inbound_trace_redacts_email_and_logs_classifier_result(self, monkeypatch) -> None:
         monkeypatch.setattr(api_main, "_INBOUND_TRACE_ENABLED", True)
@@ -487,10 +487,10 @@ class TestCommentNotificationInbound:
         assert "trace_" not in logged.call_args.args[0]
 
     def test_reply_classifier_input_is_bounded(self) -> None:
-        seen_lengths = []
+        classifier_text_lengths = []
 
         def capture_length(*args):
-            seen_lengths.append(len(args[-1]))
+            classifier_text_lengths.append(len(args[-1]))
             return False
 
         form = {"to": "reply+tok9@parse.example.com", "from": "unknown@example.com",
@@ -503,7 +503,7 @@ class TestCommentNotificationInbound:
             response = api_main._process_reply_inbound(form)
 
         assert response.detail == "ignored"
-        assert seen_lengths == [100_000, 100_000, 100_000]
+        assert classifier_text_lengths == [100_000, 100_000, 100_000]
 
     def test_accepted_comment_logs_verdict(self, api_client):
         with patch(self._DB, return_value=7), \
