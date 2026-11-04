@@ -3447,6 +3447,21 @@ class TestGroupFeedComposerProbe:
         verdict = llv.feed_composer_verdict(none_mounted)
         assert "NO composer mounted anywhere" in verdict and "#1084" in verdict
 
+    def test_a_failed_comment_click_is_distinct_from_a_missing_composer(self):
+        feed = {"feed": "home", "page_text": "posts", "cards_found": 1,
+                "composers_resolved": 0,
+                "cards": [{"comment_action": {"text": "Comment"},
+                           "comment_click_succeeded": False}]}
+        assert "click did not complete" in llv.feed_composer_verdict(feed)
+
+    def test_a_new_comment_editable_without_textbox_role_is_distinct(self):
+        feed = {"feed": "home", "page_text": "posts", "cards_found": 1,
+                "composers_resolved": 0, "page_textboxes_after_click": 0,
+                "new_page_comment_editable_candidates": 1,
+                "cards": [{"comment_action": {"text": "Comment"},
+                           "comment_click_succeeded": True}]}
+        assert "no role=textbox composer resolved" in llv.feed_composer_verdict(feed)
+
     def test_the_home_control_is_what_makes_a_group_finding_about_groups(self):
         ok = {"feed": "home", "page_text": "posts", "cards_found": 2, "composers_resolved": 2}
         drift = {"feed": "group", "page_text": "posts", "cards_found": 2, "composers_resolved": 0,
@@ -3615,6 +3630,36 @@ class TestGroupFeedComposerProbe:
                             lambda d, uid, group_id=None, max_cards=3: {"verdict": "ok"})
         assert llv.main(["--group-feed-composer"]) == 0
         assert llv.main(["--group-feed-composer", "42", "--group-feed-cards", "5"]) == 0
+
+    def test_home_feed_composer_alone_is_enough_to_probe(self, monkeypatch):
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.session.get_current_profile",
+                            lambda **k: (MagicMock(), MagicMock(), "a@b.c", MagicMock()))
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.quit_gracefully", lambda d: None)
+        clear_the_breaker(monkeypatch)
+        monkeypatch.setattr(llv, "probe_home_feed_composer",
+                            lambda d, uid: {"state": llv.STATE_OK, "verdict": "home ok"})
+        assert llv.main(["--home-feed-composer"]) == 0
+
+    def test_home_feed_composer_requests_images(self, monkeypatch):
+        captured = {}
+
+        def _open(fn, uid, require_debug_node=False, needs_images=False):
+            captured["needs_images"] = needs_images
+            return MagicMock(), MagicMock(), {"state": "signed_in"}
+
+        monkeypatch.setattr(llv, "open_probe_session", _open)
+        monkeypatch.setattr(llv, "install_read_only_guard", lambda: None)
+        monkeypatch.setattr(llv, "probe_home_feed_composer",
+                            lambda d, uid: {"state": llv.STATE_OK, "verdict": "home ok"})
+        clear_the_breaker(monkeypatch)
+        assert llv.main(["--home-feed-composer"]) == 0
+        assert captured["needs_images"] is True
+
+    def test_home_feed_composer_uses_shipped_home_card_walk(self, monkeypatch):
+        expected = {"state": llv.STATE_OK, "verdict": "home ok"}
+        monkeypatch.setattr(llv, "_walk_feed_composers", lambda *a, **k: expected)
+        assert llv.probe_home_feed_composer(MagicMock(), user_id=1,
+                                            sleep=lambda *_: None) is expected
 
     def test_a_group_flag_requests_needs_images(self, monkeypatch):
         """Issue #1778: without images /groups/* never mounts `<main>` at all.

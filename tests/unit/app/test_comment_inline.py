@@ -340,6 +340,13 @@ class TestPostComposerResolution:
         assert ra._post_composer_for_card(_driver(scope=_holder(outside, y=90)), card,
                                           user_id=1) is outside
 
+    def test_finds_composer_with_rotated_comment_label(self):
+        from cqc_lem.app.engagement import feed as ra
+        outside = _box(420, aria="Add a comment")
+        card = _holder(y=100, height=300)
+        assert ra._post_composer_for_card(_driver(scope=_holder(outside, y=90)), card,
+                                          user_id=1) is outside
+
     def test_prefers_the_posts_own_box_over_a_reply_box(self):
         # A reply box under an existing comment is a role=textbox too; typing here would answer a
         # stranger instead of the author, so the labelled box wins even when it is further away.
@@ -387,6 +394,14 @@ class TestPostComposerResolution:
         card = _holder(y=400, height=300)                  # nothing inside
         scope = _holder(y=400, height=300)                 # widened, but still holds nothing
         reply_box = _box(430)                               # unlabelled: a stranger's reply box
+        driver = _driver(scope=scope, page_boxes=(reply_box,))
+        assert ra._post_composer_for_card(driver, card, user_id=1) is None
+
+    def test_the_page_wide_fallback_rejects_reply_label_that_mentions_comment(self):
+        from cqc_lem.app.engagement import feed as ra
+        card = _holder(y=400, height=300)
+        scope = _holder(y=400, height=300)
+        reply_box = _box(430, aria="Reply to comment")
         driver = _driver(scope=scope, page_boxes=(reply_box,))
         assert ra._post_composer_for_card(driver, card, user_id=1) is None
 
