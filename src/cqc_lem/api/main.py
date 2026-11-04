@@ -2237,7 +2237,7 @@ def _log_inbound_verdict(verdict: str, form, user_id: "Optional[int]" = None) ->
                f"sender_domain={sender_domain} token_present={bool(token)}")
     if os.getenv("LI_REPLY_INBOUND_TRACE_ENABLED", "").strip().lower() in {"1", "true", "yes"}:
         headers = str(form.get("headers") or "")
-        message_id = re.search(r"(?im)^message-id:\\s*(<[^>]+>)", headers)
+        message_id = re.search(r"(?im)^message-id:\s*(<[^>]+>)", headers)
 
         def fingerprint(value: str) -> str:
             return hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()[:12]

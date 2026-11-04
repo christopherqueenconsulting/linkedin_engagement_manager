@@ -1,6 +1,7 @@
 """Unit tests for general FastAPI endpoints in cqc_lem.api.main."""
 
 import time
+import re
 from datetime import datetime
 from unittest.mock import patch
 
@@ -454,10 +455,30 @@ class TestCommentNotificationInbound:
         message = logged.call_args.args[0]
         assert "class=linkedin_other" in message
         assert "sender_domain=linkedin.com" in message
-        assert "trace_token=" in message and "trace_message=" in message
+        assert re.search(r"trace_token=[0-9a-f]{12}\b", message)
+        assert re.search(r"trace_message=[0-9a-f]{12}\b", message)
         for private_value in ("private-token", "private subject", "private message body",
                               "private-message-id", "hit-reply@linkedin.com"):
             assert private_value not in message
+
+    def test_inbound_trace_without_message_id_logs_none(self, monkeypatch):
+        monkeypatch.setenv("LI_REPLY_INBOUND_TRACE_ENABLED", "true")
+        form = {"to": "reply+private-token@parse.example.com", "headers": "Subject: x\n"}
+        with patch(f"{_MAIN}.log_info") as logged, patch(self._TRACK):
+            __import__(_MAIN, fromlist=["_log_inbound_verdict"])._log_inbound_verdict(
+                "unrelated", form, user_id=7)
+        message = logged.call_args.args[0]
+        assert re.search(r"trace_token=[0-9a-f]{12}\b", message)
+        assert "trace_message=none" in message
+
+    def test_inbound_trace_disabled_adds_no_fingerprints(self, monkeypatch):
+        monkeypatch.delenv("LI_REPLY_INBOUND_TRACE_ENABLED", raising=False)
+        form = {"to": "reply+private-token@parse.example.com",
+                "headers": "Message-ID: <private-message-id@example.com>\n"}
+        with patch(f"{_MAIN}.log_info") as logged, patch(self._TRACK):
+            __import__(_MAIN, fromlist=["_log_inbound_verdict"])._log_inbound_verdict(
+                "unrelated", form, user_id=7)
+        assert "trace_" not in logged.call_args.args[0]
 
     def test_accepted_comment_logs_verdict(self, api_client):
         with patch(self._DB, return_value=7), \
