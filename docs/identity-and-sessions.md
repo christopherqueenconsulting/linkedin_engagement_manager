@@ -720,6 +720,70 @@ guard (`HANDLER_GUARDED_ROUTES`), or if a reachable write route with an `action`
 has not been classified. A new role is one more entry in `ROLE_SCOPES`. The set of roles, who mints
 each and what each cannot do: [`agent-roles.md`](agent-roles.md).
 
+## The `operator` scope — a maintenance seat that may approve only on an internal account
+
+An operations agent that does maintenance — look at the queues, re-score the leads, pause the
+automation, check a job — should not need the owner's session or the shared `X-Admin-Secret` either.
+`POST /api/user/operator-token` mints it exactly as it mints an agent token (human session, step-up,
+`extension_scope_ok` not passed, `ttl_days` 1–365 default 90, fixed TTL never slid, audited as
+`operator_token_minted`, no migration for the scope itself).
+
+**Surface.** `_OPERATOR_SESSION_SURFACE` is `_AGENT_SESSION_SURFACE` — so every agent guard applies —
+plus `_OPERATOR_MAINTENANCE_SURFACE`:
+
+| Route | Why it is in |
+|---|---|
+| `POST /leads/refresh` | re-scores the caller's own lead pipeline from rows already stored; no LinkedIn call, no send |
+| `GET /admin/automation-status` | read the pause and 429-breaker state |
+| `POST /admin/automation-pause` | the SAFE direction of the kill switch: it stops automation and is reversible |
+| `GET /admin/task-status/{id}` | read a queued task's state (the one templated entry: `_SCOPE_PATTERNS`, anchored full-match, one path segment) |
+
+Left out on purpose, each because it sends, deletes, spends, rewrites data, or touches a credential:
+`/admin/automation-resume` (re-starts what a human may have halted for account safety), every
+`/admin/test/*` route (they send comments and DMs), `/admin/consolidate-duplicate-comments`
+(deletes), `/admin/fix-video-urls`, `/admin/user/location`, `/admin/regenerate-*`,
+`/admin/generate-media-variants`, `/admin/youtube-token`, and every user-admin route. No background-job
+RETRY route exists in the API (the only `retry` is the connection-request action, which is an
+approval and is guarded as one), and no route flips a feature flag — flags are PostHog-side — so
+neither is on the surface.
+
+**Admin routes keep `X-Admin-Secret`.** The three admin routes above gain an alternative: a session
+that resolves as `operator` exactly. `_operator_session()` answers False for a full session of a
+non-admin user, an agent, an observer, or no session, and those fall through to the secret check
+unchanged. The secret works exactly as before on these and on every other admin route; it stays the
+owner's break-glass. A non-browser operator presents its token as `session_token` (or the
+`lem_session` cookie, which is what clears the edge filter when `API_ACCESS_TOKENS` is set).
+
+### The fourth approval guard — `users.account_kind`
+
+The agent has three guards because a row reaches APPROVED three ways. The operator adds a fourth, on
+the *account*: an operator may approve only when the account is `internal` or `sandbox`.
+
+| `account_kind` | Operator, explicit approve (`action="approve"`/`"retry"`, create with `status="approved"`) | Operator, no status on an `auto_approve` account |
+|---|---|---|
+| `standard` (default, every existing row) | refused — **403 `agent_may_not_approve`**, exactly like an agent | queued PENDING |
+| `internal`, `sandbox` | allowed, and audited as `operator_approval` | **still queued PENDING** |
+
+A real-person send never auto-approves for an operator: the passive `auto_approve` default speaks
+for the human who left it set, not for a machine, on every account kind. `PUT
+/user/engagement-preferences` (the approval modes and every cap) is refused for an operator on every
+account kind too (`agent_may_not_configure`). `get_user_account_kind` fails closed — a missing row,
+a database fault or any value other than the two names reads `standard`. The acting account is the
+item's owner: every approving handler scopes the item to the caller's own user id, so another
+account's item is a 404 before it is a question.
+
+`users.account_kind` is `VARCHAR(16) NOT NULL DEFAULT 'standard'` (migration
+`V20261104170555__add_users_account_kind.sql`, rollback noted in the file). The default means nobody
+changes behaviour until a row is set by hand; there is deliberately no API or SPA control to set it.
+
+### Every operator action is audited
+
+An operator request that is not a read writes one `auth_audit_log` row before the handler runs
+(`operator_action`: role, method, path, account kind, client), and an approval writes an
+`operator_approval` row (role, whether it came by `action` or `status`, account kind). Reads are not
+audited: the Security card shows the account's last 20 events, and a row per poll would bury every
+human sign-in. The audit write is best effort and never turns an action into a 500.
+
 ## The docs surface lives inside `/api` (issue #1020)
 
 At the FastAPI defaults the docs surface sits at `/docs`, `/redoc` and `/openapi.json` — **outside**

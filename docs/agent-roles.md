@@ -12,6 +12,7 @@ a route that imports around it is a bug.
 |---|---|---|---|---|---|---|
 | `observer` | the account owner, human session + step-up | `POST /api/user/observer-token` | `_OBSERVER_SESSION_SURFACE`: review-queue reads, preferences, automation status, dashboard stats, curated-source list, `/auth/session`, `/app-info`, `/flags`, `/user/security` | `GET` `HEAD` `OPTIONS` only, on every path | `ttl_days`, 1–365, default 90, fixed at mint | create, edit, delete or approve anything; read or write a credential; change caps or approval modes; revoke sessions; move the account email; mint any token |
 | `agent` | the account owner, human session + step-up | `POST /api/user/agent-token` | `_AGENT_SESSION_SURFACE`: the observer's queue reads plus the create/save routes for pending work | any verb on a granted path (path-only scope) | `ttl_days`, 1–365, default 90, fixed at mint | approve or retry anything that sends to a real person (refused in the handlers by `_refuse_agent_approval`, `_refuse_agent_approved_status` and the `_agent_scoped()` checks in the connection-request handlers); change caps or approval modes (the `PUT /user/engagement-preferences` handler refuses on `_agent_scoped()`); touch a credential; revoke sessions; move the account email; mint any token |
+| `operator` | the account owner, human session + step-up | `POST /api/user/operator-token` | the agent surface plus `_OPERATOR_MAINTENANCE_SURFACE`: `POST /leads/refresh`, `GET /admin/automation-status`, `POST /admin/automation-pause`, `GET /admin/task-status/{id}` | any verb on a granted path (path-only scope) | `ttl_days`, 1–365, default 90, fixed at mint | everything the agent cannot do, plus: approve on a `standard` account, take the passive `auto_approve` default on any account, resume automation, call any other admin route |
 | `extension` | the account owner, human session + step-up | `POST /api/user/extension-token` | `/user/linkedin-cookie` only | the verbs that route serves | idle window (slides) | everything else |
 | `enroll` | the sign-in flow, when a strong factor is required and none is enrolled | — | the enrolment ceremonies only; promoted to `full` on enrolment | the verbs those routes serve | idle window (slides) | everything else |
 
@@ -163,3 +164,14 @@ the day the code is redeployed. So revoke first.
 An observer cannot reach `/health/deep` (it is not on the surface). That endpoint is public and
 unauthenticated — it returns counts only — so an operations agent should call it **with no
 credential at all**, not with its observer token.
+
+## Where the roles differ on approval
+
+| Account kind (`users.account_kind`) | `agent` | `operator` | `observer` |
+|---|---|---|---|
+| `standard` (default) | queue only | queue only | read only |
+| `internal` / `sandbox` | queue only | queue, and **approve explicitly** (audited) | read only |
+
+The passive `auto_approve` default never applies to a machine seat, and no seat may change caps or
+approval modes, on any account kind. Operator actions that are not reads, and every operator approval,
+are written to `auth_audit_log` with the role.
