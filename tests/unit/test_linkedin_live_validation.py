@@ -3376,11 +3376,22 @@ def _patch_composer_chain(monkeypatch, *, card=None, composer=None, in_card=(), 
 
 
 @pytest.mark.unit
-class TestGroupFeedComposerProbe:
+class TestFeedComposerProbe:
     """#928: #916 widened the composer lookup FOR the group feed and made every outcome silent.
 
     The lane posting nothing and the lane working look identical from the desk either way.
     """
+
+    def test_editable_census_failure_is_logged_and_marked_unreadable(self, monkeypatch):
+        driver = MagicMock()
+        driver.execute_script.side_effect = RuntimeError("private page detail")
+        logged = []
+        monkeypatch.setattr("cqc_lem.utilities.logger.log_debug",
+                            lambda message, **fields: logged.append((message, fields)))
+
+        assert llv._visible_editable_candidates(driver) is None
+        assert logged == [("Editable candidate census failed",
+                          {"error_type": "RuntimeError"})]
 
     def test_locator_hits_are_summed_across_cards_in_chain_order(self):
         merged = llv.merge_locator_hits([{"a": 0, "b": 1}, {"a": 0, "b": 2}])
