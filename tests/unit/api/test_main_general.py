@@ -854,10 +854,11 @@ class TestSharedInboundRouting:
         got = type("R", (), {"status_code": 200})()
         private_subject = "PRIVATE SUBJECT MARKER"
         private_url = "https://mail.google.com/mail/vf-PRIVATE-URL-MARKER"
-        private_code = "PRIVATE-CODE-MARKER-481516"
+        private_code = "PRIVATE-CODE-MARKER-481516234"
         private_body = f"Confirm {private_url} with code {private_code}; PRIVATE BODY MARKER"
         with patch("cqc_lem.utilities.db.get_user_id_by_reply_token", return_value=7), \
              patch(f"{_MAIN}.requests.get", return_value=got), \
+             patch("cqc_lem.utilities.db.get_user_email", return_value=None), \
              patch(f"{_MAIN}.log_info") as log:
             resp = api_client.post(self.PIN, data={
                 "to": "reply+tok9@parse.example.com",
