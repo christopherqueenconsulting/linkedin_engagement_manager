@@ -88,6 +88,8 @@ def sender_domain(sender: str) -> str:
         return ""
     # A trailing dot is a legal absolute FQDN ("linkedin.com.") naming the same host.
     return domain.strip().rstrip(".").lower()
+
+
 def _sender_local_part(sender: str) -> str:
     """The lowercased local part of an RFC5322 `From` value, or `""` when it doesn't carry one.
 
