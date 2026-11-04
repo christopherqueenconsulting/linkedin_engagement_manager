@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 83400)
-Total output lines: 6147
-
 """Content planning and generation — the Celery lane that books a user's calendar, then writes it.
 
 Two beats, deliberately separate. `auto_generate_content` PLANS: per active user it walks the
@@ -904,7 +901,4450 @@ def _affiliate_promo_content(user_id: int, post_id: Optional[int],
                              content_mix: Optional[str]) -> Optional[str]:
     """The LEM-promotional post for this slot, or None to write the author's own post instead.
 
-    Never raises: the (B) writer is an opt-in extra, and a user who consented to it must not lo…63400 tokens truncated…ption for HTTP errors
+    Never raises: the (B) writer is an opt-in extra, and a user who consented to it must not lose
+    the post they would otherwise have had because it failed.
+    """
+    try:
+        from cqc_lem.utilities.marketing.affiliate_content import claims_promo_slot, generate_promo_post
+        # Asked BEFORE the prefs/synthesis reads: the answer is no on almost every post, and a
+        # voice-synthesis read per planned post is a real cost to pay for an answer of "not this one".
+        if not claims_promo_slot(user_id, post_id, content_mix):
+            return None
+        return generate_promo_post(user_id, post_id=post_id, content_mix=content_mix,
+                                   prefs=_engagement_prefs_or_empty(user_id),
+                                   profile_synthesis=_profile_synthesis_or_none(user_id))
+    except Exception as e:
+        log_warning("Affiliate promo generation failed — writing the ordinary promo post instead",
+                    exc=e, user_id=user_id, post_id=post_id, task_name="create_content")
+        return None
+
+
+def _curated_source_content(user_id: int, post_id: Optional[int],
+                            content_mix: Optional[str]) -> Optional[str]:
+    """The curated post that claims this slot, or None to write the author's own post.
+
+    Never raises (``curated_content_for_slot`` contains its own faults); OFF unless
+    ``CURATED_SOURCES_ENABLED`` for this user.
+    """
+    from cqc_lem.app.run_curated_sources import curated_content_for_slot
+
+    return curated_content_for_slot(
+        user_id, post_id, content_mix,
+        load_voice=lambda: (_engagement_prefs_or_empty(user_id),
+                            _profile_synthesis_or_none(user_id)))
+
+
+def _curated_post_needs_review(user_id: int, post_id: Optional[int]) -> bool:
+    """True when this post is (or may be) a curated draft — which is NEVER auto-approved.
+
+    Read only for a user with ``CURATED_SOURCES_ENABLED``, the only users who get curated drafts.
+    For them it fails CLOSED: an unreadable answer holds the post for review, which costs a click,
+    never a publish. The publish path refuses any curated post a human did not approve, so a draft
+    left over after the flag is switched off is still caught there.
+    """
+    if post_id is None:
+        return False
+    from cqc_lem.utilities.curated_collectors import curated_enabled
+
+    if not curated_enabled(user_id):
+        return False
+    return post_is_curated(post_id) is not False
+
+
+def _profile_synthesis_or_none(user_id: int) -> Optional[str]:
+    """The user's cached voice synthesis with no Selenium fallback — promotional copy is worth
+    matching the author's voice, never worth a browser session.
+    """
+    try:
+        return get_or_create_profile_synthesis(user_id, load_profile_for_user(user_id))
+    except Exception as e:
+        log_warning("Could not load the profile synthesis — writing without the user's voice", exc=e,
+                    user_id=user_id, task_name="create_content")
+        return None
+
+
+def _fact_anchors(user_id: int) -> list:
+    """The VERIFIED, human-sourced facts a fact-anchored archetype's specifics are CHECKED against
+    (issue #619 / G4) — the numbers a draft is allowed to have written down. The story bank
+    (issue #620 / G5) is that source, and this is every active entry, not just the one entry a given
+    post was anchored to: a number out of the user's own material is by definition not something the
+    model invented, and falsely calling a real figure fabricated is the one error the guard must not
+    make. What the WRITER may state is narrower — see the anchors handed to `blueprint_directive`.
+
+    An empty or unreadable bank returns [], which runs everything downstream in its strictest mode:
+    every specific must ship as a marked placeholder, and a draft that stated one anyway is held for
+    review. Never raises — a bank read that fails costs the credit, never the post.
+    """
+    try:
+        entries = get_story_bank_entries(user_id, active_only=True)
+    except Exception as e:
+        log_warning("Story bank unreadable — running the fact gates with no verified anchors",
+                    exc=e, user_id=user_id, task_name="create_content")
+        return []
+    return [source for entry in (entries or []) for source in _story_bank.fact_sources(entry)]
+
+
+def _post_grounding_is_hard() -> bool:
+    """True when EVERY post's numbers are graded against the user's material (issue #1971).
+
+    Read at call time like every severity knob in the content core: `FACT_GROUNDING_SEVERITY_POST`
+    can put the post surface back to WARN (the pre-#1971 posture, where only the fact-anchored
+    archetypes are graded) without a deploy.
+    """
+    return _story_bank.fact_grounding_severity("post") == SEVERITY_HARD
+
+
+def _grades_fact_grounding(archetype: Optional[str]) -> bool:
+    """Whether this post's numbers are graded at all.
+
+    Always for a fact-anchored archetype, and for every post while the post surface is HARD.
+    """
+    return requires_fact_anchor("post", archetype) or _post_grounding_is_hard()
+
+
+def _fact_anchors_for(user_id: int, archetype: Optional[str]) -> list:
+    """The verified facts for the gate pass on THIS post.
+
+    Read only when the post is actually graded, so a post that is not never pays for a story-bank
+    read it cannot use.
+    """
+    return _fact_anchors(user_id) if _grades_fact_grounding(archetype) else []
+
+
+def _post_material_sources(user_id: int, post_id: Optional[int],
+                           profile_synthesis: Optional[str] = None,
+                           *extra: Optional[str]) -> list:
+    """The material this post was legitimately written FROM, beyond the story bank (issue #1971).
+
+    The user's own profile brief, the research block actually handed to the writer, and whatever
+    the caller adds (the lead-magnet CTA, the story directive). A number out of any of these is not
+    one the model invented, so they widen the grounding allow-list; nothing here narrows it.
+
+    The profile brief is READ, never created: `get_profile_synthesis` is the stored tuple, and an
+    unreadable one costs the allow-list a source, never the post.
+
+    Args:
+        user_id: Whose profile brief to read when none is given.
+        post_id: The post whose recorded research is read.
+        profile_synthesis: The brief the caller already holds, which skips the read.
+        *extra: Other text the writer was handed (the lead-magnet CTA, the story directive).
+
+    Returns:
+        The non-empty source strings, in a stable order.
+    """
+    sources = [str(s) for s in (profile_synthesis, *extra) if s and str(s).strip()]
+    if not profile_synthesis and user_id:
+        try:
+            stored = get_profile_synthesis(user_id)
+            if stored and stored[0]:
+                sources.append(str(stored[0]))
+        except Exception as e:
+            log_warning("Profile synthesis unreadable — the grounding allow-list runs without it",
+                        exc=e, user_id=user_id, post_id=post_id, task_name="create_content")
+    # The lead-magnet resource name is appended to the post AFTER the review gate
+    # (`ensure_lead_magnet_cta` in the status-setter path), so "my 12-point checklist" would read
+    # as invented at the gate pass unless the configured message is a source here.
+    if user_id:
+        try:
+            message = str((get_lead_magnet_settings(user_id) or {}).get("message") or "").strip()
+            if message:
+                sources.append(message)
+        except Exception as e:
+            log_warning("Lead-magnet settings unreadable — the grounding allow-list runs without "
+                        "them", exc=e, user_id=user_id, post_id=post_id, task_name="create_content")
+    supplied = supplied_material_for(post_id)
+    if supplied:
+        sources.append(supplied)
+    return sources
+
+
+def _select_post_blueprint(user_id: int, prefer_save_targeted: bool = False,
+                           guidance: Optional[str] = None,
+                           exclude_formats: Optional[list] = None,
+                           preferred_formats: Optional[list] = None) -> dict:
+    """ONE assigned SHAPE from the shared framework core: rotate away from this user's recently used
+    archetypes/hook styles (V51 history) and bias away from the ones that historically
+    under-perform (#389). Chosen in code — no extra LLM call. `guidance` pins the archetype when the
+    slot dictates it (the 70/20/10 promo slot needs a case study — #618); `prefer_save_targeted` only
+    biases toward one, `preferred_formats` narrows the menu to the day-type calendar's family
+    (#621), and `exclude_formats` takes archetypes off the menu for a caller that cannot
+    honor their contract. Every input is best-effort: a history or performance read that fails costs
+    the steering, never the post.
+    """
+    try:
+        shape_history = get_recent_post_shape_history(user_id)
+    except Exception as e:
+        log_warning("Could not load the post shape history — rotating without it", exc=e,
+                    user_id=user_id, task_name="create_content")
+        shape_history = []
+    try:
+        performance = get_shape_performance(user_id)
+    except Exception as e:
+        log_warning("Could not load shape performance — selecting without it", exc=e,
+                    user_id=user_id, task_name="create_content")
+        performance = None
+    recent_hooks = [h.get("hook_style") for h in shape_history if h.get("hook_style")]
+    blueprint = select_blueprint(
+        "post",
+        recent_formats=[h.get("archetype") for h in shape_history if h.get("archetype")],
+        recent_hook_styles=recent_hooks,
+        performance=performance,
+        prefer_save_targeted=prefer_save_targeted,
+        exclude_formats=exclude_formats,
+        preferred_formats=preferred_formats,
+        guidance=guidance)
+    # Carried so the opening-shape rotation (showcase round 5) can honour the same hook window.
+    return {**blueprint, "recent_hook_styles": recent_hooks[:_HOOK_AVOID_WINDOW]}
+
+
+# The recent hook styles a newly assigned opening shape must not bring back (the framework's own
+# no-repeat window for hook styles).
+_HOOK_AVOID_WINDOW = 3
+
+
+def _select_carousel_blueprint(user_id: int, fact_anchors: Optional[list] = None,
+                               day_weekday: Optional[int] = None) -> Optional[dict]:
+    """The carousel's shape — the same post menu, biased toward the save-targeted archetypes since a
+    document post is where a saved reference actually lives. Both halves of that hang on having
+    verified facts: with none, the fact-anchored archetypes are taken OFF the carousel menu entirely
+    (not merely un-preferred), because their no-fabrication contract ships every specific as a
+    `[[…]]` placeholder — and a carousel bakes its text into rendered slide IMAGES, which no edit or
+    re-score can ever fix. The caller passes the WRITER's anchors (the one selected story's facts,
+    issue #728) — that, not the size of the whole bank, is what this deck can actually write from;
+    the None fallback reads the bank only because a caller with no story selected has nothing
+    narrower to offer. `day_weekday` narrows the menu to that day type's family, as it does for a
+    text post (issue #2107). Never raises — a carousel that loses its archetype still generates from
+    the generic slide guidance.
+    """
+    try:
+        anchors = _fact_anchors(user_id) if fact_anchors is None else fact_anchors
+        return _select_post_blueprint(
+            user_id, prefer_save_targeted=bool(anchors),
+            exclude_formats=None if anchors else fact_anchored_formats("post"),
+            preferred_formats=day_type_formats(day_weekday) if day_weekday is not None else None)
+    except Exception as e:
+        log_warning("Could not select a carousel archetype — using generic slide guidance", exc=e,
+                    user_id=user_id, task_name="create_carousel_content")
+        return None
+
+
+def _report_carousel_fact_grounding(user_id: int, post_id: Optional[int], blueprint: Optional[dict],
+                                    carousel: Optional[dict]) -> None:
+    """Grade a generated DECK's specifics against the user's whole verified bank (issue #728) and log
+    anything it could not back. Only for the fact-anchored archetypes, whose value IS the specifics.
+    Advisory by design: the slides are rendered into images, so there is nothing a hold could fix —
+    the point is that an invented slide number is visible instead of silent. Never raises.
+    """
+    fmt = (blueprint or {}).get("format")
+    if not carousel or not requires_fact_anchor("post", fmt):
+        return
+    try:
+        report = fact_grounding_report(_deck_text(carousel), _fact_anchors(user_id))
+        if report["unverified_values"]:
+            log_warning("Carousel slides state specifics no verified fact backs: "
+                        + ", ".join(report["unverified_values"][:5]),
+                        user_id=user_id, post_id=post_id, task_name="create_carousel_content")
+        if report["placeholders"]:
+            log_warning("Carousel slides carry unfilled placeholders that will be rendered into the "
+                        "images: " + ", ".join(report["placeholders"][:5]),
+                        user_id=user_id, post_id=post_id, task_name="create_carousel_content")
+    except Exception as e:
+        log_warning("Could not grade the carousel's fact grounding", exc=e, user_id=user_id,
+                    post_id=post_id, task_name="create_carousel_content")
+
+
+def _deck_text(carousel: Optional[dict]) -> str:
+    """Every slide's title + body, in schema order, as ONE block of text.
+
+    This is what a slide-level TEXT check grades. The cover and CTA slides are included on purpose:
+    `deck_slides`' `graded` flag exempts them from the REFERENCE gate, whose question is "does this
+    slide carry a reusable artifact" — one a cover cannot answer — while a bait closer or a canned
+    opener is exactly what a text-quality check exists to catch, and those live on the very slides
+    the reference gate skips.
+    """
+    return deck_text(carousel)
+
+
+def _record_slide_slop_finding(user_id: int, post_id: int, report: dict) -> None:
+    """Record — or clear — the slide-level AI-slop note on `posts.gate_reason` (issue #1512).
+
+    Same mechanic as `_record_video_probe_finding`, and for the same reason: the slide TEXT exists
+    only inside `create_carousel_content` (the deck is persisted as rendered image URLs), so a gate
+    pass that runs later cannot re-derive this verdict — it has to be written where it is measured
+    and re-read where the findings are assembled. A clean deck clears any note an earlier generation
+    left, so a regenerated carousel stops showing a stale one.
+
+    ADVISORY (`demoted=False`): a hold on baked-in slide text can only be cleared by regenerating
+    the whole deck, which is a product decision that is not this change's to make.
+
+    Best-effort — this is review UX, so an unreadable/unwritable reason only logs.
+    """
+    try:
+        existing = get_post_gate_reason(post_id)
+        kept = [f for f in existing if f.get("gate") != GATE_SLIDE_SLOP]
+        if not report["violations"]:
+            if len(kept) == len(existing):
+                # Nothing to clear — a clean deck never writes.
+                return
+            findings = kept
+        else:
+            findings = kept + [slide_slop_finding(violation_reasons(report["hard"]),
+                                                  violation_reasons(report["warnings"]))]
+        update_db_post_gate_reason(post_id, findings)
+    except Exception as e:
+        log_warning("Could not record the carousel's slide-level slop lint — this deck's review "
+                    "queue entry will not name the patterns its slides carry", exc=e,
+                    user_id=user_id, post_id=post_id, task_name="create_carousel_content")
+
+
+def _report_carousel_slide_slop(user_id: int, post_id: Optional[int],
+                                carousel: Optional[dict]) -> None:
+    """Grade a deck's SLIDE text with the EXISTING slop lint and record what fired (issue #1512).
+
+    The caption has always run the full gate suite; the slides ran one gate (`deck_reference_report`)
+    and an advisory fact-grounding log, so on the one format where the slides ARE the post a tier-1
+    tell pileup or a banned scaffold opener was recorded nowhere. This runs `lint_report` — the same
+    linter, the same `post` surface severities, never a carousel-only copy — over the concatenated
+    slide text and persists the result as an advisory finding.
+
+    Records only; it never changes a post's status. Never raises: a slide reading that fails costs
+    the record, never the deck.
+    """
+    if post_id is None or not carousel:
+        return
+    try:
+        deck_text = _deck_text(carousel)
+        if not deck_text:
+            return
+        # The same lead-magnet exemption the caption's lint gets: a sanctioned "Comment KEYWORD" CTA
+        # is not bait, wherever in the piece it is written.
+        report = slop_lint_report(deck_text, "post", exempt_keyword=_cta_keyword_for(user_id, post_id))
+        if not report["checked"]:
+            return
+        _record_slide_slop_finding(user_id, post_id, report)
+        if report["violations"]:
+            # INFO, not WARNING: this is a measurement of a draft, and a deck carrying a warn-level
+            # pattern is an expected reading rather than a degraded path — warning here would file a
+            # grouped defect against working behaviour on every slop-carrying deck.
+            log_info("Carousel slide text matched the AI-slop lint: "
+                     + ", ".join(v["check"] for v in report["violations"]),
+                     user_id=user_id, post_id=post_id, task_name="create_carousel_content")
+    except Exception as e:
+        log_warning("Could not lint the carousel's slide text", exc=e, user_id=user_id,
+                    post_id=post_id, task_name="create_carousel_content")
+
+
+def _report_carousel_deck_consistency(user_id: int, post_id: Optional[int],
+                                      carousel: Optional[dict], caption: Optional[str]) -> None:
+    """Record — or clear — the two HOLDING checks of a deck against its own caption (issue #2106).
+
+    `deck_count_report`: the caption promises "the exact 5 checks" and the deck carries 4.
+    `deck_topic_report`: the slides share almost no vocabulary with the caption (an e-commerce
+    trends deck on a governance post). Both are measured HERE because the slide text exists only
+    inside `create_carousel_content`; `_recorded_deck_notes` re-reads them at every gate pass, where
+    a failing one holds the post at PENDING. Unlike the slide slop note these DEMOTE: they are not a
+    style reading but a post that contradicts itself.
+
+    Best-effort — an unreadable/unwritable reason only logs, and never costs the deck.
+    """
+    if post_id is None or not carousel:
+        return
+    try:
+        count = deck_count_report(carousel, caption)
+        topic = deck_topic_report(carousel, caption)
+        fresh = []
+        if not count["passes"]:
+            fresh.append(deck_count_finding(count["items"], count["claimed"], count["readings"]))
+        if not topic["passes"]:
+            fresh.append(deck_topic_finding(topic["score"], topic["threshold"]))
+        existing = get_post_gate_reason(post_id)
+        kept = [f for f in existing if f.get("gate") not in (GATE_DECK_COUNT, GATE_DECK_TOPIC)]
+        if not fresh and len(kept) == len(existing):
+            return
+        update_db_post_gate_reason(post_id, kept + fresh)
+        if fresh:
+            # INFO: a held draft is the gate doing its job; the finding on the post is the record.
+            log_info("Carousel deck contradicts its caption — holding for review: "
+                     + "; ".join(f["gate"] for f in fresh),
+                     user_id=user_id, post_id=post_id, task_name="create_carousel_content")
+    except Exception as e:
+        log_warning("Could not check the carousel's deck against its caption", exc=e,
+                    user_id=user_id, post_id=post_id, task_name="create_carousel_content")
+
+
+def _score_carousel_caption_authenticity(user_id: int, post_id: Optional[int], caption: str,
+                                         profile_synthesis: Optional[str] = None,
+                                         prefs: Optional[dict] = None) -> None:
+    """Judge a deck's CAPTION with the same authenticity judge a text post's draft gets (issue #1512).
+
+    `_score_and_persist_authenticity` was only ever called from `create_text_post` and
+    `rescore_post`, so `posts.authenticity_score` stayed NULL for every generated deck and the
+    authenticity gate inside `evaluate_post_gates` skipped itself by its own `is not None` guard —
+    every carousel caption shipped unjudged unless a human pressed re-score. A caption is a post
+    like any other, so it is judged like one: ONE `lem-medium` judge call per deck, and the gate that
+    reads the score back demotes a low-scoring deck to PENDING exactly as it does a text post.
+
+    The SLIDES are not judged here — their reading is the deterministic slop lint above; the judge
+    grades the caption only, which is what the review queue can actually be edited and re-scored on.
+    """
+    if post_id is None or not (caption or "").strip():
+        return
+    _score_and_persist_authenticity(user_id, post_id, caption, load_profile_for_user(user_id),
+                                    profile_synthesis, prefs,
+                                    task_name="create_carousel_content")
+
+
+@attribute_llm_cost(FEATURE_CONTENT)
+def create_carousel_content(user_id: int, stage: str, post_id: int = None,
+                            template: Optional[str] = None,
+                            guidance: Optional[str] = None,
+                            day_weekday: Optional[int] = None,
+                            post_type: Optional[str] = None) -> str:
+    """Generate AI carousel content, render slide images, update DB, and return the post text.
+
+    `guidance` is the user's free-text revision request from the regenerate flow (issue #794) — it
+    steers the CAPTION AND the slides, since on a deck the slides are the post. `day_weekday` is the
+    slot's local weekday, which picks the deck's archetype family from the day-type calendar.
+    `post_type` 'document' publishes the deck as a PDF, so its copy never calls it a carousel.
+    """
+    from cqc_lem.utilities.ai.ai_helper import generate_carousel_content
+    from cqc_lem.utilities.carousel_creator import (
+        build_carousel_model,
+        carousel_model_for_stage,
+        create_carousel_slide_images,
+        create_ppt,
+        missing_carousel_fields,
+    )
+
+    # Same alignment inputs as text posts (best-effort — carousel generation never blocks on them).
+    try:
+        prefs = get_engagement_preferences(user_id)
+    except Exception as e:
+        log_warning("Could not load engagement preferences for the carousel", exc=e,
+                    user_id=user_id, post_id=post_id, task_name="create_carousel_content")
+        prefs = None
+    try:
+        profile_synthesis = get_or_create_profile_synthesis(user_id)
+    except Exception as e:
+        log_warning("Could not load the profile synthesis for the carousel", exc=e,
+                    user_id=user_id, post_id=post_id, task_name="create_carousel_content")
+        profile_synthesis = None
+
+    # Which reader this deck is for (showcase round 5) — it re-aims the prefs every step below reads.
+    history = _recent_post_records(user_id, post_id)
+    prefs, audience = _resolve_post_audience(user_id, post_id, prefs, history)
+    prefs = _without_crowded_focus_topics(prefs, _record_texts(history))
+
+    # ONE story-bank anchor per piece (issue #728), the same split text posts have always had: the
+    # WRITER gets the single selected entry, the CHECKERS keep the whole bank. Handing the writer
+    # every active entry is what produced a six-receipt greatest-hits deck that spent the account's
+    # best material in one post. Selected BEFORE the blueprint, because whether we HAVE an anchor is
+    # what decides if a fact-anchored archetype is even on the carousel menu.
+    anchor_outcome: dict = {}
+    story = _select_story_for_post(user_id, prefs, outcome=anchor_outcome, audience=audience,
+                                   post_id=post_id)
+    story_directive = (_story_bank.story_directive(story) if story
+                       else _no_anchor_directive(user_id, anchor_outcome))
+    writer_anchors = _story_bank.fact_sources(story) if story else []
+    if story:
+        log_info(f"Story bank anchor for carousel post_id={post_id}: "
+                f"[{story.get('kind')}] {story.get('title')}")
+
+    # Carousels draw their SHAPE from the same shared post menu as text posts (issue #619 / G4) and
+    # rotate against the same V51 shape history, so a build receipt can land as a document post —
+    # and so a carousel archetype counts against the next text post's rotation.
+    blueprint = _select_carousel_blueprint(user_id, writer_anchors, day_weekday)
+    blueprint = _steer_post_blueprint(user_id, blueprint, post_id, None, prefs, profile_synthesis,
+                                      _record_texts(history), audience=audience)
+    post_text, carousel_dict = generate_carousel_content(user_id, stage, prefs=prefs,
+                                                         profile_synthesis=profile_synthesis,
+                                                         blueprint=blueprint,
+                                                         fact_anchors=writer_anchors,
+                                                         story_directive=story_directive,
+                                                         guidance=guidance,
+                                                         grounding_anchors=_fact_anchors(user_id))
+    log_info(f"Carousel AI content generated for user_id={user_id} stage={stage} "
+            f"archetype={(blueprint or {}).get('format')}")
+    # A deck's caption is the one generated post text that never reaches `sanitize_for_linkedin`
+    # (JSON-mode output gets `normalize_public_text` + `enforce_post_readability` only), so without
+    # this a carousel could still ship priced in rupees (issue #1529). Applied to the CAPTION only:
+    # the slides are normalized string-by-string, and the context words that make a foreign symbol
+    # deliberate ("European ARR") routinely sit on a different slide from the figure.
+    post_text = normalize_currency_symbols(post_text)
+    # Showcase round 6: the deterministic date/sign-off fixes, on the caption AND every slide.
+    post_text = _deterministic_fact_cleanup(post_text, user_id=user_id, post_id=post_id)
+    carousel_dict = _fact_cleanup_deck(carousel_dict)
+
+    # Credibility (showcase round 4): the cover's promised count ("4 Steps") is the number of item
+    # slides the deck actually carries, fixed here before anything renders; and a document post's
+    # copy calls itself a document, never a carousel.
+    carousel_dict, post_text, count_fixes = reconcile_deck_counts(carousel_dict, post_text)
+    if count_fixes:
+        log_info("Deck count promises rewritten to the slides it carries: " + "; ".join(count_fixes),
+                 user_id=user_id, post_id=post_id, task_name="create_carousel_content")
+    # Showcase round 7: what the deck's one regeneration left — a template-label heading, a cover
+    # promise no slide shows, a slide figure the caption never backs — is fixed in code here.
+    carousel_before_claim_cleanup = copy.deepcopy(carousel_dict)
+    carousel_dict, claim_fixes = finalize_deck_claims(carousel_dict, post_text,
+                                                      _fact_anchors(user_id))
+    try:
+        _log_carousel_claim_audit(user_id, post_id, carousel_before_claim_cleanup, carousel_dict)
+    except Exception as e:
+        log_warning("Could not record carousel figure audit", exc=e, user_id=user_id,
+                    post_id=post_id, task_name="create_carousel_content")
+    if claim_fixes:
+        log_info("Deck claims fixed before render: " + "; ".join(claim_fixes),
+                 user_id=user_id, post_id=post_id, task_name="create_carousel_content")
+    # Batch variety (showcase round 7): a deck caption is a post in the same feed.
+    post_text = _enforce_batch_variety(user_id, post_id, post_text, _record_texts(history))
+    if str(post_type or "").lower() == PostType.DOCUMENT.value:
+        post_text = document_wording(post_text)
+        carousel_dict = document_deck_wording(carousel_dict)
+
+    # The verification half of the split: the SLIDES are checked against EVERY active bank entry,
+    # because a number out of the user's own material is by definition not one the model invented.
+    # Reported, never held — the caption already has its gate (`evaluate_post_gates` runs the same
+    # check with the same full bank), and slide text has no review queue to be held in.
+    _report_carousel_fact_grounding(user_id, post_id, blueprint, carousel_dict)
+
+    # The slide text's own quality reading (issue #1512): the same slop lint the caption runs, over
+    # the concatenated slides. Recorded on the post, advisory — it holds nothing, and it leaves
+    # `_report_carousel_fact_grounding`'s advisory-only posture (ring-fenced by #1139) untouched.
+    _report_carousel_slide_slop(user_id, post_id, carousel_dict)
+
+    # The deck against its own caption (issue #2106): a count the slides do not hold, or slides on
+    # a different topic, HOLDS the post — read against the finished caption, like the slop note.
+    _report_carousel_deck_consistency(user_id, post_id, carousel_dict, post_text)
+    # The caption and slides against the calendar and the anchoring story (showcase round 6): the
+    # deck has no editor pass, so an impossible date or timeline is recorded and HOLDS the post.
+    # #2316: a slide figure the caption never states, after `finalize_deck_claims` dropped what it
+    # could, HOLDS the post too; and so does an anecdote day a recent post already told (143/144).
+    _record_consistency_finding(
+        post_id, consistency_report(f"{post_text or ''}\n{deck_text(carousel_dict)}",
+                                    (story or {}).get("happened_at"),
+                                    story_text=_story_bank.entry_text(story) if story else None,
+                                    recent_texts=_record_texts(history)
+                                    )["issues"] + deck_figure_gate_issues(carousel_dict, post_text),
+        user_id=user_id)
+
+    # The caption's authenticity judge (issue #1512, owner decision 2A on PR #1554): a carousel
+    # caption is a post like any other, and until now it was the one generated post type that
+    # reached the gate pass with a NULL score, so the authenticity gate skipped every deck. Scored
+    # here rather than after the render because this is the finished caption — the render can only
+    # fail the post, never rewrite its text.
+    _score_carousel_caption_authenticity(user_id, post_id, post_text, profile_synthesis, prefs)
+
+    # Count the anchor as used so the NEXT piece rotates to different raw material — the same write
+    # create_text_post makes. Without it the carousel reads the bank but never advances it, so
+    # `select_story`'s least-used ordering hands every deck the SAME entry and the next text post
+    # re-uses it too: one anchor per post, but the same anchor every post. Only when a deck really
+    # came out of it — a failed generation must not burn the anecdote.
+    if story and story.get("id") and (post_text or carousel_dict):
+        try:
+            record_story_bank_use(user_id, int(story["id"]))
+        except Exception as e:
+            # WARNING, not INFO: the write is what ADVANCES the bank's least-used ordering. Lose it
+            # and every deck (and the next text post) is handed the SAME anchor forever, which is
+            # the failure the comment above exists to prevent.
+            log_warning("Could not record the story bank entry as used — the next post will reuse "
+                        "the same anchor", exc=e, user_id=user_id, post_id=post_id,
+                        task_name="create_carousel_content")
+
+    # The shared stage map (issue #1681) — the same one the prompt's schema came from, so the deck
+    # in hand is built into the model it was written for.
+    stage_lower = (stage or "").lower()
+    model_cls = carousel_model_for_stage(stage)
+
+    # Pick a template that fits the buyer stage
+    _template_by_stage = {
+        "awareness": "bold_listicle",
+        "consideration": "step_framework",
+        "decision": "stat_reveal",
+        "personal": "story_arc",
+        "story": "story_arc",
+    }
+    carousel_template = next(
+        (v for k, v in _template_by_stage.items() if k in stage_lower),
+        "bold_listicle",
+    )
+
+    carousel_obj = None
+    # Read the missing required slides off the model BEFORE constructing it (issue #1666): the
+    # pydantic ValidationError names its own message, not the fields the generator dropped, and an
+    # empty deck produced one grouped exception a human could not act on. `generate_carousel_content`
+    # already logged the generation failure at ERROR where it was detected, so this stays DEBUG —
+    # one condition gets ONE record, and the 'error' status below is what a human works from.
+    missing_fields = missing_carousel_fields(model_cls, carousel_dict)
+    if missing_fields:
+        log_debug(f"Generated carousel is missing required slide field(s): "
+                  f"{', '.join(missing_fields)}", user_id=user_id, post_id=post_id,
+                  task_name="create_carousel_content")
+    else:
+        try:
+            # Trimmed to the model's own list/string limits first (#2241 showcase: 3 of 5
+            # decision decks died here on `additional_features` 3-4 > 2 and rendered nothing).
+            carousel_obj = build_carousel_model(model_cls, carousel_dict, user_id=user_id,
+                                                post_id=post_id)
+        except Exception as e:
+            # ERROR, not INFO: there is no raw-slide fallback any more — a deck that will not parse
+            # flags the post 'error' below and a human has to fix it. This is where the fault is
+            # DETECTED and the only place the exception is in hand, so it is the one that files.
+            log_error("Could not parse the generated carousel into a slide model", exc=e,
+                      user_id=user_id, post_id=post_id, task_name="create_carousel_content")
+
+    slide_urls = []
+    if carousel_obj is not None and post_id is not None:
+        try:
+            # Render slide images using Pillow; explicit override wins over auto-pick
+            image_paths = create_carousel_slide_images(
+                carousel_obj, post_id, template=template or carousel_template, user_id=user_id,
+                rotate_template=not template,  # round 9: the stage default rotates, a choice never
+                evidence=post_text,  # round 5: a slide's drawn figure must be the post's own
+            )
+            slide_urls = [
+                f"{API_URL_FINAL}/api/assets?file_name=images/carousel/{post_id}/{os.path.basename(p)}"
+                for p in image_paths
+            ]
+            update_db_post_carousel_slides(post_id, slide_urls)
+            log_info(f"Carousel slides saved: {len(slide_urls)} images for post_id={post_id}")
+
+            # Also generate PPTX for user download
+            try:
+                ppt_name = f"carousel_{post_id}"
+                create_ppt(ppt_name, carousel_obj, post_id=post_id, user_id=user_id)
+            except Exception as ppt_err:
+                log_warning(
+                    "PPTX generation failed (non-fatal)",
+                    exc=ppt_err,
+                    post_id=post_id,
+                    user_id=user_id,
+                    task_name="create_carousel_content",
+                )
+        except Exception as img_err:
+            # ERROR, not INFO: the comment below is explicit that there is no degraded fallback —
+            # the post is flagged 'error' and waits for a human. Nothing upstream logs this, so
+            # without it a user's carousel fails silently and only the DB row knows.
+            log_error("Carousel slide image generation failed", exc=img_err, user_id=user_id,
+                      post_id=post_id, task_name="create_carousel_content")
+            # Do NOT fall back to text/placeholder images — that produced carousels of a
+            # single repeated default image. Flag the post 'error' for manual/dev fix.
+            if post_id is not None:
+                update_db_post_status(post_id, PostStatus.ERROR)
+                # DEBUG: the status write is the record, and the failure already logged above.
+                # One condition gets ONE record (issue #1038).
+                log_debug(f"Post {post_id} flagged 'error' — carousel slide images could not be generated.")
+
+    elif carousel_obj is None and post_id is not None:
+        # Couldn't build a valid carousel model — flag for manual fix rather than degrade.
+        update_db_post_status(post_id, PostStatus.ERROR)
+        # DEBUG: restates the parse failure already logged at ERROR where it was detected.
+        log_debug(f"Post {post_id} flagged 'error' — could not generate a valid carousel model.")
+
+    # Same V51 shape history text posts write, so a carousel's archetype/hook is what the NEXT
+    # piece rotates away from — one rotation across both, never two drifting ones.
+    if post_id is not None and blueprint:
+        try:
+            update_db_post_shape(post_id, blueprint.get("format"), blueprint.get("hook_style"),
+                                 topic=post_topic(post_text, blueprint.get("subject")))
+        except Exception as e:
+            log_warning("Could not persist the carousel's shape — future posts will not rotate "
+                        "away from it", exc=e, user_id=user_id, post_id=post_id,
+                        task_name="create_carousel_content")
+    _record_generation(user_id, post_id, audience, story)
+
+    return post_text
+
+
+def _avatar_media_state(post_id: Optional[int], used_avatar: Optional[bool] = None) -> str:
+    """Was THIS frame a real LoRA render? ``"true"`` / ``"false"`` / ``"unknown"``.
+
+    ``used_avatar`` is the renderer's own per-render answer and always wins when it is present.
+    ``posts.avatar_media`` is only the fallback, because it cannot answer the same question: it is
+    a sticky per-POST flag that any earlier avatar render sets and nothing clears, so a re-render
+    or a gate retry that fell back to base Flux still reads true — filing the fallback frame in the
+    LoRA bucket the split exists to keep clean (issue #1430).
+
+    It is reported as a STRING rather than folded to a boolean because an unreadable flag is not
+    the same reading as a base-Flux fallback: collapsing them would put the rows that cannot be
+    attributed into that same bucket.
+    """
+    if used_avatar is not None:
+        return "true" if used_avatar else "false"
+    try:
+        from cqc_lem.utilities.db import post_avatar_media_state
+        state = post_avatar_media_state(post_id)
+    except Exception as e:
+        log_debug("Could not read the avatar-media flag for the likeness probe", error=str(e),
+                  post_id=post_id, action_type="avatar_likeness_probe")
+        return "unknown"
+    if state is None:
+        return "unknown"
+    return "true" if state else "false"
+
+
+def _check_avatar_likeness(image_path: str, avatar: dict,
+                           user_id: Optional[int] = None,
+                           post_id: Optional[int] = None,
+                           used_avatar: Optional[bool] = None) -> None:
+    """Telemetry-only likeness probe on the stored source frame (issue #1279).
+
+    Runs after the avatar source frame renders and before the video model sees it. The probe is
+    telemetry-only by default; ``AVATAR_LIKENESS_VIDEO_HOLD_ENABLED`` makes a failed probe drop the
+    AI video to the Pexels fallback. Every result is emitted to PostHog via
+    ``track_avatar_likeness_probe`` so the false-positive rate can be measured before any hold is
+    turned on — carrying ``used_avatar`` so a checked-negative can be attributed to a bad LoRA
+    render rather than to the base-Flux fallback frame, which carries no likeness by design.
+
+    ``used_avatar`` is the renderer's reading for the frame being probed; ``None`` falls back to
+    the sticky ``posts.avatar_media`` flag (issue #1430).
+    """
+    if not AVATAR_LIKENESS_PROBE_ENABLED:
+        return
+
+    from cqc_lem.utilities.avatar.likeness_probe import AvatarLikenessHold, probe_avatar_likeness
+    from cqc_lem.utilities.observability import track_avatar_likeness_probe
+
+    verdict = probe_avatar_likeness(image_path, avatar, user_id=user_id, post_id=post_id)
+    track_avatar_likeness_probe(user_id, post_id, verdict,
+                                used_avatar=_avatar_media_state(post_id, used_avatar))
+    if AVATAR_LIKENESS_VIDEO_HOLD_ENABLED and verdict.get("checked") and verdict.get("present") is False:
+        # INFO, not WARNING: holding a frame the probe declined is the flag doing its job, and a
+        # recurring warning is re-emitted at ERROR and filed as a grouped defect — one per held
+        # video, against working behaviour. The `avatar_likeness_probe` event is the record.
+        log_info(
+            "Avatar likeness probe declined the source frame — dropping to stock fallback",
+            user_id=user_id,
+            post_id=post_id,
+            action_type="avatar_likeness_probe",
+        )
+        raise AvatarLikenessHold("Avatar likeness probe declined the source frame")
+
+
+def _post_missing_required_asset(post_id: int, post_type, video_url) -> bool:
+    """True when a video post has no video or a carousel post has no slides — used to
+    hold such posts PENDING instead of approving them to publish with no media.
+    """
+    pt = str(post_type).lower()
+    if pt == PostType.VIDEO.value:
+        return not video_url
+    if pt in (PostType.CAROUSEL.value, PostType.DOCUMENT.value):
+        from cqc_lem.utilities.db import get_post_carousel_slides
+        slides = get_post_carousel_slides(post_id)
+        # Missing if empty OR only text titles (no real slide images generated yet).
+        return not _carousel_slides_are_real_images(slides)
+    return False
+
+
+def _post_used_avatar_media(post_id: Optional[int]) -> bool:
+    """Did any generated media for this post come out of the avatar LoRA? (issue #744)
+
+    Fail-soft: an unreadable flag must not cost the post its content, and the video branch still
+    triggers the disclosure independently.
+    """
+    try:
+        from cqc_lem.utilities.db import post_used_avatar_media
+        return post_used_avatar_media(post_id)
+    except Exception as e:
+        log_warning("Could not read the avatar-media flag for disclosure", exc=e, post_id=post_id)
+        return False
+
+
+def _apply_ai_disclosure(content: str) -> str:
+    """Append the AI-visuals disclosure line to a caption (idempotent)."""
+    if not AI_DISCLOSURE_ENABLED or not content:
+        return content
+    marker = AI_DISCLOSURE_TEXT.strip()
+    if marker and marker in content:
+        return content
+    return content + AI_DISCLOSURE_TEXT
+
+
+def _premium_tier_for_quality(quality: str):
+    """Map a post's video_quality to (model, credits, audio); None for standard/free."""
+    if quality == "premium":
+        return (PREMIUM_VIDEO_MODEL, PREMIUM_VIDEO_CREDITS, True)
+    if quality == "premium_top":
+        return (PREMIUM_TOP_VIDEO_MODEL, PREMIUM_TOP_VIDEO_CREDITS, True)
+    return None
+
+
+def _persist_video_model(post_id: Optional[int], model: Optional[str]) -> None:
+    """Record on the post which model rendered its video (issue #1410).
+
+    Written from `_generate_video_src` because that is the ONE place the answer exists: the model is
+    chosen there (premium degrades to standard without credits) and the Pexels fallback is taken
+    there, and every path that produces a video asset — the create path and the regenerate/heal path
+    — goes through it, so both record the same thing by construction. `posts.video_url` alone cannot
+    say it: every asset is stored under `videos/runwayml/` whatever produced it.
+
+    Never raises: telemetry must not cost a rendered video. A no-op without a post to write to.
+    """
+    if not post_id:
+        return
+    try:
+        from cqc_lem.utilities.db import update_db_post_video_model
+        update_db_post_video_model(post_id, model)
+    except Exception as e:
+        # DEBUG, not WARNING: the only cost of losing this write is one nightly telemetry row
+        # falling back to the coarse `runway` / `pexels` tier it recorded before #1410 — the post
+        # and its video are unaffected, so a defect must not be filed for it.
+        log_debug(f"_persist_video_model: could not record the render model "
+                  f"({type(e).__name__}: {e})", post_id=post_id)
+
+
+class SourceFrameRejected(Exception):
+    """The video's source frame failed the enforced judge on every attempt (PR #2249 gauntlet).
+
+    Raised only to reuse `_generate_video_src`'s refund + Pexels path: animating a frame the judge
+    already rejected spends a Runway render on an image nobody should see. A decision, not a
+    failure, so it logs INFO.
+    """
+
+
+def _require_accepted_frame(render_info: dict, *, user_id: Optional[int],
+                            post_id: Optional[int]) -> None:
+    """Raise `SourceFrameRejected` when the frame's final verdict is `rejected`.
+
+    `unchecked` (the judge could not run, twice) still animates — the gate fails open for
+    availability and records the reason; only a judge that LOOKED and said no stops the spend.
+    """
+    if render_info.get("gate_verdict") == "rejected":
+        raise SourceFrameRejected("; ".join(str(i) for i in render_info.get("gate_issues") or [])
+                                  or "rejected")
+
+
+def _render_clip_checked(render, motion: str, *, user_id: Optional[int],
+                         post_id: Optional[int], brief_info: Optional[dict]):
+    """Render the clip, check it for hallucinations, and re-render ONCE if the check finds any.
+
+    `render(motion_text)` is the branch's Runway call. The check (`utilities/video_clip_check.py`)
+    samples three frames and asks `lem-vision` whether anything appeared, distorted or grew UI; a
+    yes buys ONE re-render with a repair clause naming the defect, within the 512-char cap. The
+    verdict(s) land in `brief_info["clip_check"]` for the receipt. Fails open: an unchecked clip,
+    or a re-render that returns nothing, ships the first clip.
+    """
+    from cqc_lem.utilities.video_clip_check import check_clip_url, clip_check_enabled, repair_clause
+
+    src = render(motion)
+    if not src or not clip_check_enabled():
+        return src
+    first = check_clip_url(src, user_id=user_id, post_id=post_id)
+    record: dict = {"first": first.to_receipt()}
+    if first.checked and first.defects:
+        clause = repair_clause(first)
+        repaired = f"{motion[:max(0, 512 - len(clause) - 1)].rstrip()} {clause}"[:512]
+        log_info("Clip check found defects — ONE re-render with a repair clause",
+                 user_id=user_id, post_id=post_id, task_name="create_video_content",
+                 defects="; ".join(first.defects))
+        retry_src = render(repaired)
+        if retry_src:
+            record["retry"] = check_clip_url(retry_src, user_id=user_id,
+                                             post_id=post_id).to_receipt()
+            record["shipped"] = "retry"
+            src = retry_src
+        else:
+            record["shipped"] = "first"
+    if brief_info is not None:
+        brief_info["clip_check"] = record
+    return src
+
+
+@attribute_llm_cost(FEATURE_CONTENT)
+def _generate_video_src(user_id: int, text_content: str, profile, post_id: int = None,
+                        brief_info: dict = None):
+    """Generate a video source URL honoring the post's quality tier + video credits.
+
+    The account avatar (when active) drives the source frame on BOTH tiers so the user's
+    likeness appears regardless of tier. Standard (free) = gen4_turbo image->video off that
+    avatar frame (or a base Flux.1 frame when no avatar). Premium = Veo (+audio) image->video
+    on the avatar image to preserve likeness, else Veo text->video. The effective tier honors
+    the post's video_quality, falling back to the user's default_video_quality preference.
+    Premium credits are reserved up-front and refunded on failure; falls back to standard when
+    the user has no credits, and on error to `_fallback_video_src` — the $0 branded title card,
+    or Pexels stock only behind its opt-in flag (showcase round 4).
+    Records the model that actually ran on `posts.video_model` (issue #1410) — see
+    `_persist_video_model` for why the write lives here and not at the storage step.
+    Returns the remote Runway URL (http) or a local title-card / Pexels path, or None.
+
+    `brief_info`, when passed, is filled with `{"brief": ImageBrief}` for the source frame — plus
+    `gate_verdict` when the frame went through the vision gate — so the caller can record it beside
+    the stored MP4 (issue #1377). BOTH keys are CLEARED on the fallback: that clip is a card or
+    stock footage this brief never described, and filing the brief (or a verdict passed on a frame
+    that never shipped) under it would be a fabricated provenance claim.
+
+    The staged image engine (issue #2241): Stage 1 reads the post ONCE. That one concept briefs the
+    source frame (with the user's brand clause), grades it — the standard-tier no-avatar frame
+    included, which used to render ungated — and hands its thesis and emotional beat to the motion
+    author, so the clip moves like the post rather than like any stock clip.
+    """
+    from cqc_lem.utilities.ai.ai_helper import generate_post_image
+    from cqc_lem.utilities.ai.image_concept import analyze_content_for_image
+    from cqc_lem.utilities.ai.video_models import is_premium, supports_audio
+    from cqc_lem.utilities.avatar.guardrails import AVATAR_SURFACE_VIDEO, resolve_avatar_for_concept
+    from cqc_lem.utilities.avatar.likeness_probe import AvatarLikenessHold
+    from cqc_lem.utilities.brand_kit import brand_clause_for_user
+    from cqc_lem.utilities.db import (
+        deduct_video_credits,
+        get_default_video_quality,
+        get_post_video_quality,
+        get_user_content_language,
+        get_video_credit_balance,
+        refund_video_credits,
+    )
+    from cqc_lem.utilities.geocoding import DEFAULT_CONTENT_LANGUAGE
+
+    quality = get_post_video_quality(post_id) if post_id else "standard"
+    # Auto-planned posts default posts.video_quality to 'standard'; honor the user's per-user
+    # default_video_quality preference so they can opt their auto-generated videos up to premium
+    # (credit availability is still enforced below — no credits degrades back to standard).
+    if quality == "standard" and user_id:
+        quality = get_default_video_quality(user_id)
+    tier = _premium_tier_for_quality(quality)
+
+    model, audio, deducted = STANDARD_VIDEO_MODEL, False, 0
+    # Bound before the try: the fallback below reads Stage 1's anchors and hook when it ran.
+    concept = None
+    if tier and user_id:
+        pmodel, pcredits, paudio = tier
+        if get_video_credit_balance(user_id) >= pcredits and \
+                deduct_video_credits(user_id, pcredits, post_id, reason=f"premium_video_{pmodel}"):
+            model, audio, deducted = pmodel, paudio, pcredits
+        else:
+            log_info(f"Premium video requested but no credits for user {user_id} — using standard")
+
+    try:
+        # ONE Stage 1 call per video: the frame brief, the frame's judge and the motion author all
+        # read this same concept, and None (analysis unavailable) is passed on as-is so nothing
+        # downstream pays for a second attempt (issue #2241).
+        concept = analyze_content_for_image(text_content, surface="video", user_id=user_id,
+                                            facts=_fact_anchors(user_id))
+        # The avatar is resolved BEFORE the image prompt is authored: its declared subject clause
+        # is what stops the prompt LLM inventing a person of a different gender for the LoRA to
+        # then contradict (issue #744). None here means the guardrails said no — or the post is
+        # not about the author, so the frame renders without the likeness (#2249 gauntlet).
+        avatar = resolve_avatar_for_concept(user_id, surface=AVATAR_SURFACE_VIDEO, concept=concept,
+                                            source_text=text_content, post_id=post_id)
+        has_avatar = avatar is not None
+        # Brief the ratio this tier will actually RENDER at: the image brief composes framing for
+        # the aspect ratio it is handed, so briefing 1:1 and rendering the premium source frame at
+        # 9:16 asked for a square composition and cropped it vertical (issue #1141).
+        source_frame_ratio = "9:16" if is_premium(model) else DEFAULT_IMAGE_RATIO
+        # `frame_info` catches the brief object the wrapper otherwise discards — the focal concept
+        # this frame is graded on, recorded beside the stored MP4 (issue #1377). The caller's
+        # `brief_info` IS that dict when one was passed.
+        frame_info: dict = brief_info if brief_info is not None else {}
+        image_prompt = get_flux_image_prompt_from_ai(text_content, profile=profile,
+                                                    ratio=source_frame_ratio, avatar=avatar,
+                                                    surface="video", brief_info=frame_info,
+                                                    concept=concept,
+                                                    brand_kit=brand_clause_for_user(user_id))
+        frame_brief = frame_info.get("brief")
+        # The frame's judge reads the caption `_caption_video_asset` will burn onto the MP4 as its
+        # headline (PR #2249): a person with no context scored specificity 2-3 on every frame.
+        # JUDGE-ONLY: `video` is not a compositing surface (`image_gen.COMPOSE_SURFACES`), and
+        # `hook_text` never reaches a render prompt, so nothing is painted onto the frame.
+        # #2241 showcase C: and with the post's opening lines, which LinkedIn shows ABOVE the
+        # video before "...more" — targeted judge only, never the blind look.
+        from cqc_lem.utilities.ai.content_framework import feed_fold_text
+        from cqc_lem.utilities.video_captions import burned_caption_text
+        gate_kwargs = {"focal_concept": getattr(frame_brief, "focal_concept", None),
+                       "concept": concept,
+                       "hook_text": burned_caption_text(text_content, user_id=user_id,
+                                                        avatar_led=has_avatar),
+                       "feed_context": feed_fold_text(text_content) or None}
+        # Audio-capable (premium/Veo) renders need the user's language in the prompt — Veo has no
+        # language parameter and invents a voiceover otherwise (issue #548). Silent models skip
+        # the lookup entirely.
+        language = get_user_content_language(user_id) if supports_audio(model) else DEFAULT_CONTENT_LANGUAGE
+        motion = get_runway_ml_video_prompt_from_ai(text_content, image_prompt, model=model,
+                                                    language=language, user_id=user_id,
+                                                    post_id=post_id, concept=concept)[:512]
+        # Filled by the renderer with whether THIS frame came out of the LoRA — the sticky
+        # posts.avatar_media flag cannot say that for a re-render or a gate retry (issue #1430).
+        render_info: dict = {}
+        if is_premium(model):
+            if has_avatar:
+                image_path = generate_post_image(image_prompt, user_id, ratio=source_frame_ratio,
+                                                 surface=AVATAR_SURFACE_VIDEO, post_id=post_id,
+                                                 render_info=render_info, enforce=True,
+                                                 **gate_kwargs)
+                _check_avatar_likeness(image_path, avatar, user_id=user_id, post_id=post_id,
+                                       used_avatar=render_info.get("used_avatar"))
+                _require_accepted_frame(render_info, user_id=user_id, post_id=post_id)
+
+                def _runway(motion_text: str):
+                    return create_runway_video(image_path, motion_text, model=model, ratio="9:16",
+                                               audio=audio, user_id=user_id, post_id=post_id)
+            else:
+                def _runway(motion_text: str):
+                    # Trim the scene half, never the motion half — the motion prompt carries the
+                    # audio direction and a truncated one silently disables audio (issue #548).
+                    head = image_prompt[:max(0, 980 - len(motion_text) - len(" Motion: "))]
+                    return create_runway_video(None, f"{head} Motion: {motion_text}", model=model,
+                                               ratio="9:16", audio=audio, user_id=user_id,
+                                               post_id=post_id)
+        else:
+            # Standard tier still uses the account avatar for the source frame when the user has one
+            # (avatar likeness regardless of tier; premium only adds the higher-quality Veo motion +
+            # credit spend). generate_post_image falls back to base Flux.1 when there is no avatar.
+            if has_avatar:
+                image_path = generate_post_image(image_prompt, user_id, ratio=source_frame_ratio,
+                                                 surface=AVATAR_SURFACE_VIDEO, post_id=post_id,
+                                                 render_info=render_info, enforce=True,
+                                                 **gate_kwargs)
+                _check_avatar_likeness(image_path, avatar, user_id=user_id, post_id=post_id,
+                                       used_avatar=render_info.get("used_avatar"))
+            else:
+                # Gated like every other frame: this was the one source frame rendered with no
+                # judge at all, so a frame the article never described went straight to Runway.
+                # ENFORCED whatever IMAGE_QUALITY_GATE_SURFACES says: Runway is the expensive step.
+                from cqc_lem.utilities.ai.image_gen import render_image_gated
+                image_path = render_image_gated(image_prompt, surface="video",
+                                                ratio=source_frame_ratio, user_id=user_id,
+                                                post_id=post_id, render_info=render_info,
+                                                enforce=True, **gate_kwargs)
+            _require_accepted_frame(render_info, user_id=user_id, post_id=post_id)
+
+            def _runway(motion_text: str):
+                return create_runway_video(image_path, motion_text, model=model,
+                                           ratio=DEFAULT_VIDEO_RATIO, user_id=user_id,
+                                           post_id=post_id)
+        src = _render_clip_checked(_runway, motion, user_id=user_id, post_id=post_id,
+                                   brief_info=brief_info)
+        if not src:
+            raise RuntimeError("no video output")
+        # The gate looked at the SOURCE FRAME, so the verdict only exists here — carried out so the
+        # receipt beside the MP4 can say whether this render was graded (issue #1377). Absent on the
+        # premium text->video branch, which renders no frame to grade.
+        if brief_info is not None and render_info.get("gate_verdict"):
+            brief_info["gate_verdict"] = render_info["gate_verdict"]
+        _persist_video_model(post_id, model)
+        log_info(f"_generate_video_src: model={model} audio={audio} -> {str(src)[:60]}")
+        return src
+    except Exception as e:
+        # A likeness hold lands here only to reuse the refund + fallback path below; it is a
+        # decision, not a generation failure, so it never warns (issue #1279).
+        if isinstance(e, AvatarLikenessHold):
+            log_info("Avatar likeness hold — refunding any credits and falling back to the title "
+                     "card", user_id=user_id, post_id=post_id, task_name="create_video_content")
+        elif isinstance(e, SourceFrameRejected):
+            log_info("Source frame rejected by the judge — not animating it; falling back to the "
+                     "title card", user_id=user_id, post_id=post_id,
+                     task_name="create_video_content", issues=str(e))
+        else:
+            log_warning("Video generation failed — refunding any credits and falling back to the "
+                        "title card", exc=e, user_id=user_id, post_id=post_id,
+                        task_name="create_video_content")
+        if deducted and user_id:
+            refund_video_credits(user_id, deducted, post_id)
+        # Whatever ships from here is a card or stock, not this brief's render (issue #1377).
+        if brief_info is not None:
+            brief_info.pop("brief", None)
+            brief_info.pop("gate_verdict", None)
+            brief_info.pop("clip_check", None)
+        return _fallback_video_src(text_content, user_id=user_id, post_id=post_id,
+                                   concept=concept, ratio="9:16" if is_premium(model) else "1:1",
+                                   byline=getattr(profile, "full_name", None))
+
+
+def _fallback_video_src(text_content: str, *, user_id: int, post_id: Optional[int],
+                        concept: Any, ratio: str, byline: Optional[str]) -> Optional[str]:
+    """The video a post gets when its AI render did not happen. Never raises.
+
+    Showcase round 4: the default is the $0 code-drawn branded title card
+    (`utilities/video_title_card.py`). Pexels stock is tried first ONLY behind
+    `VIDEO_PEXELS_FALLBACK_ENABLED` (default off), and only with a query built from Stage 1's
+    concrete anchors — the raw post words gave "model retirement" an elderly couple. Records the
+    tier that shipped on `posts.video_model`, or clears it when nothing did.
+
+    Args:
+        text_content: The post.
+        user_id: The author.
+        post_id: The post.
+        concept: Stage 1's concept when it ran, else None.
+        ratio: ``"1:1"`` or ``"9:16"``, the ratio of the tier being replaced.
+        byline: The author's name for the card.
+
+    Returns:
+        A local MP4 path inside the assets volume, or None.
+    """
+    from cqc_lem.utilities.content_quality import VIDEO_MODEL_PEXELS, VIDEO_MODEL_TITLE_CARD
+    from cqc_lem.utilities.video_title_card import (
+        create_title_card_video,
+        pexels_fallback_enabled,
+        stock_query_from_concept,
+    )
+
+    if pexels_fallback_enabled():
+        query = stock_query_from_concept(concept)
+        if query:
+            try:
+                from cqc_lem.utilities.pexels_helper import download_pexels_video
+                videos_dir = os.path.join(assets_dir, 'videos', 'pexels')
+                create_folder_if_not_exists(videos_dir)
+                stock_src = download_pexels_video(query, videos_dir)
+                if stock_src:
+                    _persist_video_model(post_id, VIDEO_MODEL_PEXELS)
+                    return stock_src
+            except Exception as pe:
+                # DEBUG: the title card below still gives the post a video.
+                log_debug(f"_fallback_video_src: Pexels failed ({type(pe).__name__}: {pe})")
+        else:
+            log_debug("No pun-safe stock query for this post — skipping Pexels",
+                      user_id=user_id, post_id=post_id, task_name="create_video_content")
+    card = create_title_card_video(text_content, user_id=user_id, post_id=post_id,
+                                   concept=concept, ratio=ratio, byline=byline)
+    # Cleared rather than left alone when nothing rendered: the key from a PREVIOUS render would
+    # then be read as the model of a video this run never made.
+    _persist_video_model(post_id, VIDEO_MODEL_TITLE_CARD if card else None)
+    return card
+
+
+@attribute_llm_cost(FEATURE_CONTENT)
+def create_video_content(user_id: int, stage: str, post_id: int = None,
+                         brief_info: dict = None,
+                         content_mix: Optional[str] = None) -> tuple[str, str | None]:
+    """Write a video post: the text first, then a video generated to match it.
+
+    `brief_info` is passed straight through to `_generate_video_src`, which fills it with the source
+    frame's brief so the caller — the one that STORES the file — can record it beside the MP4
+    (issue #1377). The store is where it has to happen: the receipt is keyed by the stored path, and
+    nothing here has one yet.
+
+    `content_mix` is the slot's 70/20/10 class, passed to the caption exactly as a text post gets
+    it (showcase round 5). Without it the caption fell back to the legacy 1-in-N lead-magnet
+    cadence, which is how three non-promo videos each closed on "Comment AUDIT".
+
+    Returns:
+        `(text_content, video_url)`. The URL is None when BOTH the generator and the title-card
+        fallback came back empty — `_generate_video_src` never raises and refunds any video
+        credits it spent, so this returns usable text with no asset rather than failing.
+        `_post_missing_required_asset` is what turns that into a flagged post downstream.
+    """
+    # Get Text Content
+    text_content = create_text_post(user_id, stage, post_id=post_id, content_mix=content_mix)
+    # Load profile once so the image prompt is brand/role-aligned
+    user_profile = load_profile_for_user(user_id)
+    video_url = _generate_video_src(user_id, text_content, user_profile, post_id,
+                                    brief_info=brief_info)
+    return text_content, video_url
+
+
+def _probe_video_file(file_path: str) -> tuple[bool, str]:
+    """Cheap presence + parse probe for a downloaded video file.
+
+    Returns `(ok, reason)`. A zero-byte file, an unreadable path, or a non-MP4 signature fails.
+    When ffprobe is available we also require a positive duration parse; ffprobe absence is a
+    warning but does NOT fail the probe by itself, because the head check is deterministic and
+    the feature is fail-open unless `VIDEO_PROBE_ENABLED` is ON (issue #1280).
+    """
+    try:
+        st = os.stat(file_path)
+    except (OSError, FileNotFoundError) as e:
+        return False, f"file not readable: {type(e).__name__}"
+
+    if st.st_size == 0:
+        return False, "zero-byte file"
+    if st.st_size < VIDEO_PROBE_MIN_SIZE_BYTES:
+        return False, f"file smaller than {VIDEO_PROBE_MIN_SIZE_BYTES} bytes"
+
+    # Deterministic MP4 head check: ISO base media files start with an ftyp box.
+    try:
+        with open(file_path, 'rb') as f:
+            box_size_bytes = f.read(4)
+            box_type = f.read(4)
+        if len(box_size_bytes) < 4 or len(box_type) < 4 or box_type != b'ftyp':
+            return False, "missing MP4 ftyp signature"
+        box_size = int.from_bytes(box_size_bytes, 'big')
+        if box_size < 8 or box_size > st.st_size:
+            return False, "invalid MP4 ftyp box size"
+    except Exception as e:
+        return False, f"head parse error: {type(e).__name__}"
+
+    # Best-effort ffprobe when installed. A parseable duration is extra confidence, but absence
+    # only logs a warning so the probe stays fail-open.
+    try:
+        import shutil
+        ffprobe = shutil.which("ffprobe")
+        if ffprobe:
+            import subprocess
+            out = subprocess.run(
+                [ffprobe, "-v", "error", "-show_entries", "format=duration",
+                 "-of", "default=noprint_wrappers=1:nokey=1", file_path],
+                capture_output=True, text=True, timeout=10)
+            if out.returncode == 0:
+                raw = (out.stdout or "").strip()
+                if raw.startswith("duration="):
+                    raw = raw.split("=", 1)[1]
+                try:
+                    duration = float(raw)
+                    if duration <= 0:
+                        return False, "ffprobe reports zero/negative duration"
+                except ValueError:
+                    return False, "ffprobe duration unparseable"
+            # Non-zero ffprobe exit is advisory: the deterministic head check already passed.
+    except Exception as e:
+        log_warning("ffprobe availability/duration check failed — accepting head signature",
+                    exc=e, task_name="_probe_video_file")
+
+    return True, ""
+
+
+def _record_video_probe_finding(post_id: int, probe_ok: bool, reason: str,
+                                user_id: Optional[int] = None, task_name: str = "") -> None:
+    """Record — or clear — the malformed-media note on `posts.gate_reason` (issue #1402).
+
+    The probe verdict is the only place the reason a video file was rejected exists: the file never
+    becomes `posts.video_url`, so by the time the gate pass runs the post merely looks assetless and
+    the review queue can only say "no video yet". This writes WHICH way the download was unusable
+    ("zero-byte file", "missing MP4 ftyp signature") next to that hold, and clears it on the next
+    passing probe so a healed post stops showing a stale reason.
+
+    The note is ADVISORY while the probe is fail-open — `missing_asset` is already holding the post,
+    so a second demoting finding would add nothing but a duplicate hold. With `VIDEO_PROBE_ENABLED`
+    ON a malformed asset is a hard failure by contract, and the finding demotes with it.
+
+    Best-effort: review UX must never cost the post, so an unreadable/unwritable reason only logs.
+    """
+    try:
+        existing = get_post_gate_reason(post_id)
+        kept = [f for f in existing if f.get("gate") != GATE_MALFORMED_ASSET]
+        if probe_ok:
+            if len(kept) == len(existing):
+                # Nothing to clear — the happy path never writes.
+                return
+            findings = kept
+        else:
+            findings = kept + [malformed_asset_finding(PostType.VIDEO.value, reason,
+                                                       demoted=VIDEO_PROBE_ENABLED)]
+        update_db_post_gate_reason(post_id, findings)
+    except Exception as e:
+        log_warning("Could not record the video probe verdict on the post — a held video post will "
+                    "not say why its file was rejected", exc=e, user_id=user_id, post_id=post_id,
+                    task_name=task_name or "video_asset_probe")
+
+
+def _recorded_malformed_asset_notes(post_id: int) -> list[dict]:
+    """The malformed-media note the video probe recorded on this post, if any (issue #1402).
+
+    A gate pass cannot re-derive this one: the rejected file was never stored, so all the evaluator
+    sees is a post with no media. Re-read here so every pass keeps the reason alongside the
+    missing-asset hold it explains. Never raises — an unreadable note only costs the explanation.
+    """
+    try:
+        return [f for f in get_post_gate_reason(post_id) if f.get("gate") == GATE_MALFORMED_ASSET]
+    except Exception as e:
+        log_warning("Could not read the recorded probe verdict — this post's hold will not say why "
+                    "its media file was rejected", exc=e, post_id=post_id, task_name="create_content")
+        return []
+
+
+def _record_post_similarity_finding(post_id: Optional[int], similarity: dict,
+                                    user_id: Optional[int] = None) -> None:
+    """Record — or clear — the near-duplicate verdict on `posts.gate_reason` (issue #1452).
+
+    The generation-time gate pass cannot re-derive this one. `post_similarity_report` costs a
+    `lem-embedding` batch call, and the review gate has already paid it for this draft (twice, on the
+    retry path) against a post history it loaded once for the whole outermost call — neither is in
+    scope by the time `_gate_findings_for_post` runs. So the verdict the review gate reached is
+    written here, exactly as the video probe writes the reason a file was rejected, and re-read
+    there instead of measured again.
+
+    Written on EVERY reviewed draft, not only a failing one: a regenerated post reuses its row, so a
+    verdict left behind by an earlier draft would hold a clean rewrite forever.
+
+    Best-effort — the reason is review UX, so an unreadable/unwritable gate reason costs the hold's
+    explanation, never the post.
+    """
+    if post_id is None:
+        return
+    too_similar = bool((similarity or {}).get("too_similar"))
+    try:
+        existing = get_post_gate_reason(post_id)
+        kept = [f for f in existing if f.get("gate") != GATE_SIMILARITY]
+        if not too_similar:
+            if len(kept) == len(existing):
+                # Nothing to clear — the common path never writes.
+                return
+            findings = kept
+        else:
+            findings = kept + [similarity_finding(similarity["score"], similarity["threshold"],
+                                                  similarity["match"],
+                                                  measure=similarity["measure"])]
+        update_db_post_gate_reason(post_id, findings)
+    except Exception as e:
+        log_warning("Could not record the similarity verdict on the post — a near-duplicate draft "
+                    "will not be held for review", exc=e, user_id=user_id, post_id=post_id,
+                    task_name="create_text_post")
+
+
+def _recorded_unbacked_specifics(post_id: int) -> list[str]:
+    """The figures the post's LAST recorded `fact_grounding` finding named as unbacked (issue #1971).
+
+    Read off the persisted `gate_reason` so a re-score can keep holding a number the author never
+    touched. Never raises — an unreadable reason credits the author with every figure, which is
+    the pre-#1971 behaviour of the re-score, not a new hold.
+    """
+    prefix = "Unbacked specific: "
+    try:
+        findings = parse_gate_findings(get_post_gate_reason(post_id))
+    except Exception as e:
+        log_warning("Could not read the recorded gate findings for the re-score", exc=e,
+                    post_id=post_id, task_name="rescore_post")
+        return []
+    return [str(d)[len(prefix):] for f in findings if f.get("gate") == GATE_FACT_GROUNDING
+            for d in (f.get("details") or []) if str(d).startswith(prefix)]
+
+
+def _recorded_similarity_finding(post_id: int) -> list[dict]:
+    """The near-duplicate verdict the review gate recorded on this post, if any (issue #1452).
+
+    Read only by the generation-time gate pass. `rescore_post` measures similarity live against the
+    user's edited text — that is the whole point of a re-score — so it must never pick this up as
+    well, or an edit that fixed the duplication would still show the draft's original verdict.
+
+    Never raises — an unreadable verdict only costs the hold.
+    """
+    try:
+        return [f for f in get_post_gate_reason(post_id) if f.get("gate") == GATE_SIMILARITY]
+    except Exception as e:
+        log_warning("Could not read the recorded similarity verdict — a near-duplicate draft will "
+                    "not be held for review", exc=e, post_id=post_id, task_name="create_content")
+        return []
+
+
+def _recorded_forbidden_claim_finding(post_id: int) -> list[dict]:
+    """The forbidden-claim verdict last recorded on this post, if any (issue #2047).
+
+    Read only when the user's own list could not be loaded: the gate then checks the global floor
+    alone, and a hold that came from the USER's list would be released by a re-score that never
+    saw the list. Never raises — an unreadable verdict only costs the hold.
+    """
+    try:
+        return [f for f in get_post_gate_reason(post_id) if f.get("gate") == GATE_FORBIDDEN_CLAIM]
+    except Exception as e:
+        log_warning("Could not read the recorded forbidden-claim verdict — a hold from the user's "
+                    "own list may be released while their preferences are unreadable",
+                    exc=e, post_id=post_id, task_name="create_content")
+        return []
+
+
+def _carry_forbidden_claim_hold(post_id: int, findings: list[dict]) -> list[dict]:
+    """Keep the recorded `forbidden_claim` hold when the user's list could not be read (#2047).
+
+    A gate pass that could not load `engagement_preferences` graded the draft against the global
+    floor only, so a subject that was on the user's list is invisible to it — and persisting its
+    findings would replace the recorded hold with nothing and let `_may_auto_approve` promote the
+    post. The last recorded verdict stands instead: appended when this pass found no forbidden
+    claim, merged into this pass's finding (subjects it did not name) when it did.
+
+    Args:
+        post_id: The post whose recorded verdict is carried.
+        findings: This pass's findings, graded against the global list only.
+
+    Returns:
+        `findings`, with the recorded forbidden-claim hold carried forward.
+    """
+    recorded = _recorded_forbidden_claim_finding(post_id)
+    if not recorded:
+        return findings
+    fresh = [f for f in findings if f.get("gate") == GATE_FORBIDDEN_CLAIM]
+    if not fresh:
+        return findings + recorded[:1]
+    for detail in recorded[0].get("details") or []:
+        if detail not in fresh[0].setdefault("details", []):
+            fresh[0]["details"].append(detail)
+    return findings
+
+
+def _recorded_consistency_finding(post_id: int) -> list[dict]:
+    """The date/timeline hold the review gate (or the deck check) recorded on this post, if any.
+
+    The timeline half needs the anchoring story's date, which only the review gate holds, so the
+    gate pass re-reads the verdict instead of re-deriving it (showcase round 6). Never raises — an
+    unreadable verdict only costs the hold.
+    """
+    try:
+        return [f for f in get_post_gate_reason(post_id) if f.get("gate") == GATE_FACT_CONSISTENCY]
+    except Exception as e:
+        log_warning("Could not read the recorded date/timeline verdict — an impossible timeline "
+                    "will not be held for review", exc=e, post_id=post_id,
+                    task_name="create_content")
+        return []
+
+
+def _carry_consistency_hold(post_id: int, findings: list[dict]) -> list[dict]:
+    """Keep the RECORDED date/timeline hold through a generation-time gate pass.
+
+    `evaluate_post_gates` re-checks the calendar half (weekday, deadline) live, but cannot see the
+    story's date; the recorded verdict carries the timeline half. Merged into a live finding when
+    there is one, so the post shows ONE consistency finding.
+
+    Args:
+        post_id: The post being graded.
+        findings: This pass's findings.
+
+    Returns:
+        `findings`, with the recorded issues carried forward.
+    """
+    recorded = _recorded_consistency_finding(post_id)
+    if not recorded:
+        return findings
+    fresh = [f for f in findings if f.get("gate") == GATE_FACT_CONSISTENCY]
+    if not fresh:
+        return findings + recorded[:1]
+    for detail in recorded[0].get("details") or []:
+        if detail not in fresh[0].setdefault("details", []):
+            fresh[0]["details"].append(detail)
+    return findings
+
+
+def _record_consistency_finding(post_id: Optional[int], issues: list,
+                                user_id: Optional[int] = None) -> None:
+    """Record — or clear — the date/timeline hold on `posts.gate_reason` (showcase round 6).
+
+    Written where the story's date is known (the review gate, the deck check) and carried by
+    `_carry_consistency_hold`. A clean draft clears a stale verdict from an earlier generation and
+    otherwise never writes. Best-effort — the reason is review UX, so a failed write only logs.
+    """
+    if post_id is None:
+        return
+    try:
+        existing = get_post_gate_reason(post_id)
+        kept = [f for f in existing if f.get("gate") != GATE_FACT_CONSISTENCY]
+        if not issues and len(kept) == len(existing):
+            return
+        update_db_post_gate_reason(post_id, kept + ([fact_consistency_finding(issues)]
+                                                    if issues else []))
+    except Exception as e:
+        log_warning("Could not record the date/timeline verdict — a held post will show no reason",
+                    exc=e, user_id=user_id, post_id=post_id, task_name="create_content")
+
+
+def _deterministic_fact_cleanup(content: Optional[str], *, user_id: Optional[int] = None,
+                                post_id: Optional[int] = None) -> Optional[str]:
+    """The fixes a draft never needs an LLM for (showcase round 6). Never raises.
+
+    A weekday that is not its date's is DROPPED (`fix_weekday_mismatches`), and a leaked job-title
+    sign-off is cut (`strip_signature_lines`). Round 9: a list line that repeats an earlier one
+    (`dedupe_repeated_lines`, slot_130) and a standalone "It works." tic (`strip_verbal_tics`) go
+    too. Run before the review gate and again on the final text, because every LLM pass in between
+    can put any of them back.
+    """
+    if not content:
+        return content
+    fixed, weekdays = fix_weekday_mismatches(content)
+    signed = strip_signature_lines(fixed)
+    deduped, repeated = dedupe_repeated_lines(signed)
+    untic, tics = strip_verbal_tics(deduped)
+    if weekdays or signed != fixed or repeated or tics:
+        log_info("Draft repaired without an LLM: "
+                 + "; ".join([f"dropped the wrong weekday from {w}" for w in weekdays]
+                             + (["cut a job-title sign-off"] if signed != fixed else [])
+                             + [f"dropped a repeated line ({r[:60]})" for r in repeated]
+                             + ([f"cut {tics} verbal tic(s)"] if tics else [])),
+                 user_id=user_id, post_id=post_id, task_name="create_text_post")
+    return untic
+
+
+def _fact_cleanup_deck(value):
+    """Every slide string with a wrong weekday dropped — the deck half of the cleanup above."""
+    if isinstance(value, str):
+        return fix_weekday_mismatches(value)[0]
+    if isinstance(value, dict):
+        return {k: _fact_cleanup_deck(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_fact_cleanup_deck(v) for v in value]
+    return value
+
+
+def _recorded_deck_notes(post_id: int, content: Optional[str] = None) -> list[dict]:
+    """The deck findings recorded at generation, re-read for a gate pass.
+
+    That is the slide-level slop note (issue #1512) and the deck-vs-caption holds (issue #2106).
+    A gate pass cannot re-derive these: the deck is persisted as rendered slide IMAGES, so by the
+    time the findings are assembled the slide text is gone. Re-read here so they survive both the
+    generation-time gate pass (which writes the post's findings after generation returns) and every
+    later re-score — a re-scored caption does not change what the images say.
+
+    The one exception is the COUNT hold, whose other half is the caption: it is re-checked against
+    `content` and the deck counts it recorded, so an author who edits the caption to match the
+    slides releases it. Never raises — an unreadable note only costs the record.
+    """
+    try:
+        recorded = get_post_gate_reason(post_id)
+    except Exception as e:
+        log_warning("Could not read the recorded slide-level findings — this deck's review entry "
+                    "will not carry them", exc=e, post_id=post_id, task_name="create_content")
+        return []
+    notes = []
+    for finding in recorded:
+        gate = finding.get("gate")
+        if gate in (GATE_SLIDE_SLOP, GATE_DECK_TOPIC):
+            notes.append(finding)
+        elif gate == GATE_DECK_COUNT:
+            counts = finding.get("deck_counts")
+            if not counts:
+                notes.append(finding)
+                continue
+            claims = deck_count_claims(content)
+            if claims and not any(c["count"] in counts for c in claims):
+                notes.append(deck_count_finding(finding.get("deck_items") or min(counts),
+                                                [c["phrase"] for c in claims], counts))
+    return notes
+
+
+def _video_source_label(video_src_url: str) -> str:
+    """``runway`` for a remote render, ``title_card`` for the code-drawn card, else ``pexels``."""
+    if str(video_src_url).startswith("http"):
+        return "runway"
+    if os.path.basename(str(video_src_url)).startswith("title_card_"):
+        return "title_card"
+    return "pexels"
+
+
+def _accept_probed_video(post_id: int, video_file_path: str, video_src_url: str,
+                         user_id: Optional[int] = None, task_name: str = "") -> bool:
+    """Decide whether a just-downloaded video file may become the post's media (issue #1280).
+
+    The ONE place the probe verdict is enforced, so the initial-generation path and the
+    regenerate/backfill path cannot drift on what counts as usable media. Emits the
+    `video_asset_probe` event for every stored video (pass/fail alike) so the metric has a
+    denominator. Raises when `VIDEO_PROBE_ENABLED` is ON — a malformed asset is then a hard
+    failure; otherwise the probe is advisory and a failure returns False, which every caller treats
+    exactly like a failed render: the URL is not persisted, so the missing-asset gate holds the post
+    and asset backfill can retry it. Either way the verdict is recorded on the post
+    (`_record_video_probe_finding`), so the review queue can say why the file was rejected.
+
+    A rejection also CLEARS the render model `_generate_video_src` just recorded (issue #1410): the
+    file this key names never became the post's media, and on the regenerate path the row still
+    carries the PREVIOUS video's URL — leaving the key would report the rejected render as the model
+    of the video that actually shipped. Cleared, the nightly beat falls back to the coarse tier read
+    off that URL, which is all that is genuinely known.
+    """
+    probe_ok, probe_reason = _probe_video_file(video_file_path)
+    track_video_asset_probe(post_id=post_id, user_id=user_id, probe_ok=probe_ok, reason=probe_reason,
+                            source=_video_source_label(video_src_url))
+    # The reason goes onto the post here, where it exists (issue #1402) — a passing probe clears any
+    # note an earlier rejection left, so a healed post stops explaining a hold it no longer has.
+    _record_video_probe_finding(post_id, probe_ok, probe_reason, user_id=user_id,
+                                task_name=task_name)
+    if probe_ok:
+        return True
+    log_warning(f"Video asset probe failed ({probe_reason}) — not persisting URL",
+                user_id=user_id, post_id=post_id, task_name=task_name)
+    _persist_video_model(post_id, None)
+    if VIDEO_PROBE_ENABLED:
+        raise RuntimeError(f"video asset probe failed: {probe_reason}")
+    return False
+
+
+def _caption_video_asset(post_id: int, video_file_path: str, content: Optional[str],
+                         user_id: Optional[int] = None, task_name: str = "") -> None:
+    """Burn the post's hook onto its rendered video for LinkedIn's muted autoplay (issue #1278).
+
+    The ONE place a POST's video gets captioned, so the initial-generation path and the
+    regenerate/backfill paths cannot drift on what a shipped video looks like. `video_captions`
+    rewrites the file IN PLACE, which is why this runs before C2PA signing (a re-encode after
+    signing would strip the credentials) and before `posts.video_url` is persisted — the stored
+    URL then points at the video that actually ships.
+
+    In place also means the probed file is REPLACED, so the burn is handed `_probe_video_file` and
+    the re-encoded output has to pass the same check the download did (issue #1280) before it is
+    allowed to become the post's media. Otherwise the only bytes LinkedIn ever receives would be
+    the one version nothing verified.
+
+    Never raises and never changes the stored URL: an off flag, an unusable hook, a missing
+    ffmpeg, a failed burn or an output that fails the probe all leave the uncaptioned video
+    exactly where it was.
+
+    The avatar question is asked three-valued and answered CLOSED: an unreadable
+    `posts.avatar_media` counts as avatar-led, so the frame gets the sidecar and nothing else. The
+    disclosure path can afford to guess "not an avatar" (it costs a caption line); painting text
+    over someone's likeness on a failed DB read cannot.
+    """
+    from cqc_lem.utilities.db import post_avatar_media_state, update_db_post_captions
+    from cqc_lem.utilities.video_captions import apply_captions_to_video, caption_srt_asset_url
+
+    try:
+        result = apply_captions_to_video(
+            video_file_path, content, post_id=post_id, user_id=user_id,
+            avatar_led=post_avatar_media_state(post_id) is not False,
+            validate=lambda path: _probe_video_file(path)[0])
+    except Exception as e:
+        # apply_captions_to_video already fails open; this only catches an import/DB fault.
+        log_warning("Video captioning step could not run — shipping the video uncaptioned", exc=e,
+                    user_id=user_id, post_id=post_id, task_name=task_name or "caption_video_asset")
+        return
+
+    if result.srt_path:
+        # The sidecar is recorded even when the burn was skipped for an avatar-led frame: the
+        # author can still attach it on LinkedIn, and it is the record of what was offered.
+        update_db_post_captions(post_id, result.caption_text,
+                                caption_srt_asset_url(result.srt_path))
+
+
+def _record_video_asset_measures(post_id: int, video_file_path: str,
+                                 user_id: Optional[int] = None,
+                                 task_name: str = "") -> Optional[str]:
+    """Record the stored video's measures — and its representative keyframes — beside the file.
+
+    The ONE place a video's asset measures become durable (#1517), so both store paths — the initial
+    generation and the regenerate/backfill healer — record the same reading of the same bytes.
+    Call it LAST, after captioning and C2PA signing: those rewrite the file, and the measurement
+    has to describe the version that actually ships.
+
+    Why it is recorded at all: `purge_post_assets` (#148) deletes the MP4 the moment the post
+    publishes, and `auto_nightly_content_quality` scores content that has already shipped — so
+    without this the nightly beat re-probes a deleted file and writes `NULL / NULL / missing` for
+    every video post. `score_video_asset` reads the receipt back.
+
+    The keyframes are the same argument for the half a receipt cannot carry (#1363, owner decision
+    `2A`): rubric rows R1 and R8 are graded on pixels, and the pixels only exist before publication.
+    Both sidecars survive the purge without a carve-out — it removes the exact `.mp4` named by
+    `posts.video_url`, and neither of these is that path.
+
+    Nothing is recorded unless the probe actually read the file: a receipt is a measurement, and an
+    unmeasured video must keep reading as unmeasured rather than as a clean zero (#630). That makes
+    a failure here WARN-worthy — the file just passed `_accept_probed_video`, so a probe that cannot
+    read it means no video post will carry measures until someone looks (a missing `ffprobe` in the
+    worker image is exactly that class of fault).
+
+    Never raises: telemetry does not cost a user their video, which is already stored.
+    """
+    from cqc_lem.utilities.content_quality import VIDEO_PROBE_OK, probe_video_asset
+    from cqc_lem.utilities.video_frames import retain_keyframes
+    from cqc_lem.utilities.video_receipt import write_video_receipt
+
+    try:
+        measures = probe_video_asset(video_file_path)
+        if measures.get("asset_probe") != VIDEO_PROBE_OK:
+            log_warning("Could not measure the stored video — its duration and aspect ratio will "
+                        f"read as unmeasured after publish ({measures.get('asset_probe')})",
+                        user_id=user_id, post_id=post_id,
+                        task_name=task_name or "record_video_asset_measures")
+            return None
+        receipt_path = write_video_receipt(video_file_path, post_id, measures)
+        frames = retain_keyframes(video_file_path, measures.get("duration_seconds"))
+        if not frames:
+            # WARNING, not DEBUG: ffprobe just READ this file, so ffmpeg failing to pull a single
+            # frame from it is not an expected no-op — it is one fault (a worker image without
+            # ffmpeg is the obvious one) costing every video post its R1/R8 evidence forever.
+            log_warning("Could not retain the stored video's keyframes — this post's opening and "
+                        "closing frames cannot be graded after publish", user_id=user_id,
+                        post_id=post_id, task_name=task_name or "record_video_asset_measures")
+        return receipt_path
+    except Exception as e:
+        log_warning("Could not record the stored video's asset measures — this post's video "
+                    "dimensions will be blank in content_quality_scores", exc=e, user_id=user_id,
+                    post_id=post_id, task_name=task_name or "record_video_asset_measures")
+        return None
+
+
+def _clip_check_extra(brief_info: Optional[dict]) -> Optional[dict]:
+    """The clip check's record as receipt `extra`, or None when no check ran."""
+    record = (brief_info or {}).get("clip_check")
+    return {"clip_check": record} if record else None
+
+
+def _store_video_asset(post_id: int, video_src_url: str, content: Optional[str] = None,
+                       user_id: Optional[int] = None, brief=None,
+                       gate_verdict: Optional[str] = None,
+                       clip_check: Optional[dict] = None) -> Optional[str]:
+    """Download a generated video into the shared assets volume, probe it, and attach C2PA
+    credentials to AI output. Persist posts.video_url and return the public API asset URL only when
+    the probe passes. The ONE place a regenerated video is stored — both the asset-only healer and
+    the full post regenerate use it. Returns None when the file is empty or unparseable and the
+    probe is advisory, leaving the post for the missing-asset gate / backfill healer.
+
+    `brief` is the source frame's `ImageBrief` when one was authored, and `gate_verdict` the vision
+    gate's reading of that frame; both are recorded beside the stored file (issue #1377). A `brief`
+    of None — a Pexels fallback, or a caller that has no brief in hand — records nothing rather than
+    an empty receipt. `clip_check` is the post-render clip check's record (PR #2249), ridden along.
+    """
+    videos_dir = os.path.join(assets_dir, 'videos', 'runwayml')
+    create_folder_if_not_exists(videos_dir)
+    try:
+        video_file_path = save_video_url_to_dir(video_src_url, videos_dir)
+    except Exception:
+        # Same clear as a rejected probe (issue #1410), for the exit that never reaches one:
+        # `save_video_url_to_dir` RAISES on a non-2xx or a dropped connection, so the render this
+        # key names produced no file for this post. On the regenerate path the row still carries the
+        # PREVIOUS video's URL, and leaving the key would report the undownloaded render as the
+        # model of the video that actually shipped.
+        _persist_video_model(post_id, None)
+        raise
+
+    if not _accept_probed_video(post_id, video_file_path, video_src_url,
+                                task_name="regenerate_post_video_task"):
+        return None
+
+    # Captions BEFORE signing: the burn re-encodes the file, which would strip C2PA credentials
+    # attached first.
+    _caption_video_asset(post_id, video_file_path, content, user_id=user_id,
+                         task_name="regenerate_post_video_task")
+
+    # Only AI (Runway, http) output gets C2PA AI credentials — not Pexels stock.
+    if str(video_src_url).startswith("http"):
+        try:
+            from cqc_lem.utilities.c2pa_helper import add_ai_content_credentials
+            add_ai_content_credentials(video_file_path)
+        except Exception as e:
+            # WARNING: c2pa_helper's own docstring promises it "never raises into the generation
+            # pipeline" and logs its own skips, so anything arriving here is the best-effort module
+            # itself broken — which recurs on every AI video until someone looks.
+            log_warning("C2PA signing raised — the video ships without content credentials", exc=e,
+                        post_id=post_id, task_name="regenerate_post_video_task")
+    # Measured LAST, on the bytes that ship, and BEFORE the URL is persisted — the file is deleted
+    # at publish, so this is the only moment the measurement can be taken (issue #1517).
+    _record_video_asset_measures(post_id, video_file_path, user_id=user_id,
+                                 task_name="regenerate_post_video_task")
+    video_file_name = os.path.basename(video_file_path)
+    api_video_url = f"{API_URL_FINAL}/api/assets?file_name=videos/runwayml/{video_file_name}"
+    # Keyed by the URL the row is about to carry, so the brief can be walked back from it (#1377).
+    write_brief_receipt(api_video_url, brief, post_id=post_id, user_id=user_id,
+                        gate_verdict=gate_verdict,
+                        extra={"clip_check": clip_check} if clip_check else None)
+    update_db_post_video_url(post_id, api_video_url)
+    return api_video_url
+
+
+def regenerate_video_for_post(post_id: int) -> Optional[str]:
+    """Regenerate ONLY the video asset for an existing post, keeping its content.
+
+    Uses the post's existing text content to drive the image->video pipeline
+    (RunwayML, with Pexels fallback), saves the result into the shared assets
+    volume, updates posts.video_url, and returns the new public asset URL
+    (or None if generation failed).
+    """
+    text_content = get_post_content(post_id)
+    if not text_content:
+        log_info(f"regenerate_video_for_post: no content for post_id={post_id}")
+        return None
+
+    user_id = None
+    user_profile = None
+    try:
+        from cqc_lem.utilities.db import get_post_user_id
+        user_id = get_post_user_id(post_id)
+        user_profile = load_profile_for_user(user_id)
+    except Exception as e:
+        log_warning("Could not resolve the post's owner or profile — regenerating the video "
+                    "without either", exc=e, post_id=post_id,
+                    task_name="regenerate_post_video_task")
+
+    # Honors the post's video_quality tier + premium video credits (deduct/refund).
+    brief_info: dict = {}
+    video_src_url = _generate_video_src(user_id, text_content, user_profile, post_id,
+                                        brief_info=brief_info)
+    if not video_src_url:
+        return None
+
+    try:
+        api_video_url = _store_video_asset(post_id, video_src_url, content=text_content,
+                                           user_id=user_id, brief=brief_info.get("brief"),
+                                           gate_verdict=brief_info.get("gate_verdict"),
+                                           clip_check=brief_info.get("clip_check"))
+    except Exception as e:
+        # A hard probe failure (or any other storage error) should not strand the post; log it
+        # and let the missing-asset gate hold it for review / backfill.
+        log_warning("Could not store the regenerated video asset", exc=e,
+                    post_id=post_id, task_name="regenerate_post_video_task")
+        return None
+
+    # Symmetric with regenerate_post_carousel_task: a real video now exists, so an ERROR post is
+    # re-gated and healed — never straight to 'approved' (issue #2100).
+    if api_video_url:
+        _heal_errored_post(user_id, post_id, text_content, task_name="regenerate_post_video_task",
+                           approved_by=PostApprover.VIDEO_HEAL)
+    log_info(f"regenerate_video_for_post: post_id={post_id} -> {api_video_url}")
+    return api_video_url
+
+
+@shared_task.task
+def regenerate_post_video_task(post_id: int):
+    """Celery wrapper so premium-video upgrades run async (Veo can take minutes)."""
+    return regenerate_video_for_post(post_id)
+
+
+def _carousel_slides_are_real_images(slides) -> bool:
+    """True if carousel slides reference real images (URLs/paths), not plain text titles."""
+    if not slides:
+        return False
+    blob = str(slides)
+    return any(marker in blob for marker in ("http", "/assets", ".png", ".jpg"))
+
+
+@shared_task.task
+def regenerate_post_carousel_task(post_id: int):
+    """Regenerate a carousel post's slide images (used by the asset-backfill safety net).
+
+    On success (real slide images produced) an 'error' post is re-gated on its new content and
+    healed through `_heal_errored_post` (issue #2100). create_carousel_content flags 'error' on
+    failure, so a failed regeneration stays flagged for manual/dev attention.
+    """
+    from cqc_lem.utilities.db import (
+        get_post_buyer_stage,
+        get_post_carousel_slides,
+        get_post_user_id,
+        update_db_post_content,
+    )
+    user_id = get_post_user_id(post_id)
+    if not user_id:
+        log_info(f"regenerate_post_carousel_task: no user for post_id={post_id}")
+        return None
+    stage = get_post_buyer_stage(post_id) or "awareness"
+    content = create_carousel_content(user_id, stage, post_id)
+    if content:
+        _score_and_persist_dwell(user_id, post_id, content)
+        update_db_post_content(post_id, content)
+
+    if _carousel_slides_are_real_images(get_post_carousel_slides(post_id)):
+        _heal_errored_post(user_id, post_id, content or get_post_content(post_id),
+                           task_name="regenerate_post_carousel_task",
+                           approved_by=PostApprover.CAROUSEL_HEAL)
+    return content
+
+
+def _heal_errored_post(user_id: Optional[int], post_id: int, content: Optional[str],
+                       task_name: str, approved_by: PostApprover) -> Optional[PostStatus]:
+    """Heal an ERROR post whose media was just regenerated — through the gates, never around them.
+
+    The asset heal used to promote any non-POSTED post straight to APPROVED, so a post the gates
+    had HELD at PENDING published once its media was re-rendered (issue #2100, post 108), and a
+    rewritten carousel caption shipped without ever being graded. Now only ERROR — the media
+    failure the heal exists to repair — moves, and only as far as the post-surface gates re-run on
+    the new content allow: the same `_may_auto_approve` decision generation and the re-score use.
+    `gate_reason` is rewritten with this pass's findings, so it clears only when they pass.
+
+    Args:
+        user_id: the author. None (unresolvable) leaves the post at ERROR — it cannot be graded.
+        post_id: the healed post.
+        content: the post's text as it now stands.
+        task_name: the calling heal, for log context.
+        approved_by: the heal recorded as the approver when the gates let the post through (#2116).
+
+    Returns:
+        The status the post was moved to, or None when it was left alone.
+    """
+    from cqc_lem.utilities.db import get_post_status, get_post_type, get_post_video_url
+
+    status = get_post_status(post_id)
+    if status != PostStatus.ERROR.value:
+        # Every other status is someone else's decision — PENDING is a hold, APPROVED/SCHEDULED
+        # already passed, POSTED is terminal. An expected no-op on each backfill pass.
+        log_debug(f"Asset heal leaves post {post_id} at '{status}' — only 'error' is healed",
+                  post_id=post_id, task_name=task_name)
+        return None
+    if not user_id:
+        log_warning("Could not resolve the post's owner — the healed post stays 'error' because its "
+                    "gates cannot be re-run", post_id=post_id, task_name=task_name)
+        return None
+    post_type = get_post_type(post_id)
+    post_type = post_type.value if isinstance(post_type, PostType) else post_type
+    findings = _gate_findings_for_post(user_id, post_id, content or "", post_type,
+                                       get_post_video_url(post_id))
+    _persist_gate_findings(user_id, post_id, findings)
+    auto_schedule = bool((get_user_preferences(user_id) or {}).get("auto_schedule_posts", False))
+    new_status = (PostStatus.APPROVED
+                  if _may_auto_approve(user_id, post_id, auto_schedule, findings)
+                  else PostStatus.PENDING)
+    update_db_post_status(post_id, new_status, approved_by=approved_by)
+    log_info(f"{task_name}: post {post_id} healed → {new_status.value}", user_id=user_id,
+             post_id=post_id, task_name=task_name)
+    return new_status
+
+
+def _apply_guidance_to_text_post(user_id: int, post_id: int, content: str,
+                                 user_profile: LinkedInProfile, guidance: str) -> str:
+    """Apply the user's free-text guidance to a generated text caption, then sanitize and repair
+    deterministic CTAs that LLM rewrites can drop. Returns the caption unchanged if guidance is
+    empty or the rewrite fails.
+    """
+    guidance = (guidance or "").strip()
+    if not guidance or not content:
+        return content
+    # The author's own guidance is a source a number may legitimately come from (#1971): a
+    # regenerate asked for "mention we cut latency by 40%" must not hold the post on the 40%.
+    record_supplied_material(post_id, guidance)
+    try:
+        prefs = get_engagement_preferences(user_id)
+        synthesis = get_or_create_profile_synthesis(user_id, user_profile)
+        with llm_attribution(user_id=user_id, feature=FEATURE_CONTENT):
+            revised = apply_post_guidance(content, guidance, prefs=prefs, profile_synthesis=synthesis)
+        if revised:
+            content = sanitize_for_linkedin(revised).strip()
+            # The guidance rewrite is another LLM pass that can drop the comment-keyword
+            # mechanic create_text_post already verified — re-verify after it.
+            content = ensure_lead_magnet_cta(content, get_lead_magnet_settings(user_id), post_id,
+                                             use_emojis=bool((prefs or {}).get("use_emojis")))
+    except Exception as e:
+        # WARNING: the user typed a revision request and it was silently not applied — they get a
+        # regenerated post that ignored what they asked for.
+        log_warning("Could not apply the user's guidance to the regenerated post — keeping the "
+                    "base regeneration", exc=e, user_id=user_id, post_id=post_id,
+                    task_name="regenerate_post")
+    return content
+
+
+def _post_is_flagged_error(post_id: int) -> bool:
+    """Did the media step just flag this post 'error'? Never raises — an unreadable status falls
+    back to the normal PENDING reset rather than stranding a good post.
+    """
+    try:
+        from cqc_lem.utilities.db import get_post_status
+        return get_post_status(post_id) == PostStatus.ERROR.value
+    except Exception as e:
+        log_warning("Could not read the post's status — falling back to the normal PENDING reset",
+                    exc=e, post_id=post_id, task_name="regenerate_post")
+        return False
+
+
+def _finish_regenerated_post(user_id: int, post_id: int, content: str,
+                             post_type_value: str, video_url: Optional[str] = None,
+                             ai_media: bool = False) -> str:
+    """Shared close-out for a regenerated post: disclose AI visuals, persist content, re-score
+    dwell, refresh gate findings, and reset the post to PENDING for re-review. Returns the content
+    as PERSISTED — the caller must return this, not its pre-disclosure copy.
+    """
+    # Regeneration replaces the whole caption, so the old draft's disclosure line went with it —
+    # re-apply it here or a regenerated video/avatar post ships undisclosed (issue #744).
+    if ai_media or _post_used_avatar_media(post_id):
+        content = _apply_ai_disclosure(content)
+    _score_and_persist_dwell(user_id, post_id, content)
+    update_db_post_content(post_id, content)
+    _persist_gate_findings(user_id, post_id,
+                           _gate_findings_for_post(user_id, post_id, content, post_type_value, video_url))
+    forget_supplied_material(post_id)
+    # create_carousel_content flags a slide-render failure as ERROR so it gets a manual fix; resetting
+    # that to PENDING would hide a deck carrying the PREVIOUS draft's slides behind a normal-looking
+    # review row (the missing-asset gate reads those stale slides as present).
+    if _post_is_flagged_error(post_id):
+        log_info(f"regenerate_post: post {post_id} left 'error' — its media could not be regenerated")
+        return content
+    update_db_post_status(post_id, PostStatus.PENDING)
+    return content
+
+
+def regenerate_post(post_id: int, guidance: str = None) -> Optional[str]:
+    """Regenerate ONE post in place through the normal generation pipeline — so it honors the
+    user's saved engagement settings (voice/tone, focus/goals, emoji/hashtag prefs, anti-self-promo)
+    — then folds in optional free-text `guidance`. Mirrors regenerate_newsletter_edition. Resets
+    the post to PENDING so the user re-reviews. Works for text, carousel, document, and video posts
+    (issue #794).
+    """
+    from cqc_lem.utilities.db import get_post_buyer_stage, get_post_type, get_post_user_id
+
+    user_id = get_post_user_id(post_id)
+    if not user_id:
+        log_info(f"regenerate_post: no user for post_id={post_id}")
+        return None
+    post_type = get_post_type(post_id)
+    pt_value = post_type.value if isinstance(post_type, PostType) else post_type
+    if not pt_value:
+        log_info(f"regenerate_post: post {post_id} has no post_type — skipping regenerate")
+        return None
+
+    stage = get_post_buyer_stage(post_id) or "awareness"
+    # Cached/DB-backed profile (no Selenium) — same source the newsletter regenerate uses.
+    user_profile = load_profile_for_user(user_id)
+
+    if pt_value == PostType.TEXT.value:
+        content = create_text_post(user_id, stage, user_profile=user_profile, post_id=post_id,
+                                   content_mix=_post_content_mix(post_id))
+        if not content:
+            log_info(f"regenerate_post: text generation produced nothing for post {post_id}")
+            return None
+        content = _apply_guidance_to_text_post(user_id, post_id, content, user_profile, guidance)
+        content = _finish_regenerated_post(user_id, post_id, content, pt_value)
+        log_info(f"regenerate_post: text post {post_id} regenerated → pending")
+        return content
+
+    if pt_value in (PostType.CAROUSEL.value, PostType.DOCUMENT.value):
+        # Guidance goes INTO the deck's generation, not a caption-only rewrite after it: on a
+        # carousel/document the slides ARE the post, so steering only the caption would leave the
+        # user's suggestions off the thing they were looking at.
+        content = create_carousel_content(user_id, stage, post_id, guidance=guidance)
+        if not content:
+            log_info(f"regenerate_post: carousel generation produced nothing for post {post_id}")
+            return None
+        content = _finish_regenerated_post(user_id, post_id, content, pt_value)
+        log_info(f"regenerate_post: carousel/document post {post_id} regenerated")
+        return content
+
+    if pt_value == PostType.VIDEO.value:
+        content = create_text_post(user_id, stage, user_profile=user_profile, post_id=post_id,
+                                   content_mix=_post_content_mix(post_id))
+        if not content:
+            log_info(f"regenerate_post: video caption generation produced nothing for post {post_id}")
+            return None
+        content = _apply_guidance_to_text_post(user_id, post_id, content, user_profile, guidance)
+
+        # The new caption drives the new video asset so the visuals match the words (issue #794).
+        brief_info: dict = {}
+        video_src_url = _generate_video_src(user_id, content, user_profile, post_id,
+                                            brief_info=brief_info)
+        api_video_url = None
+        if video_src_url:
+            try:
+                api_video_url = _store_video_asset(post_id, video_src_url, content=content,
+                                                   user_id=user_id,
+                                                   brief=brief_info.get("brief"),
+                                                   gate_verdict=brief_info.get("gate_verdict"),
+                                                   clip_check=brief_info.get("clip_check"))
+            except Exception as e:
+                # Losing the download must not lose the regenerated caption too — persist it and
+                # let the missing-asset gate hold the post, exactly as a failed render does.
+                log_warning("Could not store the regenerated video asset", exc=e,
+                            user_id=user_id, post_id=post_id, task_name="regenerate_post")
+        # No video asset means the post is held for review with a missing_asset finding.
+        content = _finish_regenerated_post(
+            user_id, post_id, content, pt_value, api_video_url,
+            ai_media=bool(api_video_url) and str(video_src_url).startswith("http"))
+        log_info(f"regenerate_post: video post {post_id} regenerated"
+                f"{'' if api_video_url else ' (caption only — video asset failed)'}")
+        return content
+
+    log_info(f"regenerate_post: post {post_id} has unsupported post_type '{pt_value}' — skipping")
+    return None
+
+
+@shared_task.task
+def regenerate_post_task(post_id: int, guidance: str = None):
+    """Celery wrapper so post regeneration (slow lem-complex call) runs async off the API request."""
+    return regenerate_post(post_id, guidance)
+
+
+# --- Occasion / milestone drafts (issue #1074) -------------------------------------------------
+# LinkedIn's native "Celebrate an occasion" composer has no API entity, so LEM writes the copy and
+# the author pastes it in. Everything below is the NORMAL generation pipeline with two things
+# pinned: the archetype (the human named the event, so the shape is not up for rotation) and the
+# factual anchor (what they typed is the ONLY specific the writer may state about it).
+
+# The story-bank `kind` each occasion archetype's anchor is presented as — the bank's directive is
+# already "this is the post's factual anchor, invent nothing else", which is exactly the contract an
+# occasion announcement needs, so the occasion rides that directive rather than a parallel one.
+_OCCASION_STORY_KINDS: dict = {
+    "project_launch": "artifact",
+    "educational_milestone": "anecdote",
+    "new_certification": "anecdote",
+    "new_position": "anecdote",
+    "work_anniversary": "anecdote",
+}
+
+
+def draft_occasion_post(post_id: int, archetype: str, occasion: str) -> Optional[str]:
+    """Write the copy for ONE occasion/milestone post and leave it PENDING for review.
+
+    `occasion` is the author's own description of the real event; it becomes the writer's ONLY
+    allowed specific about it (the story-bank no-fabrication contract), so an empty one is refused
+    rather than handed to the model to fill in. The row keeps `manual_publish`, so a draft that
+    lands here never reaches the publish path — the author copies it into LinkedIn's occasion
+    composer. Returns the persisted content, or None when nothing could be written.
+    """
+    from cqc_lem.utilities.db import get_post_buyer_stage, get_post_user_id
+
+    occasion = (occasion or "").strip()
+    archetype = (archetype or "").strip()
+    if not occasion or archetype not in _OCCASION_STORY_KINDS:
+        log_error("Occasion post has no usable event description or archetype",
+                  post_id=post_id, task_name="draft_occasion_post")
+        return None
+
+    user_id = get_post_user_id(post_id)
+    if not user_id:
+        log_info(f"draft_occasion_post: no user for post_id={post_id}")
+        return None
+
+    # The occasion IS the anchor: a synthetic bank entry so the writer gets the bank's absolute
+    # "these facts are the ONLY personal specifics you may state" rule for free.
+    entry = {"kind": _OCCASION_STORY_KINDS[archetype], "body": occasion}
+    blueprint = _select_post_blueprint(user_id, preferred_formats=[archetype])
+    blueprint = {**blueprint, "subject": occasion[:200],
+                 "fact_anchors": _story_bank.fact_sources(entry)}
+
+    stage = get_post_buyer_stage(post_id) or occasion_stage("post", archetype)
+    content = create_text_post(
+        user_id, stage, post_type="personal_story",
+        user_profile=load_profile_for_user(user_id),
+        blueprint=blueprint, post_id=post_id,
+        # No 70/20/10 class: an occasion is seeded by a real event, not by the plan's cadence, so
+        # counting it into the mix would move the governor's ratios for something it never planned.
+        story_directive=_story_bank.story_directive(entry))
+    if not content:
+        log_error("Occasion post generation produced nothing", user_id=user_id, post_id=post_id,
+                  task_name="draft_occasion_post")
+        update_db_post_status(post_id, PostStatus.ERROR)
+        return None
+
+    content = _finish_regenerated_post(user_id, post_id, content, PostType.TEXT.value)
+    log_info(f"Occasion post {post_id} drafted ({archetype}) — publish natively",
+             user_id=user_id, post_id=post_id, task_name="draft_occasion_post")
+    return content
+
+
+@shared_task.task
+def draft_occasion_post_task(post_id: int, archetype: str, occasion: str):
+    """Celery wrapper so occasion drafting (a slow lem-complex call) runs off the API request."""
+    return draft_occasion_post(post_id, archetype, occasion)
+
+
+def _post_content_mix(post_id: int) -> Optional[str]:
+    """The post's assigned 70/20/10 class — a regenerate has to keep it or the plan's mix silently
+    drifts. Best-effort: an unreadable class only costs the mix steering, never the regenerate.
+    """
+    try:
+        return get_post_content_mix(post_id)
+    except Exception as e:
+        log_warning("Could not read the post's 70/20/10 mix class — the plan's mix will drift",
+                    exc=e, post_id=post_id, task_name="regenerate_post")
+        return None
+
+
+def _check_post_alignment(content: str, prefs: dict, user_id: int = None, post_id: int = None,
+                          user_profile: LinkedInProfile = None,
+                          profile_synthesis: Optional[str] = None) -> bool:
+    """Topic Authority (Topic DNA) governor on a FINAL post (issue #384): when the user declared
+    focus_topics, score how tightly the post sits inside their niche — their focus topics PLUS the
+    profile headline/about vocabulary — via the cheap deterministic overlap heuristic
+    (topic_authority_score — NO LLM call). Below the off-niche threshold, POST_ALIGNMENT_LLM_CHECK_ENABLED
+    (default OFF, the COMMENT_RESEARCH_ENABLED cost-gating pattern) lets an LLM relevance check rescue
+    keyword misses — it only fires when the heuristic already failed, so the default path costs
+    nothing. An off-niche post logs at INFO (with its score) and never blocks the pipeline.
+    """
+    topics = [str(t).strip() for t in ((prefs or {}).get("focus_topics") or []) if str(t).strip()]
+    if not topics or not content:
+        return True
+    headline, about = profile_topic_dna(user_profile, profile_synthesis)
+    threshold = topic_authority_min()
+    score = topic_authority_score(content, topics, headline, about)
+    aligned = score >= threshold
+    if not aligned and str(os.getenv("POST_ALIGNMENT_LLM_CHECK_ENABLED", "")).strip().lower() in (
+            "1", "true", "yes", "on"):
+        from cqc_lem.utilities.ai.ai_helper import post_is_relevant
+        aligned = post_is_relevant(content, topics)
+    if not aligned:
+        # INFO, not WARNING (#2308): this is a MEASUREMENT of the draft, not a degraded path — the
+        # gate pass records the same verdict on the post as an advisory `focus` finding, which is the
+        # record the author sees. Each off-niche post recurs it, so escalation filed a code defect
+        # against a governor working as designed.
+        log_info("Generated post is off-niche vs the user's Topic DNA — does not relate to any "
+                    "declared focus topic",
+                    user_id=user_id, post_id=post_id, task_name="create_text_post",
+                    topic_authority_score=round(score, 4), topic_authority_min=round(threshold, 4))
+    return aligned
+
+
+def _proof_regen_enabled() -> bool:
+    """Whether a draft missing its A2 first-person proof slot is regenerated (vs. only logged). Read
+    at call time (the POST_SIMILARITY_MAX / research-toggle live-env pattern) so ops can dial the
+    extra generation cost back without a restart. Defaults ON — the reject/regenerate is the point of
+    issue #383; the detector still runs and warns even when regeneration is off, so the A1/anti-slop
+    signal is never lost.
+    """
+    return str(os.getenv("POST_PROOF_REGEN_ENABLED", "on")).strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _fabrication_regen_enabled() -> bool:
+    """Whether a draft that states a first-person specific we never gave it is regenerated (vs. only
+    logged). Same live-env pattern as POST_PROOF_REGEN_ENABLED; defaults ON because a fabricated
+    number about the author is the one failure the story bank exists to prevent (issues #620/#416).
+    Only ever consulted when a story entry WAS selected — without one there is no allow-list.
+    """
+    return str(os.getenv("POST_FABRICATION_REGEN_ENABLED", "on")).strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _select_story_for_post(user_id: int, prefs: dict = None,
+                           blueprint: dict = None, outcome: Optional[dict] = None,
+                           audience: Optional[dict] = None,
+                           post_id: Optional[int] = None) -> Optional[dict]:
+    """The one story-bank entry this post is anchored to, or None when the bank can't ground it
+    (empty, all retired, nothing related to the user's focus topics, or every entry COOLING DOWN).
+    Never fatal — a DB hiccup just falls back to the no-fabrication directive.
+
+    The cooldown (showcase round 4): an entry anchors at most one post in the window of the user's
+    last `STORY_COOLDOWN_POSTS` posts or `STORY_COOLDOWN_DAYS` days, whichever is longer. Since
+    showcase round 5 it reads the entry each post RECORDED (`posts.story_id`) and falls back to
+    echo detection only for posts that recorded none. `outcome`, when given, is filled with
+    `cooled: True` when the answer is None because entries were cooling, which is what switches
+    the caller to the research/curated directive instead of the empty-bank one. `audience` (the
+    post's `audience_mix` profile) prefers an owner's story for a small-business reader; `post_id`
+    keeps a regenerated post out of its own window.
+    """
+    try:
+        entries = get_story_bank_entries(user_id, active_only=True)
+    except Exception as e:
+        log_warning("Story bank unreadable — writing this post without a fact anchor", exc=e,
+                    user_id=user_id, task_name="create_text_post")
+        return None
+    topics = [str(t).strip() for t in ((prefs or {}).get("focus_topics") or []) if str(t).strip()]
+    # The cooldown window, newest first; its first `STORY_RECENT_POSTS` are the soft rotation's
+    # history (#2241 showcase). Unreadable history only loses both guards — `used_count` holds.
+    rows = _recent_post_records(user_id, post_id, limit=_story_bank.STORY_COOLDOWN_POSTS,
+                                within_days=_story_bank.STORY_COOLDOWN_DAYS) or []
+    recorded = {r.get("story_id") for r in rows if r.get("story_id") is not None}
+    # Echo detection is the fallback for LEGACY posts only: a post that recorded its entry has
+    # already said which story it told, and its wording must not cool a second one.
+    legacy = [r.get("content") for r in rows if r.get("story_id") is None and r.get("content")]
+    window = [r.get("content") for r in rows if r.get("content")]
+    story = _story_bank.select_story(entries, subject=(blueprint or {}).get("subject"),
+                                     focus_topics=topics,
+                                     recent_texts=window[:_story_bank.STORY_RECENT_POSTS],
+                                     cooldown_texts=legacy, cooling_story_ids=recorded,
+                                     smb=bool((audience or {}).get("smb")))
+    if story is None and outcome is not None:
+        outcome["cooled"] = bool(_story_bank.cooling_ids(entries, legacy, recorded))
+    return story
+
+
+def _no_anchor_directive(user_id: int, outcome: Optional[dict]) -> str:
+    """The writer directive for a post with no story anchor: cooled-down, or nothing to anchor to.
+
+    A bank whose entries are all cooling down gets `cooldown_story_directive` — build on the research
+    already in the prompt plus up to three items from the user's curated-sources pool, when it has
+    any. Anything else is the empty-bank `no_story_directive`. Never raises: an unreadable pool just
+    means the research findings carry the post alone.
+    """
+    if not (outcome or {}).get("cooled"):
+        return _story_bank.no_story_directive()
+    try:
+        items = get_draftable_curated_sources(user_id, limit=_story_bank.COOLDOWN_CURATED_ITEMS)
+    except Exception as e:
+        log_debug("Curated pool unreadable — the cooled-down post runs on research alone",
+                  error=str(e), user_id=user_id, task_name="create_text_post")
+        items = []
+    return _story_bank.cooldown_story_directive(items)
+
+
+# The research-grounded source types a cooled-down post is moved onto when its slot asked for a
+# type that only works with a story (a personal story with no story is an invention).
+_COOLDOWN_POST_TYPES = ("thought_leadership", "industry_news")
+_STORY_ONLY_POST_TYPES = frozenset({"personal_story", "engagement_prompt"})
+
+
+def _score_and_persist_authenticity(user_id: int, post_id: int, content: str,
+                                    user_profile: LinkedInProfile, profile_synthesis: str = None,
+                                    prefs: dict = None,
+                                    task_name: str = "create_text_post") -> None:
+    """Run the authenticity gate's LLM judge on a finished draft and persist the 0-100 score (issue
+    #382). This only SCORES + records; the demotion to PENDING happens in the content-plan
+    status-setter, which reads the score back. No-op when the gate is disabled. Best-effort — a scorer
+    or DB hiccup never blocks generation (score_authenticity itself fails open).
+
+    `task_name` names the caller on the emitted logs — the deck caption is judged from
+    `create_carousel_content` (issue #1512), and a carousel's low-score warning must not read as a
+    text post's.
+    """
+    if not authenticity_gate_enabled():
+        return
+    try:
+        result = score_authenticity(content, profile=user_profile,
+                                    profile_synthesis=profile_synthesis, prefs=prefs)
+        update_db_post_authenticity_score(post_id, result.get("score"))
+        if result.get("flagged"):
+            log_warning(
+                f"Post flagged as low-authenticity (score {result.get('score')} < "
+                f"{authenticity_score_min(prefs)}) — will hold for review: "
+                f"{'; '.join(result.get('reasons') or []) or 'no reasons given'}",
+                user_id=user_id, post_id=post_id, task_name=task_name)
+        else:
+            log_info(f"Post authenticity score {result.get('score')}",
+                     user_id=user_id, post_id=post_id, task_name=task_name)
+    except Exception as e:
+        # WARNING: score_authenticity already fails open on its own, so anything raising here means
+        # the gate silently did not run and the draft auto-approves unscored.
+        log_warning("Authenticity scoring raised — this post is not scored by the gate", exc=e,
+                    user_id=user_id, post_id=post_id, task_name=task_name)
+
+
+def _is_affiliate_promo(content: str, post_id: Optional[int]) -> bool:
+    """Whether this draft is affiliate promotion — scoped to the post's OWN author's referral code,
+    the same way the publish gate grades it, so a post that quotes somebody else's link is not held
+    as if it were this author's paid endorsement. Unreadable ownership reads as 'not affiliate': the
+    hold is a review courtesy, and the publish gate is what actually enforces the disclosure.
+    """
+    try:
+        from cqc_lem.utilities.db import get_post_user_id
+        from cqc_lem.utilities.marketing.affiliate import is_affiliate_content
+        owner = get_post_user_id(post_id) if post_id is not None else None
+        # An owner we could not resolve must NOT fall through to `user_id=None`, which matches ANY
+        # member's referral code: that would hold somebody's post with "this is your paid
+        # endorsement" over a link that is not theirs.
+        if owner is None:
+            return False
+        return is_affiliate_content(content, user_id=owner)
+    except Exception as e:
+        log_warning("Could not evaluate whether this post is affiliate promotion", exc=e,
+                    post_id=post_id, task_name="create_content")
+        return False
+
+
+def evaluate_post_gates(post_id: int, content: str, post_type: Union[PostType, str, None],
+                        video_url: Optional[str] = None,
+                        engagement_prefs: Optional[dict] = None,
+                        authenticity_score: Optional[int] = None,
+                        recent_texts: Optional[list[str]] = None,
+                        user_profile: Optional[LinkedInProfile] = None,
+                        profile_synthesis: Optional[str] = None,
+                        archetype: Optional[str] = None,
+                        fact_anchors: Optional[list] = None,
+                        author_edited: bool = False,
+                        cta_keyword: Optional[str] = None,
+                        extra_fact_sources: Optional[list] = None,
+                        previously_unverified: Optional[list] = None,
+                        user_id: Optional[int] = None,
+                        content_mix: Optional[str] = None) -> list[dict]:
+    """Run the quality gates over a FINISHED post and return their structured findings (issue #421).
+
+    One evaluator for both callers: the content-plan status-setter (which knows the freshly persisted
+    authenticity score) and the re-score endpoint (which additionally supplies the user's post history
+    and profile, so the near-duplicate and focus-alignment gates can run against an edited draft).
+    A gate whose inputs are absent is skipped, never guessed. Every finding carries the score it
+    failed on, the threshold it failed against, and what the user can do about it.
+    """
+    findings = []
+    prefs = engagement_prefs or {}
+
+    if _post_missing_required_asset(post_id, post_type, video_url):
+        findings.append(missing_asset_finding(post_type))
+        # WHY the media is missing, when the video probe rejected a downloaded file (issue #1402).
+        # Carried only while the missing-asset hold stands: once real media exists the note is
+        # stale, and the next passing probe clears it from the post anyway.
+        findings.extend(_recorded_malformed_asset_notes(post_id))
+
+    if authenticity_score is not None and authenticity_gate_enabled():
+        threshold = authenticity_score_min(prefs)
+        if authenticity_score < threshold:
+            findings.append(authenticity_finding(authenticity_score, threshold))
+
+    # Artifact-CTA lint (issue #618): runs for EVERY post type — the deterministic repair in
+    # create_text_post only covers text posts, and a user can edit a meeting ask back in.
+    if content and contains_meeting_ask(content):
+        findings.append(meeting_cta_finding(meeting_ask_excerpts(content)))
+
+    # The promo slot must offer an artifact (issue #2107). Needs the post's class and its author,
+    # so a caller that passes neither skips it.
+    if content:
+        promo_finding = _promo_artifact_finding(user_id, post_id, content, content_mix)
+        if promo_finding:
+            findings.append(promo_finding)
+
+    # Affiliate promotion (issue #770): a paid endorsement under the author's name is never
+    # auto-scheduled, however well it scores. Derived from the CONTENT (the referral link), not from
+    # which generator wrote it, so a post the user pasted their own link into is held too.
+    if content and _is_affiliate_promo(content, post_id):
+        from cqc_lem.utilities.marketing.affiliate import disclosure_text
+        findings.append(affiliate_promo_finding(disclosure_text()))
+
+    # Deterministic AI-slop lint (issue #625 / D1): the regeneration in `_review_generated_post`
+    # gets first crack at these; anything still standing here HOLDS the post, with the exact
+    # constructions named. Warn-severity checks ride along as advisory detail and never demote.
+    if content:
+        slop = slop_lint_report(content, "post", exempt_keyword=cta_keyword)
+        if not slop["passes"]:
+            findings.append(slop_finding(violation_reasons(slop["hard"]),
+                                         violation_reasons(slop["warnings"])))
+
+    # A deck's slide-level findings, measured at generation and re-read here — the slide text no
+    # longer exists by this point. The slop note (issue #1512) is advisory; the deck-vs-caption
+    # count and topic checks (issue #2106) hold, and the count one is re-checked against `content`.
+    if str(post_type).lower() in (PostType.CAROUSEL.value, PostType.DOCUMENT.value):
+        findings.extend(_recorded_deck_notes(post_id, content))
+
+    if content and recent_texts:
+        # Embedding-first (issue #1265) — the finding carries the measure that fired, because a
+        # cosine score and a token-overlap score are not readable against each other.
+        sim = post_similarity_report(content, recent_texts, prefs)
+        if sim["too_similar"]:
+            findings.append(similarity_finding(sim["score"], sim["threshold"], sim["match"],
+                                               measure=sim["measure"]))
+
+    # No-fabrication guard (issue #619 / G4): the save-targeted archetypes whose value IS the
+    # specifics — and EVERY post while the post surface is HARD (issue #1971). A draft that
+    # invented a number is held; so is one that honestly deferred its numbers to placeholders —
+    # those need the author's real figures before it can publish. `author_edited` marks a re-score
+    # of text a HUMAN has since edited: the guard exists to stop the MODEL inventing specifics, so
+    # the author's own numbers are verified by definition and only unfilled placeholders can still
+    # hold the post — otherwise filling them in could never clear it. `extra_fact_sources` is the
+    # material the writer was actually given (profile brief, research, CTA, story directive).
+    # `previously_unverified` (issue #1971) narrows the author's credit: a re-score cannot tell an
+    # edit from a bare click, so a figure the LAST grade already named as unbacked and the author
+    # left untouched stays held — only the numbers they changed or added are theirs.
+    grounded_unverified: list = []
+    if content and _grades_fact_grounding(archetype):
+        anchors = list(fact_anchors or []) + [s for s in (extra_fact_sources or []) if s]
+        if profile_synthesis:
+            anchors.append(str(profile_synthesis))
+        report = fact_grounding_report(content, anchors)
+        unverified = report["unverified_values"]
+        if author_edited:
+            still_there = {str(v) for v in (previously_unverified or [])}
+            unverified = [v for v in unverified if v in still_there]
+        grounded_unverified = report["unverified_values"]
+        if unverified or report["placeholders"]:
+            findings.append(fact_grounding_finding(unverified, report["placeholders"]))
+
+    # Forbidden claims (issue #1971): a figure attached to a subject the author has ruled out is
+    # held on every surface, whoever wrote the sentence — the subject is on the list because no
+    # number about it can be sourced, so an author's edit does not clear it either. The list is
+    # the user's own (`engagement_prefs.forbidden_claim_terms`, issue #2047) PLUS the global floor.
+    if content:
+        forbidden = _story_bank.forbidden_claims(
+            content, _story_bank.effective_forbidden_claim_terms(prefs))
+        if forbidden:
+            findings.append(forbidden_claim_finding(forbidden))
+
+    # Dates (showcase round 6): a weekday that is not its date's, a deadline set before the offer
+    # that set it. Checked live on every pass, whoever wrote the sentence — a calendar needs no
+    # story. The timeline half needs the story's date and is carried from the review gate's record
+    # (`_carry_consistency_hold`).
+    if content:
+        # Round 7: a figure in the hook needs a story-bank fact or a named source in the body —
+        # live on every pass where numbers are graded, except over an author's own edit.
+        hook_facts = (list(fact_anchors or []) if _grades_fact_grounding(archetype)
+                      and not author_edited else None)
+        consistency = consistency_report(content, hook_facts=hook_facts,
+                                         hook_flagged=grounded_unverified)
+        if not consistency["passes"]:
+            findings.append(fact_consistency_finding(consistency["issues"]))
+
+    topics = [str(t).strip() for t in (prefs.get("focus_topics") or []) if str(t).strip()]
+    if content and topics:
+        headline, about = profile_topic_dna(user_profile, profile_synthesis)
+        threshold = topic_authority_min()
+        score = topic_authority_score(content, topics, headline, about)
+        if score < threshold:
+            findings.append(focus_finding(score, threshold, topics))
+
+    return findings
+
+
+def _gate_findings_for_post(user_id: int, post_id: int, content: str,
+                            post_type: Union[PostType, str, None],
+                            video_url: Optional[str] = None) -> list[dict]:
+    """The generation-time gate pass: the gates that can hold a fresh draft (media + authenticity +
+    the near-duplicate verdict the review gate already reached), evaluated against the user's own
+    thresholds. Best-effort — the reason is review UX, so a prefs or score read that fails costs the
+    explanation, never the post.
+
+    Similarity arrives as a RECORDED verdict rather than a live measurement (issue #1452): the post
+    history and the embedding call both belong to the review gate inside `create_text_post`, so
+    re-running the gate here would be a second `lem-embedding` call and a second history read for
+    one draft. `evaluate_post_gates` is therefore still handed no `recent_texts` from this caller.
+
+    Both recorded verdicts — the similarity one and a deck's slide-level findings (issues #1512,
+    #2106) — are carried on the FAILURE path too. The caller persists whatever comes back, overwriting
+    `posts.gate_reason`, and neither verdict can be re-derived later: a re-score would pay a second
+    embedding call, and the slide text is gone the moment the deck is rendered to images. Dropping
+    them here would erase them for good.
+    """
+    try:
+        score = get_post_authenticity_score(post_id)
+    except Exception as e:
+        # An unreadable score only silences THAT gate — the media check still has to run, or a
+        # DB hiccup would let an assetless video post auto-approve. WARNING to match the sibling
+        # handler ten lines below, which has always logged this same shape at WARNING.
+        log_warning("Could not read the authenticity score — that gate is skipped for this post",
+                    exc=e, user_id=user_id, post_id=post_id, task_name="create_content")
+        score = None
+    archetype = _post_archetype_or_none(post_id)
+    similarity = _recorded_similarity_finding(post_id)
+    prefs, prefs_readable = _engagement_prefs_for_gates(user_id)
+    try:
+        findings = evaluate_post_gates(
+            post_id, content, post_type, video_url,
+            engagement_prefs=prefs,
+            authenticity_score=score,
+            archetype=archetype,
+            fact_anchors=_fact_anchors_for(user_id, archetype),
+            cta_keyword=_cta_keyword_for(user_id, post_id),
+            # The writer's own material widens the allow-list (issue #1971); read here rather
+            # than in `evaluate_post_gates` so the re-score endpoint stays free of the registry.
+            extra_fact_sources=_post_material_sources(user_id, post_id)
+            if _grades_fact_grounding(archetype) else None,
+            user_id=user_id, content_mix=_post_content_mix(post_id)) + similarity
+        findings = _carry_consistency_hold(post_id, findings)
+        # An unreadable list must not release a hold it produced (issue #2047).
+        return findings if prefs_readable else _carry_forbidden_claim_hold(post_id, findings)
+    except Exception as e:
+        log_warning("Could not evaluate the quality gates for this post", exc=e,
+                    user_id=user_id, post_id=post_id, task_name="create_content")
+        return (similarity + _recorded_deck_notes(post_id, content)
+                + _recorded_consistency_finding(post_id))
+
+
+def _cta_keyword_for(user_id: int, post_id: int) -> Optional[str]:
+    """The lead-magnet trigger word this post is allowed to ask for, so the slop lint's bait check
+    exempts a sanctioned "Comment KEYWORD" CTA (the same exemption `strip_engagement_bait` makes at
+    generation time). Never raises — an unreadable setting just means no exemption.
+    """
+    try:
+        lead_magnet = get_lead_magnet_settings(user_id)
+    except Exception as e:
+        log_warning("Could not read the lead-magnet settings — the slop lint will not exempt this "
+                    "post's sanctioned CTA", exc=e, user_id=user_id, post_id=post_id,
+                    task_name="create_content")
+        return None
+    if not lead_magnet_enabled(lead_magnet):
+        return None
+    # The rotation's artifact close lands on the promo slot (showcase round 4), whatever the legacy
+    # 1-in-N cadence says, so a promo post's sanctioned keyword is exempt too.
+    if not should_include_lead_magnet_cta(lead_magnet, post_id) and \
+            normalize_content_mix(_post_content_mix(post_id)) != ContentMix.PROMO.value:
+        return None
+    return str(lead_magnet.get("keyword") or "").strip() or None
+
+
+def _post_archetype_or_none(post_id: int) -> Optional[str]:
+    """The post's assigned archetype (V51), never raising — an unreadable one just means the
+    archetype-specific gates are skipped for this pass, exactly like an unreadable score does.
+    """
+    try:
+        from cqc_lem.utilities.db import get_post_archetype
+        return get_post_archetype(post_id)
+    except Exception as e:
+        log_warning("Could not read the post's archetype — the archetype-specific gates are "
+                    "skipped for this pass", exc=e, post_id=post_id, task_name="create_content")
+        return None
+
+
+def _persist_gate_findings(user_id: int, post_id: int, findings: list[dict],
+                           mark_repaired: bool = False) -> None:
+    """Best-effort write of the gate findings onto the post (issue #421). The reason is review UX —
+    losing it must never fail generation or a re-score.
+
+    `mark_repaired` (issue #1134) additionally raises `posts.ever_gate_demoted`, and ONLY the review
+    gate's repair path passes it. Every pre-existing caller — the generation-time gate pass, the
+    re-score's promote-on-pass path, the regenerate path — stays at the default and is untouched.
+    A forgotten `mark_repaired=True` therefore fails SAFE in the boring direction: the post
+    under-reports having been repaired and auto-approves as it did before this change; it can never
+    hold a post that was never repaired.
+
+    Args:
+        user_id: the author, for log context.
+        post_id: the post the findings belong to. None (a preview draft with no row) writes nothing.
+        findings: the structured findings to record, replacing whatever was there.
+        mark_repaired: True only from the repair path — this draft's text was fixed by the editor
+            rather than written clean.
+    """
+    if post_id is None:
+        return
+    try:
+        update_db_post_gate_reason(post_id, findings)
+    except Exception as e:
+        log_warning("Could not persist the gate findings — a held post will show no reason", exc=e,
+                    user_id=user_id, post_id=post_id, task_name="create_content")
+    if not mark_repaired:
+        return
+    try:
+        mark_post_gate_demoted(post_id)
+    except Exception as e:
+        log_warning("Could not record that this post went through the repair pass — it will "
+                    "auto-schedule without the repaired-post hold", exc=e, user_id=user_id,
+                    post_id=post_id, task_name="create_content")
+
+
+def _may_auto_approve(user_id: int, post_id: int, auto_schedule: bool,
+                      findings: list[dict]) -> bool:
+    """The ONE approve decision (issue #1134), shared by generation time and the re-score.
+
+    Both call sites read it, so the promote-on-pass path and the generation-time status setter can
+    never drift. Three things have to hold: the user asked for auto-scheduling, nothing in THIS pass's findings
+    demotes, and the post did not reach a passing verdict by being repaired — unless the user
+    switched `hold_repaired_posts_for_review` off. A draft that failed a deterministic check and
+    passed only after the editor pass is precisely the post nobody has ever read, so the default is
+    to put it in front of its author once; the toggle is what keeps that a configurable choice
+    rather than autonomy silently taken away.
+
+    Fail-open on both reads, matching the gates' own posture ("never blocks when unscored"): an
+    unreadable flag or prefs row costs the extra review, never the publish.
+
+    Args:
+        user_id: the author, whose toggle decides what a repaired post costs.
+        post_id: the post being approved.
+        auto_schedule: the user's `auto_schedule_posts` preference, already read by the caller.
+        findings: this pass's gate findings.
+
+    Returns:
+        True when the post may go APPROVED without a human reading it.
+    """
+    if not auto_schedule or demoting_findings(findings):
+        return False
+    if _curated_post_needs_review(user_id, post_id):
+        # A curated post comments on someone else's content: only its owner approves it.
+        log_info("Holding a curated draft for the owner's approval", user_id=user_id,
+                 post_id=post_id, task_name="create_content")
+        return False
+    if post_id is None or not get_post_ever_gate_demoted(post_id):
+        return True
+    # The `.get` default only decides the UNREADABLE-prefs case: a real row always carries the key
+    # (db fills every default in), and an unreadable one hands back {} — where holding a post the
+    # user may well have wanted scheduled is the wrong way to fail, so that case does not hold.
+    hold = bool(_engagement_prefs_or_empty(user_id).get("hold_repaired_posts_for_review", False))
+    if hold:
+        # INFO, not a warning: holding a repaired post is this feature working, and it fires on
+        # every repaired post a user with the default toggle writes.
+        log_info("Holding this post for review — its text was repaired after failing a quality "
+                 "check", user_id=user_id, post_id=post_id, task_name="create_content")
+    return not hold
+
+
+def _log_content_plan_terminal_state(user_id: int, post_id: int, status: PostStatus,
+                                     auto_schedule: bool,
+                                     findings: Optional[list[dict]]) -> None:
+    """Record why a generated post reached its final content-plan status (#2505).
+
+    Emits stable state and reason codes without logging post copy or gate explanations.
+    """
+    held_by = demoting_findings(findings if isinstance(findings, list) else [])
+    if status == PostStatus.ERROR:
+        state = "failed"
+        reason = "post_status_error"
+    elif held_by:
+        state = "held"
+        reason = "quality_gate_findings"
+    elif status == PostStatus.APPROVED:
+        state = "queued"
+        reason = "gates_passed_and_auto_schedule_enabled"
+    else:
+        state = "ready"
+        reason = ("auto_schedule_disabled" if not auto_schedule
+                  else "manual_review_required")
+    log_info("Content plan terminal state", user_id=user_id, post_id=post_id,
+             terminal_state=state, status=status.value, reason=reason,
+             gate_reasons=sorted({str(f.get("gate") or "unknown") for f in held_by}))
+
+
+def _carousel_numeric_claims(carousel: Optional[dict]) -> list[dict]:
+    """Numeric claims per stable slide slot.
+
+    Keeps slide copy out of the audit log.
+    """
+    if not isinstance(carousel, dict):
+        return []
+    claims = []
+    for slide in deck_slides(carousel):
+        if not isinstance(slide, dict):
+            continue
+        key = str(slide.get("key") or "unknown")
+        index = slide.get("index")
+        if index is not None and not isinstance(index, (int, str)):
+            index = str(index)
+        slot = (key, index)
+        text = f"{slide.get('title') or ''}\n{slide.get('content') or ''}"
+        for claim in numeric_claims(text):
+            raw = claim.get("raw") if isinstance(claim, dict) else None
+            if raw is None or isinstance(raw, (dict, list, tuple, set)):
+                continue
+            # Keep unit/suffix in identity: 40 and 40% are distinct claims even though
+            # numeric_claims normalizes both to the same numeric value.
+            claims.append({"slot": slot, "value": str(raw)})
+    return claims
+
+
+def _log_carousel_claim_audit(user_id: int, post_id: int, before: Optional[dict],
+                              after: Optional[dict]) -> None:
+    """Log every numeric claim kept, removed, or introduced by deterministic deck cleanup.
+
+    Emits slide slots and raw numeric tokens (including units), never claim context.
+    """
+    try:
+        before_claims = _carousel_numeric_claims(before)
+        after_claims = _carousel_numeric_claims(after)
+        before_counts = Counter((claim["slot"], claim["value"]) for claim in before_claims)
+        after_counts = Counter((claim["slot"], claim["value"]) for claim in after_claims)
+        outcomes = []
+        for key, count in before_counts.items():
+            kept = min(count, after_counts[key])
+            outcomes.extend((key, "kept") for _ in range(kept))
+            outcomes.extend((key, "removed") for _ in range(count - kept))
+        for key, count in after_counts.items():
+            outcomes.extend((key, "added") for _ in range(count - before_counts[key]))
+        reasons = {"kept": "retained_by_finalizer", "removed": "removed_by_finalizer",
+                   "added": "introduced_by_finalizer"}
+        for (slot, value), outcome in outcomes:
+            log_info("Carousel figure audit", user_id=user_id, post_id=post_id,
+                     slide_key=slot[0], slide_index=slot[1], figure=value,
+                     outcome=outcome, reason=reasons[outcome])
+    except Exception as e:
+        log_warning("Could not record carousel figure audit", exc=e, user_id=user_id,
+                    post_id=post_id)
+
+
+def _engagement_prefs_for_gates(user_id: int) -> tuple[dict, bool]:
+    """The user's engagement preferences for a gate pass, and whether they were actually READ.
+
+    `get_engagement_preferences` answers a failed read with the code defaults, which a gate cannot
+    tell from "the user has no list" — and the forbidden-claim gate (issue #2047) must: a re-score
+    that cannot see the user's list would release a hold that list produced. So the read is made
+    strict here, and a failure is reported as `readable=False` for the caller to carry the
+    recorded hold forward, while every other gate still falls back to the deploy-wide defaults.
+
+    Args:
+        user_id: Whose preferences.
+
+    Returns:
+        `(prefs, readable)` — the preferences (empty when unreadable) and whether the read
+        succeeded.
+    """
+    try:
+        return get_engagement_preferences(user_id, raise_on_error=True) or {}, True
+    except Exception as e:
+        log_warning("Could not load engagement preferences — the gates fall back to the deploy-wide "
+                    "defaults and any recorded forbidden-claim hold is carried forward",
+                    exc=e, user_id=user_id, task_name="create_content")
+        return {}, False
+
+
+def _engagement_prefs_or_empty(user_id: int) -> dict:
+    """Engagement preferences for threshold resolution, never raising — a prefs read that fails just
+    means the gates fall back to the deploy-wide defaults.
+    """
+    try:
+        return get_engagement_preferences(user_id) or {}
+    except Exception as e:
+        log_warning("Could not load engagement preferences — the gates fall back to the deploy-wide "
+                    "defaults", exc=e, user_id=user_id, task_name="create_content")
+        return {}
+
+
+def rescore_post(post_id: int) -> dict:
+    """Re-run the quality gates on a post's CURRENT (possibly user-edited) content and update its
+    hold (issue #421). This is the 'edit & re-score' half of the review flow: a draft that now passes
+    every gate is promoted PENDING -> APPROVED without a full regenerate, and one that still fails
+    keeps a fresh, specific reason. Honors the user's auto-schedule preference — when they review
+    every post by hand, a passing re-score clears the reason but leaves the post PENDING for them.
+
+    Returns {passed, status, authenticity_score, findings, detail} — never raises for a missing post,
+    the caller turns that into a 404.
+    """
+    from cqc_lem.utilities.db import get_post_status, get_post_type, get_post_user_id, get_post_video_url
+
+    user_id = get_post_user_id(post_id)
+    content = get_post_content(post_id)
+    if not user_id or not content:
+        return {"passed": False, "status": None, "authenticity_score": None, "findings": [],
+                "detail": "Post has no content to score"}
+
+    post_type = get_post_type(post_id)
+    post_type = post_type.value if isinstance(post_type, PostType) else post_type
+    prefs, prefs_readable = _engagement_prefs_for_gates(user_id)
+    user_profile = load_profile_for_user(user_id)
+    try:
+        profile_synthesis = get_or_create_profile_synthesis(user_id, user_profile)
+    except Exception as e:
+        log_warning("Could not load the profile synthesis — re-scoring without the user's voice",
+                    exc=e, user_id=user_id, post_id=post_id, task_name="rescore_post")
+        profile_synthesis = None
+
+    # Re-judge authenticity against the edited text — a stale score would let an unchanged hold
+    # survive a genuine rewrite (and vice versa).
+    _score_and_persist_authenticity(user_id, post_id, content, user_profile, profile_synthesis, prefs)
+    score = get_post_authenticity_score(post_id)
+
+    archetype = _post_archetype_or_none(post_id)
+    findings = evaluate_post_gates(
+        post_id, content, post_type, get_post_video_url(post_id), engagement_prefs=prefs,
+        authenticity_score=score,
+        # The post is already saved, so it would match ITSELF at 100% without this exclusion.
+        recent_texts=get_recent_post_texts(user_id, exclude_post_id=post_id),
+        user_profile=user_profile, profile_synthesis=profile_synthesis,
+        # Re-runs the no-fabrication guard against the EDITED text, so filling the placeholders in
+        # with real numbers is what clears the hold — but a figure the last grade named as unbacked
+        # and the author left in place stays held (issue #1971): Re-score without an edit is not
+        # an approval.
+        archetype=archetype, fact_anchors=_fact_anchors_for(user_id, archetype),
+        author_edited=True, cta_keyword=_cta_keyword_for(user_id, post_id),
+        extra_fact_sources=_post_material_sources(user_id, post_id, profile_synthesis),
+        previously_unverified=_recorded_unbacked_specifics(post_id),
+        user_id=user_id, content_mix=_post_content_mix(post_id))
+    # A re-score that could not read the user's forbidden-claim list graded against the global
+    # floor only (issue #2047): the hold that list produced is carried forward, never cleared by a
+    # pass that could not see it — persisting an empty verdict here would auto-approve the post.
+    if not prefs_readable:
+        findings = _carry_forbidden_claim_hold(post_id, findings)
+    _persist_gate_findings(user_id, post_id, findings)
+
+    passed = not demoting_findings(findings)
+    status = get_post_status(post_id)
+    detail = "Still held for review" if not passed else "Passed every quality gate"
+    if passed and status == PostStatus.PENDING.value:
+        auto_schedule = bool((get_user_preferences(user_id) or {}).get("auto_schedule_posts", False))
+        # Same helper as the generation-time decision (issue #1134), so a repaired post cannot be
+        # promoted here by a re-score that the author never actually read. `_persist_gate_findings`
+        # above is a PRE-EXISTING caller and stays at `mark_repaired=False`: re-scoring grades the
+        # text, it does not repair it.
+        if _may_auto_approve(user_id, post_id, auto_schedule, findings):
+            update_db_post_status(post_id, PostStatus.APPROVED, approved_by=PostApprover.RESCORE)
+            status = PostStatus.APPROVED.value
+            detail = "Passed every quality gate — approved and queued"
+        elif auto_schedule:
+            detail = ("Passed every quality gate — approve it when you're ready "
+                      "(this draft was repaired after failing a check, so it waits for you)")
+        else:
+            detail = ("Passed every quality gate — approve it when you're ready "
+                      "(auto-scheduling is off)")
+    log_info(f"Re-scored post {post_id}: {detail}", user_id=user_id, post_id=post_id,
+             task_name="rescore_post")
+    return {"passed": passed, "status": status, "authenticity_score": score,
+            "findings": findings, "detail": detail}
+
+
+def _score_and_persist_dwell(user_id: int, post_id: int, content: str) -> Optional[int]:
+    """Compute the deterministic dwell-proxy score for a finished post and persist it next to the
+    authenticity score (issue #391 — C2). No LLM, no gate: dwell is the dominant 2026 ranking signal
+    but our score is a heuristic proxy, so a weak one only logs the specific structural reasons for
+    review. Best-effort — a DB hiccup never blocks the pipeline.
+    """
+    if not content or post_id is None:
+        return None
+    try:
+        report = dwell_report(content)
+        score = report["score"]
+        update_db_post_dwell_score(post_id, score)
+        metrics = report["metrics"]
+        min_score = dwell_score_min()
+        if score < min_score:
+            log_warning(f"Post dwell-proxy score {score} < {min_score}: "
+                        f"{'; '.join(report['issues']) or 'no specific issues'}",
+                        user_id=user_id, post_id=post_id, task_name="create_content")
+        else:
+            log_info(f"Post dwell-proxy score {score} "
+                     f"({metrics['words']} words, ~{metrics['read_seconds']}s read, "
+                     f"{metrics['paragraphs']} paragraphs)",
+                     user_id=user_id, post_id=post_id, task_name="create_content")
+        return score
+    except Exception as e:
+        log_warning("Dwell scoring raised — this post carries no dwell-proxy score", exc=e,
+                    user_id=user_id, post_id=post_id, task_name="create_content")
+        return None
+
+
+def _author_facts(user_id: int, profile_synthesis=None, user_profile=None) -> list:
+    """The AUTHOR's own facts — every active story-bank entry plus their profile — and nothing else.
+
+    What a company or industry claim about the author's work must trace to (showcase round 4).
+    Research findings are deliberately absent: they describe the market, not the author.
+    """
+    return list(_fact_anchors(user_id)) + _profile_facts(user_id, profile_synthesis, user_profile)
+
+
+def _profile_facts(user_id: int, profile_synthesis=None, user_profile=None) -> list:
+    """The author's PROFILE as text — the voice brief and the scraped profile, nothing else.
+
+    Since showcase round 6 this is where the profile's INDUSTRY terms are read from
+    (`story_bank.industry_terms_in`), so the industry check can flag one the story never names.
+    """
+    facts = []
+    if profile_synthesis:
+        facts.append(json.dumps(profile_synthesis, default=str)
+                     if isinstance(profile_synthesis, dict) else str(profile_synthesis))
+    if user_profile is not None and hasattr(user_profile, "model_dump_json"):
+        try:
+            facts.append(user_profile.model_dump_json())
+        except Exception as e:
+            log_debug("Profile not serializable for the industry-claim check", error=str(e),
+                      user_id=user_id, task_name="create_text_post")
+    return facts
+
+
+def _industry_claims(content: str, bank_facts: list, profile_terms: list) -> list:
+    """Industry terms the draft attaches to the author that the STORY BANK never names.
+
+    Showcase round 6: checked against the bank alone — the profile's industry ("E-commerce") is
+    who the author's readers are, not where a story happened, so it no longer clears a claim; a
+    profile term framing the post ("In AI-driven e-commerce, …") is flagged too.
+    """
+    return _story_bank.unsourced_industry_claims(content, bank_facts, profile_terms)
+
+
+def _fabricated_specifics(content: str, story: Optional[dict],
+                          profile_synthesis: Optional[str] = None,
+                          *extra_sources: Optional[str]) -> list:
+    """First-person specifics in the draft that appear in NONE of the material we supplied — i.e.
+    invented facts about the author (issue #620, enforcing the #416 no-fabrication rule). Only
+    meaningful when a story entry was selected: with no entry there is no allow-list, so every
+    number would look fabricated and the check is skipped entirely. `extra_sources` covers other
+    text we legitimately handed the writer (e.g. the lead-magnet CTA directive, whose keyword or
+    resource name can carry a number) so it is never flagged as invented.
+    """
+    if not story or not content:
+        return []
+    return _story_bank.unsourced_specifics(
+        content, _story_bank.fact_sources(story, profile_synthesis, *extra_sources))
+
+
+def _review_gate_findings(similarity: Optional[dict], *, proof_missing: bool,
+                          fabricated: Optional[list], fact_report: Optional[dict],
+                          slop: Optional[dict],
+                          profile_synthesis: Optional[str] = None,
+                          forbidden: Optional[list] = None,
+                          consistency: Optional[list] = None) -> list[dict]:
+    """The review gate's deterministic failures as structured findings (issue #1134).
+
+    The same vocabulary `evaluate_post_gates` speaks, built from the measurements the review gate
+    has already taken — so the editor's repair brief and the reason recorded on the post are one
+    thing, not two paraphrases of it. Pass a verdict as None/empty to say that check passed.
+
+    Args:
+        similarity: the near-duplicate verdict, only when it failed. None leaves the similarity
+            finding to `_record_post_similarity_finding`, which owns that half of `gate_reason`.
+        proof_missing: the A2 personal-proof slot came back empty.
+        fabricated: first-person specifics the supplied material does not contain.
+        fact_report: the fact-grounding report, only when it found unverified specifics.
+        slop: the slop-lint report, only when a HARD check fired.
+        profile_synthesis: the author's voice brief, which the proof finding points the editor at.
+        forbidden: the forbidden-claim subjects the draft attached a figure to (issue #1971).
+        consistency: the date/timeline issues `fact_consistency.consistency_report` found
+            (showcase round 6).
+
+    Returns:
+        The findings, in the order the checks are named in the review gate. Empty when the draft
+        under measurement failed nothing.
+    """
+    findings: list[dict] = []
+    if similarity:
+        findings.append(similarity_finding(similarity["score"], similarity["threshold"],
+                                           similarity["match"], measure=similarity["measure"]))
+    if proof_missing:
+        findings.append(proof_finding(profile_synthesis))
+    if fabricated:
+        findings.append(fabrication_finding(fabricated))
+    if fact_report and fact_report.get("unverified"):
+        findings.append(fact_grounding_finding(fact_report["unverified_values"],
+                                               fact_report.get("placeholders")))
+    if forbidden:
+        findings.append(forbidden_claim_finding(forbidden))
+    if consistency:
+        findings.append(fact_consistency_finding(consistency))
+    if slop and not slop.get("passes", True):
+        findings.append(slop_finding(violation_reasons(slop["hard"]),
+                                     violation_reasons(slop.get("warnings"))))
+    return findings
+
+
+def _repair_draft(ctx: PostDraftContext, content: str, findings: list[dict],
+                  cta_keyword: Optional[str], story: Optional[dict] = None) -> Optional[str]:
+    """Hand a failing draft to the EDITOR to fix (issue #1134) — the review gate's repair pass.
+
+    This is the whole point of the change: a deterministic check failing used to be answered by the
+    writer composing again against the same brief, which is a second attempt by the same author,
+    not a second opinion. `get_ai_linked_post_refinement` is a different prompt family — an editor
+    revising a finished draft — and it is handed the findings themselves, so it is fixing named
+    faults in THIS text rather than writing new text that might miss them differently.
+
+    The editor is handed the WRITER's own story-bank directive alongside the findings. Without it
+    the two findings that name a first-person specific — proof and fabrication — are unanswerable:
+    they ask for a real lived detail to be added or substituted while banning invention, and the
+    editor can see only the draft. The writer had that material (it is `ctx.story_directive`, the
+    same string `_draft_from_source` used), and it carries the bank's own absolute rule that its
+    facts are the ONLY personal specifics allowed — so passing it both enables the repair and
+    bounds it. No entry means the no-story directive, which is that rule with nothing to draw on.
+
+    The deterministic passes the first draft went through run again over the edit (LinkedIn
+    sanitisation, the engagement-bait strip, then the humanize pass), so the repaired draft is
+    graded on the same footing as the one it replaces.
+
+    Fails soft: any exception, or an editor that returns nothing, leaves the caller with the first
+    draft — the gates still hold it, which is exactly what they are for.
+
+    Args:
+        ctx: the settled inputs this post was written from.
+        content: the failing draft.
+        findings: what to fix, from `_review_gate_findings`.
+        cta_keyword: the sanctioned lead-magnet trigger word the edit must preserve.
+        story: the story-bank entry the draft was anchored to, used only to rebuild the directive
+            when the context never carried one.
+
+    Returns:
+        The repaired draft, or None when the repair produced nothing usable.
+    """
+    try:
+        repaired = get_ai_linked_post_refinement(
+            content, prefs=ctx.prefs, preserve_cta_keyword=cta_keyword,
+            repair_findings=findings,
+            repair_source_material=ctx.story_directive or _story_bank.story_directive(story))
+        if not repaired:
+            return None
+        repaired = strip_engagement_bait(sanitize_for_linkedin(repaired),
+                                         exempt_keyword=cta_keyword).strip()
+        if not repaired:
+            return None
+        return humanize_text(repaired, content_type="post",
+                             profile_synthesis=ctx.profile_synthesis, prefs=ctx.prefs)
+    except Exception as e:
+        log_warning("Review-gate repair pass failed; keeping first draft", exc=e,
+                    user_id=ctx.user_id, post_id=ctx.post_id, task_name="create_text_post")
+        return None
+
+
+@llm_step("review")
+def _review_generated_post(ctx: PostDraftContext, content: str, recent_texts: list,
+                           story: Optional[dict] = None,
+                           cta_keyword: Optional[str] = None) -> str:
+    """The post-generation REVIEW GATE (the newsletter's dedup maturity applied to posts): compare
+    the finished post against the user's recent posts with `post_similarity_report` — embedding
+    cosine first, token overlap when the embedding endpoint is down (#1265) — check the A2
+    personal-proof slot (a concrete first-person lived detail), AND
+    check that every first-person specific traces back to the user's story-bank entry. On a
+    fact-anchored archetype (#619) the numbers get a second pass too — any figure the post asserts
+    that NOTHING in the user's verified bank backs. Too similar (> POST_EMBEDDING_SIMILARITY_MAX, or
+    > POST_SIMILARITY_MAX on the degraded path),
+    missing proof, fabricated specifics, or unverified numbers → REPAIR the draft ONCE through the
+    editor (`_repair_draft`, issue #1134) with the failures named as structured findings; still
+    failing → log a structured warning and keep the repaired draft (never loop, never hard-block —
+    the GATES are what hold a still-failing draft out of auto-publish). Also runs the cheap
+    focus-alignment check on whatever content ships.
+
+    Repairing rather than re-writing is the point (issue #1134): the retry used to re-enter the
+    generate/refine core, which is the same author having a second go at the same brief. The
+    failure is now handed to a different prompt family — an editor revising THIS text — and the
+    fact that a draft needed that is recorded once on `posts.ever_gate_demoted`, because no later
+    pass can re-derive it: by the time the gates run, the draft that failed is gone.
+
+    The similarity verdict on the draft this returns is RECORDED on the post (issue #1452) so
+    `_gate_findings_for_post` can hold a still-over draft at PENDING without paying a second
+    embedding call: this is the only place that measurement exists, because the post history and the
+    `post_similarity_report` call both live here.
+
+    Args:
+        ctx: everything the draft under review was written from (issue #1217) — the same context
+            the repair pass reads its prefs and voice brief from, so the edit cannot be steered off
+            the post that was planned.
+        content: the finished draft to grade.
+        recent_texts: the user's recent posts, already loaded by the caller.
+        story: the story-bank entry the draft was anchored to, or None when the bank grounded
+            nothing (which switches the fabrication check off entirely — see `_fabricated_specifics`).
+        cta_keyword: this post's sanctioned lead-magnet trigger word, exempt from the slop lint's
+            engagement-bait check.
+
+    Returns:
+        The draft that ships — the first one, or the single repaired edit of it.
+    """
+    user_id, post_id = ctx.user_id, ctx.post_id
+    prefs, profile_synthesis = ctx.prefs, ctx.profile_synthesis
+    user_profile, blueprint = ctx.user_profile, ctx.blueprint
+    lead_magnet_cta = ctx.lead_magnet_cta
+
+    similarity = post_similarity_report(content, recent_texts, prefs)
+    score, threshold = similarity["score"], similarity["threshold"]
+    too_similar = similarity["too_similar"]
+    missing_proof = not has_first_person_proof(content)
+    proof_regen = missing_proof and _proof_regen_enabled()
+    fabricated = _fabricated_specifics(content, story, profile_synthesis, lead_magnet_cta)
+    # Company/industry claims (showcase round 4: an "e-commerce platform" bolted onto a build
+    # story) are checked against the STORY BANK only since round 6 — the profile's industry is who
+    # reads the author, never evidence of where a story happened (`_industry_claims`).
+    bank_facts = _fact_anchors(user_id)
+    profile_terms = _story_bank.industry_terms_in(
+        " ".join(str(f) for f in _profile_facts(user_id, profile_synthesis, user_profile)))
+    fabricated += [t for t in _industry_claims(content, bank_facts, profile_terms)
+                   if t not in fabricated]
+    fabrication_regen = bool(fabricated) and _fabrication_regen_enabled()
+    # No-fabrication guard (issue #619 / G4) on the archetypes whose value IS the specifics — and,
+    # since #1971, on EVERY post while the post surface is HARD: a third-person industry figure
+    # publishes under the same byline as a first-person one, and the first-person-only check above
+    # let three invented ones ship. Checked against the user's verified story bank (#620 / G5) plus
+    # the material the writer was actually given (profile brief, research, CTA), so a real number
+    # out of any of it passes and only an invented one is flagged. The story-exact check above is
+    # the stricter of the two and stays responsible for first-person specifics.
+    archetype = (blueprint or {}).get("format")
+    grading_facts = _grades_fact_grounding(archetype)
+    anchors = (_fact_anchors(user_id) + _post_material_sources(
+        user_id, post_id, profile_synthesis, lead_magnet_cta, ctx.story_directive)
+        if grading_facts else [])
+    fact_report = fact_grounding_report(content, anchors) if grading_facts else None
+    unverified = bool(fact_report and fact_report["unverified"])
+    # Forbidden claims (issue #1971): a figure attached to a subject the author has ruled out,
+    # HARD regardless of grounding. The user's own list (issue #2047) plus the global floor,
+    # resolved ONCE for both the draft and its repair.
+    forbidden_terms = _story_bank.effective_forbidden_claim_terms(prefs)
+    forbidden = _story_bank.forbidden_claims(content, forbidden_terms)
+    # Deterministic slop lint (issue #625 / D1) — one regeneration here, then the `ai_slop` gate
+    # holds whatever still trips it. Only HARD violations are worth a retry; the warn-severity
+    # signals (burstiness, rule-of-three) are advisory and reported by the gate.
+    plain_fold = bool((blueprint or {}).get("plain_fold"))
+    slop = slop_lint_report(content, "post", exempt_keyword=cta_keyword, plain_fold=plain_fold)
+    slopped = not slop["passes"]
+    # Dates and timelines (showcase round 6): a weekday that is not the date's, a deadline before
+    # the offer, more elapsed time than has passed since the anchoring story happened.
+    happened_at = (story or {}).get("happened_at")
+    # Showcase round 7: a figure in the hook needs a story-bank fact or a named source in the body
+    # (slot_141 opened on an unsourced "5.6 hours per week"). Round 8: on EVERY post — it was
+    # gated on the numbers being graded, so a tactical_list under WARN-severity grounding shipped
+    # "by over 90 %" in its hook unchecked.
+    hook_facts = bank_facts + [s for s in (lead_magnet_cta,) if s]
+    # Round 9: ONE story per post — a second case told beside the anchor (slot_130) is a finding.
+    story_text = _story_bank.entry_text(story) if story else None
+    consistency = consistency_report(
+        content, happened_at, hook_facts=hook_facts,
+        hook_flagged=(fact_report or {}).get("unverified_values"), story_text=story_text,
+        recent_texts=recent_texts)["issues"]
+
+    if (not too_similar and not proof_regen and not fabrication_regen and not unverified
+            and not slopped and not forbidden and not consistency):
+        if missing_proof:
+            log_warning("Generated post lacks a concrete first-person lived detail (A2 proof slot)",
+                        user_id=user_id, post_id=post_id, task_name="create_text_post")
+        if fabricated:
+            log_warning(f"Generated post states first-person specifics not in the story bank: "
+                        f"{', '.join(fabricated)}",
+                        user_id=user_id, post_id=post_id, task_name="create_text_post")
+        _record_post_similarity_finding(post_id, similarity, user_id=user_id)
+        _record_consistency_finding(post_id, [], user_id=user_id)
+        _check_post_alignment(content, prefs, user_id, post_id, user_profile, profile_synthesis)
+        return content
+
+    reasons = []
+    if too_similar:
+        reasons.append(f"too similar to a recent post ({similarity['measure']} score {score:.2f} "
+                       f"> max {threshold:.2f})")
+    if proof_regen:
+        reasons.append("missing a concrete first-person lived detail (A2 proof slot)")
+    if fabrication_regen:
+        reasons.append(f"states unsourced first-person specifics ({', '.join(fabricated)})")
+    if unverified:
+        reasons.append("states specifics no verified fact backs ("
+                       + ", ".join(fact_report["unverified_values"][:5]) + ")")
+    if forbidden:
+        reasons.append("attaches a figure to a forbidden-claim subject (" + ", ".join(forbidden) + ")")
+    if slopped:
+        reasons.append("trips the AI-slop lint (" + "; ".join(violation_reasons(slop["hard"])) + ")")
+    if consistency:
+        reasons.append("states an impossible date or timeline (" + "; ".join(consistency) + ")")
+    log_info(f"Post {'; '.join(reasons)} — repairing once with the editor pass")
+
+    # The failure, in the structured form the review queue speaks (issue #1134) — it is both what
+    # the editor is briefed with and what is recorded on the post, so the author and the model are
+    # told the same thing about the same draft.
+    findings = _review_gate_findings(
+        similarity if too_similar else None,
+        proof_missing=proof_regen, fabricated=fabricated if fabrication_regen else [],
+        fact_report=fact_report if unverified else None, slop=slop if slopped else None,
+        profile_synthesis=profile_synthesis, forbidden=forbidden, consistency=consistency)
+    _persist_gate_findings(user_id, post_id, findings, mark_repaired=True)
+
+    second = _repair_draft(ctx, content, findings, cta_keyword, story=story)
+    if second:
+        # The editor can reintroduce a wrong weekday or a sign-off; both have a deterministic fix.
+        second = _deterministic_fact_cleanup(second, user_id=user_id, post_id=post_id)
+    if not second:
+        # The first draft is what ships, so ITS verdict is the one the gate pass must read.
+        _record_post_similarity_finding(post_id, similarity, user_id=user_id)
+        _check_post_alignment(content, prefs, user_id, post_id, user_profile, profile_synthesis)
+        return content
+
+    # Re-graded, not re-used: the repaired draft is different text, and the second embedding call
+    # only happens on the repair path (a clean first draft still costs exactly one).
+    second_similarity = post_similarity_report(second, recent_texts, prefs)
+    still_fabricated = _fabricated_specifics(second, story, profile_synthesis, lead_magnet_cta)
+    still_fabricated += [t for t in _industry_claims(second, bank_facts, profile_terms)
+                         if t not in still_fabricated]
+    second_fact_report = fact_grounding_report(second, anchors) if fact_report is not None else None
+    still_inconsistent = consistency_report(
+        second, happened_at, hook_facts=hook_facts,
+        hook_flagged=(second_fact_report or {}).get("unverified_values"),
+        story_text=story_text, recent_texts=recent_texts)["issues"]
+    second_forbidden = _story_bank.forbidden_claims(second, forbidden_terms)
+    second_slop = slop_lint_report(second, "post", exempt_keyword=cta_keyword,
+                                   plain_fold=plain_fold)
+    # Recorded BEFORE the similarity verdict is merged in: this write replaces the column, and
+    # `_record_post_similarity_finding` is what owns the similarity half of it. An empty list is
+    # the meaningful case, not a no-op — it clears the first draft's findings off a post whose
+    # repair worked. Still `mark_repaired=True`: the flag is about the text having been repaired,
+    # which no later verdict can undo.
+    _persist_gate_findings(user_id, post_id, _review_gate_findings(
+        None,  # the similarity finding is `_record_post_similarity_finding`'s to write
+        proof_missing=not has_first_person_proof(second), fabricated=still_fabricated,
+        fact_report=second_fact_report if (second_fact_report or {}).get("unverified") else None,
+        slop=second_slop if not second_slop["passes"] else None,
+        profile_synthesis=profile_synthesis, forbidden=second_forbidden,
+        consistency=still_inconsistent), mark_repaired=True)
+    _record_post_similarity_finding(post_id, second_similarity, user_id=user_id)
+    if second_similarity["too_similar"]:
+        log_warning(f"Post still similar to a recent post after repair "
+                    f"({second_similarity['measure']} score {second_similarity['score']:.2f} > "
+                    f"max {second_similarity['threshold']:.2f}); the similarity gate will hold it "
+                    f"for review",
+                    user_id=user_id, post_id=post_id, task_name="create_text_post")
+    if not has_first_person_proof(second):
+        log_warning("Post still lacks a concrete first-person lived detail after repair "
+                    "(A2 proof slot); keeping the repaired draft",
+                    user_id=user_id, post_id=post_id, task_name="create_text_post")
+    if still_fabricated:
+        log_warning(f"Post still states first-person specifics not in the story bank after repair "
+                    f"({', '.join(still_fabricated)}); keeping the repaired draft",
+                    user_id=user_id, post_id=post_id, task_name="create_text_post")
+    # INFO, not WARNING: a gate holding a draft for review is the expected outcome of this path
+    # (every post is graded since #1971), and the status-setter already warns once per held post.
+    if second_fact_report is not None and second_fact_report["unverified"]:
+        log_info("Post still states unverified specifics after repair — the fact-grounding gate "
+                 "will hold it for review",
+                 user_id=user_id, post_id=post_id, task_name="create_text_post")
+    if second_forbidden:
+        log_info("Post still attaches a figure to a forbidden-claim subject after repair — the "
+                 "forbidden-claim gate will hold it for review",
+                 user_id=user_id, post_id=post_id, task_name="create_text_post")
+    if still_inconsistent:
+        # INFO: the recorded finding holds the post at PENDING, which is this path working.
+        log_info("Post still states an impossible date or timeline after repair — held for "
+                 "review: " + "; ".join(still_inconsistent),
+                 user_id=user_id, post_id=post_id, task_name="create_text_post")
+    still_slop = [v for v in second_slop["hard"] if v.get("check") != CHECK_FOLD_JARGON]
+    if still_slop:
+        log_warning("Post still trips the AI-slop lint after repair — the ai_slop gate will hold it "
+                    "for review: " + "; ".join(violation_reasons(still_slop)),
+                    user_id=user_id, post_id=post_id, task_name="create_text_post")
+    elif not second_slop["passes"]:
+        # INFO: the fold rule spends exactly ONE rewrite on the opening (showcase round 4); what
+        # survives it is recorded on the post above and never holds it.
+        log_info("Post opening still carries engineering jargon after its one rewrite — recorded "
+                 "on the post", user_id=user_id, post_id=post_id, task_name="create_text_post")
+    _check_post_alignment(second, prefs, user_id, post_id, user_profile, profile_synthesis)
+    return second
+
+
+# The post types the planner can write, and how many SOURCES one draft may try before it ships
+# whatever the last generator handed back. The type fallback used to be `create_text_post` calling
+# itself (issue #1217), which re-ran the profile scrape, story selection, blueprint choice and
+# lead-magnet read on every miss and was bounded only by the menu emptying. `_compose_draft`'s loop
+# re-runs the GENERATE step alone, and each miss drops the exhausted type off the menu, so three
+# attempts are three distinct sources — one more than the two types that can miss at all.
+_POST_TYPES = ["thought_leadership", "blog_summary", "website_content", "industry_news",
+               "personal_story", "engagement_prompt"]
+_DRAFT_SOURCE_ATTEMPTS = 3
+
+
+def _post_source_for_slot(post_id: Optional[int]) -> str:
+    """The source archetype a planned post is written from — ROTATED, not drawn at random.
+
+    The cadence is the reason this cannot stay a random draw (issue #1526). At the default 3/week a
+    user writes ~13 posts a month, and an unweighted draw over six sources leaves roughly a one in
+    ten chance that `blog_summary` (or `personal_story`) never comes up at all in a month — which is
+    what "no new story or blog-aligned posts" reads like from the outside. Rotating on the planned
+    row's own id spreads the sources across consecutive rows and stores no new state: a plan
+    inserts its rows in one pass, so their ids advance by one per slot.
+
+    That spread is not a per-user COVERAGE guarantee, and must not be read as one: only the text
+    and video rows of a plan reach this function (carousels and documents spend an id on their own
+    generator), so a user's text drafts land on a subsequence of the rotation. What it does buy is
+    that the pick is stable and evenly distributed over the ids rather than re-rolled per draft.
+
+    Args:
+        post_id: the planned post row this draft fills.
+
+    Returns:
+        The archetype to write. A draft with no planned row (a preview, a one-off regeneration)
+        keeps the random draw — there is no slot to rotate on.
+    """
+    if post_id is None:
+        return random.choice(_POST_TYPES)
+    try:
+        return _POST_TYPES[int(post_id) % len(_POST_TYPES)]
+    except (TypeError, ValueError):
+        return random.choice(_POST_TYPES)
+
+
+def _next_source_in_rotation(current: str, menu: list, post_id: Optional[int] = None) -> str:
+    """The replacement source after `current` reported no source, kept in rotation.
+
+    The fallback half of `_post_source_for_slot`: a user with no blog rolls off `blog_summary` on
+    every slot that lands on it, and re-drawing at random there re-opens the same starvation the
+    rotation exists to close.
+
+    The replacement has to keep rotating ACROSS slots as well, which is why the slot's id picks it
+    whenever there is one. Always stepping to the next menu entry would funnel every `blog_summary`
+    AND every `website_content` slot of a user with neither source onto the same successor — that
+    user would get half their posts as `industry_news` and one in six as `personal_story`, which is
+    the starvation of issue #1526 the other way round.
+
+    Args:
+        current: the archetype that just reported no source.
+        menu: the archetypes not yet exhausted for this draft — never empty, and never holds
+            `current`.
+        post_id: the planned row this draft fills; the slot the replacement rotates on.
+
+    Returns:
+        The menu entry this slot rotates onto; with no usable slot, the next entry after `current`,
+        wrapping, or the first entry when `current` is not part of the rotation at all.
+    """
+    if post_id is not None:
+        try:
+            return menu[int(post_id) % len(menu)]
+        except (TypeError, ValueError):
+            pass
+    if current in _POST_TYPES:
+        start = _POST_TYPES.index(current)
+        for candidate in _POST_TYPES[start + 1:] + _POST_TYPES[:start]:
+            if candidate in menu:
+                return candidate
+    return menu[0]
+
+
+def _resolve_user_profile(user_id: int) -> LinkedInProfile:
+    """The profile a post is written from, scraped live with the cached DB profile as the fallback.
+
+    Args:
+        user_id: the author.
+
+    Returns:
+        The live profile, else the user's cached DB profile, else a neutral placeholder — never
+        None, because the generators call `model_dump_json()` on whatever they are handed.
+    """
+    user_profile = None
+    # A suggest-only account never gets a browser (issue #2367): it goes straight to the cached
+    # profile below, which is what a failed live scrape falls back to anyway.
+    if browser_automation_allowed(user_id):
+        user_email, user_password = get_user_password_pair_by_id(user_id)
+        driver, wait = get_driver_wait_pair(session_name='Create Text Post', user_id=user_id)
+        try:
+            user_profile = get_my_profile(driver, wait, user_email, user_password, user_id=user_id)
+        except Exception as e:
+            log_info(f"Error getting user profile: {e}")
+            user_profile = None
+        finally:
+            quit_gracefully(driver)
+    else:
+        log_debug("Live profile scrape skipped — suggest-only engagement mode", user_id=user_id)
+
+    # get_my_profile RETURNS None on a failed scrape as well as raising (issue #1101), and a
+    # DOM change makes that the normal failure — so the fallback ladder has to cover both or
+    # None reaches the generators and dies on `None.model_dump_json()`.
+    if user_profile is None:
+        # Prefer the user's cached DB profile (no Selenium) — the old hardcoded "John Doe,
+        # Software Developer at ABC Inc." dummy leaked a tech persona into generated posts
+        # whenever the live profile load hiccupped. Neutral dummy only as a last resort.
+        try:
+            user_profile = load_profile_for_user(user_id)
+        except Exception as e2:
+            # DEBUG: load_profile_for_user warns on both of its own failure paths, so a second
+            # record here files a duplicate issue for one lost profile (issue #1038).
+            log_debug(f"Cached profile unavailable: {e2}")
+            user_profile = None
+    if user_profile is None:
+        user_profile = LinkedInProfile(full_name="LinkedIn Member", job_title="Professional")
+    return user_profile
+
+
+def _resolve_post_history(user_id: int, post_id: Optional[int], similarity_check: bool,
+                          history_directive: Optional[str]) -> Tuple[list, str]:
+    """The user's recent posts and the AVOID block the writer is steered with.
+
+    Post-history dedup steering (the newsletter's avoid_subjects/avoid_openers, applied to posts):
+    recent posts' opening lines + subject fingerprints ride into the generation prompt as an
+    explicit AVOID block, and the same history feeds the review gate's similarity check.
+
+    Args:
+        user_id: the author.
+        post_id: the planned post row, for log context only.
+        similarity_check: False when some other pass owns the gate, which also makes the history
+            read pointless — the directive is then whatever the caller supplied.
+        history_directive: a directive the caller already built, which wins over deriving one.
+
+    Returns:
+        `(recent_texts, history_directive)`. An unreadable history is never fatal: the post is
+        written with no dedup steering rather than not written.
+    """
+    recent_texts: list = []
+    if similarity_check:
+        try:
+            recent_texts = get_recent_post_texts(user_id)
+        except Exception as e:
+            log_warning("Could not load the recent post history — writing with no dedup steering",
+                        exc=e, user_id=user_id, post_id=post_id, task_name="create_text_post")
+    if history_directive is None:
+        history_directive = history_avoidance_directive(recent_texts)
+    return recent_texts, history_directive
+
+
+def _resolve_story_anchor(user_id: int, post_id: Optional[int], prefs: dict,
+                          blueprint: Optional[dict], story_directive: Optional[str],
+                          content_mix: Optional[str], outcome: Optional[dict] = None,
+                          audience: Optional[dict] = None
+                          ) -> Tuple[Optional[dict], str, Optional[str]]:
+    """The ONE thing the user actually did that this post is anchored to (issue #620).
+
+    That entry is the ONLY personal specific the writer may state. An empty bank — or a bank with
+    nothing related to the user's focus topics — ships the explicit no-fabrication fallback instead,
+    so a missing story degrades to an industry observation rather than an invented anecdote.
+    Selected BEFORE the blueprint so the promo demotion below can still steer shape selection.
+
+    Args:
+        user_id: the author.
+        post_id: the planned post row, for log context.
+        prefs: engagement preferences, whose focus topics narrow which entries are usable.
+        blueprint: the caller's pre-chosen shape, if any, which biases entry selection.
+        story_directive: a directive the caller already built — when set, the entry was chosen by
+            an earlier pass and this is a no-op that keeps the whole post on the same anchor.
+        content_mix: this post's 70/20/10 class.
+        outcome: filled with `cooled` (see `_select_story_for_post`) for the caller.
+        audience: this post's `audience_mix` profile, which prefers a story that fits its reader.
+
+    Returns:
+        `(story, story_directive, content_mix)` — content_mix demoted out of 'promo' when the bank
+        could not ground a case study. Integration seam (#618 x #620): the promo slot demands a
+        case study built on ONE real outcome number, but without an anchor the fabrication detector
+        has no allow-list and is skipped entirely, so the one post most likely to invent a client
+        figure would ship unchecked. The row is re-classed 'value' too (issue #2107), so the
+        governor's next plan and the promo gate both see the post that was actually written.
+    """
+    if story_directive is not None:
+        return None, story_directive, content_mix
+
+    outcome = {} if outcome is None else outcome
+    story = _select_story_for_post(user_id, prefs, blueprint, outcome=outcome, audience=audience,
+                                   post_id=post_id)
+    story_directive = (_story_bank.story_directive(story) if story
+                       else _no_anchor_directive(user_id, outcome))
+    if story:
+        log_info(f"Story bank anchor for post_id={post_id}: "
+                 f"[{story.get('kind')}] {story.get('title')}")
+    else:
+        # DEBUG: an empty bank is the documented resting state for a user who has not filled
+        # one in, and it fires on EVERY post they write. Same shape as db.get_ready_to_post_posts
+        # logging INFO only when the list is non-empty.
+        log_debug("No story bank entry available — writing a non-story archetype")
+
+    if story is None and content_mix == ContentMix.PROMO.value:
+        log_warning("Promo slot has no story-bank anchor — demoting this post to 'value' so a "
+                    "case study cannot be invented", user_id=user_id, post_id=post_id,
+                    task_name="create_text_post")
+        content_mix = ContentMix.VALUE.value
+        if post_id:
+            update_post_content_mix(post_id, content_mix)
+    return story, story_directive, content_mix
+
+
+def _resolve_blueprint(user_id: int, blueprint: Optional[dict], content_mix: Optional[str],
+                       day_weekday: Optional[int], story: Optional[dict],
+                       story_selected_here: bool) -> dict:
+    """The ONE assigned SHAPE this post is written to, plus its verified-fact allow-list.
+
+    Rotates away from this user's recently used post archetypes/hook styles exactly the way
+    newsletter editions rotate — chosen in code, no extra LLM call — and biases away from their
+    historically under-performing shapes (issue #389 / B4).
+
+    Args:
+        user_id: the author.
+        blueprint: the caller's pre-chosen shape; when set, nothing is selected.
+        content_mix: this post's 70/20/10 class. The promo slot's shape is not negotiable — the
+            governor requires a case study (client as hero, real outcome number).
+        day_weekday: the slot's LOCAL weekday, which narrows the archetype menu to that day-type's
+            family (issue #621); rotation and performance weighting still apply WITHIN it.
+        story: the story-bank entry this post is anchored to, if any.
+        story_selected_here: True when the anchor was chosen for THIS call. The no-fabrication
+            allow-list a fact-anchored archetype (#619) writes against is exactly that entry — a
+            number from some OTHER entry was never in this prompt, so stating one is still
+            inventing. A caller that supplied both already paired them.
+
+    Returns:
+        The blueprint, copied rather than mutated so a caller's dict is never changed behind its
+        back — every post-prompt builder threads `fact_anchors` through on it already.
+    """
+    if blueprint is None:
+        day_type = day_type_for_weekday(day_weekday) if day_weekday is not None else None
+        blueprint = _select_post_blueprint(
+            user_id,
+            guidance=PROMO_ARCHETYPE if content_mix == ContentMix.PROMO.value else None,
+            preferred_formats=day_type_formats(day_weekday) if day_type else None)
+        if day_type:
+            log_info(f"Day type for weekday {day_weekday}: {day_type['label']}")
+    log_info(f"Post blueprint: format={blueprint.get('format')} hook={blueprint.get('hook_style')} "
+             f"cta={blueprint.get('cta_style')}")
+    if story_selected_here:
+        blueprint = {**blueprint,
+                     "fact_anchors": _story_bank.fact_sources(story) if story else []}
+    return blueprint
+
+
+def _recent_post_records(user_id: int, post_id: Optional[int], limit: int = 10,
+                         within_days: Optional[int] = None) -> Optional[list]:
+    """The user's recent generated posts (`get_recent_post_records`), newest first, or None.
+
+    The one history read behind the showcase-round-5 rules (audience alternation, story cooldown,
+    hook shapes, topic cap). None means unreadable — every caller then runs without that history,
+    which is never worse than before the rule existed.
+    """
+    try:
+        rows = get_recent_post_records(user_id, limit=limit, exclude_post_id=post_id,
+                                       within_days=within_days)
+    except Exception as e:
+        log_debug("Recent post records unreadable — writing without the rotation history",
+                  error=str(e), user_id=user_id, post_id=post_id, task_name="create_content")
+        return None
+    return list(rows) if isinstance(rows, (list, tuple)) else None
+
+
+def _record_texts(rows: Optional[list]) -> Optional[list]:
+    """The non-empty contents of `_recent_post_records` rows, newest first; None stays None."""
+    if rows is None:
+        return None
+    return [r.get("content") for r in rows if isinstance(r, dict) and r.get("content")]
+
+
+def _resolve_post_audience(user_id: int, post_id: Optional[int], prefs: Optional[dict],
+                           history: Optional[list]) -> Tuple[Optional[dict], Optional[dict]]:
+    """Which ONE reader this post is written for, and the prefs re-aimed at them (showcase round 5).
+
+    Off unless the user's `audience_mix` has a positive share and a secondary audience — then the
+    pick is `audience_mix.select_audience` over the audiences the recent posts recorded.
+
+    Args:
+        user_id: The author.
+        post_id: The post being written, for log context.
+        prefs: Engagement preferences.
+        history: `_recent_post_records` rows.
+
+    Returns:
+        `(prefs, audience)` — prefs unchanged and None for a single-audience author.
+    """
+    mix = prefs.get("audience_mix") if isinstance(prefs, dict) else None
+    if not _audience_mix.mix_active(mix):
+        return prefs, None
+    audience = _audience_mix.select_audience(mix, [r.get("audience") for r in (history or [])])
+    profile = _audience_mix.audience_profile(mix, audience, prefs)
+    log_info(f"Audience for post_id={post_id}: {audience}", user_id=user_id,
+             task_name="create_content")
+    return _audience_mix.audience_prefs(prefs, profile), profile
+
+
+def _without_crowded_focus_topics(prefs: Optional[dict],
+                                  recent_texts: Optional[list]) -> Optional[dict]:
+    """`prefs` minus the focus topics whose cluster already hit the topic cap (showcase round 5).
+
+    Steers topic selection away from a crowded cluster BEFORE drafting, which is cheaper than the
+    regeneration `_diversify_topic` spends after. Leaves prefs alone when it would empty the list.
+    """
+    if not isinstance(prefs, dict):
+        return prefs
+    crowded = crowded_topic_clusters(recent_texts)
+    topics = list(prefs.get("focus_topics") or [])
+    if not crowded or not topics:
+        return prefs
+    kept = [t for t in topics if topic_cluster(str(t), min_hits=1) not in crowded]
+    return {**prefs, "focus_topics": kept} if kept and len(kept) < len(topics) else prefs
+
+
+def _record_generation(user_id: int, post_id: Optional[int], audience: Optional[dict],
+                       story: Optional[dict]) -> None:
+    """Record the post's audience and story-bank entry (`posts.audience` / `posts.story_id`).
+
+    What the next post's audience pick and story cooldown read back (showcase round 5). Written at
+    generation time, before the content is stored, so a post generated in the same run counts.
+    """
+    if post_id is None:
+        return
+    story_id = story.get("id") if isinstance(story, dict) else None
+    try:
+        update_post_generation_record(post_id, (audience or {}).get("audience"), story_id)
+    except Exception as e:
+        log_warning("Could not record the post's audience and story — the next post's cooldown "
+                    "falls back to reading its wording", exc=e, user_id=user_id, post_id=post_id,
+                    task_name="create_content")
+
+
+def _keyword_cta_capped(user_id: int, post_id: Optional[int]) -> bool:
+    """Whether the keyword artifact ask already ran within `ARTIFACT_CTA_COOLDOWN_DAYS` of this slot.
+
+    Showcase round 5: "Comment AUDIT" closed four of ten posts. The ask is the promo slot's alone,
+    and at most once in any seven days of slots. Fails CLOSED on an unreadable history — a promo
+    post without its keyword costs one ask, a fifth "Comment AUDIT" costs the reader.
+    """
+    try:
+        lead_magnet = get_lead_magnet_settings(user_id)
+    except Exception as e:
+        log_debug("Lead-magnet settings unreadable — no keyword ask to cap", error=str(e),
+                  user_id=user_id, post_id=post_id, task_name="create_text_post")
+        return False
+    if not lead_magnet_enabled(lead_magnet):
+        return False
+    try:
+        texts = get_post_texts_near_slot(user_id, post_id, ARTIFACT_CTA_COOLDOWN_DAYS)
+    except Exception as e:
+        texts = None
+        log_debug("Posts near this slot unreadable", error=str(e), user_id=user_id,
+                  post_id=post_id, task_name="create_text_post")
+    if texts is None:
+        log_warning("Could not read the posts near this slot — the keyword CTA is skipped on it",
+                    user_id=user_id, post_id=post_id, task_name="create_text_post")
+        return True
+    keyword = str(lead_magnet.get("keyword") or "").strip()
+    return any(has_lead_magnet_cta_mechanic(t, keyword) for t in texts)
+
+
+def _cap_promo_keyword(user_id: int, post_id: Optional[int],
+                       content_mix: Optional[str]) -> Optional[str]:
+    """The slot's class, demoted out of 'promo' when its keyword ask is inside the 7-day cooldown.
+
+    A promo post must close on an artifact (`_promo_artifact_finding`), and the artifact a lead
+    magnet user gets is the keyword ask — so a capped promo slot is written, and re-classed, as
+    'value' (the same demotion an anchorless promo slot gets).
+    """
+    if content_mix != ContentMix.PROMO.value or not _keyword_cta_capped(user_id, post_id):
+        return content_mix
+    log_info(f"Keyword CTA already used within {ARTIFACT_CTA_COOLDOWN_DAYS} days of this slot — "
+             f"post_id={post_id} written as 'value'", user_id=user_id, post_id=post_id,
+             task_name="create_text_post")
+    if post_id:
+        update_post_content_mix(post_id, ContentMix.VALUE.value)
+    return ContentMix.VALUE.value
+
+
+def _recent_cta_types(user_id: int, recent_texts: Optional[list] = None) -> list:
+    """The CTA types the user's last posts closed on, most recent first (`cta_type_of`).
+
+    Reads the history only when the caller has none in hand. Unreadable history rotates from
+    nothing, which is never worse than the old fixed close.
+    """
+    if recent_texts is None:
+        try:
+            recent_texts = get_recent_post_texts(user_id, limit=CTA_TYPE_WINDOW)
+        except Exception as e:
+            log_debug("Recent posts unreadable — CTA rotation runs without history",
+                      error=str(e), user_id=user_id, task_name="create_content")
+            recent_texts = []
+    return [cta_type_of(t) for t in list(recent_texts or [])[:CTA_TYPE_WINDOW]]
+
+
+def _steer_post_blueprint(user_id: int, blueprint: Optional[dict], post_id: Optional[int],
+                          content_mix: Optional[str], prefs: Optional[dict] = None,
+                          profile_synthesis=None, recent_texts: Optional[list] = None,
+                          audience: Optional[dict] = None, hook_shape: bool = False
+                          ) -> Optional[dict]:
+    """The showcase-round-4/5 rules hung on a freshly selected blueprint, for posts AND decks.
+
+    The CTA TYPE rotates against the user's recent closes (`select_cta_type`: never the same type
+    twice in three posts, the artifact ask only on the promo slot), and the plain-fold rule
+    (`plain_fold`) is switched on for a post whose reader is a small-business owner
+    (`smb_audience` — per post when the user alternates audiences). Round 5 adds the post's
+    audience directive and, with `hook_shape`, its rotated opening shape — `blueprint_directive`
+    turns all of them into writer instructions.
+
+    Args:
+        user_id: The author.
+        blueprint: The selected blueprint (copied, never mutated).
+        post_id: The planned row, which breaks rotation ties deterministically.
+        content_mix: The slot's 70/20/10 class.
+        prefs: Engagement preferences.
+        profile_synthesis: The author's voice brief.
+        recent_texts: The user's recent posts when the caller already loaded them.
+        audience: This post's `audience_mix` profile, or None for a single-audience author.
+        hook_shape: Assign a rotated opening shape (text posts; a deck's cover is its own hook).
+
+    Returns:
+        The steered blueprint, or the input when it is not a dict.
+    """
+    if not isinstance(blueprint, dict):
+        return blueprint
+    smb = smb_audience(prefs, profile_synthesis, audience)
+    menu_smb = smb if audience else None
+    cta_type = select_cta_type(_recent_cta_types(user_id, recent_texts),
+                               promo=normalize_content_mix(content_mix) == ContentMix.PROMO.value,
+                               sequence_index=post_id, smb=menu_smb)
+    steered = assign_cta_style(blueprint, cta_type, sequence_index=post_id, smb=menu_smb)
+    if smb:
+        steered = {**steered, "plain_fold": True}
+    if audience:
+        steered = {**steered, "audience": audience.get("audience"),
+                   "audience_directive": _audience_mix.audience_directive(audience)}
+    if hook_shape and recent_texts is not None:
+        avoid = steered.get("recent_hook_styles") or ()
+        shape = select_hook_shape(recent_texts, smb=menu_smb,
+                                  allowed=allowed_hook_shapes(steered.get("format"), avoid))
+        style = hook_style_for_shape(shape, steered.get("format"), avoid)
+        steered = {**steered, "hook_shape": shape, "what_if_banned": what_if_banned(recent_texts),
+                   **({"hook_style": style} if style else {})}
+    log_debug(f"CTA type for post_id={post_id}: {cta_type}", user_id=user_id,
+              task_name="create_content")
+    return steered
+
+
+def _resolve_lead_magnet(user_id: int, post_id: Optional[int],
+                         lead_magnet_cta: Optional[str],
+                         allow_artifact: Optional[bool] = None) -> Tuple[Optional[dict], bool, str]:
+    """This post's lead-magnet soft-ask, on the deterministic 1-in-N rotation.
+
+    "Comment KEYWORD and I'll DM it to you" is the compliant way to share a resource and what fires
+    the keyword listener in the automation. Only SOME posts get it (all = spammy/pattern-flagged),
+    and the rotation is keyed off post_id so it is stable and testable.
+
+    Args:
+        user_id: the author.
+        post_id: the planned post row, which keys the rotation.
+        lead_magnet_cta: a directive an earlier pass already built — when set, this is a no-op so
+            the same post stays consistent.
+        allow_artifact: the CTA rotation's verdict (showcase round 4): True only when this post's
+            CTA type is the artifact ask, which `select_cta_type` gives the promo slot alone. None
+            keeps the legacy 1-in-N cadence for a caller with no rotation.
+
+    Returns:
+        `(lead_magnet, include_cta, lead_magnet_cta)`. Unreadable settings ship the post without
+        the comment-keyword mechanic rather than failing it. No-op unless the user enabled the
+        lead magnet with a non-empty keyword.
+    """
+    if lead_magnet_cta is not None:
+        return None, False, lead_magnet_cta
+    try:
+        lead_magnet = get_lead_magnet_settings(user_id)
+        include_cta = (should_include_lead_magnet_cta(lead_magnet, post_id) if allow_artifact is None
+                       else bool(allow_artifact) and lead_magnet_enabled(lead_magnet))
+        lead_magnet_cta = lead_magnet_cta_directive(lead_magnet, include_cta)
+        if lead_magnet_cta:
+            log_info(f"Lead-magnet CTA included on post_id={post_id} "
+                     f"(keyword '{lead_magnet.get('keyword')}')")
+        return lead_magnet, include_cta, lead_magnet_cta
+    except Exception as e:
+        log_warning("Could not read the lead-magnet settings — this post ships without the "
+                    "comment-keyword mechanic", exc=e, user_id=user_id, post_id=post_id,
+                    task_name="create_text_post")
+        return None, False, ""
+
+
+def _draft_from_source(ctx: PostDraftContext) -> Tuple[Optional[str], bool]:
+    """Write ONE draft in `ctx.post_type`'s archetype, and say whether that type had a SOURCE.
+
+    Args:
+        ctx: the settled inputs this draft is written from.
+
+    Returns:
+        `(content, source_available)`. `source_available` is False only when this user has nothing
+        to write this type FROM — no blog, no sitemap, or a sitemap with nothing relevant in it —
+        which is the one condition the type-fallback loop retries. A generator that simply returned
+        nothing is NOT a missing source: the type was writable and the model failed, and re-rolling
+        the type would hide that.
+    """
+    steering = dict(prefs=ctx.prefs, profile_synthesis=ctx.profile_synthesis,
+                    blueprint=ctx.blueprint, lead_magnet_cta=ctx.lead_magnet_cta,
+                    history_directive=ctx.history_directive,
+                    story_directive=ctx.story_directive, content_mix=ctx.content_mix)
+    # Only the ai_helper generators take the post/user ids (they research and cost-attribute per
+    # post); the two source-backed ones are handed their source instead.
+    attribution = dict(post_id=ctx.post_id, user_id=ctx.user_id)
+
+    if ctx.post_type == "blog_summary":
+        user_main_blog_url = get_user_blog_url(ctx.user_id)
+        blog_post_url, blog_post_content = get_main_blog_url_content(user_main_blog_url)
+        if not (blog_post_url and blog_post_content):
+            log_info("No blog post found for this user. Generating another post type")
+            return None, False
+        process_selected_post(blog_post_url, blog_post_content)
+        # The user's own article is the source every number in this draft may come from (#1971).
+        record_supplied_material(ctx.post_id, blog_post_content)
+        return get_blog_summary_post_from_ai(blog_post_url, blog_post_content, ctx.user_profile,
+                                             ctx.stage, **steering), True
+
+    if ctx.post_type == "website_content":
+        sitemap_url = get_user_sitemap_url(ctx.user_id)
+        if not sitemap_url:
+            log_info("No sitemap found for this user. Generating another post type")
+            return None, False
+        content = generate_website_content_post(sitemap_url, ctx.user_profile, ctx.stage,
+                                                post_id=ctx.post_id, **steering)
+        if not content:
+            log_info("No relevant content found in the sitemap. Generating another post type")
+            return None, False
+        return content, True
+
+    if ctx.post_type == "thought_leadership":
+        return get_thought_leadership_post_from_ai(ctx.user_profile, ctx.stage,
+                                                   **steering, **attribution), True
+    if ctx.post_type == "industry_news":
+        return get_industry_news_post_from_ai(ctx.user_profile, ctx.stage,
+                                              **steering, **attribution), True
+    if ctx.post_type == "personal_story":
+        return get_personal_story_post_from_ai(ctx.user_profile, ctx.stage,
+                                               **steering, **attribution), True
+    return generate_engagement_prompt_post(ctx.user_profile, ctx.stage,
+                                           **steering, **attribution), True
+
+
+def _refine_draft(content: str, ctx: PostDraftContext, cta_keyword: Optional[str],
+                  bait_exempt_keyword: Optional[str]) -> str:
+    """The two LLM rewrite passes plus the deterministic bait strip, in order.
+
+    Both passes get the user's prefs so the rewrites can't re-introduce emojis/hashtags the user
+    turned off (or flatten a configured tone), and the hook pass puts a strong first line before
+    the '…more' fold.
+
+    Args:
+        content: the raw draft.
+        ctx: the settled inputs, read for the user's preferences.
+        cta_keyword: the sanctioned "comment KEYWORD" trigger the rewrites must preserve.
+        bait_exempt_keyword: the same keyword as the bait strip's exemption — a configured trigger
+            word can collide with the bait regex (e.g. 'YES') and must survive it.
+
+    Returns:
+        The refined draft.
+    """
+    content = get_ai_linked_post_refinement(content, prefs=ctx.prefs,
+                                            preserve_cta_keyword=cta_keyword)
+    blueprint = ctx.blueprint or {}
+    content = optimize_post_hook(content, prefs=ctx.prefs, preserve_cta_keyword=cta_keyword,
+                                 cta_type=blueprint.get("cta_type"),
+                                 hook_shape=blueprint.get("hook_shape"),
+                                 ban_what_if=bool(blueprint.get("what_if_banned")))
+    content = sanitize_for_linkedin(content)
+    # Guardrail: strip classic engagement-bait CTAs (penalized), keeping lead-magnet CTAs.
+    content = strip_engagement_bait(content, exempt_keyword=bait_exempt_keyword)
+    return content.strip()
+
+
+@llm_step("compose")
+def _compose_draft(ctx: PostDraftContext, cta_keyword: Optional[str] = None,
+                   bait_exempt_keyword: Optional[str] = None
+                   ) -> Tuple[Optional[str], PostDraftContext]:
+    """Write one post: generate, fall back a BOUNDED number of times, refine.
+
+    Dispatch to the archetype's generator; when that type has no SOURCE for this user, drop it off
+    the menu and re-draw, up to `_DRAFT_SOURCE_ATTEMPTS` times; then run the refinement passes.
+
+    THE core step (issue #1217). The review gate's regeneration re-enters here, not
+    `create_text_post`, so a retry re-runs generation and refinement only — the profile scrape,
+    story selection, blueprint choice and lead-magnet read stay settled, and the once-per-post
+    gates live outside this call and cannot run twice on one post. `@llm_step` rides the core for
+    the same reason CLAUDE.md gives: decorate the shared step, not its call sites, or the first
+    draft and its retry attribute to different places.
+
+    Args:
+        ctx: the settled inputs this post is written from.
+        cta_keyword: the sanctioned lead-magnet trigger word the refinement passes must preserve.
+        bait_exempt_keyword: that keyword as the bait strip's exemption.
+
+    Returns:
+        `(content, ctx)` — the returned ctx names the type that actually shipped, which is what the
+        review gate downstream has to be told about.
+    """
+    menu = list(_POST_TYPES)
+    content = None
+    for _ in range(_DRAFT_SOURCE_ATTEMPTS):
+        log_info(f"Creating text post of type: {ctx.post_type} for stage: {ctx.stage}")
+        content, source_available = _draft_from_source(ctx)
+        if source_available:
+            break
+        if ctx.post_type in menu:
+            menu.remove(ctx.post_type)
+        if not menu:
+            break
+        ctx = ctx.with_post_type(_next_source_in_rotation(ctx.post_type, menu, ctx.post_id))
+
+    if ctx.refine_final_post:
+        content = _refine_draft(content, ctx, cta_keyword, bait_exempt_keyword)
+    return content, ctx
+
+
+def _recent_topic_rows(user_id: int, post_id: Optional[int]) -> list:
+    """The last `TOPIC_CLUSTER_WINDOW - 1` posts' `{topic, content}` rows, most recent first.
+
+    Unreadable history is no history: the post is written without the diversity checks.
+    """
+    try:
+        return list(get_recent_post_topics(user_id, limit=TOPIC_CLUSTER_WINDOW - 1,
+                                           exclude_post_id=post_id) or [])
+    except Exception as e:
+        log_debug("Recent post topics unreadable — writing without the topic-diversity check",
+                  error=str(e), user_id=user_id, task_name="create_text_post")
+        return []
+
+
+def _recent_topics(user_id: int, post_id: Optional[int], rows: Optional[list] = None) -> list:
+    """The last `TOPIC_DIVERSITY_WINDOW` posts' topics, most recent first.
+
+    The recorded `posts.topic` where there is one, else the post's own keyword fingerprint
+    (`post_topic`) — posts written before every post recorded a topic still count. `rows` are
+    `_recent_topic_rows` when the caller already read them.
+    """
+    if rows is None:
+        rows = _recent_topic_rows(user_id, post_id)
+    topics = []
+    for row in list(rows or [])[:TOPIC_DIVERSITY_WINDOW]:
+        topic = post_topic((row or {}).get("content"), (row or {}).get("topic"))
+        if topic:
+            topics.append(topic)
+    return topics
+
+
+def _without_repeated_focus_topics(prefs: Optional[dict], recent_topics: list,
+                                   crowded: Optional[set] = None) -> dict:
+    """`prefs` minus every focus topic a recent post already covered, or whose cluster is capped.
+
+    The research fallback's subject steer: the trend research is anchored to a focus topic, so the
+    ones just written about — and, since showcase round 5, the ones in a cluster that already hit
+    the topic cap (`crowded`) — are taken off the rotation for this one draft. With none left the
+    research falls back to the profile's own niche anchors.
+    """
+    prefs = dict(prefs or {})
+    prefs["focus_topics"] = [t for t in (prefs.get("focus_topics") or [])
+                             if not repeated_topic(str(t), recent_topics)
+                             and not any(str(t).lower() in str(r).lower() for r in recent_topics)
+                             and topic_cluster(str(t), min_hits=1) not in (crowded or set())]
+    return prefs
+
+
+# The research-grounded type a draft that keeps repeating a recent topic falls back to.
+_RESEARCH_TOPIC_TYPE = "industry_news"
+
+
+def _diversify_topic(ctx: PostDraftContext, content: Optional[str], cta_keyword: Optional[str],
+                     bait_exempt_keyword: Optional[str]) -> Tuple[Optional[str], PostDraftContext]:
+    """Topic diversity across the plan: no recent topic again, no over-full topic cluster.
+
+    Never the last three posts' topic (showcase round 4), and never a fourth post in one topic
+    CLUSTER inside ten (showcase round 5). The draft's topic (`post_topic`) is compared with the
+    last `TOPIC_DIVERSITY_WINDOW` posts' (`repeated_topic`, the similarity toolbox's token
+    overlap), and its cluster (`topic_cluster`)
+    with the last `TOPIC_CLUSTER_WINDOW - 1` posts' (`capped_topic_cluster`: at most
+    `TOPIC_CLUSTER_MAX` per window). Either is regenerated ONCE with the topics and clusters named
+    as off-limits; a second failure falls back to a RESEARCH topic — the research-grounded type
+    with the just-covered focus topics and the capped clusters taken off its rotation. A caller
+    that pinned the subject on the blueprint is never second-guessed.
+
+    Args:
+        ctx: The settled inputs.
+        content: The composed draft.
+        cta_keyword: Passed through to the compose step.
+        bait_exempt_keyword: Passed through to the compose step.
+
+    Returns:
+        `(content, ctx)` — the draft that ships and the context it was written from.
+    """
+    if not content or not ctx.similarity_check or not ctx.refine_final_post or \
+            (ctx.blueprint or {}).get("subject"):
+        return content, ctx
+    rows = _recent_topic_rows(ctx.user_id, ctx.post_id)
+    recent = _recent_topics(ctx.user_id, ctx.post_id, rows)
+    history = [(r or {}).get("content") for r in rows if (r or {}).get("content")]
+    crowded = crowded_topic_clusters(history)
+
+    def repeats(draft: str) -> Optional[str]:
+        return (repeated_topic(post_topic(draft), recent)
+                or capped_topic_cluster(draft, history))
+
+    match = repeats(content)
+    if not match:
+        return content, ctx
+    log_info(f"Draft repeats a recent post's topic or a capped cluster ({match}) — regenerating "
+             "once", user_id=ctx.user_id, post_id=ctx.post_id, task_name="create_text_post")
+    retry = ctx.with_history_directive((ctx.history_directive or "")
+                                       + topic_avoidance_directive(recent)
+                                       + cluster_avoidance_directive(crowded))
+    second, retry = _compose_draft(retry, cta_keyword=cta_keyword,
+                                   bait_exempt_keyword=bait_exempt_keyword)
+    if second and not repeats(second):
+        return second, retry
+    log_info("Regenerated draft still repeats a recent topic — falling back to a research topic",
+             user_id=ctx.user_id, post_id=ctx.post_id, task_name="create_text_post")
+    research = dataclasses.replace(retry, post_type=_RESEARCH_TOPIC_TYPE,
+                                   prefs=_without_repeated_focus_topics(retry.prefs, recent,
+                                                                        crowded))
+    third, research = _compose_draft(research, cta_keyword=cta_keyword,
+                                     bait_exempt_keyword=bait_exempt_keyword)
+    if third:
+        return third, research
+    return second or content, retry
+
+
+def _enforce_hook_shape(ctx: PostDraftContext, content: Optional[str],
+                        history: Optional[list], cta_keyword: Optional[str]) -> Optional[str]:
+    """The opening-shape rotation's check on the composed draft (showcase round 5).
+
+    The hook pass was told the shape; when the draft still opens like the previous post, or opens
+    "What if" inside the `WHAT_IF_WINDOW`, it gets ONE more hook pass with the shape and the ban
+    restated. A question opener that survives that is cut deterministically when the post still
+    stands without it (`drop_opening_question`). Anything else ships as is, recorded at INFO.
+
+    Args:
+        ctx: The settled inputs; only a blueprint carrying a `hook_shape` is enforced.
+        content: The composed draft.
+        history: The user's recent posts, most recent first.
+        cta_keyword: The sanctioned keyword the hook pass must preserve.
+
+    Returns:
+        The draft with a rotated opening where that was possible.
+    """
+    blueprint = ctx.blueprint or {}
+    if not content or not ctx.refine_final_post or not blueprint.get("hook_shape"):
+        return content
+    reason = hook_shape_violation(content, history)
+    if not reason:
+        return content
+    log_info(f"Draft {reason} — one more hook pass", user_id=ctx.user_id, post_id=ctx.post_id,
+             task_name="create_text_post")
+    second = optimize_post_hook(content, prefs=ctx.prefs, preserve_cta_keyword=cta_keyword,
+                                cta_type=blueprint.get("cta_type"),
+                                hook_shape=blueprint.get("hook_shape"), ban_what_if=True)
+    second = sanitize_for_linkedin(second) if second else content
+    if not hook_shape_violation(second, history):
+        return second
+    return _drop_repeated_question(ctx, second, history)
+
+
+def _drop_repeated_question(ctx: PostDraftContext, content: Optional[str],
+                            history: Optional[list]) -> Optional[str]:
+    """Cut an opening question that still breaks the rotation, when the post stands without it."""
+    if not content or not (ctx.blueprint or {}).get("hook_shape") \
+            or not hook_shape_violation(content, history):
+        return content
+    dropped = drop_opening_question(content)
+    if dropped != content and not hook_shape_violation(dropped, history):
+        log_info("Opening question cut — the post opens on its next paragraph",
+                 user_id=ctx.user_id, post_id=ctx.post_id, task_name="create_text_post")
+        return dropped
+    log_info("Post opening still repeats the rotation after its retry — shipped as is",
+             user_id=ctx.user_id, post_id=ctx.post_id, task_name="create_text_post")
+    return content
+
+
+def _strip_unsanctioned_keyword_cta(ctx: PostDraftContext, content: Optional[str],
+                                    lead_magnet: Optional[dict], include_cta: bool) -> Optional[str]:
+    """Remove a "Comment KEYWORD" ask from a post that was not given one (showcase round 5).
+
+    The keyword ask belongs to the promo slot alone; a rewrite that copied it onto another post
+    (it reads the user's recent posts) loses the lines carrying the mechanic.
+    """
+    keyword = str((lead_magnet or {}).get("keyword") or "").strip()
+    if include_cta or not content or not keyword \
+            or not has_lead_magnet_cta_mechanic(content, keyword):
+        return content
+    kept = [ln for ln in content.split("\n") if not has_lead_magnet_cta_mechanic(ln, keyword)]
+    trimmed = re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
+    if trimmed and trimmed != content:
+        log_info("Keyword CTA on a post that was not given one — removed", user_id=ctx.user_id,
+                 post_id=ctx.post_id, task_name="create_text_post")
+        return trimmed
+    return content
+
+
+def _enforce_cta_rotation(ctx: PostDraftContext, content: Optional[str],
+                          recent_texts: Optional[list]) -> Optional[str]:
+    """The deterministic half of the CTA rotation: never the same close type twice in three posts.
+
+    The writer was told which type to close on; a rewrite can still put the same close back. When
+    the shipped close repeats one of the last `CTA_TYPE_WINDOW - 1` posts' types, the closing ask
+    is cut (`strip_closing_ask`) so the post ends on its last insight — unless a no-ask ending is
+    itself in the window, in which case the draft is left alone. The promo slot's artifact close is
+    never touched.
+
+    Args:
+        ctx: The settled inputs; only a blueprint carrying a `cta_type` is enforced.
+        content: The draft as it would ship.
+        recent_texts: The user's recent posts, most recent first.
+
+    Returns:
+        The draft, its repeated closing ask cut when that was safe.
+    """
+    cta_type = (ctx.blueprint or {}).get("cta_type")
+    if not content or cta_type == CTA_TYPE_ARTIFACT:
+        return content
+    if not cta_type:
+        return _apply_close_caps(ctx.user_id, ctx.post_id, content, recent_texts)
+    window = [cta_type_of(t) for t in list(recent_texts or [])[:CTA_TYPE_WINDOW - 1]]
+    shipped = cta_type_of(content)
+    if shipped not in window or CTA_TYPE_NONE in window:
+        return _cut_repeated_cta_phrase(ctx.user_id, ctx.post_id, content, recent_texts)
+    trimmed = strip_closing_ask(content)
+    if trimmed != content:
+        log_info(f"Post closed on a '{shipped}' CTA its last posts already used — closing ask cut",
+                 user_id=ctx.user_id, post_id=ctx.post_id, task_name="create_text_post")
+        return trimmed
+    return _apply_close_caps(ctx.user_id, ctx.post_id, content, recent_texts)
+
+
+def _apply_close_caps(user_id: int, post_id: Optional[int], content: Optional[str],
+                      recent_texts: Optional[list]) -> Optional[str]:
+    """One share ask in six posts, a question close in at most a third (showcase round 8).
+
+    Deterministic (`enforce_close_caps`): the share ask is cut whole, a question close loses its
+    question. The keyword close is never either, so the promo slot is never touched.
+    """
+    if not content or cta_type_of(content) == CTA_TYPE_ARTIFACT:
+        return content
+    trimmed, reason = enforce_close_caps(content, recent_texts)
+    if reason:
+        log_info(f"Post closed on {reason} — close cut", user_id=user_id, post_id=post_id,
+                 task_name="create_content")
+    return trimmed
+
+
+def _cut_repeated_cta_phrase(user_id: int, post_id: Optional[int], content: Optional[str],
+                             recent_texts: Optional[list]) -> Optional[str]:
+    """Cut a closing ask whose WORDING one of the last few posts already used (showcase round 7).
+
+    The type rotation lets a "share" close follow a "question" close, but "share this with someone
+    hiring their first operations person" twice in two posts reads as a template. A close that
+    repeats a recent close's wording (`repeated_cta_phrase`) is cut when the post stands without
+    it (`strip_closing_ask`); the promo slot's artifact close is never touched.
+    """
+    if not content or cta_type_of(content) == CTA_TYPE_ARTIFACT:
+        return content
+    phrase = repeated_cta_phrase(content, recent_texts)
+    if not phrase:
+        return _apply_close_caps(user_id, post_id, content, recent_texts)
+    trimmed = strip_closing_ask(content)
+    if trimmed != content:
+        log_info(f"Post closed with wording a recent post used (\"{phrase}\") — closing ask cut",
+                 user_id=user_id, post_id=post_id, task_name="create_content")
+        return trimmed
+    return _apply_close_caps(user_id, post_id, content, recent_texts)
+
+
+def _enforce_batch_variety(user_id: int, post_id: Optional[int], content: Optional[str],
+                           recent_texts: Optional[list]) -> Optional[str]:
+    """The batch rules for a caption that gets no hook pass of its own (a deck's, round 7).
+
+    A question opener over `QUESTION_HOOK_CAP` is cut when the post stands without it
+    (`drop_opening_question`), and a close that repeats a recent close's wording is cut
+    (`_cut_repeated_cta_phrase`). Deterministic; anything that cannot be cut ships as is.
+    """
+    if not content or recent_texts is None:
+        return content
+    if opening_shape(content) == HOOK_SHAPE_QUESTION and question_hooks_capped(recent_texts):
+        dropped = drop_opening_question(content)
+        if dropped != content:
+            log_info("Caption opened on one question too many in its window — opening cut",
+                     user_id=user_id, post_id=post_id, task_name="create_content")
+            content = dropped
+    return _cut_repeated_cta_phrase(user_id, post_id, content, recent_texts)
+
+
+def _apply_once_per_post_gates(ctx: PostDraftContext, content: str, recent_texts: list,
+                               story: Optional[dict], cta_keyword: Optional[str]) -> str:
+    """Humanize, review and reflow the finished draft — the passes that run ONCE per post.
+
+    Order is the contract (generate -> A2 proof -> humanize -> review -> A1): the humanization pass
+    is the final anti-AI-tell rewrite (issue #416 — A5), READER mode only, never fabricates, fails
+    open; the review gate then runs the deterministic near-duplicate/proof/fabrication/slop checks
+    with ONE avoid-directive retry. Never a hard block — worst case it warns and keeps the best
+    attempt; the GATES are what hold a still-failing draft out of auto-publish.
+
+    Args:
+        ctx: the settled inputs, including the once-per-post markers that switch this whole step
+            off for a caller that is only drafting.
+        content: the refined draft.
+        recent_texts: the user's recent posts, for the similarity check.
+        story: the story-bank entry the draft was anchored to, if any.
+        cta_keyword: the sanctioned lead-magnet trigger word, exempt from the slop lint.
+
+    Returns:
+        The draft that ships.
+    """
+    if not (content and ctx.refine_final_post and ctx.similarity_check):
+        return content
+
+    content = humanize_text(content, content_type="post",
+                            profile_synthesis=ctx.profile_synthesis, prefs=ctx.prefs)
+    content = _review_generated_post(ctx, content, recent_texts, story=story,
+                                     cta_keyword=cta_keyword)
+    # Dwell shaping (issue #391 — C2): deterministic, no-LLM repair of the structural dwell
+    # killer every LLM rewrite above can re-introduce — wall-of-text paragraphs. Runs on
+    # whichever draft the review gate kept, reflows ONLY over-long paragraphs, and never
+    # truncates, so the CTA/proof/hashtag lines survive. The hook-before-fold and read-time
+    # targets are steered in the prompt (content_framework.dwell_directive) and measured into
+    # the persisted dwell-proxy score when the post is saved.
+    return shape_for_dwell(content)
+
+
+def _repair_post_ctas(ctx: PostDraftContext, content: str, lead_magnet: Optional[dict],
+                      include_cta: bool) -> str:
+    """Deterministic CTA repair, run LAST because every LLM pass above can undo it.
+
+    Two repairs, both verified in prod. A meeting ask ("book a call", "DM me to discuss") is the CTA
+    shape 2026 demotes hardest and the rewrites write it back in even though the prompt bans it
+    (issue #618) — it is dropped and, only when the user genuinely has an artifact (their lead
+    magnet, else their newsletter), replaced with that. The "comment KEYWORD" mechanic gets reworded
+    into a generic ask or dropped entirely, which silently kills the auto-DM keyword listener — so
+    it is verified and repaired after every rewrite (no-op when already present; variant chosen by
+    post_id so repaired CTAs stay non-identical).
+
+    Args:
+        ctx: the settled inputs.
+        content: the draft the review gate kept.
+        lead_magnet: the user's lead-magnet settings, or None when unreadable/not selected.
+        include_cta: whether THIS post is on the lead-magnet rotation.
+
+    Returns:
+        The repaired draft. What survives is still lint-checked by the review gate above.
+    """
+    user_id, post_id, prefs = ctx.user_id, ctx.post_id, ctx.prefs
+    if content and ctx.refine_final_post and ctx.similarity_check and contains_meeting_ask(content):
+        try:
+            newsletter = get_newsletter_settings(user_id)
+        except Exception as e:
+            log_warning("Could not read the newsletter settings — the meeting-ask CTA has no "
+                        "artifact to be replaced with", exc=e, user_id=user_id, post_id=post_id,
+                        task_name="create_text_post")
+            newsletter = None
+        repaired = replace_meeting_ask_cta(
+            content, lead_magnet=lead_magnet, newsletter=newsletter, post_id=post_id,
+            use_emojis=bool((prefs or {}).get("use_emojis")))
+        if repaired and repaired != content:
+            log_warning("Meeting-ask CTA replaced with an artifact CTA (70/20/10 promo policy): "
+                        f"{'; '.join(meeting_ask_excerpts(content))}",
+                        user_id=user_id, post_id=post_id, task_name="create_text_post")
+            content = repaired
+
+    if include_cta and content:
+        # `include_cta` IS the selection (the promo slot's CTA rotation, showcase round 5), so the
+        # repair must not re-apply the legacy 1-in-N cadence on top of it (every_n=1).
+        repaired = ensure_lead_magnet_cta(content, lead_magnet, post_id,
+                                          use_emojis=bool((prefs or {}).get("use_emojis")),
+                                          every_n=1)
+        if repaired != content:
+            log_info("Lead-magnet CTA lost in refinement - repaired deterministically",
+                     post_id=post_id, user_id=user_id, task_name="create_text_post")
+            content = repaired
+
+    if content and normalize_content_mix(ctx.content_mix) == ContentMix.PROMO.value:
+        content = _repair_promo_artifact_cta(user_id, post_id, content,
+                                             bool((prefs or {}).get("use_emojis")))
+    return content
+
+
+def _artifact_settings(user_id: int, post_id: Optional[int]) -> Optional[tuple]:
+    """`(lead_magnet, newsletter)` for the promo artifact check, or None when a read failed."""
+    try:
+        return get_lead_magnet_settings(user_id), get_newsletter_settings(user_id)
+    except Exception as e:
+        log_warning("Could not read the lead-magnet or newsletter settings — the promo post's "
+                    "artifact CTA is not checked", exc=e, user_id=user_id, post_id=post_id,
+                    task_name="create_content")
+        return None
+
+
+def _repair_promo_artifact_cta(user_id: int, post_id: Optional[int], content: str,
+                               use_emojis: bool) -> str:
+    """Close a promo post on the user's artifact when the draft offers none (issue #2107).
+
+    Leaves the draft alone when the user has no artifact to offer: `evaluate_post_gates` holds it.
+    """
+    settings = _artifact_settings(user_id, post_id)
+    if settings is None or has_artifact_cta(content, *settings):
+        return content
+    line = artifact_cta_line(*settings, post_id=post_id, use_emojis=use_emojis)
+    if not line:
+        return content
+    log_info("Promo post offered no artifact — appended the user's artifact CTA",
+             user_id=user_id, post_id=post_id, task_name="create_text_post")
+    return content.rstrip() + "\n\n" + line
+
+
+def _promo_artifact_finding(user_id: Optional[int], post_id: int, content: str,
+                            content_mix: Optional[str]) -> Optional[dict]:
+    """The hold for a promo post that offers no artifact (issue #2107), else None.
+
+    Skipped when the settings cannot be read: a gate whose inputs are absent is not guessed.
+    """
+    if not user_id or normalize_content_mix(content_mix) != ContentMix.PROMO.value:
+        return None
+    settings = _artifact_settings(user_id, post_id)
+    if settings is None or has_artifact_cta(content, *settings):
+        return None
+    return promo_artifact_cta_finding()
+
+
+def _persist_draft_outcome(ctx: PostDraftContext, content: Optional[str],
+                           story: Optional[dict]) -> None:
+    """Score and record what this post cost the user's material — the writes a draft leaves behind.
+
+    Three of them. The authenticity gate (issue #382 — 360Brew defense) scores the finished draft
+    for generic-AI risk + profile-topic consistency and persists it; it runs on the draft this
+    function's caller RETURNS (issue #1264), because the review gate regenerates on a
+    similarity / A2-proof / fabrication / slop failure and scoring earlier persisted the score of a
+    draft that was thrown away. Still exactly ONE judge call per shipped post. The gate itself is a
+    status demotion (APPROVED -> PENDING) applied by the content-plan status-setter, mirroring the
+    deterministic similarity gate's demote-not-block posture. The story-bank entry is counted as
+    used so the NEXT post rotates to different raw material — only when a post really came out of
+    it, because a failed generation must not burn the anecdote. The assigned shape is persisted so
+    FUTURE posts rotate away from it (the newsletter's V50 shape history, applied via V51).
+
+    Args:
+        ctx: the settled inputs, including the markers that make this the once-per-post pass.
+        content: the draft that ships, or None when generation produced nothing.
+        story: the story-bank entry the post was anchored to, if any.
+    """
+    user_id, post_id = ctx.user_id, ctx.post_id
+    if content and ctx.refine_final_post and ctx.similarity_check and post_id is not None:
+        _score_and_persist_authenticity(user_id, post_id, content, ctx.user_profile,
+                                        ctx.profile_synthesis, ctx.prefs)
+
+    if story and content and story.get("id"):
+        try:
+            record_story_bank_use(user_id, int(story["id"]))
+        except Exception as e:
+            # WARNING for the same reason as the carousel's copy of this write: without it the
+            # bank never advances and every post reuses the same anchor.
+            log_warning("Could not record the story bank entry as used — the next post will reuse "
+                        "the same anchor", exc=e, user_id=user_id, post_id=post_id,
+                        task_name="create_text_post")
+
+    if post_id is not None and content and ctx.blueprint:
+        try:
+            update_db_post_shape(post_id, ctx.blueprint.get("format"),
+                                 ctx.blueprint.get("hook_style"),
+                                 topic=post_topic(content, ctx.blueprint.get("subject")))
+        except Exception as e:
+            log_warning("Could not persist the post's shape — future posts will not rotate away "
+                        "from it", exc=e, user_id=user_id, post_id=post_id,
+                        task_name="create_text_post")
+    if content:
+        _record_generation(user_id, post_id, {"audience": (ctx.blueprint or {}).get("audience")},
+                           story)
+
+
+@llm_pipeline("post_generation", feature=FEATURE_CONTENT)
+def create_text_post(user_id: int, stage: str, post_type: str = None,
+                     user_profile: LinkedInProfile = None,
+                     refine_final_post: bool = True, blueprint: dict = None, post_id: int = None,
+                     lead_magnet_cta: str = None, history_directive: str = None,
+                     similarity_check: bool = True, story_directive: str = None,
+                     content_mix: str = None, day_weekday: int = None) -> Optional[str]:
+    """Generate a text post for LinkedIn based on the user's profile, blog, or website content.
+
+    Four beats, in order (issue #1217): SETTLE what the post is written from into one
+    `PostDraftContext`, COMPOSE the draft from it — the bounded generate/refine core every retry
+    re-enters — then run the once-per-post gates and the writes the draft leaves behind. Every
+    argument below is an INPUT to the settling; nothing here is a recursion flag.
+
+    Args:
+        user_id: ID of user to grab user profile.
+        stage: Buyer journey stage for the post.
+        post_type: the archetype to write; taken from the `_POST_TYPES` rotation when unset.
+        user_profile: the author's profile; scraped when unset.
+        refine_final_post: run the refinement passes and, with `similarity_check`, the once-per-post
+            gates. A caller that only wants a raw draft turns it off.
+        blueprint: a pre-chosen shape; selected when unset.
+        post_id: the planned post row this draft fills.
+        lead_magnet_cta: a pre-built CTA directive; resolved from the user's settings when unset.
+        history_directive: a pre-built AVOID block; derived from post history when unset.
+        similarity_check: run the review gate (and load the history it needs).
+        story_directive: a pre-built story anchor; selected from the bank when unset.
+        content_mix: this post's 70/20/10 class from the plan governor (issue #618). 'promo' is the
+            one-in-ten soft-promo slot and is forced into a case-study shape; anything else sells
+            nothing.
+        day_weekday: the slot's LOCAL weekday, which picks the day-type archetype family (#621).
+
+    Returns:
+        The generated text post, or None when generation produced nothing.
+    """
+    content_mix = normalize_content_mix(content_mix)
+    if post_type is None:
+        post_type = _post_source_for_slot(post_id)
+    if user_profile is None:
+        user_profile = _resolve_user_profile(user_id)
+
+    # User-declared focus topics + business/personal goals steer the post's angle and enforce the
+    # anti-self-promo guardrail (see _alignment_directive) so posts don't drift into promoting
+    # whatever the user is currently building.
+    prefs = get_engagement_preferences(user_id)
+    # Stable VOICE synthesis (cached weekly; lazily generated on first use) replaces the bloated full
+    # profile JSON as the voice/credibility source — keeps posts in the user's voice without dragging
+    # in their volatile recent activity / current projects (LEM-drift).
+    profile_synthesis = get_or_create_profile_synthesis(user_id, user_profile)
+    # Showcase round 5: ONE reader per post (the audience mix re-aims the prefs every step below
+    # reads), and focus topics in a cluster that already hit the topic cap are taken off this one.
+    history = _recent_post_records(user_id, post_id)
+    history_texts = _record_texts(history)
+    prefs, audience = _resolve_post_audience(user_id, post_id, prefs, history)
+    prefs = _without_crowded_focus_topics(prefs, history_texts)
+
+    recent_texts, history_directive = _resolve_post_history(user_id, post_id, similarity_check,
+                                                            history_directive)
+    story_selected_here = story_directive is None
+    anchor_outcome: dict = {}
+    story, story_directive, content_mix = _resolve_story_anchor(user_id, post_id, prefs, blueprint,
+                                                                story_directive, content_mix,
+                                                                outcome=anchor_outcome,
+                                                                audience=audience)
+    # The keyword ask at most once in seven days of slots (showcase round 5).
+    content_mix = _cap_promo_keyword(user_id, post_id, content_mix)
+    if anchor_outcome.get("cooled") and post_type in _STORY_ONLY_POST_TYPES:
+        # Every story is cooling down, and this slot's type only works with one: write it from
+        # research instead of inventing the experience (showcase round 4).
+        post_type = _COOLDOWN_POST_TYPES[int(post_id or 0) % len(_COOLDOWN_POST_TYPES)]
+        log_debug(f"Story bank cooling down — post_id={post_id} written as {post_type}",
+                  user_id=user_id, task_name="create_text_post")
+    blueprint_selected_here = blueprint is None
+    blueprint = _resolve_blueprint(user_id, blueprint, content_mix, day_weekday, story,
+                                   story_selected_here)
+    rotation_texts = history_texts or (recent_texts if similarity_check else None)
+    if blueprint_selected_here:
+        blueprint = _steer_post_blueprint(user_id, blueprint, post_id, content_mix, prefs,
+                                          profile_synthesis, rotation_texts, audience=audience,
+                                          hook_shape=True)
+    # The keyword artifact ask is the PROMO slot's alone (showcase round 5): the CTA rotation's
+    # verdict when it ran, the slot's class otherwise. The legacy 1-in-N cadence it replaced is
+    # what put "Comment AUDIT" on unclassified video captions.
+    lead_magnet, include_cta, lead_magnet_cta = _resolve_lead_magnet(
+        user_id, post_id, lead_magnet_cta,
+        allow_artifact=((blueprint or {}).get("cta_type") == CTA_TYPE_ARTIFACT
+                        if "cta_type" in (blueprint or {})
+                        else content_mix == ContentMix.PROMO.value))
+
+    # Everything this draft is written from, settled (issue #1220). The generate step and the two
+    # retries around it read it instead of re-threading a dozen arguments each.
+    ctx = PostDraftContext(user_id=user_id, stage=stage, post_type=post_type,
+                           user_profile=user_profile, prefs=prefs,
+                           profile_synthesis=profile_synthesis, blueprint=blueprint,
+                           post_id=post_id, lead_magnet_cta=lead_magnet_cta,
+                           history_directive=history_directive, story_directive=story_directive,
+                           content_mix=content_mix, refine_final_post=refine_final_post,
+                           similarity_check=similarity_check)
+
+    # The sanctioned 'comment KEYWORD' ask for THIS post: the refinement passes preserve it, the
+    # bait strip exempts it, and the slop lint's bait check must not read it as engagement bait.
+    cta_keyword = (str(lead_magnet.get("keyword")).strip()
+                   if include_cta and lead_magnet else None) or None
+    bait_exempt_keyword = (lead_magnet or {}).get("keyword") if include_cta else None
+
+    final_content, ctx = _compose_draft(ctx, cta_keyword=cta_keyword,
+                                        bait_exempt_keyword=bait_exempt_keyword)
+    final_content, ctx = _diversify_topic(ctx, final_content, cta_keyword, bait_exempt_keyword)
+    final_content = _enforce_hook_shape(ctx, final_content, rotation_texts, cta_keyword)
+    final_content = _deterministic_fact_cleanup(final_content, user_id=user_id, post_id=post_id)
+    final_content = _apply_once_per_post_gates(ctx, final_content, recent_texts, story,
+                                               cta_keyword)
+    final_content = _repair_post_ctas(ctx, final_content, lead_magnet, include_cta)
+    if not include_cta:
+        final_content = _strip_unsanctioned_keyword_cta(ctx, final_content, lead_magnet,
+                                                        include_cta)
+        final_content = _enforce_cta_rotation(ctx, final_content, rotation_texts)
+    # The gates above can rewrite the opening; a "What if" they put back is cut here, without an
+    # LLM call, when the post stands without it.
+    final_content = _drop_repeated_question(ctx, final_content, rotation_texts)
+    # LAST word on the draft's currency glyphs (issue #1529). `_refine_draft`'s
+    # `sanitize_for_linkedin` runs BEFORE the humanization rewrite and the review gate's
+    # regeneration, and both of those are LLM passes that can price a dollar figure in rupees all
+    # over again — the humanizer already re-runs `normalize_public_text` on its output for exactly
+    # that reason, and currency is deliberately not part of that pass. Scored and persisted below
+    # on the text this returns, so the judge reads what ships.
+    final_content = normalize_currency_symbols(final_content)
+    final_content = _deterministic_fact_cleanup(final_content, user_id=user_id, post_id=post_id)
+    _persist_draft_outcome(ctx, final_content, story)
+    return final_content
+
+
+def get_main_blog_url_content(blog_url):
+    """Retrieve recent posts from a blog, randomly select one, and send the post content to another function.
+
+    Parameters:
+    - blog_url (str): URL of the blog's homepage.
+
+    Returns:
+    - None
+    """
+    # Check if the blog is a WordPress site by trying the REST API
+    wp_api_url = f"{blog_url.rstrip('/')}/wp-json/wp/v2/posts"
+
+    session, headers = get_session_for_response()
+
+    recent_posts = None
+
+    try:
+        # Make the request
+        response = session.get(wp_api_url, headers=headers, timeout=10)
+
+        # Raise an exception for HTTP errors
         response.raise_for_status()
 
         if response.status_code == 200:
