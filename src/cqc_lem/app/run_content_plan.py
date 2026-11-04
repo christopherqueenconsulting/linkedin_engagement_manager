@@ -23,6 +23,7 @@ import json
 import os
 import random
 import re
+from collections import Counter
 from datetime import datetime, timedelta
 from typing import Any, Optional, Tuple, Union
 from urllib.parse import urlparse
@@ -99,6 +100,7 @@ from cqc_lem.utilities.ai.content_framework import (
     deck_count_claims,
     deck_count_report,
     deck_figure_gate_issues,
+    deck_slides,
     deck_text,
     deck_topic_report,
     dedupe_repeated_lines,
@@ -115,6 +117,7 @@ from cqc_lem.utilities.ai.content_framework import (
     history_avoidance_directive,
     hook_shape_violation,
     hook_style_for_shape,
+    numeric_claims,
     occasion_stage,
     opening_shape,
     post_similarity_report,
@@ -1380,8 +1383,10 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
                  user_id=user_id, post_id=post_id, task_name="create_carousel_content")
     # Showcase round 7: what the deck's one regeneration left — a template-label heading, a cover
     # promise no slide shows, a slide figure the caption never backs — is fixed in code here.
+    carousel_before_claim_cleanup = carousel_dict
     carousel_dict, claim_fixes = finalize_deck_claims(carousel_dict, post_text,
                                                       _fact_anchors(user_id))
+    _log_carousel_claim_audit(user_id, post_id, carousel_before_claim_cleanup, carousel_dict)
     if claim_fixes:
         log_info("Deck claims fixed before render: " + "; ".join(claim_fixes),
                  user_id=user_id, post_id=post_id, task_name="create_carousel_content")
@@ -3479,6 +3484,75 @@ def _may_auto_approve(user_id: int, post_id: int, auto_schedule: bool,
         log_info("Holding this post for review — its text was repaired after failing a quality "
                  "check", user_id=user_id, post_id=post_id, task_name="create_content")
     return not hold
+
+
+def _log_content_plan_terminal_state(user_id: int, post_id: int, status: PostStatus,
+                                     auto_schedule: bool, findings: list[dict]) -> None:
+    """Record why a generated post reached its final content-plan status (#2505).
+
+    Emits stable state and reason codes without logging post copy or gate explanations.
+    """
+    held_by = demoting_findings(findings)
+    if held_by:
+        state = "held"
+        reason = "quality_gate_findings"
+    elif status == PostStatus.APPROVED:
+        state = "queued"
+        reason = "gates_passed_and_auto_schedule_enabled"
+    else:
+        state = "ready"
+        reason = ("auto_schedule_disabled" if not auto_schedule
+                  else "manual_review_required")
+    log_info("Content plan terminal state", user_id=user_id, post_id=post_id,
+             terminal_state=state, status=status.value, reason=reason,
+             gate_reasons=sorted({str(f.get("gate") or "unknown") for f in held_by}))
+
+
+def _log_content_plan_failure(user_id: int, post_id: int, reason: str) -> None:
+    """Record a content-plan slot that ended before it could reach review or scheduling."""
+    log_info("Content plan terminal state", user_id=user_id, post_id=post_id,
+             terminal_state="failed", status=PostStatus.ERROR.value, reason=reason,
+             gate_reasons=[])
+
+
+def _carousel_numeric_claims(carousel: Optional[dict]) -> list[dict]:
+    """Numeric claims per stable slide slot.
+
+    Keeps slide copy out of the audit log.
+    """
+    claims = []
+    for slide in deck_slides(carousel):
+        slot = (slide["key"], slide["index"])
+        for claim in numeric_claims(f"{slide['title']}\n{slide['content']}"):
+            # Keep unit/suffix in identity: 40 and 40% are distinct claims even though
+            # numeric_claims normalizes both to the same numeric value.
+            claims.append({"slot": slot, "value": claim["raw"]})
+    return claims
+
+
+def _log_carousel_claim_audit(user_id: int, post_id: int, before: Optional[dict],
+                              after: Optional[dict]) -> None:
+    """Log every numeric claim kept, removed, or introduced by deterministic deck cleanup.
+
+    Emits slide slots and raw numeric tokens (including units), never claim context.
+    """
+    before_claims = _carousel_numeric_claims(before)
+    after_claims = _carousel_numeric_claims(after)
+    before_counts = Counter((claim["slot"], claim["value"]) for claim in before_claims)
+    after_counts = Counter((claim["slot"], claim["value"]) for claim in after_claims)
+    outcomes = []
+    for key, count in before_counts.items():
+        kept = min(count, after_counts[key])
+        outcomes.extend((key, "kept") for _ in range(kept))
+        outcomes.extend((key, "removed") for _ in range(count - kept))
+    for key, count in after_counts.items():
+        outcomes.extend((key, "added") for _ in range(count - before_counts[key]))
+    for (slot, value), outcome in outcomes:
+        reason = {"kept": "retained_by_finalizer", "removed": "removed_by_finalizer",
+                  "added": "introduced_by_finalizer"}[outcome]
+        log_info("Carousel figure audit", user_id=user_id, post_id=post_id,
+                 slide_key=slot[0], slide_index=slot[1], figure=value,
+                 outcome=outcome, reason=reason)
 
 
 def _engagement_prefs_for_gates(user_id: int) -> tuple[dict, bool]:
@@ -5842,6 +5916,7 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
         # slot produces nothing.
         log_error("Skipping post: content generation failed", exc=e, user_id=user_id,
                   post_id=post_id, task_name="auto_create_weekly_content")
+        _log_content_plan_failure(user_id, post_id, "generation_exception")
         record_post_failed(user_id, post_id)
         return False
 
@@ -5849,6 +5924,7 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
         # ERROR with no exc=: there is no exception to file, but the user still lost the post.
         log_error("Skipping post: content generation returned nothing", user_id=user_id,
                   post_id=post_id, task_name="auto_create_weekly_content")
+        _log_content_plan_failure(user_id, post_id, "empty_generation_result")
         record_post_failed(user_id, post_id)
         return False
 
@@ -5972,9 +6048,12 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
 
         log_info(f"Updating post_id: {post_id} Status={new_status}")
         update_db_post_status(post_id, new_status, approved_by=PostApprover.AUTO_SCHEDULE)
+        _log_content_plan_terminal_state(user_id, post_id, new_status, auto_schedule,
+                                         gate_findings)
     except Exception as e:
         log_error(f"Skipping post_id {post_id}: storing generated content failed", exc=e,
                   user_id=user_id, post_id=post_id, task_name="auto_create_weekly_content")
+        _log_content_plan_failure(user_id, post_id, "persistence_exception")
         record_post_failed(user_id, post_id)
         return False
 
