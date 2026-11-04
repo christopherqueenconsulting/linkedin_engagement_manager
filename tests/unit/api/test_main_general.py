@@ -476,7 +476,7 @@ class TestCommentNotificationInbound:
             api_client.post(self.BASE, data={
                 "to": "reply+stale@parse.example.com",
                 "subject": "someone commented on your post"})
-        track.assert_called_once_with("unknown_reply_token", user_id=None, classification="unrecognized")
+        track.assert_called_once_with("unknown_reply_token", user_id=None, classification="comment")
 
     def test_linkedin_reaction_logs_verdict(self, api_client):
         with patch(self._DB, return_value=7), \

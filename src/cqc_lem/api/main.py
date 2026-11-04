@@ -2212,7 +2212,6 @@ def _log_inbound_verdict(verdict: str, form, user_id: "Optional[int]" = None) ->
     """
     import hashlib
     import os
-    import re
 
     from cqc_lem.integrations.linkedin.notification_email import (
         _sender_domain,
