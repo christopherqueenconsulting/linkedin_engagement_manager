@@ -31,7 +31,8 @@ _TOKEN = "observer-exposure-token"
 # A column or key that names a credential, a session handle or an address. `recipient_email` is a
 # third party's address; it is only ever exposed as the `has_recipient_email` boolean.
 _CREDENTIAL = re.compile(
-    r"li_at|cookie|passw|token|secret|session|hash|credential|api_key|bearer|recipient_email",
+    r"li_at|cookie|passw|token|secret|session|hash|credential|api_key|bearer|recipient_email"
+    r"|phone|mobile|e_?mail|\btel(?:ephone)?\b",
     re.IGNORECASE)
 # The one place an address column is allowed to appear: as a boolean, never the value.
 _ADDRESS_AS_BOOLEAN = "recipient_email IS NOT NULL AS has_recipient_email"

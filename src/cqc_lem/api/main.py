@@ -900,6 +900,49 @@ def _release_hold(token: str) -> bool:
         return False
 
 
+# The ONLY fields an observer is shown on each list route, written out literally. The list readers
+# already SELECT an explicit column tuple, so for real rows this changes nothing; it is the second
+# lock. A row reaching a handler with a column nobody listed here (a phone, an email, a credential)
+# is stripped before it can leave the process, for an observer. Adding a field to a response is a
+# deliberate edit to THIS table, which `test_observer_route_bodies.py` pins key for key.
+_OBSERVER_ROW_FIELDS: Dict[str, frozenset] = {
+    "dms": frozenset({"id", "user_id", "recipient_profile_url", "recipient_name", "message", "source",
+                      "scheduled_time", "status", "created_at", "updated_at"}),
+    "connection_requests": frozenset({
+        "id", "user_id", "recipient_profile_url", "recipient_name", "message", "source", "icp_score",
+        "reasons", "failure_reason", "status", "attempts", "created_at", "updated_at",
+        # A boolean saying whether an address exists — never the address.
+        "has_recipient_email"}),
+    "outreach_targets": frozenset({"id", "user_id", "target_profile_url", "target_name", "stage", "status",
+                                   "context_url", "draft_text", "notes", "created_at", "updated_at"}),
+    "catchup_touches": frozenset({"id", "user_id", "profile_url", "person_name", "event_type",
+                                  "event_detail", "event_period", "score", "message", "status",
+                                  "created_at", "updated_at"}),
+    "lead_signals": frozenset({
+        "id", "user_id", "source", "channel", "person_name", "person_profile_url", "thread_key",
+        "snippet", "score", "matched_signals", "post_id", "context_url", "draft_response", "status",
+        "delivery_attempts", "created_at", "updated_at"}),
+    "leads": frozenset({
+        "id", "user_id", "person_key", "person_name", "person_profile_url", "score", "icp_score",
+        "engagement_score", "stage", "signals", "signal_count", "reasons", "next_action",
+        "first_signal_at", "last_signal_at", "manual_stage", "notes", "dismissed", "created_at",
+        "updated_at"}),
+}
+
+
+def _observer_rows(kind: str, rows: Any) -> Any:
+    """Reduce an observer's list rows to the whitelisted fields; every other scope is untouched.
+
+    For an observer each row keeps only the fields `_OBSERVER_ROW_FIELDS[kind]` names. A non-list is
+    returned as it came.
+    """
+    if _request_session_scope.get() != SESSION_SCOPE_OBSERVER or not isinstance(rows, list):
+        return rows
+    allowed = _OBSERVER_ROW_FIELDS[kind]
+    return [{k: v for k, v in row.items() if k in allowed} if isinstance(row, dict) else row
+            for row in rows]
+
+
 def _session_log_id(token: Optional[str]) -> Optional[str]:
     """A short, stable, non-reversible label for a session, safe to put in a log line.
 
@@ -3251,6 +3294,7 @@ def list_scheduled_dms_endpoint(session_token: str, status_filter: Optional[str]
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     result = get_scheduled_dms(user_id, status_filter=status_filter, page=page,
                                page_size=page_size, sort_order=sort_order)
+    result["dms"] = _observer_rows("dms", result.get("dms", []))
     for dm in result.get("dms", []):
         for key in ("scheduled_time", "created_at", "updated_at"):
             if dm.get(key) is not None:
@@ -3357,6 +3401,7 @@ def list_connection_requests_endpoint(session_token: str, status_filter: Optiona
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     result = get_connection_requests(user_id, status_filter=status_filter, page=page,
                                      page_size=page_size, sort_order=sort_order)
+    result["requests"] = _observer_rows("connection_requests", result.get("requests", []))
     return ResponseModel(status_code=200, detail=result)
 
 
@@ -3459,6 +3504,7 @@ def list_lead_signals_endpoint(session_token: str, status_filter: Optional[str] 
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     result = get_lead_signals(user_id, status_filter=status_filter, page=page,
                               page_size=page_size, sort_order=sort_order)
+    result["signals"] = _observer_rows("lead_signals", result.get("signals", []))
     result["new_count"] = count_new_lead_signals(user_id)
     return ResponseModel(status_code=200, detail=result)
 
@@ -3535,6 +3581,7 @@ def list_leads_endpoint(session_token: str, stage_filter: Optional[str] = None,
         raise HTTPException(status_code=422, detail=f"Unknown stage '{stage_filter}'")
     result = get_leads(user_id, stage_filter=stage_filter, include_dismissed=include_dismissed,
                        page=page, page_size=page_size)
+    result["leads"] = _observer_rows("leads", result.get("leads", []))
     result["hot_count"] = count_hot_leads(user_id)
     return ResponseModel(status_code=200, detail=result)
 
@@ -3595,10 +3642,12 @@ def list_catchup_touches_endpoint(
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
-    return ResponseModel(status_code=200, detail=get_catchup_touches(
+    result = get_catchup_touches(
         user_id, status_filter=status_filter, event_type_filter=event_type_filter,
         page=page, page_size=page_size, sort_order=sort_order, sort_by=sort_by,
-        start_date=start_date, end_date=end_date))
+        start_date=start_date, end_date=end_date)
+    result["touches"] = _observer_rows("catchup_touches", result.get("touches", []))
+    return ResponseModel(status_code=200, detail=result)
 
 
 @router.put("/catchup/touch")

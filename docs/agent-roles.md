@@ -48,9 +48,15 @@ An `observer` token can read, for the account that minted it:
 **Those records contain third parties' data**: names, profile URLs, the text of messages the owner
 drafted to them and of comments and replies they wrote. A connection request exposes only whether a
 recipient email address exists (`has_recipient_email`), never the address. No credential field is
-returned by any observer route; `tests/unit/api/test_observer_exposure.py` proves that from the SQL
-the readers run and from the handlers that reshape their rows, and fails the build on a wildcard
-`SELECT` or a credential-like column.
+returned by any observer route. Two locks hold that: the readers `SELECT` an explicit column tuple
+(`tests/unit/api/test_observer_exposure.py` fails the build on a wildcard, or on a credential, phone,
+mobile or email column), and an observer's list responses are cut down again in the handler to a
+literal per-route field whitelist (`_OBSERVER_ROW_FIELDS`), so a field that reached a handler by some
+other route is dropped, not shown. `tests/unit/api/test_observer_route_bodies.py` calls the six list
+routes with rows seeded with a credential, a session id, a third party's email and a phone number and
+holds each item's keys to the whitelist, key for key. The one thing that is *not* redacted is
+free text — message drafts, snippets, notes — which carries whatever its author typed, including a
+contact detail; treat it as third-party data.
 
 What the code does about retention: **nothing**. `auth_audit_log` has no purge job, no expiry and no
 foreign key, so audit events (including `observer_token_minted` and `observer_access`) are kept
@@ -76,7 +82,10 @@ session row id; no body, no query string, no address, no user agent). Redis (the
 pattern as the profile-refresh limiter) keeps it to one a day, and it fails **open**: if Redis is
 unreachable the read still succeeds and the access is recorded rather than lost, so during an outage
 there may be more than one row a day. A refusal is different: it is a WARNING log line (below), not
-an audit row. `sessions.last_seen_at` moves on every request and says when the token was last used,
+an audit row. The `path` the row stores is the request path with `/api` and any query string removed,
+and it is always one of the observer surface's literal paths (`/dms`, `/leads`, …): the surface is an
+exact-match list with no path parameters, so no route template, numeric id or third-party identifier
+can appear in it (a test asserts the surface holds no `{}`, `:`, `*` or `?`). `sessions.last_seen_at` moves on every request and says when the token was last used,
 not what it read.
 
 ## Observer incident and rollback
@@ -97,8 +106,17 @@ not what it read.
   carries each session's `scope`; the card itself only badges `agent` sessions.
 - **The WARNING log line** `Machine session refused outside its scope` (fields `scope`, `method`,
   `path`, `session` — a salted 16-hex label for the session, never the token or the column the
-  database looks it up by). Every refusal of an `observer` or `agent` token logs one, and repeats
-  escalate to a grouped error issue.
+  database looks it up by). Every refusal of an `observer` or `agent` token logs one. A repeated
+  warning is re-emitted at ERROR after 3 occurrences in 24 hours and captured as one grouped
+  `$exception`, which the daily error-to-issue job turns into a GitHub issue
+  (`utilities/log_escalation.py`, `utilities/CLAUDE.md`; the thresholds are
+  `LOG_ESCALATE_THRESHOLD` / `LOG_ESCALATE_WINDOW_SECONDS`). Treat the first line as the alert and
+  the issue as the backstop.
+  The session label uses a fixed, non-secret literal as its salt (`lem-session-log:`), not a key. That
+  is acceptable because the input is a 256-bit random token: the label is a truncated digest of it, so
+  there is nothing to brute-force whatever the salt is, and the salt's only job is to make the label
+  differ from the SHA-256 the sessions table stores. A keyed digest would add a secret to protect and
+  would change every label whenever `LEM_SECRET_KEY` rotates, breaking matches across log lines.
 - **Audit events** in `auth_audit_log`: `observer_token_minted` (who minted what, when, with which
   label and TTL) and `observer_access` (the first read of each day, per session).
 
@@ -125,6 +143,11 @@ the day the code is redeployed. So revoke first.
    ```
 
    or, one token at a time, the Security card / `POST /api/user/sessions/revoke` above.
+
+   **Note:** **a bulk SQL revoke writes no `auth_audit_log` row** (only the API route writes
+   `session_revoked`). Whoever runs the statement should record what they ran, when, and how many
+   rows it changed in the incident note.
+
 2. **Revert** the change: `git revert <merge sha>`. There is no migration to undo.
 3. **Verify none remain**:
 
