@@ -3386,7 +3386,7 @@ class TestFeedComposerProbe:
         driver = MagicMock()
         driver.execute_script.side_effect = RuntimeError("private page detail")
         logged = []
-        monkeypatch.setattr("cqc_lem.utilities.logger.log_debug",
+        monkeypatch.setattr(llv, "log_debug",
                             lambda message, **fields: logged.append((message, fields)))
 
         assert llv._visible_editable_candidates(driver) is None
