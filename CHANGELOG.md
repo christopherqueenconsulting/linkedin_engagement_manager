@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.202.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.201.0...v0.202.0) (2026-11-04)
+
+
+### Features
+
+* **auth:** observer session scope (read-only agent seat) ([#2516](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2516)) ([04b8836](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/04b8836690d3d9516c78124fd6582e26ebd95ad0))
+
+
+### Bug Fixes
+
+* **replies:** sanitise inbound log domain, scope redaction docs, test the trace flag ([#2521](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2521)) ([99bfecd](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/99bfecdf2017087d0be5dbe3ca4b31ba0f6971db))
+* **replies:** trace inbound notification delivery safely ([#2515](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2515)) ([89b8c75](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/89b8c7574c3e756c8a14d623bae207a5c5351d02))
+
 ## [0.201.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.200.0...v0.201.0) (2026-11-03)
 
 
