@@ -126,9 +126,11 @@ def list_outreach_targets_endpoint(session_token: str, status_filter: Optional[s
     user_id = _main.get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
-    return ResponseModel(status_code=200, detail=get_outreach_targets(
+    result = get_outreach_targets(
         user_id, status_filter=status_filter, stage_filter=stage_filter, page=page,
-        page_size=page_size, sort_order=sort_order))
+        page_size=page_size, sort_order=sort_order)
+    result["targets"] = _main._observer_rows("outreach_targets", result.get("targets", []))
+    return ResponseModel(status_code=200, detail=result)
 
 
 @router.put("/target")

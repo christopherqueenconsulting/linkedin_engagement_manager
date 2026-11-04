@@ -82,6 +82,7 @@ from cqc_lem.platform.db.repositories.auth import (
     AUTH_FACTOR_TOTP,
     SESSION_SCOPE_AGENT,
     SESSION_SCOPE_ENROLL,
+    SESSION_SCOPE_OBSERVER,
     TOTP_SECRET_FIELD,
     _credential_id_hash,
     _device_label,
@@ -314,6 +315,12 @@ from cqc_lem.platform.db.repositories.groups import (
     set_groups_enabled,
     update_group_post_draft,
     upsert_user_group,
+)
+from cqc_lem.platform.db.repositories.linkedin_connections import (
+    delete_member_analytics_token,
+    get_member_analytics_access_token,
+    get_member_analytics_token_info,
+    upsert_member_analytics_token,
 )
 from cqc_lem.platform.db.repositories.newsletter import (
     _NEWSLETTER_BOOL_COLS,
@@ -912,6 +919,7 @@ __all__ = [
     "SESSION_SCOPE_ENROLL",
     "SESSION_SCOPE_EXTENSION",
     "SESSION_SCOPE_FULL",
+    "SESSION_SCOPE_OBSERVER",
     "SESSION_SCOPE_RECOVERY",
     "STALE_INVITE_WITHDRAWN_MESSAGE",
     "STORY_BANK_KINDS",
@@ -1166,6 +1174,8 @@ __all__ = [
     "get_linkedin_session_email_sent_at",
     "get_linkedin_token_user_ids",
     "get_margin_users",
+    "get_member_analytics_access_token",
+    "get_member_analytics_token_info",
     "get_most_recent_dm_thread_target",
     "get_newsletter_due_user_ids",
     "get_newsletter_edition",
@@ -1505,6 +1515,8 @@ __all__ = [
     "upsert_dm_templates",
     "upsert_engagement_targets",
     "upsert_engager",
+    "upsert_member_analytics_token",
+    "delete_member_analytics_token",
     "upsert_faq_entry",
     "upsert_lead",
     "upsert_story_bank_entries",

@@ -11,6 +11,7 @@ The bearer gate in `api_token_middleware` is an edge filter and NOT authorisatio
 comment above `_API_ACCESS_TOKEN_SET`. Authorisation happens in the handler, which fails closed.
 """
 
+import hashlib
 import io
 import json
 import math
@@ -22,8 +23,8 @@ import zipfile
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from enum import IntEnum
-from typing import Any, Awaitable, Callable, Dict, Iterator, List, NoReturn, Optional, Union
-from urllib.parse import urlparse
+from typing import Any, Awaitable, Callable, Dict, Iterator, List, Mapping, NoReturn, Optional, Union
+from urllib.parse import urlencode, urlparse
 
 import requests
 from celery import chain as celery_chain
@@ -75,6 +76,15 @@ from cqc_lem.app.engagement.invites import automate_invites_to_company_page_for_
 from cqc_lem.app.engagement.outreach import scheduled_dm_is_stale, send_lead_response
 from cqc_lem.app.engagement.posting import automate_reply_commenting, sweep_reply_comments
 from cqc_lem.app.run_content_plan import auto_create_weekly_content, plan_content_for_user
+from cqc_lem.integrations.linkedin.notification_email import (
+    extract_gmail_confirmation_code,
+    extract_gmail_confirmation_url,
+    extract_reply_token_from_address,
+    is_comment_notification,
+    is_gmail_forwarding_confirmation,
+    is_linkedin_notification,
+    sender_domain,
+)
 from cqc_lem.utilities.ai_spend_cap import DailyAICapReached
 from cqc_lem.utilities.auth_factors import (
     enrollment_required,
@@ -87,6 +97,7 @@ from cqc_lem.utilities.db import (
     SESSION_SCOPE_ENROLL,
     SESSION_SCOPE_EXTENSION,
     SESSION_SCOPE_FULL,
+    SESSION_SCOPE_OBSERVER,
     SESSION_SCOPE_RECOVERY,
     AuthAuditEvent,
     CatchupTouchStatus,
@@ -118,6 +129,7 @@ from cqc_lem.utilities.db import (
     get_lead_signal,
     get_lead_signals,
     get_leads,
+    get_linkedin_profile_url_by_user_id,
     get_passkey_by_credential_id,
     get_planned_tasks,
     get_post_type,
@@ -129,6 +141,7 @@ from cqc_lem.utilities.db import (
     get_scheduled_dm,
     get_scheduled_dm_user_id,
     get_scheduled_dms,
+    get_session_id,
     get_session_user_id as _db_get_session_user_id,
     get_user_email,
     get_user_subscription_info,
@@ -155,6 +168,7 @@ from cqc_lem.utilities.db import (
     update_scheduled_dm,
     update_scheduled_dm_status,
     update_user_linkedin_token,
+    upsert_member_analytics_token,
     user_approver,
     user_owns_posts,
 )
@@ -162,11 +176,21 @@ from cqc_lem.utilities.demo_mode import DemoModeError, guard_linkedin, is_demo_m
 from cqc_lem.utilities.env_constants import (
     API_ACCESS_TOKENS,
     AUTH_CHALLENGE_TTL_SECONDS,
+    LI_API_VERSION,
     LI_CLIENT_ID,
     LI_CLIENT_SECRET,
+    LI_MEMBER_POST_ANALYTICS_CLIENT_ID,
+    LI_MEMBER_POST_ANALYTICS_CLIENT_SECRET,
+    LI_MEMBER_POST_ANALYTICS_REDIRECT_URL,
     LI_REDIRECT_URL,
     LI_STATE_SALT,
+    NGROK_CUSTOM_DOMAIN,
     SESSION_COOKIE_NAME,
+)
+from cqc_lem.utilities.linkedin.member_post_analytics import (
+    member_post_analytics_connection_available_for_user,
+    member_post_analytics_enabled_for_user,
+    member_post_analytics_separate_app_enabled,
 )
 from cqc_lem.utilities.linkedin.verification_pin import (
     extract_pin_from_text,
@@ -180,7 +204,9 @@ from cqc_lem.utilities.observability import (
     capture_exception,
     llm_trace,
     track_api_call,
+    track_inbound_email,
 )
+from cqc_lem.utilities.observer_access import claim_observer_access
 from cqc_lem.utilities.post_image import (
     owns_post_image_url,
 )
@@ -580,10 +606,43 @@ _AGENT_SESSION_SURFACE = frozenset({
     "/curated/sources", "/curated/source",
 })
 
+# What a read-only operations agent may SEE: the queue reads, the settings and state that say whether
+# automation is safe, the dashboard counters, the boot payloads, and the account's own recent auth
+# history (`/user/security` — device list + audit events, never a token or an IP hash). It is the
+# read half of `_AGENT_SESSION_SURFACE` plus those few, so it has NO create route at all. Paths grant
+# every verb (see `_SCOPE_METHODS`), so every entry here is also held to read verbs by the resolver.
+# Absent by design, exactly as for the agent: every credential path, the account mover, session
+# revocation, and every minting endpoint — an observer cannot mint a successor, or anything else.
+# `/health/deep` is not listed: it is public and has no session-gated variant to widen.
+_OBSERVER_SESSION_SURFACE = frozenset({
+    # read the queues
+    "/connection_requests", "/outreach/targets", "/dms", "/lead_signals", "/leads",
+    "/catchup/touches",
+    # read the state that decides whether automation is running safely
+    "/user/engagement-preferences", "/user/automation-status", "/dashboard/stats",
+    "/user/linkedin-profile-skills",
+    # curated outside sources: list candidates (the queue-a-URL write is a different path)
+    "/curated/sources",
+    # who am I, what build, what flags, and the account's own device + audit history
+    "/auth/session", "/app-info", "/flags", "/user/security",
+})
+
 _SCOPE_SURFACES: Dict[str, frozenset[str]] = {
     SESSION_SCOPE_EXTENSION: _EXTENSION_SESSION_SURFACE,
     SESSION_SCOPE_ENROLL: _ENROLL_SESSION_SURFACE,
     SESSION_SCOPE_AGENT: _AGENT_SESSION_SURFACE,
+    SESSION_SCOPE_OBSERVER: _OBSERVER_SESSION_SURFACE,
+}
+
+# Surfaces match on PATH, so granting a path grants every verb on it (see the engagement-preferences
+# note on `_AGENT_SESSION_SURFACE`). A scope listed HERE is additionally limited to these verbs on
+# every path it reaches, decided in the same resolver. A scope with no entry is path-only — which is
+# exactly what extension, enroll and agent are, and must stay byte-identical. The method is read off
+# the request ContextVar; if there is no request to read it from, a scope listed here is REFUSED
+# (fail closed), never waved through.
+_READ_ONLY_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+_SCOPE_METHODS: Dict[str, frozenset[str]] = {
+    SESSION_SCOPE_OBSERVER: _READ_ONLY_METHODS,
 }
 
 # The browser's own two sessions, and the ONLY scopes that reach everything. A NULL scope — every
@@ -593,6 +652,7 @@ _UNRESTRICTED_SCOPES = frozenset({SESSION_SCOPE_FULL, SESSION_SCOPE_RECOVERY})
 _SCOPE_REFUSAL_CODE = {
     SESSION_SCOPE_EXTENSION: "session_scope_forbidden",
     SESSION_SCOPE_AGENT: "session_scope_forbidden",
+    SESSION_SCOPE_OBSERVER: "session_scope_forbidden",
     # The SPA reads this one and renders the enrolment gate instead of a dead page.
     SESSION_SCOPE_ENROLL: "enrollment_required",
 }
@@ -615,15 +675,21 @@ def _scope_path(path: Optional[str]) -> Optional[str]:
     return path.rstrip("/") or "/"
 
 
-def _scope_allows(scope: Optional[str], path: Optional[str]) -> bool:
-    """Pure path check. Whether an `enroll` hold is still WARRANTED is a separate question with a
-    different input (the account, not the path) and is answered in `_scope_checked`.
+def _scope_allows(scope: Optional[str], path: Optional[str],
+                  method: Optional[str] = None) -> bool:
+    """Path check, plus the verb check for a scope listed in `_SCOPE_METHODS`. Whether an `enroll`
+    hold is still WARRANTED is a separate question with a different input (the account, not the
+    path) and is answered in `_scope_checked`.
+
+    `method` defaults to the current request's, read off the ContextVar the middleware stamped —
+    that is how `_scope_checked` calls it. A scope with no verb limit never looks at it.
 
     Both unknowns fail CLOSED, and for the same reason. An unknown PATH means a restricted token
     reached a handler by a route this middleware never saw. An unknown SCOPE means a value nobody
     taught this table about — a typo, a hand-edited row, or a scope some later phase added and
     only half wired up — and granting it everything by omission would make the table itself the
-    opt-in thing this design exists to avoid.
+    opt-in thing this design exists to avoid. A verb-limited scope with NO readable method is the
+    same shape and is refused too.
     """
     effective = scope or SESSION_SCOPE_FULL
     if effective in _UNRESTRICTED_SCOPES:
@@ -632,6 +698,15 @@ def _scope_allows(scope: Optional[str], path: Optional[str]) -> bool:
     if surface is None:
         log_warning("Session carries an unrecognised scope — refusing", scope=effective)
         return False
+    verbs = _SCOPE_METHODS.get(effective)
+    if verbs is not None:
+        if method is None:
+            # `.get(None)` and `getattr` rather than trusting the ContextVar: a missing request
+            # context (a Celery or direct caller, a request object without a method) must be a
+            # REFUSAL here, never an AttributeError that surfaces as a 500.
+            method = getattr(_request_object.get(None), "method", None)
+        if not isinstance(method, str) or method.upper() not in verbs:
+            return False
     return _scope_path(path) in surface
 
 
@@ -835,6 +910,85 @@ def _release_hold(token: str) -> bool:
         return False
 
 
+# The ONLY fields an observer is shown on each list route, written out literally. The list readers
+# already SELECT an explicit column tuple, so for real rows this changes nothing; it is the second
+# lock. A row reaching a handler with a column nobody listed here (a phone, an email, a credential)
+# is stripped before it can leave the process, for an observer. Adding a field to a response is a
+# deliberate edit to THIS table, which `test_observer_route_bodies.py` pins key for key.
+_OBSERVER_ROW_FIELDS: Dict[str, frozenset] = {
+    "dms": frozenset({"id", "user_id", "recipient_profile_url", "recipient_name", "message", "source",
+                      "scheduled_time", "status", "created_at", "updated_at"}),
+    "connection_requests": frozenset({
+        "id", "user_id", "recipient_profile_url", "recipient_name", "message", "source", "icp_score",
+        "reasons", "failure_reason", "status", "attempts", "created_at", "updated_at",
+        # A boolean saying whether an address exists — never the address.
+        "has_recipient_email"}),
+    "outreach_targets": frozenset({"id", "user_id", "target_profile_url", "target_name", "stage", "status",
+                                   "context_url", "draft_text", "notes", "created_at", "updated_at"}),
+    "catchup_touches": frozenset({"id", "user_id", "profile_url", "person_name", "event_type",
+                                  "event_detail", "event_period", "score", "message", "status",
+                                  "created_at", "updated_at"}),
+    "lead_signals": frozenset({
+        "id", "user_id", "source", "channel", "person_name", "person_profile_url", "thread_key",
+        "snippet", "score", "matched_signals", "post_id", "context_url", "draft_response", "status",
+        "delivery_attempts", "created_at", "updated_at"}),
+    "leads": frozenset({
+        "id", "user_id", "person_key", "person_name", "person_profile_url", "score", "icp_score",
+        "engagement_score", "stage", "signals", "signal_count", "reasons", "next_action",
+        "first_signal_at", "last_signal_at", "manual_stage", "notes", "dismissed", "created_at",
+        "updated_at"}),
+}
+
+
+def _observer_rows(kind: str, rows: Any) -> Any:
+    """Reduce an observer's list rows to the whitelisted fields; every other scope is untouched.
+
+    For an observer each row keeps only the fields `_OBSERVER_ROW_FIELDS[kind]` names. A non-list is
+    returned as it came.
+    """
+    if _request_session_scope.get() != SESSION_SCOPE_OBSERVER or not isinstance(rows, list):
+        return rows
+    allowed = _OBSERVER_ROW_FIELDS[kind]
+    return [{k: v for k, v in row.items() if k in allowed} if isinstance(row, dict) else row
+            for row in rows]
+
+
+def _session_log_id(token: Optional[str]) -> Optional[str]:
+    """A short, stable, non-reversible label for a session, safe to put in a log line.
+
+    Deliberately NOT `sessions.session_token`: that column holds the plain SHA-256 of the token, and
+    a log line that carried it would be a second copy of the database's lookup key. This is a
+    separately-salted digest, truncated, so a line can be matched to another line about the same
+    session (and to the access claim) and to nothing else.
+    """
+    if not token:
+        return None
+    return hashlib.sha256(b"lem-session-log:" + token.encode()).hexdigest()[:16]
+
+
+def _record_observer_access(user_id: int, token: Optional[str], path: Optional[str]) -> None:
+    """Write the observer's once-a-day `observer_access` audit row. Never raises.
+
+    Scope, path and the session row id; no body, no query string, no client address. The claim
+    (`claim_observer_access`, Redis, fails open) is what keeps this to one row per session per UTC
+    day. Everything here is best effort: an access record must never turn a read into an error.
+    """
+    try:
+        session_key = _session_log_id(token)
+        if not session_key or not claim_observer_access(session_key):
+            return
+        _safe_auth_event(AuthAuditEvent.OBSERVER_ACCESS, user_id=user_id,
+                         session_id=get_session_id(token) if token else None,
+                         details={"scope": SESSION_SCOPE_OBSERVER, "path": _scope_path(path)})
+    except Exception as e:
+        log_debug(f"Could not record observer access: {e}")
+
+
+# Machine seats whose refusal is a WARNING: a held token of one of these only reaches a path it was
+# not given when its holder is misconfigured or the token is stolen, so each refusal is worth seeing.
+_WARN_ON_REFUSAL_SCOPES = frozenset({SESSION_SCOPE_AGENT, SESSION_SCOPE_OBSERVER})
+
+
 def _scope_checked(resolved: Dict[str, Any], token: Optional[str]) -> int:
     scope = resolved.get("scope") or SESSION_SCOPE_FULL
     path = _request_path.get()
@@ -855,6 +1009,8 @@ def _scope_checked(resolved: Dict[str, Any], token: Optional[str]) -> int:
 
     if _scope_allows(scope, path):
         _request_session_scope.set(scope)
+        if scope == SESSION_SCOPE_OBSERVER:
+            _record_observer_access(user_id, token, path)
         return user_id
     if scope == SESSION_SCOPE_EXTENSION:
         # Audited AND warned, for the extension scope only. The extension calls exactly one path
@@ -869,6 +1025,15 @@ def _scope_checked(resolved: Dict[str, Any], token: Optional[str]) -> int:
         _safe_auth_event(AuthAuditEvent.SESSION_SCOPE_DENIED, user_id=user_id, success=False,
                          ip=_client_ip(http_request), user_agent=_user_agent(http_request),
                          details={"scope": scope, "path": _scope_path(path)})
+    elif scope in _WARN_ON_REFUSAL_SCOPES:
+        # WARNING, not audited. A machine seat reaching a path or verb it was not given means a
+        # misconfigured agent or a stolen token, and nobody reads a DEBUG line. The message is a
+        # stable template so the recurrence escalation groups every refusal into one issue; the
+        # variable parts ride as keyword context. No audit row: an agent probing a path would
+        # otherwise fill the account's last-20 events list.
+        log_warning("Machine session refused outside its scope", user_id=user_id, scope=scope,
+                    method=getattr(_request_object.get(None), "method", None),
+                    path=_scope_path(path), session=_session_log_id(token))
     else:
         log_debug("Session refused outside its scope", user_id=user_id, scope=scope)
     raise _scope_refusal(scope)
@@ -2031,7 +2196,6 @@ def _handle_inbound_parse(form) -> ResponseModel[str]:
     # SendGrid Inbound Parse routes ALL mail for the parse host to this ONE URL, so this endpoint
     # must also handle the reply+<token> traffic (Gmail forwarding confirmations + comment
     # notifications), not only pin+<token> PIN replies. Dispatch by the address prefix.
-    from cqc_lem.integrations.linkedin.notification_email import extract_reply_token_from_address
     if extract_reply_token_from_address(to_field) or extract_reply_token_from_address(envelope):
         return _process_reply_inbound(form)
     text = str(form.get("text") or form.get("html") or "")
@@ -2080,7 +2244,8 @@ def _store_gmail_forward_confirmation(user_id: int, record: "dict", quiet: bool 
         # A repeated log_warning is re-emitted at ERROR and files a defect (utilities/CLAUDE.md), so
         # the path that runs on every inbound email must not warn per email.
         (log_debug if quiet else log_warning)(
-            "Could not store Gmail forwarding confirmation result", exc=e, user_id=user_id)
+            "Could not store Gmail forwarding confirmation result", user_id=user_id,
+            error_type=type(e).__name__)
         return False
 
 
@@ -2105,17 +2270,13 @@ def _handle_gmail_forwarding_confirmation(user_id: int, subject: str, text: str,
     and stash the numeric code + status so the UI can show it as a fallback if the auto-click didn't
     take. Always 200.
     """
-    from cqc_lem.integrations.linkedin.notification_email import (
-        extract_gmail_confirmation_code,
-        extract_gmail_confirmation_url,
-    )
     # Prefer the HTML href — the plain-text part wraps the long verify URL across lines and breaks it.
     url = extract_gmail_confirmation_url(html) or extract_gmail_confirmation_url(text)
     code = (extract_gmail_confirmation_code(subject) or extract_gmail_confirmation_code(text)
             or extract_gmail_confirmation_code(html))
-    # Log the shape so we can see Gmail's exact format when extraction misses.
-    log_info(f"Gmail forwarding confirmation received: url={'yes' if url else 'no'} code={code or 'none'} "
-             f"subject={subject[:120]!r} text_head={(text or '')[:500]!r}", user_id=user_id)
+    # Log extraction shape only. Subject, code, URL and body can contain private credentials.
+    log_info("Gmail forwarding confirmation received", user_id=user_id,
+             url_present=bool(url), code_present=bool(code))
     confirmed = False
     if url:
         try:
@@ -2128,9 +2289,11 @@ def _handle_gmail_forwarding_confirmation(user_id: int, subject: str, text: str,
                 try:
                     confirmed = requests.get(nested, timeout=15).status_code < 400 or confirmed
                 except Exception as e:
-                    log_debug("Nested Gmail confirmation check failed", exc=e, user_id=user_id)
+                    log_debug("Nested Gmail confirmation check failed", user_id=user_id,
+                              error_type=type(e).__name__)
         except Exception as e:
-            log_warning("Gmail forwarding auto-confirm click failed", exc=e, user_id=user_id)
+            log_warning("Gmail forwarding auto-confirm click failed", user_id=user_id,
+                        error_type=type(e).__name__)
     # Server-side clicking may not complete Gmail's flow (interstitial / datacenter IP). Forward the
     # verify link + code to the user's real inbox so they can finish it from their own signed-in
     # browser — the reliable path. The confirmation went to our reply+ address, so they never saw it.
@@ -2146,7 +2309,8 @@ def _handle_gmail_forwarding_confirmation(user_id: int, subject: str, text: str,
                 forwarded = send_reply_forward_confirmation_email(user_email, url, code,
                                                                   trial=trial)
         except Exception as e:
-            log_warning("Could not forward Gmail confirmation to user", exc=e, user_id=user_id)
+            log_warning("Could not forward Gmail confirmation to user", user_id=user_id,
+                        error_type=type(e).__name__)
     _store_gmail_forward_confirmation(user_id, {
         "code": code, "confirmed": confirmed, "url_found": bool(url),
         "forwarded_to_user": forwarded, **({"source": "auto_click"} if confirmed else {}),
@@ -2193,74 +2357,110 @@ def _reply_sweep_debounced(user_id: int, window_s: int = 120) -> bool:
         return True
 
 
-def _log_inbound_verdict(verdict: str, form, user_id: "Optional[int]" = None) -> None:
-    """One log line + one PostHog event per inbound parse email saying what we did with it. The
-    webhook ignores most mail BY DESIGN, which made a broken forwarding chain indistinguishable from
-    no mail at all — weeks of 100%-silently-dropped traffic looked like "feature never used". The
-    raw (truncated) address fields are included so a token/format mismatch is visible from the log.
+_INBOUND_TRACE_ENV = "LI_REPLY_INBOUND_TRACE_ENABLED"
+
+
+def _env_flag(name: str) -> bool:
+    """True when the environment variable is 1, true or yes (case and spaces ignored)."""
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes"}
+
+
+# Read once at process start: changing the variable needs an API restart or recreate.
+_INBOUND_TRACE_ENABLED = _env_flag(_INBOUND_TRACE_ENV)
+
+
+def _log_inbound_verdict(verdict: str, form: Mapping[str, Any],
+                         user_id: Optional[int] = None,
+                         classification: str = "unknown") -> None:
+    """Log inbound decisions without exposing tokenized addresses or email content.
+
+    `LI_REPLY_INBOUND_TRACE_ENABLED` adds stable, non-reversible fingerprints for correlating
+    SendGrid retries when enabled.
     """
-    to_field = str(form.get("to") or "")[:160]
-    envelope = str(form.get("envelope") or "")[:240]
-    from_field = str(form.get("from") or "")[:120]
-    subject = str(form.get("subject") or "")[:120]
-    log_info(f"Inbound parse email verdict={verdict} to={to_field!r} envelope={envelope!r} "
-             f"from={from_field!r} subject={subject!r}", user_id=user_id)
+    to_field = str(form.get("to") or "")
+    envelope = str(form.get("envelope") or "")
+    token = extract_reply_token_from_address(to_field) or extract_reply_token_from_address(envelope)
+    from_domain = sender_domain(str(form.get("from") or "")) or "unknown"
+    # The From header is attacker-controlled on a public webhook: keep only a plain hostname
+    # so it cannot add lines or fields to the log.
+    if not re.fullmatch(r"[a-z0-9.-]{1,253}", from_domain):
+        from_domain = "invalid"
+    details = (f"Inbound parse email verdict={verdict} class={classification} "
+               f"sender_domain={from_domain} token_present={bool(token)}")
+    if _INBOUND_TRACE_ENABLED:
+        headers = str(form.get("headers") or "")[:8000]
+        message_id = re.search(r"(?im)^message-id:\s*(<[^>]+>)", headers)
+
+        def fingerprint(value: str) -> str:
+            return hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()[:12]
+
+        token_fp = fingerprint(token) if token else "none"
+        message_fp = fingerprint(message_id.group(1)) if message_id else "none"
+        details += f" trace_token={token_fp} trace_message={message_fp}"
+    log_info(details, user_id=user_id)
     try:
-        from cqc_lem.utilities.observability import track_inbound_email
-        track_inbound_email(verdict, user_id=user_id)
+        track_inbound_email(verdict, user_id=user_id, classification=classification)
     except Exception as e:
-        log_debug("Could not track inbound email verdict", exc=e, user_id=user_id)
+        log_debug("Could not track inbound email verdict", user_id=user_id,
+                  error_type=type(e).__name__)
 
 
-def _process_reply_inbound(form) -> ResponseModel[str]:
+def _process_reply_inbound(form: Mapping[str, Any]) -> ResponseModel[str]:
     """Handle inbound mail sent to a reply+<token>@parse-domain address: a Gmail forwarding
     confirmation (auto-click the verify link) or a forwarded LinkedIn comment notification (trigger a
     debounced recent-posts reply sweep). Reactions/unknown tokens are ignored. Always 200. Called
     from BOTH inbound endpoints because SendGrid Inbound Parse posts all parse-host mail to one URL.
     """
-    from cqc_lem.integrations.linkedin.notification_email import (
-        extract_reply_token_from_address,
-        is_comment_notification,
-        is_gmail_forwarding_confirmation,
-        is_linkedin_notification,
-    )
     from cqc_lem.utilities.db import get_user_id_by_reply_token
     to_field = str(form.get("to") or "")
     envelope = str(form.get("envelope") or "")
     from_field = str(form.get("from") or "")
     subject = str(form.get("subject") or "")
-    text = str(form.get("text") or "")
-    html = str(form.get("html") or "")
+    text = str(form.get("text") or "")[:100_000]
+    html = str(form.get("html") or "")[:100_000]
+    notification_text = text or html
     token = extract_reply_token_from_address(to_field) or extract_reply_token_from_address(envelope)
+    gmail_confirmation = is_gmail_forwarding_confirmation(from_field, subject, notification_text)
+    comment = is_comment_notification(subject, notification_text)
+    linkedin_notification = is_linkedin_notification(from_field, subject, notification_text)
+    if gmail_confirmation:
+        classification = "gmail_confirmation"
+    elif comment:
+        classification = "comment"
+    elif linkedin_notification:
+        classification = "linkedin_other"
+    else:
+        classification = "unrecognized"
     if not token:
-        _log_inbound_verdict("no_reply_token", form)
+        _log_inbound_verdict("no_reply_token", form, classification=classification)
         return ResponseModel(status_code=200, detail="ignored")
     user_id = get_user_id_by_reply_token(token)
     if not user_id:
-        _log_inbound_verdict("unknown_reply_token", form)
+        _log_inbound_verdict("unknown_reply_token", form, classification=classification)
         return ResponseModel(status_code=200, detail="ignored")
     # Gmail forwarding confirmation: the address is ours + token-gated, so auto-click the verify link.
-    if is_gmail_forwarding_confirmation(from_field, subject, text or html):
-        _log_inbound_verdict("gmail_confirmation", form, user_id=user_id)
+    if gmail_confirmation:
+        _log_inbound_verdict("gmail_confirmation", form, user_id=user_id,
+                             classification=classification)
         return _handle_gmail_forwarding_confirmation(user_id, subject, text, html)
-    comment = is_comment_notification(subject, text or html)
     # Record the proof BEFORE the comment/reaction split — a forwarded reaction email shows the
     # forwarding rule is live just as well as a comment one does, and the status chip is about the
     # chain working, not about this particular email being actionable (issue #813).
-    if comment or is_linkedin_notification(from_field, subject, text or html):
+    if comment or linkedin_notification:
         _record_forwarding_confirmed_by_delivery(user_id)
     if not comment:
-        _log_inbound_verdict("linkedin_not_comment" if is_linkedin_notification(
-            from_field, subject, text or html) else "unrelated", form, user_id=user_id)
+        verdict = "linkedin_not_comment" if linkedin_notification else "unrelated"
+        _log_inbound_verdict(verdict, form, user_id=user_id, classification=classification)
         return ResponseModel(status_code=200, detail="ignored")
     if not _reply_sweep_debounced(user_id):
-        _log_inbound_verdict("debounced", form, user_id=user_id)
+        _log_inbound_verdict("debounced", form, user_id=user_id, classification=classification)
         return ResponseModel(status_code=200, detail="debounced")
     # slot 0 is the single-shot trigger (the golden-hour amplifier owns the other slots). Omitting it
     # once raised KeyError at enqueue and 500'd every forwarded notification; cqc_lem.app.queue_once
     # now fills the default into the dedup key, so this stays explicit for meaning, not for safety.
     sweep_reply_comments.apply_async(kwargs={"user_id": user_id, "sweep_slot": 0}, countdown=120)
-    _log_inbound_verdict("comment_accepted", form, user_id=user_id)
+    _log_inbound_verdict("comment_accepted", form, user_id=user_id,
+                         classification=classification)
     log_info("Triggered reply sweep from comment notification", user_id=user_id)
     return ResponseModel(status_code=200, detail="accepted")
 
@@ -2824,9 +3024,18 @@ def _verify_assertion_for_user(credential: Dict[str, Any], challenge: str,
     return stored
 
 
+def _linkedin_account_redirect(callback_url: str, params: dict[str, str]) -> RedirectResponse:
+    """Build an account-page redirect from the host registered for one LinkedIn app."""
+    parsed_url = urlparse(callback_url)
+    base_host = f"{parsed_url.scheme}://{parsed_url.netloc}"
+    if NGROK_CUSTOM_DOMAIN:
+        base_host = "https://" + NGROK_CUSTOM_DOMAIN
+    return RedirectResponse(url=f"{base_host}/account?{urlencode(params)}")
+
+
 @app.get("/auth/linkedin/", response_model=None, include_in_schema=False)
 @router.get("/auth/linkedin/", response_model=None, include_in_schema=False)
-def linkedin_auth_init(session_token: str = None) -> RedirectResponse:
+def linkedin_auth_init(session_token: Optional[str] = None) -> RedirectResponse:
     """The `email` parameter is gone (issue #914). It was already dead — the user comes from the
     `session_token` carried in the OAuth `state` — but it left the last handler in this file whose
     signature named an account it did not use, and it put the address in a URL (browser history,
@@ -2834,19 +3043,27 @@ def linkedin_auth_init(session_token: str = None) -> RedirectResponse:
     """
     guard_linkedin("api.linkedin_auth_init")
     client = AuthClient(LI_CLIENT_ID, LI_CLIENT_SECRET, LI_REDIRECT_URL)
+    scopes = ["openid", "profile", "email", "w_member_social"]
+    # CMA access is an explicit, allowlisted canary. In main-app mode it is requested here; in
+    # separate-app bridge mode a dedicated OAuth route stores a second token and leaves the
+    # existing publishing token bound to the original app.
+    user_id = get_session_user_id(session_token)
+    if (user_id is not None and member_post_analytics_enabled_for_user(user_id)
+            and not member_post_analytics_separate_app_enabled()):
+        scopes.append("r_member_postAnalytics")
     # Embed the session_token in state so the callback can find the right user,
     # even when the LinkedIn account email differs from the login email.
     state = f"{LI_STATE_SALT}:{session_token}" if session_token else LI_STATE_SALT
     auth_url = client.generate_member_auth_url(
         state=state,
-        scopes=["openid", "profile", "email", "w_member_social"]
+        scopes=scopes,
     )
     return RedirectResponse(url=auth_url)
 
 
 # LinkedIn OAuth callback lives outside /api since LinkedIn redirects here
 @app.get("/auth/linkedin/callback", response_model=None)
-def linkedin_callback(code: str, state: str = None) -> Union[ResponseModel, RedirectResponse]:
+def linkedin_callback(code: str, state: Optional[str] = None) -> Union[ResponseModel, RedirectResponse]:
     """LinkedIn's OAuth redirect target. Lives OUTSIDE `/api` because LinkedIn sends the browser here.
 
     `state` is `"<salt>:<session_token>"`, and the session it carries is what identifies the user —
@@ -2857,16 +3074,10 @@ def linkedin_callback(code: str, state: str = None) -> Union[ResponseModel, Redi
     Every failure path REDIRECTS to /account with an `li_error` rather than rendering an error: the
     caller is a browser mid-flow, and an API error page strands the user outside the app.
     """
-    from urllib.parse import urlencode
-
     guard_linkedin("api.linkedin_callback")
 
-    def _account_redirect(params: dict) -> RedirectResponse:
-        parsed_url = urlparse(LI_REDIRECT_URL)
-        base_host = f"{parsed_url.scheme}://{parsed_url.netloc.split(':')[0]}"
-        if os.environ.get('NGROK_CUSTOM_DOMAIN'):
-            base_host = "https://" + os.environ.get('NGROK_CUSTOM_DOMAIN')
-        return RedirectResponse(url=f"{base_host}/account?{urlencode(params)}")
+    def _account_redirect(params: dict[str, str]) -> RedirectResponse:
+        return _linkedin_account_redirect(LI_REDIRECT_URL, params)
 
     # State format: "{LI_STATE_SALT}:{session_token}" or just "{LI_STATE_SALT}"
     session_token_from_state: Optional[str] = None
@@ -2940,6 +3151,147 @@ def linkedin_callback(code: str, state: str = None) -> Union[ResponseModel, Redi
     return _account_redirect({'email': user_email, 'li_connected': '1'})
 
 
+def _member_analytics_account_redirect(params: dict[str, str]) -> RedirectResponse:
+    """Return OAuth results to the account page using the Dev-app callback's host."""
+    return _linkedin_account_redirect(LI_MEMBER_POST_ANALYTICS_REDIRECT_URL, params)
+
+
+def _linkedin_vanity_name(profile_url: Optional[str]) -> Optional[str]:
+    """Extract the public /in/{vanityName} handle stored for a LEM user."""
+    parsed = urlparse(profile_url or "")
+    segments = [segment for segment in parsed.path.split("/") if segment]
+    if len(segments) < 2 or segments[0].casefold() != "in":
+        return None
+    return segments[1].casefold()
+
+
+def _linkedin_exception_status_code(exc: BaseException) -> Optional[int]:
+    """Read HTTP status from SDK or requests exceptions without logging response bodies."""
+    response = getattr(exc, "response", None)
+    status_code = getattr(exc, "status_code", None) or getattr(response, "status_code", None)
+    return status_code if isinstance(status_code, int) else None
+
+
+@app.get("/auth/linkedin/analytics/", response_model=None, include_in_schema=False)
+@router.get("/auth/linkedin/analytics/", response_model=None, include_in_schema=False)
+def member_analytics_auth_init(session_token: Optional[str] = None) -> RedirectResponse:
+    """Begin the allowlisted-user OAuth flow for the temporary separate Development-tier app."""
+    guard_linkedin("api.member_analytics_auth_init")
+    user_id = get_session_user_id(session_token)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="A valid LEM session is required")
+    if not member_post_analytics_connection_available_for_user(user_id):
+        raise HTTPException(status_code=404, detail="Analytics connection is unavailable")
+    if not LI_STATE_SALT:
+        raise HTTPException(status_code=503, detail="LinkedIn OAuth state is not configured")
+
+    client = AuthClient(
+        LI_MEMBER_POST_ANALYTICS_CLIENT_ID,
+        LI_MEMBER_POST_ANALYTICS_CLIENT_SECRET,
+        LI_MEMBER_POST_ANALYTICS_REDIRECT_URL,
+    )
+    state = f"{LI_STATE_SALT}:member_analytics:{session_token}"
+    # The Development app uses r_basicprofile to expose /me's app-scoped member ID and vanityName;
+    # these fields let the callback match the account because member IDs differ across apps.
+    auth_url = client.generate_member_auth_url(
+        state=state,
+        scopes=["r_basicprofile", "r_member_postAnalytics"],
+    )
+    return RedirectResponse(url=auth_url)
+
+
+# LinkedIn redirects to the registered URI without `/api`; keep an API-prefixed alias as well.
+@app.get("/auth/linkedin/analytics/callback", response_model=None, include_in_schema=False)
+@router.get("/auth/linkedin/analytics/callback", response_model=None, include_in_schema=False)
+def member_analytics_callback(code: Optional[str] = None, state: Optional[str] = None,
+                             error: Optional[str] = None) -> RedirectResponse:
+    """Store separate-app analytics credentials without replacing the LEM publishing token."""
+    guard_linkedin("api.member_analytics_callback")
+    # maxsplit=2 leaves the complete opaque session token in the final state segment.
+    state_parts = (state or "").split(":", 2)
+    if not LI_STATE_SALT or len(state_parts) != 3 or state_parts[0] != LI_STATE_SALT \
+            or state_parts[1] != "member_analytics":
+        log_warning("Member analytics OAuth state invalid")
+        return _member_analytics_account_redirect({"li_analytics_error": "invalid_state"})
+    session_token = state_parts[2]
+    user_id = get_session_user_id(session_token)
+    if user_id is None:
+        log_warning("Member analytics OAuth session is invalid")
+        return _member_analytics_account_redirect({"li_analytics_error": "invalid_session"})
+    if error or not code:
+        log_warning("Member analytics OAuth authorization denied or code missing", user_id=user_id,
+                    has_error=bool(error), has_code=bool(code), status_code=None)
+        return _member_analytics_account_redirect({"li_analytics_error": "authorization_denied"})
+    if not member_post_analytics_connection_available_for_user(user_id):
+        log_warning("Member analytics OAuth connection is unavailable", user_id=user_id)
+        return _member_analytics_account_redirect({"li_analytics_error": "connection_unavailable"})
+
+    client = AuthClient(
+        LI_MEMBER_POST_ANALYTICS_CLIENT_ID,
+        LI_MEMBER_POST_ANALYTICS_CLIENT_SECRET,
+        LI_MEMBER_POST_ANALYTICS_REDIRECT_URL,
+    )
+    try:
+        token_response = client.exchange_auth_code_for_access_token(code)
+    except Exception as exc:
+        status_code = _linkedin_exception_status_code(exc)
+        log_error("Member analytics token exchange failed", exc=exc, user_id=user_id,
+                  status_code=status_code)
+        return _member_analytics_account_redirect({"li_analytics_error": "token_exchange_failed"})
+
+    access_token = getattr(token_response, "access_token", None)
+    if not access_token:
+        return _member_analytics_account_redirect({"li_analytics_error": "no_access_token"})
+    granted_scopes = set(
+        (getattr(token_response, "scope", None) or "").replace(",", " ").split())
+    if "r_member_postAnalytics" not in granted_scopes:
+        log_warning("Member analytics OAuth scope was not granted", user_id=user_id,
+                    required_scope="r_member_postAnalytics")
+        return _member_analytics_account_redirect({"li_analytics_error": "scope_missing"})
+    try:
+        profile = RestliClient().get(
+            resource_path="/me", access_token=access_token, version_string=LI_API_VERSION)
+        if getattr(profile, "status_code", None) != 200:
+            log_error("Member analytics /me lookup returned non-200", user_id=user_id,
+                      status_code=getattr(profile, "status_code", None))
+            return _member_analytics_account_redirect({"li_analytics_error": "profile_lookup_failed"})
+        entity = getattr(profile, "entity", None) or {}
+        new_sub_id = entity.get("id") if isinstance(entity, dict) else None
+        new_vanity_name = entity.get("vanityName") if isinstance(entity, dict) else None
+    except Exception as exc:
+        status_code = _linkedin_exception_status_code(exc)
+        log_error("Member analytics /me failed", exc=exc, user_id=user_id,
+                  status_code=status_code)
+        return _member_analytics_account_redirect({"li_analytics_error": "profile_lookup_failed"})
+
+    # TODO(#2513): replace vanity-name bridge with a verified OIDC/subject identity bridge.
+    # LinkedIn's member IDs are app-specific, so /me.id cannot bridge these apps. The public
+    # vanity name is the only comparable field available without adding OIDC to the CMA app. This
+    # catches accidental account mismatches, but is not cryptographic identity proof: handles can
+    # change or be reassigned. Keep the analytics connection allowlisted and user-confirmed.
+    stored_vanity_name = _linkedin_vanity_name(get_linkedin_profile_url_by_user_id(user_id))
+    if not new_sub_id or not new_vanity_name or not stored_vanity_name:
+        log_info("Member analytics OAuth profile could not be matched", user_id=user_id)
+        return _member_analytics_account_redirect({"li_analytics_error": "identity_unverified"})
+    if new_vanity_name.casefold() != stored_vanity_name:
+        log_info("Member analytics OAuth profile did not match the existing LEM account",
+                 user_id=user_id)
+        return _member_analytics_account_redirect({"li_analytics_error": "account_mismatch"})
+
+    stored = upsert_member_analytics_token(
+        user_id,
+        new_sub_id,
+        access_token,
+        getattr(token_response, "expires_in", None),
+    )
+    if not stored:
+        return _member_analytics_account_redirect({"li_analytics_error": "token_store_failed"})
+    log_info("Member analytics OAuth connection stored", user_id=user_id,
+             expires_in=getattr(token_response, "expires_in", None),
+             scope=getattr(token_response, "scope", None))
+    return _member_analytics_account_redirect({"li_analytics_connected": "1"})
+
+
 # --- Occasion / milestone posts (issue #1074) --------------------------------------------------
 # LinkedIn's "Celebrate an occasion" composer creates an entity no API call can, so these two
 # endpoints are the whole loop: seed a draft LEM writes, then record that the author published it
@@ -2987,6 +3339,7 @@ def list_scheduled_dms_endpoint(session_token: str, status_filter: Optional[str]
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     result = get_scheduled_dms(user_id, status_filter=status_filter, page=page,
                                page_size=page_size, sort_order=sort_order)
+    result["dms"] = _observer_rows("dms", result.get("dms", []))
     for dm in result.get("dms", []):
         for key in ("scheduled_time", "created_at", "updated_at"):
             if dm.get(key) is not None:
@@ -3093,6 +3446,7 @@ def list_connection_requests_endpoint(session_token: str, status_filter: Optiona
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     result = get_connection_requests(user_id, status_filter=status_filter, page=page,
                                      page_size=page_size, sort_order=sort_order)
+    result["requests"] = _observer_rows("connection_requests", result.get("requests", []))
     return ResponseModel(status_code=200, detail=result)
 
 
@@ -3195,6 +3549,7 @@ def list_lead_signals_endpoint(session_token: str, status_filter: Optional[str] 
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     result = get_lead_signals(user_id, status_filter=status_filter, page=page,
                               page_size=page_size, sort_order=sort_order)
+    result["signals"] = _observer_rows("lead_signals", result.get("signals", []))
     result["new_count"] = count_new_lead_signals(user_id)
     return ResponseModel(status_code=200, detail=result)
 
@@ -3271,6 +3626,7 @@ def list_leads_endpoint(session_token: str, stage_filter: Optional[str] = None,
         raise HTTPException(status_code=422, detail=f"Unknown stage '{stage_filter}'")
     result = get_leads(user_id, stage_filter=stage_filter, include_dismissed=include_dismissed,
                        page=page, page_size=page_size)
+    result["leads"] = _observer_rows("leads", result.get("leads", []))
     result["hot_count"] = count_hot_leads(user_id)
     return ResponseModel(status_code=200, detail=result)
 
@@ -3331,10 +3687,12 @@ def list_catchup_touches_endpoint(
     user_id = get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
-    return ResponseModel(status_code=200, detail=get_catchup_touches(
+    result = get_catchup_touches(
         user_id, status_filter=status_filter, event_type_filter=event_type_filter,
         page=page, page_size=page_size, sort_order=sort_order, sort_by=sort_by,
-        start_date=start_date, end_date=end_date))
+        start_date=start_date, end_date=end_date)
+    result["touches"] = _observer_rows("catchup_touches", result.get("touches", []))
+    return ResponseModel(status_code=200, detail=result)
 
 
 @router.put("/catchup/touch")

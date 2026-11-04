@@ -2528,6 +2528,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/user/member-post-analytics-connection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Member Post Analytics Connection
+         * @description Status for the allowlisted temporary Community Management OAuth connection.
+         */
+        get: operations["get_member_post_analytics_connection_api_user_member_post_analytics_connection_get"];
+        put?: never;
+        post?: never;
+        /**
+         * Disconnect Member Post Analytics
+         * @description Remove only the separate analytics app token; retain the user's main LinkedIn connection.
+         */
+        delete: operations["disconnect_member_post_analytics_api_user_member_post_analytics_connection_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/user/newsletter-draft": {
         parameters: {
             query?: never;
@@ -2704,6 +2728,38 @@ export interface paths {
         get: operations["get_newsletter_subscribers_endpoint_api_user_newsletter_subscribers_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/user/observer-token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mint Observer Token
+         * @description Mint a long-lived, READ-ONLY session for an operations agent.
+         *
+         *     Mirrors `mint_agent_token` line for line, for the same reasons: a non-browser client needs a
+         *     credential it can hold, and the ceremony that makes minting safe can only happen HERE, in the
+         *     SPA, with a human present. The observer never runs one.
+         *
+         *     What differs is the surface, not the mint. `scope='observer'` reaches `_OBSERVER_SESSION_SURFACE`
+         *     (the queue reads, preferences, automation state, dashboard, boot payloads, the account's own
+         *     audit history) and only on `GET`/`HEAD`/`OPTIONS` — `_SCOPE_METHODS`, enforced in the one
+         *     resolver — so it can create nothing, approve nothing, and change nothing.
+         *
+         *     The TTL is fixed at mint and never slid (`FIXED_TTL_SCOPES`). The row is listed and revocable
+         *     per-device on the Security card, so revoking it stops the observer and signs nobody out.
+         */
+        post: operations["mint_observer_token_api_user_observer_token_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5383,6 +5439,27 @@ export interface components {
             survey_key?: string | null;
             /** Why */
             why?: string | null;
+        };
+        /**
+         * ObserverTokenRequest
+         * @description Body of `POST /user/observer-token`: a READ-ONLY token for an operations agent.
+         *
+         *     Same shape as `AgentTokenRequest`; `label` is what the owner will read on the Security card when
+         *     deciding which machine to revoke.
+         */
+        ObserverTokenRequest: {
+            /**
+             * Label
+             * @description Free text shown on the Security card and kept in the audit log. Letters, digits, space and . _ : - only, 120 characters at most. It must not hold personal data (no names or email addresses).
+             */
+            label?: string | null;
+            /** Session Token */
+            session_token?: string | null;
+            /**
+             * Ttl Days
+             * @default 90
+             */
+            ttl_days: number;
         };
         /**
          * OccasionPostRequest
@@ -10859,6 +10936,68 @@ export interface operations {
             };
         };
     };
+    get_member_post_analytics_connection_api_user_member_post_analytics_connection_get: {
+        parameters: {
+            query: {
+                session_token: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    disconnect_member_post_analytics_api_user_member_post_analytics_connection_delete: {
+        parameters: {
+            query: {
+                session_token: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_str_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_newsletter_draft_endpoint_api_user_newsletter_draft_get: {
         parameters: {
             query: {
@@ -11207,6 +11346,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ResponseModel_NewsletterSubscribersDetail_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    mint_observer_token_api_user_observer_token_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ObserverTokenRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
                 };
             };
             /** @description Validation Error */
@@ -12603,7 +12775,7 @@ export interface operations {
         parameters: {
             query: {
                 code: string;
-                state?: string;
+                state?: string | null;
             };
             header?: never;
             path?: never;

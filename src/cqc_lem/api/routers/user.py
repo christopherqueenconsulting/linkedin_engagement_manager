@@ -118,6 +118,7 @@ from cqc_lem.utilities.db import (
     SESSION_SCOPE_AGENT,
     SESSION_SCOPE_EXTENSION,
     SESSION_SCOPE_FULL,
+    SESSION_SCOPE_OBSERVER,
     STORY_BANK_KINDS,
     STORY_BANK_TARGET_ENTRIES,
     VALID_CATCHUP_MESSAGE_SOURCES,
@@ -138,6 +139,7 @@ from cqc_lem.utilities.db import (
     create_session,
     delete_auth_factor,
     delete_engagement_target,
+    delete_member_analytics_token,
     delete_pin_for_email,
     delete_story_bank_entry,
     get_auth_audit_events,
@@ -154,6 +156,8 @@ from cqc_lem.utilities.db import (
     get_latest_edition_scheduled_for,
     get_lead_magnet_settings,
     get_linkedin_profile_url_by_user_id,
+    get_member_analytics_access_token,
+    get_member_analytics_token_info,
     get_newsletter_edition,
     get_newsletter_settings,
     get_next_group_for_post,
@@ -223,7 +227,13 @@ from cqc_lem.utilities.geocoding import GeocodeError, geocode_city
 from cqc_lem.utilities.group_post_slot import group_skip_undo_open, skip_undo_deadline
 from cqc_lem.utilities.linkedin.helper import load_profile_for_user
 from cqc_lem.utilities.linkedin.login_status import get_login_status
-from cqc_lem.utilities.linkedin.token_refresh import resolve_token_status
+from cqc_lem.utilities.linkedin.member_post_analytics import (
+    member_post_analytics_connection_available_for_user,
+    member_post_analytics_enabled_for_user,
+    member_post_analytics_separate_app_enabled,
+    member_post_analytics_user_allowed,
+)
+from cqc_lem.utilities.linkedin.token_refresh import get_token_expiry, resolve_token_status
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
 from cqc_lem.utilities.observability import FEATURE_CONTENT, llm_trace
 from cqc_lem.utilities.post_image import (
@@ -316,6 +326,27 @@ class AgentTokenRequest(BaseModel):
     """
     session_token: SessionTokenField = None
     label: Optional[str] = Field(default=None, max_length=120)
+    ttl_days: int = Field(default=90, ge=1, le=365)
+
+
+# Letters, digits, space and `._:-` only. The label is shown on the Security card and kept in the
+# audit log, so it must not be able to carry an email address, a name with punctuation, or a newline
+# that forges a second line in a log. Rust-regex semantics: `$` is end-of-input, not before a final \n.
+_TOKEN_LABEL_PATTERN = r"^[A-Za-z0-9 ._:\-]*$"
+
+
+class ObserverTokenRequest(BaseModel):
+    """Body of `POST /user/observer-token`: a READ-ONLY token for an operations agent.
+
+    Same shape as `AgentTokenRequest`; `label` is what the owner will read on the Security card when
+    deciding which machine to revoke.
+    """
+    session_token: SessionTokenField = None
+    label: Optional[str] = Field(
+        default=None, max_length=120, pattern=_TOKEN_LABEL_PATTERN,
+        description="Free text shown on the Security card and kept in the audit log. Letters, "
+                    "digits, space and . _ : - only, 120 characters at most. It must not hold "
+                    "personal data (no names or email addresses).")
     ttl_days: int = Field(default=90, ge=1, le=365)
 
 
@@ -1197,6 +1228,51 @@ def get_user_token_status(session_token: str) -> ResponseModel[dict[str, Any]]:
     return ResponseModel(status_code=200, detail=resolve_token_status(user_id))
 
 
+@router.get("/member-post-analytics-connection")
+def get_member_post_analytics_connection(session_token: str) -> ResponseModel[dict[str, Any]]:
+    """Status for the allowlisted temporary Community Management OAuth connection."""
+    user_id = _main.get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    allowed = member_post_analytics_user_allowed(user_id)
+    connect_available = member_post_analytics_connection_available_for_user(user_id)
+    if not allowed:
+        return ResponseModel(status_code=200, detail={
+            "available": False, "connect_available": False,
+            "analytics_enabled": False, "separate_app": False,
+            "connected": False, "saved_token": False, "expired": False, "expires_at": None,
+        })
+    info = get_member_analytics_token_info(user_id)
+    expiry = get_token_expiry(info or {})
+    access_token = get_member_analytics_access_token(user_id)
+    saved_token = bool(info and info.get("access_token"))
+    return ResponseModel(status_code=200, detail={
+        # Keep disconnect controls visible after cutover, while OAuth reconnect remains available
+        # only when the separate-app bridge is actively configured.
+        "available": connect_available or saved_token,
+        "connect_available": connect_available,
+        "analytics_enabled": member_post_analytics_enabled_for_user(user_id),
+        "separate_app": member_post_analytics_separate_app_enabled(),
+        "connected": bool(access_token),
+        "saved_token": saved_token,
+        "expired": bool(saved_token and not access_token),
+        "expires_at": expiry.isoformat() if expiry else None,
+    })
+
+
+@router.delete("/member-post-analytics-connection")
+def disconnect_member_post_analytics(session_token: str) -> ResponseModel[str]:
+    """Remove only the separate analytics app token; retain the user's main LinkedIn connection."""
+    user_id = _main.get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    if not member_post_analytics_user_allowed(user_id):
+        raise HTTPException(status_code=403, detail="Analytics connection is unavailable")
+    if not delete_member_analytics_token(user_id):
+        raise HTTPException(status_code=500, detail="Could not remove analytics connection")
+    return ResponseModel(status_code=200, detail="Analytics app connection removed")
+
+
 @router.get("/linkedin-signin-status")
 def get_linkedin_signin_status(session_token: str) -> ResponseModel[dict[str, Any]]:
     """The last LinkedIn sign-in the automation made, and whether it is waiting on the user's
@@ -1221,6 +1297,10 @@ def get_linkedin_signin_status(session_token: str) -> ResponseModel[dict[str, An
     })
 
 
+# The most recent auth events `GET /user/security` returns, whoever asks.
+_SECURITY_EVENTS_LIMIT = 50
+
+
 @router.get("/security")
 def get_user_security(session_token: Optional[str] = None) -> ResponseModel[dict[str, Any]]:
     """Everything the account page's Security card shows (issue #745, 2b): the devices signed in,
@@ -1241,12 +1321,21 @@ def get_user_security(session_token: Optional[str] = None) -> ResponseModel[dict
         "is_current": s["is_current"],
         "scope": s.get("scope") or SESSION_SCOPE_FULL,
     } for s in list_user_sessions(user_id, current_token=token)]
-    events = [{
-        "event": e.get("event"),
-        "success": bool(e.get("success")),
-        "user_agent": e.get("user_agent"),
-        "created_at": _main._utc_iso(e.get("created_at")),
-    } for e in get_auth_audit_events(user_id)]
+    # Bounded for EVERY scope, in the query and again here: the list is an account-history view,
+    # and an unbounded read is the wrong default for a page a read-only token can fetch.
+    # An observer is a machine reading the owner's history, and a user agent string identifies the
+    # owner's browsers and tools — it adds nothing a monitor needs, so it is left out for that scope.
+    include_user_agent = _main._request_session_scope.get() != SESSION_SCOPE_OBSERVER
+    events = []
+    for e in get_auth_audit_events(user_id, limit=_SECURITY_EVENTS_LIMIT)[:_SECURITY_EVENTS_LIMIT]:
+        entry = {
+            "event": e.get("event"),
+            "success": bool(e.get("success")),
+            "created_at": _main._utc_iso(e.get("created_at")),
+        }
+        if include_user_agent:
+            entry["user_agent"] = e.get("user_agent")
+        events.append(entry)
 
     return ResponseModel(status_code=200, detail={
         "public_uid": get_user_public_uid(user_id),
@@ -1356,6 +1445,50 @@ def mint_agent_token(request: AgentTokenRequest, http_request: Request = None) -
                       ip=_main._client_ip(http_request), user_agent=_main._user_agent(http_request),
                       details={"scope": SESSION_SCOPE_AGENT, "ttl_days": request.ttl_days,
                                "label": request.label or "Headless agent"})
+    return ResponseModel(status_code=200,
+                         detail={"session_token": token, "expires_in_days": request.ttl_days})
+
+
+# `http_request: Request = None`, not `Optional[Request]`: FastAPI injects a parameter annotated
+# exactly `Request`, but reads `Optional[Request]` as a body field and fails to build the route. The
+# `= None` only lets a direct (non-HTTP) call omit it; every handler here already passes it through
+# helpers that accept None.
+@router.post("/observer-token")
+def mint_observer_token(request: ObserverTokenRequest,
+                        http_request: Request = None) -> ResponseModel[dict[str, Any]]:  # type: ignore[assignment]
+    """Mint a long-lived, READ-ONLY session for an operations agent.
+
+    Mirrors `mint_agent_token` line for line, for the same reasons: a non-browser client needs a
+    credential it can hold, and the ceremony that makes minting safe can only happen HERE, in the
+    SPA, with a human present. The observer never runs one.
+
+    What differs is the surface, not the mint. `scope='observer'` reaches `_OBSERVER_SESSION_SURFACE`
+    (the queue reads, preferences, automation state, dashboard, boot payloads, the account's own
+    audit history) and only on `GET`/`HEAD`/`OPTIONS` — `_SCOPE_METHODS`, enforced in the one
+    resolver — so it can create nothing, approve nothing, and change nothing.
+
+    The TTL is fixed at mint and never slid (`FIXED_TTL_SCOPES`). The row is listed and revocable
+    per-device on the Security card, so revoking it stops the observer and signs nobody out.
+    """
+    user_id = _main.get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    # Step-up ONCE, here, where a passkey ceremony is possible. `extension_scope_ok` is NOT passed:
+    # an observer token must never be able to mint its own successor without a fresh human ceremony.
+    _require_step_up(user_id, request.session_token, "mint_observer_token",
+                     http_request=http_request)
+
+    token = create_session(user_id, user_agent=_main._user_agent(http_request),
+                           ip=_main._client_ip(http_request),
+                           label=(request.label or "Read-only observer"),
+                           scope=SESSION_SCOPE_OBSERVER,
+                           ttl_hours=request.ttl_days * 24)
+    if not token:
+        raise HTTPException(status_code=500, detail="Could not create session")
+    record_auth_event(AuthAuditEvent.OBSERVER_TOKEN_MINTED, user_id=user_id,
+                      ip=_main._client_ip(http_request), user_agent=_main._user_agent(http_request),
+                      details={"scope": SESSION_SCOPE_OBSERVER, "ttl_days": request.ttl_days,
+                               "label": request.label or "Read-only observer"})
     return ResponseModel(status_code=200,
                          detail={"session_token": token, "expires_in_days": request.ttl_days})
 

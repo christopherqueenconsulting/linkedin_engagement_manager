@@ -82,6 +82,7 @@ index and the `CLAUDE.md` row that points at it, or the pointer becomes a dead e
 ## Identity, auth & secrets
 
 - ★ [Identity & sessions](identity-and-sessions.md) — `public_uid` as identity, session-token hashing, per-route authorisation, CSRF, session scopes
+- [Machine roles](agent-roles.md) — the `observer` and `agent` session scopes side by side: who mints, surface, verbs, TTL, what each cannot do
 - ★ [Strong authentication](strong-authentication.md) — passkeys, TOTP, recovery codes, and the step-up contract
 - ★ [Secrets at rest](secrets-at-rest.md) — AES-256-GCM per user+column; the field-name constants are AAD
 - [Auth, identity & session-secret protection](AUTH_SECURITY_DESIGN.md) — the research and design doc the above three implement

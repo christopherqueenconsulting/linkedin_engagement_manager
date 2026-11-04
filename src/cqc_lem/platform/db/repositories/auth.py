@@ -133,6 +133,14 @@ SESSION_SCOPE_ENROLL = "enroll"
 # can read the review queues and CREATE pending work for a human to approve. It can never approve,
 # touch a credential, move the account, or mint another token.
 SESSION_SCOPE_AGENT = "agent"
+# An `observer` session is the read-only sibling of `agent`: held by an operations agent that must
+# SEE the account (queues, preferences, automation state, dashboard, its own audit trail) and can
+# change nothing. Same mint ceremony as `agent` (human, step-up, fixed TTL, cannot mint a
+# successor); the difference is enforced in the one API resolver, which limits it to read verbs.
+SESSION_SCOPE_OBSERVER = "observer"
+# Scopes whose expiry is fixed at mint and never slid by `resolve_session`. Every one of them is a
+# credential a machine holds on a schedule, so a sliding window would make it renew forever.
+FIXED_TTL_SCOPES = frozenset({SESSION_SCOPE_AGENT, SESSION_SCOPE_OBSERVER})
 def resolve_session(token: str) -> Optional[dict]:
     """Validate a session token and, if live, slide its expiry forward — returning WHO it is and
     WHAT it may do in one read.
@@ -141,8 +149,9 @@ def resolve_session(token: str) -> Optional[dict]:
     bounded by an absolute cap (SESSION_ABSOLUTE_MAX_DAYS from first login) for security.
     Expired/unknown/revoked tokens return None so the caller forces a fresh PIN.
 
-    An `agent` session is the ONE exception and does not slide at all — its expiry is whatever
-    `create_session(ttl_hours=...)` granted, fixed from mint. See the branch below for why.
+    An `agent` or `observer` session is the exception and does not slide at all — its expiry is
+    whatever `create_session(ttl_hours=...)` granted, fixed from mint (`FIXED_TTL_SCOPES`). See the
+    branch below for why.
 
     The presented token is hashed before lookup (#745, 2b) — the plaintext never touches SQL.
 
@@ -168,8 +177,8 @@ def resolve_session(token: str) -> Optional[dict]:
 
         scope = row.get('scope') or SESSION_SCOPE_FULL
 
-        if scope == SESSION_SCOPE_AGENT:
-            # An agent session's life is FIXED at mint, never slid (issue #1026). Sliding it is
+        if scope in FIXED_TTL_SCOPES:
+            # An agent (or observer) session's life is FIXED at mint, never slid (issue #1026). Sliding it is
             # wrong in both directions. Sliding by SESSION_IDLE_HOURS — what every other session
             # gets — would rewrite the 90-day expiry to 24 hours on the FIRST request, silently
             # destroying the one thing `ttl_hours` exists to provide and leaving the weekly agent

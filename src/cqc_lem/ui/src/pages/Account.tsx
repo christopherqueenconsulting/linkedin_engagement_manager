@@ -15,11 +15,25 @@ export default function Account() {
   // strips it from the URL, so what it said is read ONCE at mount — otherwise the notice would
   // vanish with the parameter that produced it.
   const [oauthResult] = useState(() => {
+    if (searchParams.get('li_analytics_connected') === '1') {
+      return { ok: true, kind: 'analytics', text: 'Community analytics connection saved.', dismissAfterMs: 5000 }
+    }
+    if (searchParams.get('li_analytics_error')) {
+      const error = searchParams.get('li_analytics_error')
+      const text = error === 'identity_unverified'
+        ? 'LEM could not match your stored LinkedIn profile URL. Finish profile setup, then reconnect the analytics app.'
+        : error === 'account_mismatch'
+          ? 'Use the same LinkedIn profile as your existing LEM connection. No analytics token was saved.'
+          : error === 'profile_lookup_failed'
+            ? 'LinkedIn profile lookup failed. Check that LI Manage v2 granted r_basicprofile, then reconnect.'
+          : 'Community analytics connection failed. Main LinkedIn connection is unchanged.'
+      return { ok: false, kind: 'analytics', text, dismissAfterMs: 8000 }
+    }
     if (searchParams.get('li_connected') === '1') {
-      return { ok: true, text: 'LinkedIn connected successfully!', dismissAfterMs: 5000 }
+      return { ok: true, kind: 'linkedin', text: 'LinkedIn connected successfully!', dismissAfterMs: 5000 }
     }
     if (searchParams.get('li_error')) {
-      return { ok: false, text: 'LinkedIn connection failed — please try again.', dismissAfterMs: 8000 }
+      return { ok: false, kind: 'linkedin', text: 'LinkedIn connection failed — please try again.', dismissAfterMs: 8000 }
     }
     return null
   })
@@ -31,9 +45,13 @@ export default function Account() {
   useEffect(() => {
     if (!oauthResult) return
     if (oauthResult.ok) {
-      localStorage.setItem('lem_li_connected', '1')
-      // Force refetch so the fresh token is reflected immediately
-      queryClient.invalidateQueries({ queryKey: ['token-status'] })
+      if (oauthResult.kind === 'linkedin') {
+        localStorage.setItem('lem_li_connected', '1')
+        // Force refetch so the fresh posting token is reflected immediately.
+        queryClient.invalidateQueries({ queryKey: ['token-status'] })
+      } else {
+        queryClient.invalidateQueries({ queryKey: ['member-post-analytics-connection'] })
+      }
     }
     setSearchParams({ section: 'setup' }, { replace: true })
     const t = setTimeout(() => setOauthDismissed(true), oauthResult.dismissAfterMs)

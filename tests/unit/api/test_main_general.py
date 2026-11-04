@@ -1,5 +1,7 @@
 """Unit tests for general FastAPI endpoints in cqc_lem.api.main."""
 
+import hashlib
+import re
 import time
 from datetime import datetime
 from unittest.mock import patch
@@ -12,6 +14,8 @@ _MAIN = "cqc_lem.api.main"
 _AUTH = "cqc_lem.api.routers.auth"
 _USER = "cqc_lem.api.routers.user"
 
+from cqc_lem.api import main as api_main  # noqa: E402
+from cqc_lem.api.main import _log_inbound_verdict  # noqa: E402
 from tests.unit.api.conftest import SESSION_TOKEN, SESSION_USER_ID  # noqa: E402
 
 
@@ -435,7 +439,90 @@ class TestCommentNotificationInbound:
         assert resp.json()["detail"] == "debounced"
         sweep.apply_async.assert_not_called()
 
-    _TRACK = "cqc_lem.utilities.observability.track_inbound_email"
+    _TRACK = "cqc_lem.api.main.track_inbound_email"
+
+    def test_inbound_trace_redacts_email_and_logs_classifier_result(self, monkeypatch) -> None:
+        monkeypatch.setattr(api_main, "_INBOUND_TRACE_ENABLED", True)
+        form = {
+            "to": "reply+privatetoken123@parse.example.com",
+            "envelope": '{"to":["reply+privatetoken123@parse.example.com"]}',
+            "from": "LinkedIn <hit-reply@linkedin.com>",
+            "subject": "Message replied: private subject",
+            "text": "private message body",
+            "headers": "Message-ID: <private-message-id@example.com>\n",
+        }
+        with patch(f"{_MAIN}.log_info") as logged, patch(self._TRACK):
+            _log_inbound_verdict("linkedin_not_comment", form, user_id=7,
+                                 classification="linkedin_other")
+
+        message = logged.call_args.args[0]
+        assert "class=linkedin_other" in message
+        assert "sender_domain=linkedin.com" in message
+        expected_token = hashlib.sha256(b"privatetoken123").hexdigest()[:12]
+        expected_message = hashlib.sha256(b"<private-message-id@example.com>").hexdigest()[:12]
+        assert f"trace_token={expected_token}" in message
+        assert f"trace_message={expected_message}" in message
+        assert re.search(r"(?im)^message-id:\s*(<[^>]+>)", message) is None
+        for private_value in ("privatetoken123", "private subject", "private message body",
+                              "private-message-id", "hit-reply@linkedin.com"):
+            assert private_value not in message
+
+    def test_inbound_log_sanitises_hostile_from_domain(self, monkeypatch) -> None:
+        monkeypatch.setattr(api_main, "_INBOUND_TRACE_ENABLED", False)
+        for hostile in ("x@[a\nINFO forged line]", "x@evil.com\r\nINFO forged", "x@" + "a" * 10_000 + ".com"):
+            form = {"to": "reply+privatetoken123@parse.example.com", "from": hostile}
+            with patch(f"{_MAIN}.log_info") as logged, patch(self._TRACK):
+                _log_inbound_verdict("unrelated", form, user_id=7, classification="unrecognized")
+            message = logged.call_args.args[0]
+            assert "\n" not in message and "\r" not in message
+            assert len(message) < 400
+
+    def test_inbound_trace_env_flag_parsing(self, monkeypatch) -> None:
+        assert api_main._INBOUND_TRACE_ENV == "LI_REPLY_INBOUND_TRACE_ENABLED"
+        for value, expected in (("1", True), ("true", True), (" YES ", True), ("TRUE", True),
+                                ("0", False), ("false", False), ("", False), ("on", False)):
+            monkeypatch.setenv(api_main._INBOUND_TRACE_ENV, value)
+            assert api_main._env_flag(api_main._INBOUND_TRACE_ENV) is expected, value
+        monkeypatch.delenv(api_main._INBOUND_TRACE_ENV, raising=False)
+        assert api_main._env_flag(api_main._INBOUND_TRACE_ENV) is False
+
+    def test_inbound_trace_without_message_id_logs_none(self, monkeypatch) -> None:
+        monkeypatch.setattr(api_main, "_INBOUND_TRACE_ENABLED", True)
+        form = {"to": "reply+privatetoken123@parse.example.com", "headers": "Subject: x\n"}
+        with patch(f"{_MAIN}.log_info") as logged, patch(self._TRACK):
+            _log_inbound_verdict("unrelated", form, user_id=7,
+                                 classification="unrecognized")
+        message = logged.call_args.args[0]
+        assert re.search(r"trace_token=[0-9a-f]{12}\b", message)
+        assert "trace_message=none" in message
+
+    def test_inbound_trace_disabled_adds_no_fingerprints(self, monkeypatch) -> None:
+        monkeypatch.setattr(api_main, "_INBOUND_TRACE_ENABLED", False)
+        form = {"to": "reply+privatetoken123@parse.example.com",
+                "headers": "Message-ID: <private-message-id@example.com>\n"}
+        with patch(f"{_MAIN}.log_info") as logged, patch(self._TRACK):
+            _log_inbound_verdict("unrelated", form, user_id=7,
+                                 classification="unrecognized")
+        assert "trace_" not in logged.call_args.args[0]
+
+    def test_reply_classifier_input_is_bounded(self) -> None:
+        classifier_text_lengths = []
+
+        def capture_length(*args):
+            classifier_text_lengths.append(len(args[-1]))
+            return False
+
+        form = {"to": "reply+tok9@parse.example.com", "from": "unknown@example.com",
+                "subject": "notification", "text": "x" * 100_001}
+        with patch("cqc_lem.utilities.db.get_user_id_by_reply_token", return_value=7), \
+             patch(f"{_MAIN}.is_gmail_forwarding_confirmation", side_effect=capture_length), \
+             patch(f"{_MAIN}.is_comment_notification", side_effect=capture_length), \
+             patch(f"{_MAIN}.is_linkedin_notification", side_effect=capture_length), \
+             patch(f"{_MAIN}._log_inbound_verdict"):
+            response = api_main._process_reply_inbound(form)
+
+        assert response.detail == "ignored"
+        assert classifier_text_lengths == [100_000, 100_000, 100_000]
 
     def test_accepted_comment_logs_verdict(self, api_client):
         with patch(self._DB, return_value=7), \
@@ -445,7 +532,7 @@ class TestCommentNotificationInbound:
             api_client.post(self.BASE, data={
                 "to": "reply+tok9@parse.example.com",
                 "subject": "Chris, Jane commented on your post"})
-        track.assert_called_once_with("comment_accepted", user_id=7)
+        track.assert_called_once_with("comment_accepted", user_id=7, classification="comment")
 
     def test_unknown_token_logs_verdict(self, api_client):
         with patch(self._DB, return_value=None), \
@@ -454,7 +541,7 @@ class TestCommentNotificationInbound:
             api_client.post(self.BASE, data={
                 "to": "reply+stale@parse.example.com",
                 "subject": "someone commented on your post"})
-        track.assert_called_once_with("unknown_reply_token", user_id=None)
+        track.assert_called_once_with("unknown_reply_token", user_id=None, classification="comment")
 
     def test_linkedin_reaction_logs_verdict(self, api_client):
         with patch(self._DB, return_value=7), \
@@ -464,7 +551,20 @@ class TestCommentNotificationInbound:
                 "to": "reply+tok9@parse.example.com",
                 "from": "notifications-noreply@linkedin.com",
                 "subject": "Jane liked your post", "text": ""})
-        track.assert_called_once_with("linkedin_not_comment", user_id=7)
+        track.assert_called_once_with("linkedin_not_comment", user_id=7, classification="linkedin_other")
+
+    def test_linkedin_direct_message_reply_is_not_post_comment(self, api_client):
+        with patch(self._DB, return_value=7), \
+             patch(f"{_MAIN}.sweep_reply_comments") as sweep, \
+             patch(self._TRACK) as track:
+            response = api_client.post(self.BASE, data={
+                "to": "reply+tok9@parse.example.com",
+                "from": "Sparsh <hit-reply@linkedin.com>",
+                "subject": "Message replied: Opportunity to explore",
+            })
+        assert response.json()["detail"] == "ignored"
+        sweep.apply_async.assert_not_called()
+        track.assert_called_once_with("linkedin_not_comment", user_id=7, classification="linkedin_other")
 
     def test_unrelated_mail_logs_verdict(self, api_client):
         with patch(self._DB, return_value=7), \
@@ -473,14 +573,14 @@ class TestCommentNotificationInbound:
             api_client.post(self.BASE, data={
                 "to": "reply+tok9@parse.example.com",
                 "from": "spam@example.com", "subject": "hello", "text": "buy now"})
-        track.assert_called_once_with("unrelated", user_id=7)
+        track.assert_called_once_with("unrelated", user_id=7, classification="unrecognized")
 
     def test_pin_endpoint_spam_logs_verdict(self, api_client):
         with patch(self._TRACK) as track:
             resp = api_client.post("/api/linkedin/verification-pin/inbound", data={
                 "to": "random@parse.example.com", "subject": "spam", "text": "spam"})
         assert resp.json()["detail"] == "ignored"
-        track.assert_called_once_with("no_pin_token", user_id=None)
+        track.assert_called_once_with("no_pin_token", user_id=None, classification="unknown")
 
     def test_tracking_failure_never_breaks_webhook(self, api_client):
         with patch(self._DB, return_value=7), \
@@ -792,6 +892,47 @@ class TestSharedInboundRouting:
                 "from": "forwarding-noreply@google.com",
                 "subject": "Gmail Forwarding Confirmation", "text": body})
         assert resp.json()["detail"] == "confirmed"
+
+    def test_gmail_confirmation_log_excludes_subject_body_code_and_url(self, api_client):
+        """Confirmation observability must not leak email content or one-time secrets."""
+        got = type("R", (), {"status_code": 200})()
+        private_subject = "PRIVATE SUBJECT MARKER"
+        private_url = "https://mail.google.com/mail/vf-PRIVATE-URL-MARKER"
+        private_code = "PRIVATE-CODE-MARKER-481516234"
+        private_body = f"Confirm {private_url} with code {private_code}; PRIVATE BODY MARKER"
+        with patch("cqc_lem.utilities.db.get_user_id_by_reply_token", return_value=7), \
+             patch(f"{_MAIN}.requests.get", return_value=got), \
+             patch("cqc_lem.utilities.db.get_user_email", return_value=None), \
+             patch(f"{_MAIN}.log_info") as log:
+            resp = api_client.post(self.PIN, data={
+                "to": "reply+tok9@parse.example.com",
+                "from": "forwarding-noreply@google.com",
+                "subject": private_subject, "text": private_body})
+
+        assert resp.json()["detail"] == "confirmed"
+        logged = repr(log.call_args_list)
+        for private_value in (private_subject, private_url, private_code, "PRIVATE BODY MARKER"):
+            assert private_value not in logged
+        assert any(call.args[0] == "Gmail forwarding confirmation received"
+                   and call.kwargs["url_present"] is True
+                   and call.kwargs["code_present"] is True
+                   for call in log.call_args_list)
+
+    def test_gmail_confirmation_failure_log_excludes_secret_url_from_exception(self, api_client):
+        """Requests errors can echo secret verification URLs; log only exception type."""
+        private_url = "https://mail.google.com/mail/vf-PRIVATE-URL-MARKER"
+        body = f"Confirm {private_url} with code 4815162342"
+        with patch("cqc_lem.utilities.db.get_user_id_by_reply_token", return_value=7), \
+             patch("cqc_lem.utilities.db.get_user_email", return_value=None), \
+             patch(f"{_MAIN}.requests.get", side_effect=RuntimeError(private_url)), \
+             patch(f"{_MAIN}.log_warning") as warning:
+            resp = api_client.post(self.PIN, data={
+                "to": "reply+tok9@parse.example.com",
+                "from": "forwarding-noreply@google.com",
+                "subject": "Gmail Forwarding Confirmation", "text": body})
+
+        assert resp.json()["detail"] == "code_stored"
+        assert private_url not in repr(warning.call_args_list)
 
     def test_pin_url_still_handles_pin(self, api_client):
         with patch(f"{_MAIN}.submit_pin_by_token", return_value=1) as m:

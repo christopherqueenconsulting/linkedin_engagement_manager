@@ -593,7 +593,7 @@ there are three ways a row reaches APPROVED and only the first one says "approve
 
 | Route shape | Reaches APPROVED via | Guard |
 |---|---|---|
-| the five PUTs (`/dm`, `/connection_request`, `/outreach/target`, `/lead_signal`, `/catchup/touch`) | `action="approve"` | `_refuse_agent_approval` |
+| the PUTs (`/connection_request`, `/outreach/target`, `/lead_signal`, `/curated/source` are on the agent surface; `/dm` and `/catchup/touch` carry the same guard but are not) | `action="approve"` | `_refuse_agent_approval` |
 | the creates (`/schedule_dm`, `/connection_request`, `/outreach/target`) | `status="approved"` at insert time — no `action` field anywhere | `_refuse_agent_approved_status` |
 | `POST /connection_request` with no status at all | the account's `connection_request_mode`, which is `auto_approve` **out of the box** | `_agent_scoped()` in the handler |
 
@@ -642,6 +642,83 @@ route on `_AGENT_SESSION_SURFACE` changes what an external system may send us �
 `recipient_email` on `/connection_request` (#1836, paired with
 `christopherqueenconsulting/backfill#44`), where a machine supplies a third party's address but a
 human still approves every send.
+
+## The `observer` scope — a read-only seat for an operations agent
+
+An operations agent needs to look at the account — the review queues, whether automation is safe,
+the dashboard, what happened to the account lately — without borrowing the owner's session or the
+shared `X-Admin-Secret`. `agent` is the wrong shape: it carries the create routes, and its surface
+matches on PATH, so every verb on a granted path comes with it. `observer` is the same credential
+(minted once by a human, step-up gated, fixed TTL, cannot mint a successor) with a different
+resolver rule: it is held to **read verbs on every path it reaches**.
+
+`POST /api/user/observer-token` is `agent-token` line for line — human session only,
+`_require_step_up` with `extension_scope_ok` **not** passed, `ttl_days` 1–365 (default 90), audited
+as `observer_token_minted`. `sessions.scope` is `VARCHAR(32)` and `auth_audit_log.event` is
+`VARCHAR(50)`, so there is **no migration**.
+
+### Method-aware scopes
+
+Until this scope every surface was a set of path literals. `_SCOPE_METHODS` adds the missing axis:
+a scope listed there is limited to those verbs, and `_scope_allows(scope, path, method=None)`
+enforces it in the same place it enforces the path. The verb comes off the request `ContextVar` the
+middleware already stamps (`_request_object`), so no handler has to remember anything.
+
+| Scope | Path rule | Verb rule |
+|---|---|---|
+| `extension`, `enroll`, `agent` | its surface | none — **unchanged, path only** |
+| `observer` | `_OBSERVER_SESSION_SURFACE` | `GET`, `HEAD`, `OPTIONS` |
+
+Three details are load-bearing:
+
+- **No readable verb means refused.** A verb-limited scope that cannot learn its verb (no request in
+  scope) is refused, never defaulted to "read". It is the same fail-closed rule as an unknown path or
+  an unknown scope.
+- **The observer surface is deliberately not the agent's.** It is the read half — the six queue
+  reads, `/user/engagement-preferences`, `/user/automation-status`, `/dashboard/stats`,
+  `/user/linkedin-profile-skills`, `/curated/sources` — plus `/auth/session`, `/app-info`, `/flags`
+  and `/user/security` (the account's own device list and recent audit events; never a token, a token
+  hash or an IP hash). Every create route is absent. `/health/deep` is not listed: it is public and
+  has no session-gated variant.
+- **Absent, as for the agent:** every credential path, the account mover, `/user/sessions/revoke`,
+  and **all** minting endpoints. Today the only route on the surface with a write verb is
+  `PUT /user/engagement-preferences`, which the verb rule refuses; the rule is what keeps the next
+  route that shares a path with a read from becoming a write.
+
+A refusal is **403 `session_scope_forbidden`** before the handler runs. What is recorded differs by
+scope: an `extension` refusal is **audited** (`session_scope_denied`) and warned, because its surface
+is one path and a refusal there cannot be an accident; an `observer` or `agent` refusal is a
+**WARNING log line, not an audit row** (`Machine session refused outside its scope`, with `scope`,
+`method`, `path` and a salted hash of the session — never the token); an enrolment hold stays DEBUG.
+A machine seat reaching something it was not given is a misconfigured agent or a stolen token, and
+nobody reads a DEBUG line. No audit row, so a probing agent cannot fill the account's recent-events
+list.
+
+### What an observer can read, and the access record
+
+The observer's reads are the owner's queues, so they include **third parties' names, profile URLs
+and message text** — see [`agent-roles.md` § Observer data exposure](agent-roles.md#observer-data-exposure)
+for the record types, retention (the code purges nothing), and the owner's obligations to any agent or
+vendor that receives the data. `GET /user/security` is bounded to the 50 most recent events for every
+scope and drops `user_agent` for an observer. `label` on `POST /user/observer-token` takes letters,
+digits, space and `._:-` only (max 120): it is shown on the Security card and kept in the audit log.
+
+Reads are not logged one by one. The first successful observer request of each UTC day, per session,
+writes one `observer_access` audit row (`utilities/observer_access.py`: a Redis `SET NX` window, fail
+open, so an outage records the access rather than failing the read). `last_seen_at` alone says when a
+token was last used, not what it read. Rotation, leak detection and the ordered rollback are in
+[`agent-roles.md` § Observer incident and rollback](agent-roles.md#observer-incident-and-rollback).
+
+### The route-table invariant
+
+`tests/unit/api/test_role_surface_invariants.py` walks every route FastAPI serves, asks
+`_scope_allows` whether each restricted role may reach each (path, method), and fails with the
+offending routes if any role reaches a member of `FORBIDDEN_ROLE_ROUTES` (credentials, the account
+mover, session revocation, token minting). It also fails if the read-only role reaches any write
+verb, if a write-capable role reaches an approval-capable route whose handler no longer contains its
+guard (`HANDLER_GUARDED_ROUTES`), or if a reachable write route with an `action`/`status` body field
+has not been classified. A new role is one more entry in `ROLE_SCOPES`. The set of roles, who mints
+each and what each cannot do: [`agent-roles.md`](agent-roles.md).
 
 ## The docs surface lives inside `/api` (issue #1020)
 

@@ -444,7 +444,8 @@ class TestNoHandlerNamesAnAccountItDoesNotUse:
 
     def test_a_stray_email_parameter_changes_nothing(self, api_client):
         """A cached page still linking with `?email=` must redirect exactly as before, not 422."""
-        with patch(f"{_M}.AuthClient") as auth:
+        with patch(f"{_M}.get_session_user_id", return_value=None), \
+             patch(f"{_M}.AuthClient") as auth:
             auth.return_value.generate_member_auth_url.return_value = "https://linkedin.example/oauth"
             resp = api_client.get("/api/auth/linkedin/",
                               params={"session_token": SESSION_TOKEN, "email": _OTHER_EMAIL},

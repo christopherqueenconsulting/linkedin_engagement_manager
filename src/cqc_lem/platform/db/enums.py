@@ -354,6 +354,9 @@ class AuthAuditEvent(StrEnum):
     LOGOUT = "logout"
     SESSION_REVOKED = "session_revoked"
     AGENT_TOKEN_MINTED = "agent_token_minted"
+    OBSERVER_TOKEN_MINTED = "observer_token_minted"
+    # At most one per observer session per UTC day (utilities/observer_access.py): the access record.
+    OBSERVER_ACCESS = "observer_access"
     SESSIONS_REVOKED_ALL = "sessions_revoked_all"
     EMAIL_CHANGE_REQUESTED = "email_change_requested"
     EMAIL_CHANGED = "email_changed"

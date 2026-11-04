@@ -58,6 +58,24 @@ LI_STATE_SALT = get_constant_from_env('LI_STATE_SALT')
 # /rest/* call fail 426 NONEXISTENT_VERSION. Bump this — AND LI_API_VERSION in the deployment
 # .env, which overrides it — at least annually. See upload_document() in linkedin/poster.py.
 LI_API_VERSION = get_constant_from_env('LI_API_VERSION', default_value='202606')
+# Member post analytics is opt-in. Main-app mode needs Community Management Standard; a separate
+# Development-tier app can bridge an allowlisted test user while that request is reviewed.
+LI_MEMBER_POST_ANALYTICS_ENABLED = isTrue(
+    get_constant_from_env('LI_MEMBER_POST_ANALYTICS_ENABLED', default_value='False'))
+LI_MEMBER_POST_ANALYTICS_USER_IDS = frozenset(
+    int(value.strip())
+    for value in get_constant_from_env('LI_MEMBER_POST_ANALYTICS_USER_IDS', default_value='').split(',')
+    if value.strip().isdigit() and int(value.strip()) > 0
+)
+LI_MEMBER_POST_ANALYTICS_SEPARATE_APP_ENABLED = isTrue(
+    get_constant_from_env('LI_MEMBER_POST_ANALYTICS_SEPARATE_APP_ENABLED', default_value='False'))
+LI_MEMBER_POST_ANALYTICS_CLIENT_ID = get_constant_from_env('LI_MEMBER_POST_ANALYTICS_CLIENT_ID')
+LI_MEMBER_POST_ANALYTICS_CLIENT_SECRET = get_constant_from_env('LI_MEMBER_POST_ANALYTICS_CLIENT_SECRET')
+try:
+    LI_MEMBER_POST_ANALYTICS_MAX_POSTS_PER_SWEEP = max(
+        0, int(get_constant_from_env('LI_MEMBER_POST_ANALYTICS_MAX_POSTS_PER_SWEEP', default_value='5')))
+except ValueError:
+    LI_MEMBER_POST_ANALYTICS_MAX_POSTS_PER_SWEEP = 5
 PEXELS_API_KEY = get_constant_from_env('PEXELS_API_KEY')
 PERPLEXITY_API_KEY = get_constant_from_env('PERPLEXITY_API_KEY')
 HF_TOKEN = get_constant_from_env('HF_TOKEN')
@@ -269,6 +287,11 @@ if PUBLIC_BASE_URL:
     LI_REDIRECT_URL = f"{PUBLIC_BASE_URL}/auth/linkedin/callback"
 elif NGROK_CUSTOM_DOMAIN:
     LI_REDIRECT_URL = f"https://{NGROK_CUSTOM_DOMAIN}/auth/linkedin/callback"
+
+LI_MEMBER_POST_ANALYTICS_REDIRECT_URL = get_constant_from_env(
+    'LI_MEMBER_POST_ANALYTICS_REDIRECT_URL',
+    default_value=(LI_REDIRECT_URL or '').replace(
+        '/auth/linkedin/callback', '/auth/linkedin/analytics/callback'))
 
 # API base URL precedence:
 #   PUBLIC_BASE_URL (prod, port-less) > NGROK_CUSTOM_DOMAIN > PREFIX.FREE_DOMAIN
