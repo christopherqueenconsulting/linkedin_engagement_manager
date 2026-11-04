@@ -80,7 +80,7 @@ from cqc_lem.utilities.carousel_creator import (
 )
 from cqc_lem.utilities.env_constants import DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_RATIO, DEFAULT_VIDEO_MODEL
 from cqc_lem.utilities.flags import NEWSLETTER_EDITOR, VIDEO_MOTION_LINT_HOLD, flag_enabled
-from cqc_lem.utilities.geocoding import DEFAULT_CONTENT_LANGUAGE, language_name
+from cqc_lem.utilities.geocoding import DEFAULT_CONTENT_LANGUAGE
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.linkedin_formatter import (
     PLAIN_PUNCTUATION_DIRECTIVE,
