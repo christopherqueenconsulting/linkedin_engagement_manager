@@ -561,7 +561,7 @@ class TestCommentNotificationInbound:
             resp = api_client.post("/api/linkedin/verification-pin/inbound", data={
                 "to": "random@parse.example.com", "subject": "spam", "text": "spam"})
         assert resp.json()["detail"] == "ignored"
-        track.assert_called_once_with("no_pin_token", user_id=None, classification="unrecognized")
+        track.assert_called_once_with("no_pin_token", user_id=None, classification="unknown")
 
     def test_tracking_failure_never_breaks_webhook(self, api_client):
         with patch(self._DB, return_value=7), \
