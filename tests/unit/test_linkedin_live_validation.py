@@ -3393,6 +3393,13 @@ class TestFeedComposerProbe:
         assert logged == [("Editable candidate census failed",
                           {"error_type": "RuntimeError"})]
 
+    def test_reply_to_comment_editable_is_not_a_post_comment_composer(self):
+        reply_box = {"comment_labelled": True, "reply_labelled": True}
+        post_comment_box = {"comment_labelled": True, "reply_labelled": False}
+
+        assert not llv._is_post_comment_editable_candidate(reply_box)
+        assert llv._is_post_comment_editable_candidate(post_comment_box)
+
     def test_locator_hits_are_summed_across_cards_in_chain_order(self):
         merged = llv.merge_locator_hits([{"a": 0, "b": 1}, {"a": 0, "b": 2}])
         assert merged == {"a": 0, "b": 3}
