@@ -188,6 +188,31 @@ class TestOperatorAccessRecord:
         assert details["path"] == "/admin/task-status/{id}"
         assert "secret-task-id-9" not in repr(recorded.call_args_list)
 
+    def test_a_non_get_to_task_status_stores_the_template_in_the_action_row(self) -> None:
+        """The `operator_action` half of the task-id guarantee, kept beside the access-row half above.
+
+        `test_operator_privilege.py::TestOperatorAuditPaths` holds the same case with the full
+        `_stamp_operator` call; this one asserts it from the rows a POST-shaped request writes.
+        """
+        main = _kernel()
+        resets = [
+            (main._request_object,
+             main._request_object.set(SimpleNamespace(method="POST", headers={}, client=None))),
+            (main._request_path, main._request_path.set("/api/admin/task-status/another-secret-id")),
+            (main._request_operator, main._request_operator.set(None)),
+        ]
+        try:
+            with patch.object(main, "get_user_account_kind", return_value="internal"), \
+                 patch.object(main, "record_auth_event", return_value=True) as recorded:
+                main._stamp_operator(_UID, "/api/admin/task-status/another-secret-id", None)
+        finally:
+            for var, reset in reversed(resets):
+                var.reset(reset)
+        actions = [c for c in recorded.call_args_list if str(c.args[0]) == "operator_action"]
+        assert len(actions) == 1
+        assert actions[0].kwargs["details"]["path"] == "/admin/task-status/{id}"
+        assert "another-secret-id" not in repr(recorded.call_args_list)
+
     def test_a_redis_outage_still_serves_the_request(self, api_client: Any) -> None:
         from cqc_lem.utilities import observer_access
 

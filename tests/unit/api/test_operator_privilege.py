@@ -298,12 +298,14 @@ class TestApprovalOnEveryRoute:
         with _session("operator"), _kind("standard"), \
              patch.object(_kernel(), "get_connection_request_user_id", return_value=_UID), \
              patch.object(_kernel(), "get_connection_request", return_value={"status": "failed"}), \
-             patch.object(_kernel(), "update_connection_request", return_value=True) as update:
+             patch.object(_kernel(), "update_connection_request", return_value=True) as update, \
+             patch.object(_kernel(), "record_auth_event", return_value=True) as recorded:
             resp = api_client.put("/api/connection_request",
                                   json={"session_token": _TOKEN, "request_id": 5, "action": action})
         assert resp.status_code == 403
         assert resp.json()["detail"]["code"] == "agent_may_not_approve"
         update.assert_not_called()
+        assert _approvals(recorded) == [], "a refusal must write no operator_approval row"
 
     @pytest.mark.parametrize("kind", _KINDS)
     @pytest.mark.parametrize("action", ["approve", "retry"])
@@ -327,12 +329,14 @@ class TestApprovalOnEveryRoute:
              patch.object(_kernel(), "get_lead_signal",
                           return_value={"user_id": _UID, "draft_response": "hi"}), \
              patch.object(_kernel(), "update_lead_signal", return_value=True) as update, \
-             patch.object(_kernel(), "send_lead_response") as send:
+             patch.object(_kernel(), "send_lead_response") as send, \
+             patch.object(_kernel(), "record_auth_event", return_value=True) as recorded:
             resp = api_client.put("/api/lead_signal",
                                   json={"session_token": _TOKEN, "signal_id": 3, "action": "approve"})
         assert resp.status_code == 403
         update.assert_not_called()
         send.apply_async.assert_not_called()
+        assert _approvals(recorded) == [], "a refusal must write no operator_approval row"
 
     @pytest.mark.parametrize("kind", _KINDS)
     def test_lead_signal_on_an_internal_or_sandbox_account(self, api_client: Any, kind: str) -> None:
@@ -353,11 +357,13 @@ class TestApprovalOnEveryRoute:
     def test_outreach_target_on_a_standard_account(self, api_client: Any) -> None:
         with _session("operator"), _kind("standard"), \
              patch(f"{_OUTREACH}.get_outreach_target_user_id", return_value=_UID), \
-             patch(f"{_OUTREACH}.update_outreach_target", return_value=True) as update:
+             patch(f"{_OUTREACH}.update_outreach_target", return_value=True) as update, \
+             patch.object(_kernel(), "record_auth_event", return_value=True) as recorded:
             resp = api_client.put("/api/outreach/target",
                                   json={"session_token": _TOKEN, "target_id": 2, "action": "approve"})
         assert resp.status_code == 403
         update.assert_not_called()
+        assert _approvals(recorded) == [], "a refusal must write no operator_approval row"
 
     @pytest.mark.parametrize("kind", _KINDS)
     def test_outreach_target_on_an_internal_or_sandbox_account(self, api_client: Any, kind: str) -> None:
@@ -388,12 +394,14 @@ class TestApprovalOnEveryRoute:
         a, b = self._curated_patches()
         with _session("operator"), _kind("standard"), a, b, \
              patch(f"{_CURATED}.update_db_post_status", return_value=True) as post, \
-             patch(f"{_CURATED}.update_curated_source_status", return_value=True) as source:
+             patch(f"{_CURATED}.update_curated_source_status", return_value=True) as source, \
+             patch.object(_kernel(), "record_auth_event", return_value=True) as recorded:
             resp = api_client.put("/api/curated/source",
                                   json={"session_token": _TOKEN, "source_id": 4, "action": "approve"})
         assert resp.status_code == 403
         post.assert_not_called()
         source.assert_not_called()
+        assert _approvals(recorded) == [], "a refusal must write no operator_approval row"
 
     @pytest.mark.parametrize("kind", _KINDS)
     def test_curated_source_on_an_internal_or_sandbox_account(self, api_client: Any, kind: str) -> None:
@@ -477,7 +485,8 @@ class TestApprovalOnEveryRoute:
         try:
             with patch.object(main, "get_session_user_id", return_value=_UID), \
                  patch.object(main, "get_scheduled_dm_user_id", return_value=_UID), \
-                 patch.object(main, "update_scheduled_dm", return_value=True) as update:
+                 patch.object(main, "update_scheduled_dm", return_value=True) as update, \
+                 patch.object(main, "record_auth_event", return_value=True) as recorded:
                 with pytest.raises(HTTPException) as exc:
                     main.update_scheduled_dm_endpoint(
                         main.UpdateDmRequest(session_token="t", dm_id=1, action="approve"))
@@ -485,6 +494,7 @@ class TestApprovalOnEveryRoute:
             self._restore(resets)
         assert exc.value.status_code == 403
         update.assert_not_called()
+        assert _approvals(recorded) == [], "a refusal must write no operator_approval row"
 
     @pytest.mark.parametrize("kind", _KINDS)
     def test_the_dm_and_catchup_handlers_approve_for_an_internal_operator_and_audit_once(
@@ -520,7 +530,8 @@ class TestApprovalOnEveryRoute:
         try:
             with patch.object(main, "get_session_user_id", return_value=_UID), \
                  patch.object(main, "get_catchup_touch", return_value={"user_id": _UID, "message": "m"}), \
-                 patch.object(main, "update_catchup_touch", return_value=True) as update:
+                 patch.object(main, "update_catchup_touch", return_value=True) as update, \
+                 patch.object(main, "record_auth_event", return_value=True) as recorded:
                 with pytest.raises(HTTPException) as exc:
                     main.update_catchup_touch_endpoint(
                         main.UpdateCatchupTouchRequest(session_token="t", touch_id=1, action="approve"))
@@ -528,6 +539,7 @@ class TestApprovalOnEveryRoute:
             self._restore(resets)
         assert exc.value.status_code == 403
         update.assert_not_called()
+        assert _approvals(recorded) == [], "a refusal must write no operator_approval row"
 
 
 # ---------------------------------------------------------------------------
@@ -536,6 +548,11 @@ class TestApprovalOnEveryRoute:
 
 class TestOperatorAuditPaths:
     def test_a_non_get_to_task_status_stores_the_template_not_the_id(self) -> None:
+        """The `operator_action` half of the task-id guarantee.
+
+        The access-row half is `test_operator_hardening.py::TestOperatorAccessRecord::
+        test_a_task_id_never_reaches_the_audit_path`; the two are the same property on the two rows.
+        """
         main = _kernel()
         resets = [(main._request_object,
                    main._request_object.set(SimpleNamespace(method="POST", headers={}, client=None))),

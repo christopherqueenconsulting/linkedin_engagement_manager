@@ -587,6 +587,11 @@ lock the owner out.
 
 ### An agent may queue work; only a human may approve it
 
+(One exact exception, below the guards: an `operator` token on an `internal` or `sandbox` account may
+approve an item explicitly; see [The fourth approval guard](#the-fourth-approval-guard--usersaccount_kind).
+An `agent`, an `observer`, and an operator on a `standard` account may not, and no machine seat ever
+gets the passive `auto_approve` default.)
+
 This **cannot** be a path list — saving a draft and approving one are the same `PUT` — so it is
 enforced server-side on the fields that turn a draft into a send. It took three guards, because
 there are three ways a row reaches APPROVED and only the first one says "approve":

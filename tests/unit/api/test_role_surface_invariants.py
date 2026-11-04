@@ -518,3 +518,33 @@ class TestOperatorEligibilityGatesStayInPlace:
             assert main_mod._operator_account_eligible(None, "internal") is False
         with patch.object(main_mod, "is_user_admin", return_value=True):
             assert main_mod._operator_account_eligible(5, "standard") is True
+
+
+class TestPostMutatingRoutesStayOffEveryMachineSurface:
+    """The post-mutating routes stay off every machine surface.
+
+    `/schedule_post`, `/update_post` and `/posts/bulk_update` can move a post to `approved`, which
+    publishes it. None of them is on any machine surface today; this keeps it that way.
+    """
+
+    _PATHS = ("/schedule_post", "/update_post", "/posts/bulk_update")
+
+    @pytest.mark.parametrize("path", _PATHS)
+    def test_the_route_exists(self, route_table: list[tuple[str, str, Any]], path: str) -> None:
+        """Otherwise a rename turns the checks below into ones that cannot fail."""
+        assert [m for (m, p, _r) in route_table if p == path], path
+
+    @pytest.mark.parametrize("path", _PATHS)
+    def test_it_is_on_neither_the_agent_nor_the_operator_surface(self, main_mod: ModuleType,
+                                                                path: str) -> None:
+        assert path not in main_mod._AGENT_SESSION_SURFACE
+        assert path not in main_mod._OPERATOR_SESSION_SURFACE
+        assert path not in main_mod._OBSERVER_SESSION_SURFACE
+
+    @pytest.mark.parametrize("role", sorted(ROLE_SCOPES))
+    @pytest.mark.parametrize("path", _PATHS)
+    def test_no_role_can_reach_it_on_any_verb(self, main_mod: ModuleType,
+                                              route_table: list[tuple[str, str, Any]], role: str,
+                                              path: str) -> None:
+        reached = [m for (m, p, _r) in _reachable(main_mod, route_table, ROLE_SCOPES[role]) if p == path]
+        assert not reached, f"{role} reaches {path} on {reached}"
