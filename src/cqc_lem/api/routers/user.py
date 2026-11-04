@@ -118,6 +118,7 @@ from cqc_lem.utilities.db import (
     SESSION_SCOPE_AGENT,
     SESSION_SCOPE_EXTENSION,
     SESSION_SCOPE_FULL,
+    SESSION_SCOPE_OBSERVER,
     STORY_BANK_KINDS,
     STORY_BANK_TARGET_ENTRIES,
     VALID_CATCHUP_MESSAGE_SOURCES,
@@ -322,6 +323,17 @@ class ExtensionTokenRequest(BaseModel):
 class AgentTokenRequest(BaseModel):
     """Mint a token for a headless automation (issue #1026). `label` is what the operator will
     read on the Security card when deciding which machine to revoke.
+    """
+    session_token: SessionTokenField = None
+    label: Optional[str] = Field(default=None, max_length=120)
+    ttl_days: int = Field(default=90, ge=1, le=365)
+
+
+class ObserverTokenRequest(BaseModel):
+    """Body of `POST /user/observer-token`: a READ-ONLY token for an operations agent.
+
+    Same shape as `AgentTokenRequest`; `label` is what the owner will read on the Security card when
+    deciding which machine to revoke.
     """
     session_token: SessionTokenField = None
     label: Optional[str] = Field(default=None, max_length=120)
@@ -1410,6 +1422,45 @@ def mint_agent_token(request: AgentTokenRequest, http_request: Request = None) -
                       ip=_main._client_ip(http_request), user_agent=_main._user_agent(http_request),
                       details={"scope": SESSION_SCOPE_AGENT, "ttl_days": request.ttl_days,
                                "label": request.label or "Headless agent"})
+    return ResponseModel(status_code=200,
+                         detail={"session_token": token, "expires_in_days": request.ttl_days})
+
+
+@router.post("/observer-token")
+def mint_observer_token(request: ObserverTokenRequest, http_request: Request = None) -> ResponseModel[dict[str, Any]]:
+    """Mint a long-lived, READ-ONLY session for an operations agent.
+
+    Mirrors `mint_agent_token` line for line, for the same reasons: a non-browser client needs a
+    credential it can hold, and the ceremony that makes minting safe can only happen HERE, in the
+    SPA, with a human present. The observer never runs one.
+
+    What differs is the surface, not the mint. `scope='observer'` reaches `_OBSERVER_SESSION_SURFACE`
+    (the queue reads, preferences, automation state, dashboard, boot payloads, the account's own
+    audit history) and only on `GET`/`HEAD`/`OPTIONS` — `_SCOPE_METHODS`, enforced in the one
+    resolver — so it can create nothing, approve nothing, and change nothing.
+
+    The TTL is fixed at mint and never slid (`FIXED_TTL_SCOPES`). The row is listed and revocable
+    per-device on the Security card, so revoking it stops the observer and signs nobody out.
+    """
+    user_id = _main.get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    # Step-up ONCE, here, where a passkey ceremony is possible. `extension_scope_ok` is NOT passed:
+    # an observer token must never be able to mint its own successor without a fresh human ceremony.
+    _require_step_up(user_id, request.session_token, "mint_observer_token",
+                     http_request=http_request)
+
+    token = create_session(user_id, user_agent=_main._user_agent(http_request),
+                           ip=_main._client_ip(http_request),
+                           label=(request.label or "Read-only observer"),
+                           scope=SESSION_SCOPE_OBSERVER,
+                           ttl_hours=request.ttl_days * 24)
+    if not token:
+        raise HTTPException(status_code=500, detail="Could not create session")
+    record_auth_event(AuthAuditEvent.OBSERVER_TOKEN_MINTED, user_id=user_id,
+                      ip=_main._client_ip(http_request), user_agent=_main._user_agent(http_request),
+                      details={"scope": SESSION_SCOPE_OBSERVER, "ttl_days": request.ttl_days,
+                               "label": request.label or "Read-only observer"})
     return ResponseModel(status_code=200,
                          detail={"session_token": token, "expires_in_days": request.ttl_days})
 

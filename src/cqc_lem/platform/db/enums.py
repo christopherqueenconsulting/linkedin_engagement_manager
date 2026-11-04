@@ -354,6 +354,7 @@ class AuthAuditEvent(StrEnum):
     LOGOUT = "logout"
     SESSION_REVOKED = "session_revoked"
     AGENT_TOKEN_MINTED = "agent_token_minted"
+    OBSERVER_TOKEN_MINTED = "observer_token_minted"
     SESSIONS_REVOKED_ALL = "sessions_revoked_all"
     EMAIL_CHANGE_REQUESTED = "email_change_requested"
     EMAIL_CHANGED = "email_changed"

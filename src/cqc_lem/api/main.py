@@ -87,6 +87,7 @@ from cqc_lem.utilities.db import (
     SESSION_SCOPE_ENROLL,
     SESSION_SCOPE_EXTENSION,
     SESSION_SCOPE_FULL,
+    SESSION_SCOPE_OBSERVER,
     SESSION_SCOPE_RECOVERY,
     AuthAuditEvent,
     CatchupTouchStatus,
@@ -592,10 +593,43 @@ _AGENT_SESSION_SURFACE = frozenset({
     "/curated/sources", "/curated/source",
 })
 
+# What a read-only operations agent may SEE: the queue reads, the settings and state that say whether
+# automation is safe, the dashboard counters, the boot payloads, and the account's own recent auth
+# history (`/user/security` — device list + audit events, never a token or an IP hash). It is the
+# read half of `_AGENT_SESSION_SURFACE` plus those few, so it has NO create route at all. Paths grant
+# every verb (see `_SCOPE_METHODS`), so every entry here is also held to read verbs by the resolver.
+# Absent by design, exactly as for the agent: every credential path, the account mover, session
+# revocation, and every minting endpoint — an observer cannot mint a successor, or anything else.
+# `/health/deep` is not listed: it is public and has no session-gated variant to widen.
+_OBSERVER_SESSION_SURFACE = frozenset({
+    # read the queues
+    "/connection_requests", "/outreach/targets", "/dms", "/lead_signals", "/leads",
+    "/catchup/touches",
+    # read the state that decides whether automation is running safely
+    "/user/engagement-preferences", "/user/automation-status", "/dashboard/stats",
+    "/user/linkedin-profile-skills",
+    # curated outside sources: list candidates (the queue-a-URL write is a different path)
+    "/curated/sources",
+    # who am I, what build, what flags, and the account's own device + audit history
+    "/auth/session", "/app-info", "/flags", "/user/security",
+})
+
 _SCOPE_SURFACES: Dict[str, frozenset[str]] = {
     SESSION_SCOPE_EXTENSION: _EXTENSION_SESSION_SURFACE,
     SESSION_SCOPE_ENROLL: _ENROLL_SESSION_SURFACE,
     SESSION_SCOPE_AGENT: _AGENT_SESSION_SURFACE,
+    SESSION_SCOPE_OBSERVER: _OBSERVER_SESSION_SURFACE,
+}
+
+# Surfaces match on PATH, so granting a path grants every verb on it (see the engagement-preferences
+# note on `_AGENT_SESSION_SURFACE`). A scope listed HERE is additionally limited to these verbs on
+# every path it reaches, decided in the same resolver. A scope with no entry is path-only — which is
+# exactly what extension, enroll and agent are, and must stay byte-identical. The method is read off
+# the request ContextVar; if there is no request to read it from, a scope listed here is REFUSED
+# (fail closed), never waved through.
+_READ_ONLY_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+_SCOPE_METHODS: Dict[str, frozenset[str]] = {
+    SESSION_SCOPE_OBSERVER: _READ_ONLY_METHODS,
 }
 
 # The browser's own two sessions, and the ONLY scopes that reach everything. A NULL scope — every
@@ -605,6 +639,7 @@ _UNRESTRICTED_SCOPES = frozenset({SESSION_SCOPE_FULL, SESSION_SCOPE_RECOVERY})
 _SCOPE_REFUSAL_CODE = {
     SESSION_SCOPE_EXTENSION: "session_scope_forbidden",
     SESSION_SCOPE_AGENT: "session_scope_forbidden",
+    SESSION_SCOPE_OBSERVER: "session_scope_forbidden",
     # The SPA reads this one and renders the enrolment gate instead of a dead page.
     SESSION_SCOPE_ENROLL: "enrollment_required",
 }
@@ -627,15 +662,21 @@ def _scope_path(path: Optional[str]) -> Optional[str]:
     return path.rstrip("/") or "/"
 
 
-def _scope_allows(scope: Optional[str], path: Optional[str]) -> bool:
-    """Pure path check. Whether an `enroll` hold is still WARRANTED is a separate question with a
-    different input (the account, not the path) and is answered in `_scope_checked`.
+def _scope_allows(scope: Optional[str], path: Optional[str],
+                  method: Optional[str] = None) -> bool:
+    """Path check, plus the verb check for a scope listed in `_SCOPE_METHODS`. Whether an `enroll`
+    hold is still WARRANTED is a separate question with a different input (the account, not the
+    path) and is answered in `_scope_checked`.
+
+    `method` defaults to the current request's, read off the ContextVar the middleware stamped —
+    that is how `_scope_checked` calls it. A scope with no verb limit never looks at it.
 
     Both unknowns fail CLOSED, and for the same reason. An unknown PATH means a restricted token
     reached a handler by a route this middleware never saw. An unknown SCOPE means a value nobody
     taught this table about — a typo, a hand-edited row, or a scope some later phase added and
     only half wired up — and granting it everything by omission would make the table itself the
-    opt-in thing this design exists to avoid.
+    opt-in thing this design exists to avoid. A verb-limited scope with NO readable method is the
+    same shape and is refused too.
     """
     effective = scope or SESSION_SCOPE_FULL
     if effective in _UNRESTRICTED_SCOPES:
@@ -644,6 +685,13 @@ def _scope_allows(scope: Optional[str], path: Optional[str]) -> bool:
     if surface is None:
         log_warning("Session carries an unrecognised scope — refusing", scope=effective)
         return False
+    verbs = _SCOPE_METHODS.get(effective)
+    if verbs is not None:
+        if method is None:
+            http_request = _request_object.get()
+            method = http_request.method if http_request is not None else None
+        if not method or method.upper() not in verbs:
+            return False
     return _scope_path(path) in surface
 
 
