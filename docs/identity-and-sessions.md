@@ -643,6 +643,63 @@ route on `_AGENT_SESSION_SURFACE` changes what an external system may send us �
 `christopherqueenconsulting/backfill#44`), where a machine supplies a third party's address but a
 human still approves every send.
 
+## The `observer` scope — a read-only seat for an operations agent
+
+An operations agent needs to look at the account — the review queues, whether automation is safe,
+the dashboard, what happened to the account lately — without borrowing the owner's session or the
+shared `X-Admin-Secret`. `agent` is the wrong shape: it carries the create routes, and its surface
+matches on PATH, so every verb on a granted path comes with it. `observer` is the same credential
+(minted once by a human, step-up gated, fixed TTL, cannot mint a successor) with a different
+resolver rule: it is held to **read verbs on every path it reaches**.
+
+`POST /api/user/observer-token` is `agent-token` line for line — human session only,
+`_require_step_up` with `extension_scope_ok` **not** passed, `ttl_days` 1–365 (default 90), audited
+as `observer_token_minted`. `sessions.scope` is `VARCHAR(32)` and `auth_audit_log.event` is
+`VARCHAR(50)`, so there is **no migration**.
+
+### Method-aware scopes
+
+Until this scope every surface was a set of path literals. `_SCOPE_METHODS` adds the missing axis:
+a scope listed there is limited to those verbs, and `_scope_allows(scope, path, method=None)`
+enforces it in the same place it enforces the path. The verb comes off the request `ContextVar` the
+middleware already stamps (`_request_object`), so no handler has to remember anything.
+
+| Scope | Path rule | Verb rule |
+|---|---|---|
+| `extension`, `enroll`, `agent` | its surface | none — **unchanged, path only** |
+| `observer` | `_OBSERVER_SESSION_SURFACE` | `GET`, `HEAD`, `OPTIONS` |
+
+Three details are load-bearing:
+
+- **No readable verb means refused.** A verb-limited scope that cannot learn its verb (no request in
+  scope) is refused, never defaulted to "read". It is the same fail-closed rule as an unknown path or
+  an unknown scope.
+- **The observer surface is deliberately not the agent's.** It is the read half — the six queue
+  reads, `/user/engagement-preferences`, `/user/automation-status`, `/dashboard/stats`,
+  `/user/linkedin-profile-skills`, `/curated/sources` — plus `/auth/session`, `/app-info`, `/flags`
+  and `/user/security` (the account's own device list and recent audit events; never a token, a token
+  hash or an IP hash). Every create route is absent. `/health/deep` is not listed: it is public and
+  has no session-gated variant.
+- **Absent, as for the agent:** every credential path, the account mover, `/user/sessions/revoke`,
+  and **all** minting endpoints. Today the only route on the surface with a write verb is
+  `PUT /user/engagement-preferences`, which the verb rule refuses; the rule is what keeps the next
+  route that shares a path with a read from becoming a write.
+
+A refusal is **403 `session_scope_forbidden`** before the handler runs, logged at DEBUG and not
+audited — the agent's pattern. (Only the `extension` scope audits, because its surface is one path
+and a refusal there cannot be an accident.)
+
+### The route-table invariant
+
+`tests/unit/api/test_role_surface_invariants.py` walks every route FastAPI serves, asks
+`_scope_allows` whether each restricted role may reach each (path, method), and fails with the
+offending routes if any role reaches a member of `FORBIDDEN_ROLE_ROUTES` (credentials, the account
+mover, session revocation, token minting). It also fails if the read-only role reaches any write
+verb, if a write-capable role reaches an approval-capable route whose handler no longer contains its
+guard (`HANDLER_GUARDED_ROUTES`), or if a reachable write route with an `action`/`status` body field
+has not been classified. A new role is one more entry in `ROLE_SCOPES`. The set of roles, who mints
+each and what each cannot do: [`agent-roles.md`](agent-roles.md).
+
 ## The docs surface lives inside `/api` (issue #1020)
 
 At the FastAPI defaults the docs surface sits at `/docs`, `/redoc` and `/openapi.json` — **outside**
