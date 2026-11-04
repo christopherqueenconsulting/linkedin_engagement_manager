@@ -2223,7 +2223,8 @@ def _log_inbound_verdict(verdict: str, form: Mapping[str, Any],
                          classification: str = "unknown") -> None:
     """Log inbound decisions without exposing tokenized addresses or email content.
 
-    Optional trace mode adds stable, non-reversible fingerprints for correlating SendGrid retries.
+    `LI_REPLY_INBOUND_TRACE_ENABLED` adds stable, non-reversible fingerprints for correlating
+    SendGrid retries when enabled.
     """
     to_field = str(form.get("to") or "")
     envelope = str(form.get("envelope") or "")
@@ -2259,15 +2260,21 @@ def _process_reply_inbound(form: Mapping[str, Any]) -> ResponseModel[str]:
     envelope = str(form.get("envelope") or "")
     from_field = str(form.get("from") or "")
     subject = str(form.get("subject") or "")
-    text = str(form.get("text") or "")
-    html = str(form.get("html") or "")
+    text = str(form.get("text") or "")[:100_000]
+    html = str(form.get("html") or "")[:100_000]
     notification_text = text or html
     token = extract_reply_token_from_address(to_field) or extract_reply_token_from_address(envelope)
     gmail_confirmation = is_gmail_forwarding_confirmation(from_field, subject, notification_text)
     comment = is_comment_notification(subject, notification_text)
     linkedin_notification = is_linkedin_notification(from_field, subject, notification_text)
-    classification = ("gmail_confirmation" if gmail_confirmation else "comment" if comment
-                      else "linkedin_other" if linkedin_notification else "unrecognized")
+    if gmail_confirmation:
+        classification = "gmail_confirmation"
+    elif comment:
+        classification = "comment"
+    elif linkedin_notification:
+        classification = "linkedin_other"
+    else:
+        classification = "unrecognized"
     if not token:
         _log_inbound_verdict("no_reply_token", form, classification=classification)
         return ResponseModel(status_code=200, detail="ignored")

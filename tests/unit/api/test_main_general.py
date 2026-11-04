@@ -1,5 +1,6 @@
 """Unit tests for general FastAPI endpoints in cqc_lem.api.main."""
 
+import hashlib
 import re
 import time
 from datetime import datetime
@@ -457,8 +458,11 @@ class TestCommentNotificationInbound:
         message = logged.call_args.args[0]
         assert "class=linkedin_other" in message
         assert "sender_domain=linkedin.com" in message
-        assert re.search(r"trace_token=[0-9a-f]{12}\b", message)
-        assert re.search(r"trace_message=[0-9a-f]{12}\b", message)
+        expected_token = hashlib.sha256(b"privatetoken123").hexdigest()[:12]
+        expected_message = hashlib.sha256(b"<private-message-id@example.com>").hexdigest()[:12]
+        assert f"trace_token={expected_token}" in message
+        assert f"trace_message={expected_message}" in message
+        assert re.search(r"(?im)^message-id:\\s*(<[^>]+>)", form["headers"]) is None
         for private_value in ("privatetoken123", "private subject", "private message body",
                               "private-message-id", "hit-reply@linkedin.com"):
             assert private_value not in message
@@ -481,6 +485,25 @@ class TestCommentNotificationInbound:
             _log_inbound_verdict("unrelated", form, user_id=7,
                                  classification="unrecognized")
         assert "trace_" not in logged.call_args.args[0]
+
+    def test_reply_classifier_input_is_bounded(self) -> None:
+        seen_lengths = []
+
+        def capture_length(*args):
+            seen_lengths.append(len(args[-1]))
+            return False
+
+        form = {"to": "reply+tok9@parse.example.com", "from": "unknown@example.com",
+                "subject": "notification", "text": "x" * 100_001}
+        with patch("cqc_lem.utilities.db.get_user_id_by_reply_token", return_value=7), \
+             patch(f"{_MAIN}.is_gmail_forwarding_confirmation", side_effect=capture_length), \
+             patch(f"{_MAIN}.is_comment_notification", side_effect=capture_length), \
+             patch(f"{_MAIN}.is_linkedin_notification", side_effect=capture_length), \
+             patch(f"{_MAIN}._log_inbound_verdict"):
+            response = api_main._process_reply_inbound(form)
+
+        assert response.detail == "ignored"
+        assert seen_lengths == [100_000, 100_000, 100_000]
 
     def test_accepted_comment_logs_verdict(self, api_client):
         with patch(self._DB, return_value=7), \
