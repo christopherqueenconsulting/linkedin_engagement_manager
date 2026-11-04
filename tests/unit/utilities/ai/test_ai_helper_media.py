@@ -88,18 +88,21 @@ class TestAudioDirection:
         from cqc_lem.utilities.ai.ai_helper import _audio_direction
         assert _audio_direction("not-a-model") == ""
 
-    def test_bans_speech_and_names_the_language(self):
+    def test_requests_instrumental_music_and_bans_all_vocals(self):
         from cqc_lem.utilities.ai.ai_helper import _audio_direction
         from cqc_lem.utilities.ai.video_models import AUDIO_DIRECTION_MARKER
         direction = _audio_direction("veo3.1_fast", "es-ES")
         assert direction.startswith(AUDIO_DIRECTION_MARKER)
-        assert "Spanish (es-ES)" in direction
-        for banned in ("no spoken dialogue", "no voiceover", "no narration"):
+        assert "instrumental background music only" in direction
+        for banned in ("no vocals", "no human voices", "no spoken words", "no dialogue",
+                       "no voiceover", "no narration", "no singing", "no lyrics",
+                       "no vocal samples"):
             assert banned in direction.lower()
 
-    def test_defaults_to_english_when_language_unset(self):
+    def test_audio_direction_does_not_allow_incidental_speech(self):
         from cqc_lem.utilities.ai.ai_helper import _audio_direction
-        assert "English" in _audio_direction("veo3.1_fast")
+        direction = _audio_direction("veo3.1_fast")
+        assert "incidental speech" not in direction.lower()
 
     def test_appended_to_the_returned_motion_prompt(self, mock_openai_client):
         with patch("cqc_lem.utilities.ai.ai_helper.client", mock_openai_client):

@@ -62,7 +62,7 @@ AUDIO_DIRECTION_MARKER = "Audio:"
 # answers "Audio: a warm voiceover" carries the same marker, and the motion-prompt lint (issue
 # #1277) excludes the deterministic clause from grading — so keying that exclusion on the marker
 # would hide exactly the violation the audio check exists to catch.
-AUDIO_DIRECTION_LEAD = "natural ambient sound only"
+AUDIO_DIRECTION_LEAD = "instrumental background music only"
 
 # Friendly aspect-ratio aliases -> Runway resolution strings.
 RATIO_ALIASES = {
