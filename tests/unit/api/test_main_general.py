@@ -462,10 +462,29 @@ class TestCommentNotificationInbound:
         expected_message = hashlib.sha256(b"<private-message-id@example.com>").hexdigest()[:12]
         assert f"trace_token={expected_token}" in message
         assert f"trace_message={expected_message}" in message
-        assert re.search(r"(?im)^message-id:\\s*(<[^>]+>)", form["headers"]) is None
+        assert re.search(r"(?im)^message-id:\s*(<[^>]+>)", message) is None
         for private_value in ("privatetoken123", "private subject", "private message body",
                               "private-message-id", "hit-reply@linkedin.com"):
             assert private_value not in message
+
+    def test_inbound_log_sanitises_hostile_from_domain(self, monkeypatch) -> None:
+        monkeypatch.setattr(api_main, "_INBOUND_TRACE_ENABLED", False)
+        for hostile in ("x@[a\nINFO forged line]", "x@evil.com\r\nINFO forged", "x@" + "a" * 10_000 + ".com"):
+            form = {"to": "reply+privatetoken123@parse.example.com", "from": hostile}
+            with patch(f"{_MAIN}.log_info") as logged, patch(self._TRACK):
+                _log_inbound_verdict("unrelated", form, user_id=7, classification="unrecognized")
+            message = logged.call_args.args[0]
+            assert "\n" not in message and "\r" not in message
+            assert len(message) < 400
+
+    def test_inbound_trace_env_flag_parsing(self, monkeypatch) -> None:
+        assert api_main._INBOUND_TRACE_ENV == "LI_REPLY_INBOUND_TRACE_ENABLED"
+        for value, expected in (("1", True), ("true", True), (" YES ", True), ("TRUE", True),
+                                ("0", False), ("false", False), ("", False), ("on", False)):
+            monkeypatch.setenv(api_main._INBOUND_TRACE_ENV, value)
+            assert api_main._env_flag(api_main._INBOUND_TRACE_ENV) is expected, value
+        monkeypatch.delenv(api_main._INBOUND_TRACE_ENV, raising=False)
+        assert api_main._env_flag(api_main._INBOUND_TRACE_ENV) is False
 
     def test_inbound_trace_without_message_id_logs_none(self, monkeypatch) -> None:
         monkeypatch.setattr(api_main, "_INBOUND_TRACE_ENABLED", True)
