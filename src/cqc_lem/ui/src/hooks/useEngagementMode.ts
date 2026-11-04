@@ -10,7 +10,10 @@ import type { UserSettings } from '../pages/account/types'
 // Same query key and payload as UserPrefsProvider, so the settings page reads /user/settings once.
 // Only a stored 'automate' turns full-automation wording on — loading, an error or anything else
 // reads as suggest, matching the backend, where an unreadable mode is suggest too.
-export function useSuggestOnly(): boolean {
+export type EngagementMode = UserSettings['engagement_mode']
+
+// Shared with all settings readers so they make one `/user/settings` request.
+export function useEngagementMode(): EngagementMode | undefined {
   const { sessionToken } = useAuth()
   const { data } = useQuery({
     queryKey: ['user-settings', sessionToken],
@@ -21,5 +24,10 @@ export function useSuggestOnly(): boolean {
     enabled: !!sessionToken,
     staleTime: 60 * 1000,
   })
-  return data?.engagement_mode !== 'automate'
+  return data?.engagement_mode
+}
+
+// Fail closed: loading, unreadable, or unknown mode keeps credential controls hidden.
+export function useSuggestOnly(): boolean {
+  return useEngagementMode() !== 'automate'
 }
