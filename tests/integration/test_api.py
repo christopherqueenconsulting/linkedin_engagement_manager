@@ -161,3 +161,26 @@ class TestUpdatePostEndpoint:
 
         assert response.status_code == 403
         mock_update.assert_not_called()
+
+@pytest.mark.integration
+class TestReplyInboundParseEndpoint:
+    def test_linkedin_dm_reply_is_ignored_without_queueing_comment_sweep(self, api_client):
+        # A broad Gmail "replied" filter can forward LinkedIn DM notifications. Exercise the
+        # actual form endpoint and prove this mail does not reach the comment-sweep dispatcher.
+        with patch("cqc_lem.api.main.get_user_id_by_reply_token", return_value=1), \
+             patch("cqc_lem.api.main._record_forwarding_confirmed_by_delivery"), \
+             patch("cqc_lem.api.main._log_inbound_verdict"), \
+             patch("cqc_lem.api.main._reply_sweep_debounced") as dispatch:
+            response = api_client.post(
+                "/api/linkedin/verification-pin/inbound",
+                data={
+                    "to": "reply+abc123@parse.example.com",
+                    "from": "notifications-noreply@linkedin.com",
+                    "subject": "Message replied",
+                    "text": "Someone replied to your LinkedIn message.",
+                },
+            )
+
+        assert response.status_code == 200
+        assert response.json()["detail"] == "ignored"
+        dispatch.assert_not_called()
