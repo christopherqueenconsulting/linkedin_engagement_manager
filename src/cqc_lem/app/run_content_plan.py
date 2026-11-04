@@ -18,6 +18,7 @@ user's own blog or sitemap so a post can be written from something they actually
 """
 
 import calendar
+import copy
 import dataclasses
 import json
 import os
@@ -1383,10 +1384,14 @@ def create_carousel_content(user_id: int, stage: str, post_id: int = None,
                  user_id=user_id, post_id=post_id, task_name="create_carousel_content")
     # Showcase round 7: what the deck's one regeneration left — a template-label heading, a cover
     # promise no slide shows, a slide figure the caption never backs — is fixed in code here.
-    carousel_before_claim_cleanup = carousel_dict
+    carousel_before_claim_cleanup = copy.deepcopy(carousel_dict)
     carousel_dict, claim_fixes = finalize_deck_claims(carousel_dict, post_text,
                                                       _fact_anchors(user_id))
-    _log_carousel_claim_audit(user_id, post_id, carousel_before_claim_cleanup, carousel_dict)
+    try:
+        _log_carousel_claim_audit(user_id, post_id, carousel_before_claim_cleanup, carousel_dict)
+    except Exception as e:
+        log_warning("Could not record carousel figure audit", exc=e, user_id=user_id,
+                    post_id=post_id, task_name="create_carousel_content")
     if claim_fixes:
         log_info("Deck claims fixed before render: " + "; ".join(claim_fixes),
                  user_id=user_id, post_id=post_id, task_name="create_carousel_content")
@@ -3508,25 +3513,30 @@ def _log_content_plan_terminal_state(user_id: int, post_id: int, status: PostSta
              gate_reasons=sorted({str(f.get("gate") or "unknown") for f in held_by}))
 
 
-def _log_content_plan_failure(user_id: int, post_id: int, reason: str) -> None:
-    """Record a content-plan slot that ended before it could reach review or scheduling."""
-    log_error("Content plan terminal state", user_id=user_id, post_id=post_id,
-              terminal_state="failed", status=PostStatus.ERROR.value, reason=reason,
-              gate_reasons=[])
-
-
 def _carousel_numeric_claims(carousel: Optional[dict]) -> list[dict]:
     """Numeric claims per stable slide slot.
 
     Keeps slide copy out of the audit log.
     """
+    if not isinstance(carousel, dict):
+        return []
     claims = []
     for slide in deck_slides(carousel):
-        slot = (slide["key"], slide["index"])
-        for claim in numeric_claims(f"{slide['title']}\n{slide['content']}"):
+        if not isinstance(slide, dict):
+            continue
+        key = str(slide.get("key") or "unknown")
+        index = slide.get("index")
+        if index is not None and not isinstance(index, (int, str)):
+            index = str(index)
+        slot = (key, index)
+        text = f"{slide.get('title') or ''}\n{slide.get('content') or ''}"
+        for claim in numeric_claims(text):
+            raw = claim.get("raw") if isinstance(claim, dict) else None
+            if raw is None or isinstance(raw, (dict, list, tuple, set)):
+                continue
             # Keep unit/suffix in identity: 40 and 40% are distinct claims even though
             # numeric_claims normalizes both to the same numeric value.
-            claims.append({"slot": slot, "value": claim["raw"]})
+            claims.append({"slot": slot, "value": str(raw)})
     return claims
 
 
@@ -3536,23 +3546,27 @@ def _log_carousel_claim_audit(user_id: int, post_id: int, before: Optional[dict]
 
     Emits slide slots and raw numeric tokens (including units), never claim context.
     """
-    before_claims = _carousel_numeric_claims(before)
-    after_claims = _carousel_numeric_claims(after)
-    before_counts = Counter((claim["slot"], claim["value"]) for claim in before_claims)
-    after_counts = Counter((claim["slot"], claim["value"]) for claim in after_claims)
-    outcomes = []
-    for key, count in before_counts.items():
-        kept = min(count, after_counts[key])
-        outcomes.extend((key, "kept") for _ in range(kept))
-        outcomes.extend((key, "removed") for _ in range(count - kept))
-    for key, count in after_counts.items():
-        outcomes.extend((key, "added") for _ in range(count - before_counts[key]))
-    for (slot, value), outcome in outcomes:
-        reason = {"kept": "retained_by_finalizer", "removed": "removed_by_finalizer",
-                  "added": "introduced_by_finalizer"}[outcome]
-        log_info("Carousel figure audit", user_id=user_id, post_id=post_id,
-                 slide_key=slot[0], slide_index=slot[1], figure=value,
-                 outcome=outcome, reason=reason)
+    try:
+        before_claims = _carousel_numeric_claims(before)
+        after_claims = _carousel_numeric_claims(after)
+        before_counts = Counter((claim["slot"], claim["value"]) for claim in before_claims)
+        after_counts = Counter((claim["slot"], claim["value"]) for claim in after_claims)
+        outcomes = []
+        for key, count in before_counts.items():
+            kept = min(count, after_counts[key])
+            outcomes.extend((key, "kept") for _ in range(kept))
+            outcomes.extend((key, "removed") for _ in range(count - kept))
+        for key, count in after_counts.items():
+            outcomes.extend((key, "added") for _ in range(count - before_counts[key]))
+        reasons = {"kept": "retained_by_finalizer", "removed": "removed_by_finalizer",
+                   "added": "introduced_by_finalizer"}
+        for (slot, value), outcome in outcomes:
+            log_info("Carousel figure audit", user_id=user_id, post_id=post_id,
+                     slide_key=slot[0], slide_index=slot[1], figure=value,
+                     outcome=outcome, reason=reasons[outcome])
+    except Exception as e:
+        log_warning("Could not record carousel figure audit", exc=e, user_id=user_id,
+                    post_id=post_id)
 
 
 def _engagement_prefs_for_gates(user_id: int) -> tuple[dict, bool]:
@@ -5915,16 +5929,18 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
         # always been log_error: both end the same way — record_post_failed, and the user's planned
         # slot produces nothing.
         log_error("Skipping post: content generation failed", exc=e, user_id=user_id,
-                  post_id=post_id, task_name="auto_create_weekly_content")
-        _log_content_plan_failure(user_id, post_id, "generation_exception")
+                  post_id=post_id, task_name="auto_create_weekly_content",
+                  terminal_state="failed", status=PostStatus.ERROR.value,
+                  reason="generation_exception", gate_reasons=[])
         record_post_failed(user_id, post_id)
         return False
 
     if content is None:
         # ERROR with no exc=: there is no exception to file, but the user still lost the post.
         log_error("Skipping post: content generation returned nothing", user_id=user_id,
-                  post_id=post_id, task_name="auto_create_weekly_content")
-        _log_content_plan_failure(user_id, post_id, "empty_generation_result")
+                  post_id=post_id, task_name="auto_create_weekly_content",
+                  terminal_state="failed", status=PostStatus.ERROR.value,
+                  reason="empty_generation_result", gate_reasons=[])
         record_post_failed(user_id, post_id)
         return False
 
@@ -6048,12 +6064,17 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
 
         log_info(f"Updating post_id: {post_id} Status={new_status}")
         update_db_post_status(post_id, new_status, approved_by=PostApprover.AUTO_SCHEDULE)
-        _log_content_plan_terminal_state(user_id, post_id, new_status, auto_schedule,
-                                         gate_findings)
+        try:
+            _log_content_plan_terminal_state(user_id, post_id, new_status, auto_schedule,
+                                             gate_findings)
+        except Exception as audit_error:
+            log_warning("Could not record content-plan terminal state", exc=audit_error,
+                        user_id=user_id, post_id=post_id)
     except Exception as e:
         log_error(f"Skipping post_id {post_id}: storing generated content failed", exc=e,
-                  user_id=user_id, post_id=post_id, task_name="auto_create_weekly_content")
-        _log_content_plan_failure(user_id, post_id, "persistence_exception")
+                  user_id=user_id, post_id=post_id, task_name="auto_create_weekly_content",
+                  terminal_state="failed", status=PostStatus.ERROR.value,
+                  reason="persistence_exception", gate_reasons=[])
         record_post_failed(user_id, post_id)
         return False
 
