@@ -441,8 +441,8 @@ class TestCommentNotificationInbound:
     def test_inbound_trace_redacts_email_and_logs_classifier_result(self, monkeypatch):
         monkeypatch.setenv("LI_REPLY_INBOUND_TRACE_ENABLED", "true")
         form = {
-            "to": "reply+private-token@parse.example.com",
-            "envelope": '{"to":["reply+private-token@parse.example.com"]}',
+            "to": "reply+privatetoken123@parse.example.com",
+            "envelope": '{"to":["reply+privatetoken123@parse.example.com"]}',
             "from": "LinkedIn <hit-reply@linkedin.com>",
             "subject": "Message replied: private subject",
             "text": "private message body",
@@ -457,13 +457,13 @@ class TestCommentNotificationInbound:
         assert "sender_domain=linkedin.com" in message
         assert re.search(r"trace_token=[0-9a-f]{12}\b", message)
         assert re.search(r"trace_message=[0-9a-f]{12}\b", message)
-        for private_value in ("private-token", "private subject", "private message body",
+        for private_value in ("privatetoken123", "private subject", "private message body",
                               "private-message-id", "hit-reply@linkedin.com"):
             assert private_value not in message
 
     def test_inbound_trace_without_message_id_logs_none(self, monkeypatch):
         monkeypatch.setenv("LI_REPLY_INBOUND_TRACE_ENABLED", "true")
-        form = {"to": "reply+private-token@parse.example.com", "headers": "Subject: x\n"}
+        form = {"to": "reply+privatetoken123@parse.example.com", "headers": "Subject: x\n"}
         with patch(f"{_MAIN}.log_info") as logged, patch(self._TRACK):
             __import__(_MAIN, fromlist=["_log_inbound_verdict"])._log_inbound_verdict(
                 "unrelated", form, user_id=7)
@@ -473,7 +473,7 @@ class TestCommentNotificationInbound:
 
     def test_inbound_trace_disabled_adds_no_fingerprints(self, monkeypatch):
         monkeypatch.delenv("LI_REPLY_INBOUND_TRACE_ENABLED", raising=False)
-        form = {"to": "reply+private-token@parse.example.com",
+        form = {"to": "reply+privatetoken123@parse.example.com",
                 "headers": "Message-ID: <private-message-id@example.com>\n"}
         with patch(f"{_MAIN}.log_info") as logged, patch(self._TRACK):
             __import__(_MAIN, fromlist=["_log_inbound_verdict"])._log_inbound_verdict(
