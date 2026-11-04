@@ -247,18 +247,21 @@ Reverting leaves any minted operator session an unknown scope (every request ref
 but it would slide its expiry like a browser session and work again the day the code is redeployed.
 So revoke first. **Run by the on-call engineer or the account owner**, never by an operator token.
 
-**0. Reach the production database, and the admin secret.** Everything here runs on the VPS.
+**0. Reach the production database, and the admin secret.** Everything here runs on the VPS, from an
+**interactive** `ssh deploy@<vps>` session (a terminal is allocated, which the `-it` form below needs).
 
 - **Access.** `ssh deploy@<vps>` (`docs/DEPLOYMENT.md`; the host is the `VPS_HOST` repo secret). SSH is
   held by whoever has a public key in `/home/deploy/.ssh/authorized_keys`: the account owner, and the CI
   deploy key (`VPS_SSH_KEY`). The repository lists nobody else, so **if you are the on-call engineer
   and you cannot log in, you do not have access: go to the fallback below**. Docker commands need
   `sudo`.
-- **Confirm the container name first.** Compose names the MySQL container `${MYSQL_HOST}`
-  (`docker-compose.yml`), which is `mysql_db` in `.env.prod.example`:
+- **Confirm the container name first, and use that name.** Compose names the MySQL container
+  `${MYSQL_HOST}` (`docker-compose.yml`), which is `mysql_db` in `.env.prod.example`, but this host's
+  `.env` is what decides, so read it from Docker rather than assuming:
 
   ```bash
-  sudo docker ps --format '{{.Names}}'        # expect mysql_db in the list
+  sudo docker ps --format '{{.Names}}'        # find the MySQL container in the list
+  CONTAINER=<that name>                       # every command below uses $CONTAINER, not a literal mysql_db
   ```
 
 - **Load the password without printing it.** It is `MYSQL_ROOT_PASSWORD` in `/opt/lem/.env` (owned by
@@ -267,39 +270,66 @@ So revoke first. **Run by the on-call engineer or the account owner**, never by 
   any command line or in `ps`:
 
   ```bash
-  export MYSQL_PWD="$(grep -E '^MYSQL_ROOT_PASSWORD=' /opt/lem/.env | cut -d= -f2-)"   # strip quotes if the value is quoted
-  sudo -E docker exec -i -e MYSQL_PWD mysql_db mysql -u root linkedin_manager
-  unset MYSQL_PWD                                                                       # when you are done
+  export MYSQL_PWD="$(grep -E '^MYSQL_ROOT_PASSWORD=' /opt/lem/.env | cut -d= -f2-)"
   ```
 
+  **If the value in `.env` is quoted, the quotes come along and the login fails with "access denied".**
+  Strip them (`... | tr -d '"'`) or fix the line; do not retry in a loop.
   (Sourcing the file with `set -a; . /opt/lem/.env; set +a` also works, but it executes the file as shell
   and exports every secret into your session; the one-line form is safer.) Never paste the value into a
-  ticket or the incident note.
+  ticket or the incident note. Run `unset MYSQL_PWD` when you are done.
+- **Open a SQL prompt (interactive).** `-it` allocates the terminal, so a `mysql>` prompt appears:
+
+  ```bash
+  sudo -E docker exec -it -e MYSQL_PWD "$CONTAINER" mysql -u root linkedin_manager
+  ```
+
+- **Or run one statement at a time (non-interactive).** Steps 2, 3 and 5 below work either way; this is
+  the same command with the SQL passed in, and no terminal is needed:
+
+  ```bash
+  lemsql() { sudo -E docker exec -i -e MYSQL_PWD "$CONTAINER" mysql -u root linkedin_manager -e "$1"; }
+  lemsql "SELECT COUNT(*) FROM sessions WHERE scope = 'operator' AND revoked_at IS NULL;"
+  ```
+
+  If your `sudo` strips the environment and the password is not found, run `sudo MYSQL_PWD="$MYSQL_PWD" docker
+  exec -i -e MYSQL_PWD ...` instead; the value is then visible in the process list for the length of
+  that command, so do it on a host nobody else is logged into.
 - **The admin secret** that `POST /api/admin/automation-pause` and `automation-resume` need is
   `ADMIN_SECRET` in the same `/opt/lem/.env`; it is server-side only and is never issued to a browser
   or to a machine token. **Only the account owner uses it**; the on-call engineer uses it only when the
   owner has handed it over for the incident, and an ops agent never does. To pause without putting the
-  value on a command line, write it to a header file and pass `-H @file` (`BASE` is the deployment's
-  base URL, shown in `docs/TESTING_ENGAGEMENT_API.md`):
+  value on a command line, write it to a header file and pass `-H @file`. `BASE` is the deployment's
+  base URL (also in `docs/TESTING_ENGAGEMENT_API.md`):
 
   ```bash
+  BASE=https://lem.christopherqueenconsulting.com
   umask 077; HDR="$(mktemp)"
   grep -E '^ADMIN_SECRET=' /opt/lem/.env | sed 's/^ADMIN_SECRET=/X-Admin-Secret: /' > "$HDR"
-  curl -sS -X POST "$BASE/api/admin/automation-pause?hours=24" -H @"$HDR"
+  curl -sS -o /dev/null -w '%{http_code}\n' -X POST "$BASE/api/admin/automation-pause?hours=24" -H @"$HDR"
   rm -f "$HDR"
   ```
 
-- **Fallback if the on-call engineer has no VPS access.** Call the account owner: they hold the SSH key
-  and the secret, and the bulk revoke, the pause and the migration steps are theirs. Meanwhile the
-  owner can, without the host, revoke each operator token one at a time: **Account → Security → sign
-  out** the device, or `POST /api/user/sessions/revoke` with `{"session_id": <id>}` (a stepped-up
-  human session is required). That stops each token but cannot pause automation or revoke in bulk, which
-  need the host.
+  The same quoted-value caution applies: a quoted `ADMIN_SECRET` is sent with its quotes and answers 403.
+- **Fallback if the on-call engineer has no VPS access.** Call the account owner, found on the **private
+  on-call roster** the owner keeps outside this public repository (no names or phone numbers are in this
+  document): they hold the SSH key and the secret, and the bulk revoke, the pause and the migration
+  steps are theirs. Meanwhile the owner can, without the host, revoke each operator token one at a time:
+  **Account → Security → sign out** the device, or `POST /api/user/sessions/revoke` with
+  `{"session_id": <id>}` (a stepped-up human session is required). That stops each token but cannot
+  pause automation or revoke in bulk, which need the host.
+- **The incident note** is a **private** record, never a GitHub issue or comment (this repository is
+  public, and the note holds user ids, session ids and counts). The account owner names where it is kept
+  on the same private roster; if no such place exists yet, create one **before** step 2, because the
+  pre-count has to be saved somewhere durable.
 
 1. **Pause, and stop new tokens, before you revoke.** The revoke-to-revert window is the dangerous one:
    until the revert is live, anyone who can mint can mint again. Pause automation if it is not
-   already paused (`POST /api/admin/automation-pause` with the secret), and **nobody mints an operator
-   token until the revert is deployed**.
+   already paused (the `curl` above, run by the account owner, or by the engineer they authorise).
+   **Check the HTTP status it prints: `200` means paused. If it is anything else (403 is a wrong or
+   quoted secret), do not retry; go straight to step 3**, because the revoke is what removes the risk
+   and the pause only limits the damage while you get there. **Nobody mints an operator token until the
+   revert is deployed.**
 2. **Save a pre-count**, and paste the result into the incident note:
 
    ```sql
@@ -316,16 +346,38 @@ So revoke first. **Run by the on-call engineer or the account owner**, never by 
    changes zero rows. Or one token at a time: Account → Security, or `POST /api/user/sessions/revoke`
    with `{"session_id": <id>}` (step-up required). **A bulk SQL revoke writes no audit row**; record what
    was run, when, by whom and how many rows it changed.
-4. **Revert** the change (see "The migration after the revert" first), deploy it, and wait for the
-   release to be live.
-5. **Verify, and again after the deploy.** Run the count; it must be `0`:
+4. **Get the revert live.** Read "The migration after the revert" below first, then pick a path from
+   `docs/DEPLOYMENT.md`:
+   - **Fast path, an image rollback** (minutes). Roll back to the last release tag from **before** the
+     one that shipped this change (the repository's Releases page lists them; `/opt/lem/.last_good_tag`
+     is what is running *now*, not the previous one). Either on the box, as `deploy`:
+
+     ```bash
+     cd /opt/lem && ./scripts/rollback.sh <previous good tag>
+     ```
+
+     or from GitHub: **Actions → "Redeploy / Rollback VPS" (`deploy-vps.yml`) → Run workflow**, enter
+     the tag and **tick `rollback`** (it uses `rollback.sh` and skips migrations). The workflow runs in
+     the `production` environment, so it waits for that environment's **required reviewers**;
+     `docs/DEPLOYMENT.md` says to configure reviewers there but does not name them, so ask the account
+     owner who they are before an incident. **`rollback.sh` runs no health check**: confirm the site
+     yourself with `curl -fsS https://app.<domain>/health`. **An image rollback does not undo the
+     `account_kind` migration**: the migration is already applied, `rollback.sh` skips migrations by
+     design, and the column stays (harmless).
+   - **Slower path, a reverted merge.** Merge the revert to `main`; release-please opens a "chore:
+     release" PR; merging it tags a release, and `Build & Deploy Release` builds the image and deploys it
+     **after `production` approval** (same required reviewers), with `scripts/deploy.sh` health-checking
+     and auto-rolling-back on failure. Releases batch four times a day (05/11/17/23 UTC) unless the revert PR carries the
+     `release:now` label (`docs/release-fast-lane.md`, `docs/DEPLOYMENT.md`). Use this path for the lasting
+     fix; use the fast path first when the exposure is live.
+5. **Verify, and again after the revert is live.** Run the count; it must be `0`:
 
    ```sql
    SELECT COUNT(*) FROM sessions WHERE scope = 'operator' AND revoked_at IS NULL;
    ```
 
-   Re-run it after the revert deploys, check that no `operator_token_minted` event appeared in the
-   window, and confirm a former operator token answers `401` or `403`.
+   Re-run it once the rollback or release has deployed, check that no `operator_token_minted` event
+   appeared in the window, and confirm a former operator token answers `401` or `403`.
 
 **Scoping an incident.** The audit table is `auth_audit_log` (columns `id`, `user_id`, `email`, `event`,
 `ip_hash`, `user_agent`, `session_id`, `success`, `details` (JSON), `created_at`):
