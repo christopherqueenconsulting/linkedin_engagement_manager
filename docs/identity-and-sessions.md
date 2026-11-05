@@ -808,6 +808,15 @@ reads the kind with a separate, three-valued reader (`read_account_kind`) and al
 `standard` or `internal`; a `sandbox` account never acts on LinkedIn at all. See
 [`agent-roles.md` § Sandbox tenant](agent-roles.md#sandbox-tenant).
 
+**Leaving sandbox.** Because the send path reads the kind when a task runs, flipping an account off
+`sandbox` makes everything already queued on it go live, including items an operator approved while it
+was a dry run. The owner's tool refuses any move away from `sandbox` without `--allow-leave-sandbox`, and
+refuses while the account has queued sends (DMs, connection requests, catch-up touches, lead responses,
+outreach-funnel targets, posts) unless `--cancel-queued` cancels them in the same transaction. The
+procedure, with the commands and the status each queue is cancelled to, is in
+[`agent-roles.md` § Sandbox tenant](agent-roles.md#sandbox-tenant); it applies to a plain flip, not only
+to a code rollback.
+
 ### Operator audit, access record and refusals
 
 An operator request that is not a read writes one `auth_audit_log` row before the handler runs

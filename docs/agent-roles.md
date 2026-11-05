@@ -504,39 +504,126 @@ The tool refuses (exit 2, nothing written) when:
 - the account is `internal` or `sandbox` and the kind asked for is `standard`, unless
   `--allow-reset-to-standard` is passed. That move turns a dry-run account into one whose approved items
   reach real people.
+- the account is `sandbox` and the kind asked for is anything else, unless `--allow-leave-sandbox` is
+  passed; and then also while it has queued sends, unless `--cancel-queued` is passed (§ Leaving sandbox).
 
 **Warning: `internal` accounts are NOT dry-run.** An approval on an `internal` account reaches a real
 person exactly as on a `standard` one; what `internal` changes is only that an operator may approve
 there. Flag an account `internal` deliberately, for an account the owner is willing to have an agent
 send from, and use `sandbox` for anything that must not send.
 
-**Rollback, in this order.** There is nothing to revoke for the sandbox itself; operator and observer
-tokens are covered by their own runbooks above.
+**Leaving sandbox (flipping a sandbox account to `internal` or `standard`).** The kind is read when a
+task RUNS, not when an item is approved, so **every item already queued on the account goes live the
+moment the flag flips**: an approved DM, a scheduled post, a pending lead response. The owner's tool
+therefore refuses to move an account off `sandbox` unless two things are said out loud:
 
-1. **Before reverting, make sure no flagged account can send.** After a revert the gate is gone and a
-   `sandbox` account would act on LinkedIn again if it holds credentials. List them and their
-   credentials, and check for queued rows that would go out:
+1. `--allow-leave-sandbox`: any move away from `sandbox` (to `internal` as well as to `standard`;
+   `standard` additionally needs `--allow-reset-to-standard`).
+2. The queue is empty, or `--cancel-queued` is passed, which cancels it **in the same transaction** as the
+   change. A queue that cannot be counted counts as "there are some".
 
-   ```sql
-   SELECT id, account_kind FROM users WHERE account_kind <> 'standard';
-   SELECT user_id, COUNT(*) FROM scheduled_dms WHERE status IN ('approved','scheduled') GROUP BY user_id;
-   SELECT user_id, COUNT(*) FROM connection_requests WHERE status IN ('approved','sending') GROUP BY user_id;
+From `/opt/lem`, as `deploy` (host access, the container name and the SQL prompt: § Operator rollback,
+step 0, reused by link):
+
+```bash
+# 1. LIST: run it without --cancel-queued. It refuses and prints the count per queue, writes nothing.
+./scripts/compose.sh exec -T celery_worker python -m cqc_lem.utilities.account_kind_admin \
+  --email qa-sandbox@example.com --kind internal --allow-leave-sandbox
+# 2. CANCEL AND FLIP, atomically:
+./scripts/compose.sh exec -T celery_worker python -m cqc_lem.utilities.account_kind_admin \
+  --email qa-sandbox@example.com --kind internal --allow-leave-sandbox --cancel-queued
+```
+
+What `--cancel-queued` does, queue by queue (the real tables and `platform/db/enums.py` values; a test
+pins every status to its enum): `scheduled_dms` pending/approved/scheduled → `canceled`;
+`connection_requests` pending/approved/sending → `canceled`; `catchup_touches` pending/approved/sending →
+`canceled`; `lead_signals` new/approved → `dismissed`; `outreach_funnel_targets` pending/approved →
+`canceled`; `posts` pending/approved/scheduled → `rejected` (reason "cancelled when the account left
+sandbox"). It never touches a row that already went out. The audit row records the counts it cancelled.
+
+**Rollback of the code, in this order.** There is nothing to revoke for the sandbox itself; operator and
+observer tokens are covered by their own runbooks above. After a revert the gate is gone, so a sandbox
+account that holds credentials would act on LinkedIn again and **every queued item on it would send**.
+
+0. Host access, the container name and the SQL prompt: § Operator rollback, step 0 (do not retype them).
+   Set `BASE` as shown there.
+1. **Pause automation first.** **Who:** the account owner, who holds `ADMIN_SECRET`
+   (`POST $BASE/api/admin/automation-pause?hours=24`, the header-file `curl` in step 0; check it prints
+   `200`). **Without the owner's secret** the on-call engineer on the host can instead stop the workers
+   that send, from `/opt/lem`:
+
+   ```bash
+   ./scripts/compose.sh stop celery_beat celery_worker celery_worker_selenium \
+     celery_worker_selenium_prepost celery_worker_selenium_outreach celery_worker_selenium_content
    ```
 
-   Cancel or reset those rows for any sandbox account, and pause automation first (the owner's secret;
-   § Operator rollback, step 1) so nothing runs while the revert deploys.
-2. **Revert** (`git revert <merge sha>`) and get it live. The fast path is `./scripts/rollback.sh
-   <previous good tag>` on the box, or Actions → "Redeploy / Rollback VPS" with `rollback` ticked; the
-   release path is a reverted merge through release-please. LEM's `production` GitHub environment has
-   **no required reviewers**, so green releases auto-deploy at the next window (05/11/17/23 UTC, or at
-   merge with the `release:now` label). `docs/DEPLOYMENT.md` still describes a reviewer approval and is
-   stale on this. `rollback.sh` runs no health check, so confirm `/health` yourself.
-3. **The flags stay.** `users.account_kind` keeps its values; nothing resets them, and the operator
-   approval guard (a separate, earlier change) keeps reading them. An image rolled back to a tag
-   from before this change has no sandbox gate at all.
-4. **Verify**: the first query above lists the same accounts, and a QA item approved on a sandbox
-   account is no longer completed as a dry run, which is the signal the gate is gone, so do not approve
-   anything there until the gate is back.
+   That halts every lane for every user until step 6, which is the point; say so in the incident note.
+2. **Count, before and after, what could send on the flagged accounts.** Save this output to the
+   incident note (the same private record as the operator runbook), run the cancel below, then run it
+   again: every number must be `0` afterwards. (Use the interactive `-it` prompt or the non-interactive
+   `lemsql "<SQL>"` form from step 0.)
+
+   ```sql
+   SELECT 'scheduled_dms' AS queue, COUNT(*) FROM scheduled_dms WHERE status IN ('pending','approved','scheduled') AND user_id IN (SELECT id FROM users WHERE account_kind = 'sandbox')
+   UNION ALL SELECT 'connection_requests', COUNT(*) FROM connection_requests WHERE status IN ('pending','approved','sending') AND user_id IN (SELECT id FROM users WHERE account_kind = 'sandbox')
+   UNION ALL SELECT 'catchup_touches', COUNT(*) FROM catchup_touches WHERE status IN ('pending','approved','sending') AND user_id IN (SELECT id FROM users WHERE account_kind = 'sandbox')
+   UNION ALL SELECT 'lead_signals', COUNT(*) FROM lead_signals WHERE status IN ('new','approved') AND user_id IN (SELECT id FROM users WHERE account_kind = 'sandbox')
+   UNION ALL SELECT 'outreach_funnel_targets', COUNT(*) FROM outreach_funnel_targets WHERE status IN ('pending','approved') AND user_id IN (SELECT id FROM users WHERE account_kind = 'sandbox')
+   UNION ALL SELECT 'posts', COUNT(*) FROM posts WHERE status IN ('pending','approved','scheduled') AND user_id IN (SELECT id FROM users WHERE account_kind = 'sandbox');
+   ```
+
+3. **Cancel them** (safe to re-run: each statement only touches rows still in a live status):
+
+   ```sql
+   UPDATE scheduled_dms SET status = 'canceled' WHERE status IN ('pending','approved','scheduled') AND user_id IN (SELECT id FROM users WHERE account_kind = 'sandbox');
+   UPDATE connection_requests SET status = 'canceled' WHERE status IN ('pending','approved','sending') AND user_id IN (SELECT id FROM users WHERE account_kind = 'sandbox');
+   UPDATE catchup_touches SET status = 'canceled' WHERE status IN ('pending','approved','sending') AND user_id IN (SELECT id FROM users WHERE account_kind = 'sandbox');
+   UPDATE lead_signals SET status = 'dismissed' WHERE status IN ('new','approved') AND user_id IN (SELECT id FROM users WHERE account_kind = 'sandbox');
+   UPDATE outreach_funnel_targets SET status = 'canceled' WHERE status IN ('pending','approved') AND user_id IN (SELECT id FROM users WHERE account_kind = 'sandbox');
+   UPDATE posts SET status = 'rejected', rejection_reason = 'cancelled before the sandbox gate was removed' WHERE status IN ('pending','approved','scheduled') AND user_id IN (SELECT id FROM users WHERE account_kind = 'sandbox');
+   ```
+
+   **These write no audit row**; record what was run, when, by whom, and the before and after counts.
+4. **Revert** (`git revert <merge sha>`) and get it live. The fast path is `./scripts/rollback.sh
+   <previous good tag>` on the box, or Actions → "Redeploy / Rollback VPS" with `rollback` ticked. The
+   release path is a reverted merge through release-please: LEM's `production` GitHub environment has
+   **no required reviewers**, so the revert merge **auto-deploys at the next release window**
+   (05/11/17/23 UTC, or at merge with the `release:now` label); `docs/DEPLOYMENT.md` still describes a
+   reviewer approval and is stale on this. `rollback.sh` runs no health check.
+5. **Verify with checks that send nothing.** The deployed tag: `grep '^IMAGE_TAG=' /opt/lem/.env`
+   (the tag, not the secrets: never print the file). The site: `curl -fsS "$BASE/health"`. That the gate
+   code is absent, which is what a rolled-back image looks like:
+
+   ```bash
+   ./scripts/compose.sh exec -T celery_worker python -c \
+     "import cqc_lem.utilities.engagement_mode as m; print('gate present:', hasattr(m, 'sandbox_dry_run'))"
+   ```
+
+   It must print `gate present: False` after a revert. **After the revert, NEVER approve a test item on a
+   sandbox account**: the gate is gone, so an approval there sends. Do not "check that it still
+   dry-runs".
+6. **Unpause**, once steps 2 to 5 are done: `POST $BASE/api/admin/automation-resume` with the owner's
+   secret if you paused with it, or `./scripts/compose.sh start celery_beat celery_worker
+   celery_worker_selenium celery_worker_selenium_prepost celery_worker_selenium_outreach
+   celery_worker_selenium_content` if you stopped the workers.
+7. **The flags stay.** `users.account_kind` keeps its values; the operator approval guard (an earlier
+   change) keeps reading them. An image rolled back to a tag from before this change has no sandbox gate
+   at all.
+
+**Blast radius of a bad deploy.** The gate fails closed, and that cuts both ways: an `account_kind` that
+cannot be read (a database error, a missing row, a `NULL`, a value nobody recognises) refuses sends for
+**real `standard` accounts**, not just sandbox ones. *Symptom:* automation goes quiet for everyone; rows
+stay `approved` and are retried at the next beat; no lane fails. *Log strings:* `Could not read engagement
+mode` (the repository) and `Engagement mode unreadable — treating the account as suggest-only`, plus
+`SandboxAccountRefused` / `refused — account may not act on LinkedIn` from the publish helpers. *Check:*
+
+```sql
+SELECT COUNT(*) FROM users WHERE account_kind IS NULL OR account_kind NOT IN ('standard','internal','sandbox');
+```
+
+A non-zero count is the cause; fix the rows (the owner's tool sets a valid kind) and the next beat
+sends. A column that is missing entirely (a rollback of the migration without the code) shows as the
+`Could not read engagement mode` line for every account.
 
 **What is not dry-run, and why.** Only the five lanes above complete a row. Every other lane skips on a
 sandbox account through the browser layer, so their rows stay as they are (outreach-funnel stages,
@@ -545,3 +632,16 @@ need a status per lane, and the guarantee (nothing is sent) already holds withou
 direct DM that an agent drafts on a sandbox account is stored as an engagement suggestion, as it is for
 a trial account. Browser sessions opened with **no** account (the tutorial recorder, the live-validation
 probe, the load test) are not an account's and are outside this gate; `DEMO_MODE` covers the first.
+
+**Reading and trusting a sandbox account's numbers.**
+
+- **Dry-run rows are `sent` / `posted` and look exactly like real ones.** Only `users.account_kind`
+  tells them apart, so **filter on `account_kind` in any sent-count, report, disclosure or metric** that
+  must mean "reached a person".
+- **A sandbox account must hold synthetic data only**: no real prospect, client or recipient records,
+  and no real LinkedIn credential. The credential refusal in the owner's tool checks the `password`,
+  `access_token` and `li_at` cookie only, so it is defence in depth, not a proof that nothing else is
+  stored.
+- **`account_kind_changed` has no actor.** The row records the change and the flags used, but not who
+  ran it: the actor is whoever had host access (`ssh deploy@<vps>`), and the host's own login record is
+  the only attribution.
