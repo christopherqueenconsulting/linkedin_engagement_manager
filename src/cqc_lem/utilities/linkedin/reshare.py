@@ -29,6 +29,7 @@ import requests
 from cqc_lem.utilities.curated_sources import escape_little_text, is_reshareable_urn
 from cqc_lem.utilities.db import get_user_access_token, get_user_linked_sub_id
 from cqc_lem.utilities.demo_mode import guard_linkedin
+from cqc_lem.utilities.engagement_mode import guard_send
 from cqc_lem.utilities.env_constants import LI_API_VERSION
 from cqc_lem.utilities.linkedin.poster import (
     REGISTER_UPLOAD_TIMEOUT,
@@ -157,6 +158,7 @@ def share_reshare_on_linkedin(user_id: int, commentary: str, parent_urn: str) ->
         ValueError: ``parent_urn`` is an activity URN (refused before any request).
     """
     guard_linkedin("reshare.share_reshare_on_linkedin")
+    guard_send(user_id, "reshare.share_reshare_on_linkedin")
     sub, token = _credentials(user_id)
     if not sub:
         return None
@@ -185,6 +187,7 @@ def share_curated_image_on_linkedin(user_id: int, commentary: str,
         The post URN, or None (no credentials, or an unconfirmed publish).
     """
     guard_linkedin("reshare.share_curated_image_on_linkedin")
+    guard_send(user_id, "reshare.share_curated_image_on_linkedin")
     sub, token = _credentials(user_id)
     if not sub:
         return None
@@ -241,6 +244,7 @@ def share_article_on_linkedin(user_id: int, commentary: str, url: str, title: st
         The post URN, or None (no credentials, or an unconfirmed publish).
     """
     guard_linkedin("reshare.share_article_on_linkedin")
+    guard_send(user_id, "reshare.share_article_on_linkedin")
     sub, token = _credentials(user_id)
     if not sub:
         return None

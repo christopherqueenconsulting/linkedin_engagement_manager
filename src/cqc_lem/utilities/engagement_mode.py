@@ -20,8 +20,20 @@ Three rules hold everywhere this module is used:
 - **Not a feature flag.** This is a per-account safety control stored in the database. It never
   falls back to an environment variable and is never read from PostHog (`utilities/flags.py`).
 
-API publishing (`post_to_linkedin`, the OAuth `w_member_social` path) is not a browser and is not
-gated here. Full posture: `docs/engagement-automation.md` § Engagement mode.
+A **sandbox** account (`users.account_kind = 'sandbox'`, set only by the owner with
+`scripts/set_account_kind.py`) is held to the same gate and then some: it never acts on LinkedIn, by
+any route. Its mode reads `suggest` whatever is stored, so every browser lane skips and
+`get_docker_driver` refuses it; `guard_send` refuses it at the API publish entry points; and the
+queue-fed send lanes (`send_scheduled_dm`, `send_connection_request`, `send_catchup_touch`,
+`send_lead_response`, `post_to_linkedin`) ask `sandbox_dry_run` first, which writes the row's
+terminal state WITHOUT any LinkedIn call, so an end-to-end QA run completes. Only `standard` and
+`internal` may send: an unreadable kind, a missing `account_kind`, and any value this module does
+not recognise all read as "do not send". `tests/unit/test_sandbox_send_invariants.py` fails the build
+when a send path is added without the gate. Posture: `docs/agent-roles.md` § Sandbox tenant.
+
+API publishing (`post_to_linkedin`, the OAuth `w_member_social` path) is not a browser, so the
+suggest-only mode does not gate it for a trial account; the sandbox gate does (`guard_send`). Full
+posture: `docs/engagement-automation.md` § Engagement mode.
 """
 
 import hashlib
@@ -42,6 +54,26 @@ SUGGEST_ONLY_SKIP_MESSAGE = "Skipped — suggest-only engagement mode"
 SUGGESTION_SAVED_MESSAGE = "Saved as a suggestion — suggest-only engagement mode"
 #: What a draft-storing lane returns when it could not read the mode, and so did nothing.
 ENGAGEMENT_MODE_UNREADABLE_MESSAGE = "Deferred — engagement mode unreadable"
+#: What a queue-fed send lane returns when it completed a row as a dry run on a sandbox account.
+SANDBOX_DRY_RUN_MESSAGE = "Dry run — sandbox account, nothing was sent"
+
+#: `users.account_kind` values. Only the first two may send; `sandbox` never does.
+ACCOUNT_KIND_STANDARD = "standard"
+ACCOUNT_KIND_INTERNAL = "internal"
+ACCOUNT_KIND_SANDBOX = "sandbox"
+#: The kinds that may act on LinkedIn. Matched EXACTLY, so `'Sandbox'`, `'sandbox '` and any typo are
+#: not in it and read as "do not send". NOTE the direction: `get_user_account_kind` (the permissions
+#: reader) reads an unknown value as `standard`, the safe direction for APPROVALS; for SENDS the safe
+#: direction is the opposite, so this set is an allow-list rather than "not sandbox".
+SENDING_ACCOUNT_KINDS = frozenset({ACCOUNT_KIND_STANDARD, ACCOUNT_KIND_INTERNAL})
+
+
+class SandboxAccountRefused(RuntimeError):
+    """An API publish was attempted for an account that may not send (sandbox, or kind unreadable).
+
+    Raised by `guard_send`, the entry check of every LinkedIn API publish helper. Reaching it from a
+    lane means the lane did not ask `sandbox_dry_run` first, which is a defect in the lane.
+    """
 
 
 class SuggestOnlyEngagement(RuntimeError):
@@ -69,21 +101,8 @@ def _is_trial(state: dict) -> bool:
             or _norm(state.get("subscription_tier")) == TRIAL_SUBSCRIPTION_TIER)
 
 
-def read_engagement_mode(user_id: Optional[int]) -> Optional[EngagementMode]:
-    """The user's engagement mode, or None when it could not be READ.
-
-    Lanes that store a draft instead of skipping (the seed and second-wave self-comments) need this
-    three-valued answer: a read fault must defer them, never turn an `automate` account's live
-    comment into a stored suggestion. Everything else wants `resolve_engagement_mode`.
-
-    Args:
-        user_id: the account. None (no account at all) reads as None.
-
-    Returns:
-        `AUTOMATE` only when the stored mode is exactly `automate` and the account is not on a
-        trial; `SUGGEST` for any other readable state; None for no account, a missing row or a
-        read fault.
-    """
+def _read_state(user_id: Optional[int]) -> Optional[dict]:
+    """The engagement state row, or None for no account, a read fault or a malformed reading."""
     if user_id is None:
         return None
     try:
@@ -95,9 +114,100 @@ def read_engagement_mode(user_id: Optional[int]) -> Optional[EngagementMode]:
                     user_id=user_id)
         return None
     if not isinstance(state, dict) or not {"engagement_mode", "subscription_status",
-                                           "subscription_tier"} <= state.keys():
-        # A reading that cannot say whether the account is on a trial is not a reading at all.
+                                           "subscription_tier", "account_kind"} <= state.keys():
+        # A reading that cannot say whether the account is on a trial, or what KIND of account it
+        # is, is not a reading at all.
         return None
+    return state
+
+
+def read_account_kind(user_id: Optional[int]) -> Optional[str]:
+    """The account's `account_kind` exactly as stored, or None when it could not be READ.
+
+    Three-valued on purpose. `get_user_account_kind` collapses "unreadable" into `standard` because
+    that is the safe answer for a PERMISSION; for a SEND it is the unsafe one, so this reader keeps
+    the difference and every send-side caller treats None as "do not send".
+    """
+    state = _read_state(user_id)
+    return None if state is None else state.get("account_kind")
+
+
+def may_send(user_id: Optional[int]) -> bool:
+    """True only when the account's kind is readable and is `standard` or `internal`."""
+    return read_account_kind(user_id) in SENDING_ACCOUNT_KINDS
+
+
+def is_sandbox_account(user_id: Optional[int]) -> bool:
+    """True only when the account's kind is READABLE and is exactly `sandbox`.
+
+    Deliberately not `not may_send(...)`: an unreadable kind is not a sandbox account and must not be
+    completed as a dry run (that would write a terminal state for a row that may be a real send);
+    it falls through to the gates, which refuse it.
+    """
+    return read_account_kind(user_id) == ACCOUNT_KIND_SANDBOX
+
+
+def sandbox_dry_run(user_id: Optional[int], task_name: str) -> bool:
+    """True when `task_name` for this account is a dry run, and logs it.
+
+    The queue-fed send lanes call this BEFORE `skip_browser_lane`. True means: the caller writes the
+    row's terminal state and returns `SANDBOX_DRY_RUN_MESSAGE` without touching LinkedIn. False
+    means: carry on to the normal gates, which stop an unreadable or unrecognised kind.
+
+    Args:
+        user_id: the account the send would go out from.
+        task_name: the lane, for the log line.
+    """
+    if not is_sandbox_account(user_id):
+        return False
+    log_info(f"{task_name}: sandbox account, completed as a dry run; nothing was sent",
+             user_id=user_id, task_name=task_name, action_type="sandbox_dry_run")
+    return True
+
+
+def guard_send(user_id: Optional[int], surface: str) -> None:
+    """Raise `SandboxAccountRefused` unless this account may act on LinkedIn.
+
+    The entry check of every LinkedIn API publish helper (`poster.py`, `reshare.py`): the API path is
+    not a browser, so `get_docker_driver`'s backstop never sees it. Fails closed — an unreadable kind,
+    a missing account and an unrecognised value all refuse.
+
+    Args:
+        user_id: the account the publish would go out as.
+        surface: the helper, for the error and the log line.
+
+    Raises:
+        SandboxAccountRefused: the account is `sandbox`, or its kind cannot be read.
+    """
+    if may_send(user_id):
+        return
+    log_info(f"{surface}: refused — account may not act on LinkedIn", user_id=user_id,
+             task_name=surface, action_type="sandbox_refused")
+    raise SandboxAccountRefused(f"{surface} refused — the account may not act on LinkedIn")
+
+
+def read_engagement_mode(user_id: Optional[int]) -> Optional[EngagementMode]:
+    """The user's engagement mode, or None when it could not be READ.
+
+    Lanes that store a draft instead of skipping (the seed and second-wave self-comments) need this
+    three-valued answer: a read fault must defer them, never turn an `automate` account's live
+    comment into a stored suggestion. Everything else wants `resolve_engagement_mode`.
+
+    Args:
+        user_id: the account. None (no account at all) reads as None.
+
+    Returns:
+        `AUTOMATE` only when the stored mode is exactly `automate`, the account kind is `standard` or
+        `internal`, and the account is not on a trial; `SUGGEST` for any other readable state
+        (a `sandbox` account included); None for no account, a missing row or a read fault.
+    """
+    state = _read_state(user_id)
+    if state is None:
+        return None
+    # A sandbox account (or any kind this module does not recognise) never gets a browser, whatever
+    # its stored mode says — exact match, fail closed.
+    if state.get("account_kind") not in SENDING_ACCOUNT_KINDS:
+        return EngagementMode.SUGGEST
     # Exact match on the mode (fail closed); the trial markers below are normalised instead,
     # because a looser trial match can only widen suggest.
     if state.get("engagement_mode") != EngagementMode.AUTOMATE.value:

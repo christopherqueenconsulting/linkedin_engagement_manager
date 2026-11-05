@@ -137,7 +137,12 @@ from cqc_lem.utilities.db import (
 )
 from cqc_lem.utilities.demo_mode import DemoModeError
 from cqc_lem.utilities.dm_templates import render_dm_placeholders
-from cqc_lem.utilities.engagement_mode import SUGGEST_ONLY_SKIP_MESSAGE, skip_browser_lane
+from cqc_lem.utilities.engagement_mode import (
+    SANDBOX_DRY_RUN_MESSAGE,
+    SUGGEST_ONLY_SKIP_MESSAGE,
+    sandbox_dry_run,
+    skip_browser_lane,
+)
 from cqc_lem.utilities.env_constants import LI_API_VERSION
 from cqc_lem.utilities.flags import OCCASION_NATIVE_PUBLISH, flag_enabled
 from cqc_lem.utilities.golden_hour import _record_golden_hour_report, _reply_outcome
@@ -2654,6 +2659,14 @@ def post_to_linkedin(self, user_id: int, post_id: int):
         # working. The comment above says as much.
         log_debug(f"Post {post_id} already posted. Skipping duplicate execution.")
         return f"Post {post_id} already posted — skipped"
+
+    # A sandbox account never reaches LinkedIn: complete the post as a dry run, before anything is read
+    # for the publish. POSTED is the post's "published" — the account kind, not the row, says nothing
+    # went out. Unreadable or unrecognised kinds do NOT land here; `guard_send` in the poster helpers
+    # refuses them.
+    if sandbox_dry_run(user_id, "post_to_linkedin"):
+        update_db_post_status(post_id, PostStatus.POSTED)
+        return f"Post {post_id}: {SANDBOX_DRY_RUN_MESSAGE}"
 
     # An occasion/milestone draft publishes through LinkedIn's native composer, which has no API
     # entity (issue #1074) — sharing it here would post it as an ordinary text update, losing the

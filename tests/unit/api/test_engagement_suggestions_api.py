@@ -13,9 +13,10 @@ pytestmark = pytest.mark.unit
 _MODE = "cqc_lem.utilities.engagement_mode.get_user_engagement_state"
 
 
-def _state(mode, status="active", tier="professional"):
+def _state(mode, status="active", tier="professional", kind="standard"):
     """What `get_user_engagement_state` returns: the stored mode and the subscription it rides on."""
-    return {"engagement_mode": mode, "subscription_status": status, "subscription_tier": tier}
+    return {"engagement_mode": mode, "subscription_status": status, "subscription_tier": tier,
+            "account_kind": kind}
 
 
 _URL = "https://www.linkedin.com/feed/update/urn:li:ugcPost:7479519458164695040/"

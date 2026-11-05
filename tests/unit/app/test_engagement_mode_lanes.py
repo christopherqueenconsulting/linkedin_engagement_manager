@@ -33,9 +33,10 @@ _POST = "cqc_lem.app.engagement.posting"
 _MODE = "cqc_lem.utilities.engagement_mode.get_user_engagement_state"
 
 
-def _state(mode, status="active", tier="professional"):
+def _state(mode, status="active", tier="professional", kind="standard"):
     """What `get_user_engagement_state` returns: the stored mode and the subscription it rides on."""
-    return {"engagement_mode": mode, "subscription_status": status, "subscription_tier": tier}
+    return {"engagement_mode": mode, "subscription_status": status, "subscription_tier": tier,
+            "account_kind": kind}
 
 # (module, task, kwargs, row patches) — every Selenium lane task, with the smallest call that
 # reaches its guard. Row-id tasks resolve their user from a row, so the row reader is stubbed.
@@ -168,6 +169,91 @@ class TestNoBrowserForASuggestOnlyAccount:
         assert call_kwargs["target_url"] == target
 
 
+# --- Sandbox accounts (docs/agent-roles.md § Sandbox tenant) -----------------------------------
+# A sandbox account rides the same gate: its mode reads `suggest` whatever is stored, so every lane
+# above skips and no driver opens. The four queue-fed send lanes that are in `_SKIP_LANES` complete the
+# row as a DRY RUN instead (`post_to_linkedin` has its own test in test_sandbox_send_invariants.py).
+_DRY_RUN_WRITERS = {
+    "send_scheduled_dm": "cqc_lem.utilities.db.update_scheduled_dm_status",
+    "send_connection_request": "cqc_lem.utilities.db.update_connection_request_status",
+    "send_lead_response": f"{_OUT}.update_lead_signal",
+    "send_catchup_touch": f"{_OUT}.update_catchup_touch_status",
+}
+_SANDBOX = [
+    pytest.param({"return_value": _state("automate", kind="sandbox")}, id="sandbox-stored-automate"),
+    pytest.param({"return_value": _state("suggest", kind="sandbox")}, id="sandbox-stored-suggest"),
+]
+# Kinds that must read as "do not send": a missing key, None, and every near-miss of a real kind.
+_UNSENDABLE_KINDS = [
+    pytest.param({"return_value": {"engagement_mode": "automate", "subscription_status": "active",
+                                   "subscription_tier": "professional"}}, id="kind-key-missing"),
+    pytest.param({"return_value": _state("automate", kind=None)}, id="kind-none"),
+    pytest.param({"return_value": _state("automate", kind="")}, id="kind-empty"),
+    pytest.param({"return_value": _state("automate", kind="Sandbox")}, id="kind-capitalised"),
+    pytest.param({"return_value": _state("automate", kind="sandbox ")}, id="kind-trailing-space"),
+    pytest.param({"return_value": _state("automate", kind="garbage")}, id="kind-unrecognised"),
+]
+
+
+class TestNoBrowserForASandboxAccount:
+    @staticmethod
+    def _run(module, name, kwargs, rows, mode):
+        with ExitStack() as stack:
+            stack.enter_context(patch(_MODE, **mode))
+            driver, remote = _browser_tripwires(stack)
+            for target, row in rows.items():
+                stack.enter_context(patch(target, return_value=row))
+            writer = None
+            if name in _DRY_RUN_WRITERS:
+                writer = stack.enter_context(patch(_DRY_RUN_WRITERS[name], return_value=True))
+                stack.enter_context(patch(f"{_OUT}.report_catchup_run"))
+            result = _task(module, name).run(**kwargs)
+        return result, driver, remote, writer
+
+    @pytest.mark.parametrize("mode", _SANDBOX)
+    @pytest.mark.parametrize("module,name,kwargs,rows", _SKIP_LANES,
+                             ids=[lane[1] for lane in _SKIP_LANES])
+    def test_the_lane_skips_or_dry_runs_and_never_opens_a_driver(self, module, name, kwargs, rows, mode):
+        from cqc_lem.utilities.engagement_mode import SANDBOX_DRY_RUN_MESSAGE
+
+        result, driver, remote, writer = self._run(module, name, kwargs, rows, mode)
+        driver.assert_not_called()
+        remote.assert_not_called()
+        if name in _DRY_RUN_WRITERS:
+            assert SANDBOX_DRY_RUN_MESSAGE in result
+            writer.assert_called_once()
+            assert "sent" in repr(writer.call_args).lower()  # the row's terminal state
+        else:
+            assert result == SUGGEST_ONLY_SKIP_MESSAGE
+
+    @pytest.mark.parametrize("mode", _UNSENDABLE_KINDS)
+    @pytest.mark.parametrize("module,name,kwargs,rows", _SKIP_LANES,
+                             ids=[lane[1] for lane in _SKIP_LANES])
+    def test_an_unreadable_or_unrecognised_kind_does_nothing_at_all(self, module, name, kwargs, rows,
+                                                                    mode):
+        """Not a dry run either: completing a row that may be a real send would lose it."""
+        result, driver, remote, writer = self._run(module, name, kwargs, rows, mode)
+        assert result == SUGGEST_ONLY_SKIP_MESSAGE
+        driver.assert_not_called()
+        remote.assert_not_called()
+        if writer is not None:
+            writer.assert_not_called()
+
+    @pytest.mark.parametrize("mode", _SANDBOX + _UNSENDABLE_KINDS)
+    @pytest.mark.parametrize("module,name,kwargs,kind,body,target", _SAVE_LANES,
+                             ids=[lane[1] for lane in _SAVE_LANES])
+    def test_a_finished_draft_is_stored_never_sent(self, module, name, kwargs, kind, body, target, mode):
+        with ExitStack() as stack:
+            stack.enter_context(patch(_MODE, **mode))
+            driver, remote = _browser_tripwires(stack)
+            stack.enter_context(patch(
+                "cqc_lem.utilities.engagement_mode.insert_engagement_suggestion", return_value=True))
+            result = _task(module, name).run(**kwargs)
+        assert result in (SUGGESTION_SAVED_MESSAGE, SUGGEST_ONLY_SKIP_MESSAGE) or "Deferred" in result
+        driver.assert_not_called()
+        remote.assert_not_called()
+
+
 class TestAnAutomateAccountIsUnchanged:
     """Anti-overreach: the guard lets an `automate` account through to the browser as before.
 
@@ -190,9 +276,11 @@ class TestAnAutomateAccountIsUnchanged:
          {"user_id": 1, "profile_url": "https://www.linkedin.com/in/sam/", "message": "hi"},
          f"{_OUT}.send_dm_now", {}),
     ], ids=["comment_on_post", "update_stale_profile", "send_private_dm"])
-    def test_the_lane_reaches_its_browser(self, module, name, kwargs, acquire, setup):
+    @pytest.mark.parametrize("kind", ["standard", "internal"])
+    def test_the_lane_reaches_its_browser(self, module, name, kwargs, acquire, setup, kind):
+        """`standard` and `internal` accounts still act on LinkedIn; only `sandbox` does not."""
         with ExitStack() as stack:
-            stack.enter_context(patch(_MODE, return_value=_state("automate")))
+            stack.enter_context(patch(_MODE, return_value=_state("automate", kind=kind)))
             reached = stack.enter_context(patch(acquire, side_effect=self._DriverReached()))
             for target, value in setup.items():
                 stack.enter_context(patch(target, return_value=value))

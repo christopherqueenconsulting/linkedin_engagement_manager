@@ -68,7 +68,12 @@ from cqc_lem.utilities.db import (
     set_target_connect_status,
 )
 from cqc_lem.utilities.demo_mode import DemoModeError
-from cqc_lem.utilities.engagement_mode import SUGGEST_ONLY_SKIP_MESSAGE, skip_browser_lane
+from cqc_lem.utilities.engagement_mode import (
+    SANDBOX_DRY_RUN_MESSAGE,
+    SUGGEST_ONLY_SKIP_MESSAGE,
+    sandbox_dry_run,
+    skip_browser_lane,
+)
 from cqc_lem.utilities.human_pacing import ACTION_INVITE, record_action
 from cqc_lem.utilities.lead_scoring import profile_slug
 from cqc_lem.utilities.linkedin.company_page_inviter import (
@@ -1905,6 +1910,10 @@ def send_connection_request(self, request_id: int):
         return f"Connection request {request_id} not sendable (status={req['status'] if req else 'missing'})"
 
     user_id = req["user_id"]
+    if sandbox_dry_run(user_id, "send_connection_request"):
+        # Before the acquisition hold and the caps: a sandbox row is completed, never held or counted.
+        update_connection_request_status(request_id, ConnectionRequestStatus.SENT)
+        return f"Connection request {request_id}: {SANDBOX_DRY_RUN_MESSAGE}"
     if skip_browser_lane(user_id, "send_connection_request"):
         return SUGGEST_ONLY_SKIP_MESSAGE
     # Real dispatches this row has already spent. The three defers below add nothing to it — they

@@ -21,9 +21,10 @@ pytestmark = pytest.mark.unit
 _MODE = "cqc_lem.utilities.engagement_mode.get_user_engagement_state"
 
 
-def _state(mode, status="active", tier="professional"):
+def _state(mode, status="active", tier="professional", kind="standard"):
     """What `get_user_engagement_state` returns: the stored mode and the subscription it rides on."""
-    return {"engagement_mode": mode, "subscription_status": status, "subscription_tier": tier}
+    return {"engagement_mode": mode, "subscription_status": status, "subscription_tier": tier,
+            "account_kind": kind}
 
 
 _CONN = "cqc_lem.platform.db.connection.get_db_connection"
@@ -247,13 +248,14 @@ class TestRepository:
     def test_the_state_is_read_in_one_query(self, fake_cursor):
         from cqc_lem.utilities.db import get_user_engagement_state
 
-        conn, cur = fake_cursor(fetch_one=("automate", "trial", "free_trial"))
+        conn, cur = fake_cursor(fetch_one=("automate", "trial", "free_trial", "sandbox"))
         with patch(_CONN, return_value=conn):
-            assert get_user_engagement_state(4) == _state("automate", "trial", "free_trial")
+            assert get_user_engagement_state(4) == _state("automate", "trial", "free_trial",
+                                                          kind="sandbox")
         cur.execute.assert_called_once()
         sql, params = cur.execute.call_args.args
         assert "engagement_mode" in sql and "subscription_status" in sql
-        assert "subscription_tier" in sql and params == (4,)
+        assert "subscription_tier" in sql and "account_kind" in sql and params == (4,)
 
     def test_a_missing_row_is_none(self, fake_cursor):
         from cqc_lem.utilities.db import get_user_engagement_state
@@ -717,3 +719,39 @@ class TestOwnPostCommentsBecomeSuggestions:
             result = auto_second_wave_comment.run(user_id=1, post_id=3)
         assert "already suggested" in result
         gen.assert_not_called()
+
+
+class TestAccountKindInTheMode:
+    """A `sandbox` account never gets a browser: its mode reads `suggest` whatever is stored."""
+
+    def test_a_sandbox_account_reads_suggest_even_when_it_stores_automate(self):
+        from cqc_lem.utilities import engagement_mode as em
+
+        with patch(_MODE, return_value=_state("automate", kind="sandbox")):
+            assert em.read_engagement_mode(1) == em.EngagementMode.SUGGEST
+            assert em.browser_automation_allowed(1) is False
+            with pytest.raises(em.SuggestOnlyEngagement):
+                em.require_browser_automation(1, "x")
+
+    @pytest.mark.parametrize("kind", ["standard", "internal"])
+    def test_standard_and_internal_accounts_are_unchanged(self, kind):
+        from cqc_lem.utilities import engagement_mode as em
+
+        with patch(_MODE, return_value=_state("automate", kind=kind)):
+            assert em.read_engagement_mode(1) == em.EngagementMode.AUTOMATE
+
+    @pytest.mark.parametrize("kind", [None, "", "Sandbox", "sandbox ", "garbage", "admin"])
+    def test_an_unrecognised_kind_reads_suggest(self, kind):
+        from cqc_lem.utilities import engagement_mode as em
+
+        with patch(_MODE, return_value=_state("automate", kind=kind)):
+            assert em.read_engagement_mode(1) == em.EngagementMode.SUGGEST
+
+    def test_a_state_with_no_kind_at_all_is_unreadable(self):
+        from cqc_lem.utilities import engagement_mode as em
+
+        state = {"engagement_mode": "automate", "subscription_status": "active",
+                 "subscription_tier": "professional"}
+        with patch(_MODE, return_value=state):
+            assert em.read_engagement_mode(1) is None
+            assert em.resolve_engagement_mode(1) == em.EngagementMode.SUGGEST

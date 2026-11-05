@@ -1686,25 +1686,68 @@ def get_users_with_reply_mode(mode: str) -> list:
         log_error(f"Could not get users with reply mode {mode}", exc=err)
         return []
 def get_user_engagement_state(user_id: int) -> Optional[dict]:
-    """What decides a user's engagement mode (issue #2367), read in ONE query — or None.
+    """What decides whether LEM may act on a user's LinkedIn account, read in ONE query — or None.
 
-    Returns `engagement_mode`, `subscription_status` and `subscription_tier` together, because a
-    trial account is suggest-only whatever its stored mode says, and reading the two halves in
-    separate round trips would let them disagree. None covers a missing row as well as a DB fault.
-    This reader does not decide what anything MEANS — `utilities/engagement_mode.py` is the one place
-    that does, and it reads None as `suggest`.
+    Returns `engagement_mode`, `subscription_status`, `subscription_tier` and `account_kind`
+    together, because a trial account is suggest-only whatever its stored mode says and a `sandbox`
+    account never acts on LinkedIn at all, and reading the halves in separate round trips would let
+    them disagree. None covers a missing row as well as a DB fault. This reader does not decide what
+    anything MEANS — `utilities/engagement_mode.py` is the one place that does, and it reads None
+    as `suggest`.
     """
     try:
         with db_cursor() as cursor:
-            cursor.execute("SELECT engagement_mode, subscription_status, subscription_tier"
-                           " FROM users WHERE id = %s", (user_id,))
+            cursor.execute("SELECT engagement_mode, subscription_status, subscription_tier,"
+                           " account_kind FROM users WHERE id = %s", (user_id,))
             row = cursor.fetchone()
     except mysql.connector.Error as err:
         log_warning("Could not read engagement mode", exc=err, user_id=user_id)
         return None
     if not row:
         return None
-    return {"engagement_mode": row[0], "subscription_status": row[1], "subscription_tier": row[2]}
+    return {"engagement_mode": row[0], "subscription_status": row[1], "subscription_tier": row[2],
+            "account_kind": row[3]}
+
+
+def get_linkedin_credential_flags(user_id: int) -> Optional[dict]:
+    """Which kinds of stored LinkedIn credential an account holds — presence only, never a value.
+
+    Returns `{"password": bool, "access_token": bool, "li_at": bool}`, or None for a missing row or a
+    DB fault. Callers that must refuse on "has credentials" treat None as "may have some".
+    """
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT (password IS NOT NULL AND password <> ''),"
+                " (access_token IS NOT NULL AND access_token <> ''),"
+                " EXISTS(SELECT 1 FROM cookies WHERE user_id = users.id AND name = 'li_at')"
+                " FROM users WHERE id = %s", (user_id,))
+            row = cursor.fetchone()
+    except mysql.connector.Error as err:
+        log_error("Could not read LinkedIn credential flags", exc=err, user_id=user_id)
+        return None
+    if not row:
+        return None
+    return {"password": bool(row[0]), "access_token": bool(row[1]), "li_at": bool(row[2])}
+
+
+def set_user_account_kind(user_id: int, account_kind: str) -> bool:
+    """Write `users.account_kind`. True only when exactly one row changed hands.
+
+    Called ONLY by `scripts/set_account_kind.py`, run by the owner on the host. No API route may call
+    it: a machine session must never be able to flag an account (`test_account_kind_is_owner_only.py`
+    walks the route table and the api package for it). The value is validated here too, so a typo
+    can never write something the readers would treat as a third kind.
+    """
+    if account_kind not in (ACCOUNT_KIND_STANDARD, ACCOUNT_KIND_INTERNAL, ACCOUNT_KIND_SANDBOX):
+        raise ValueError(f"unknown account_kind {account_kind!r}")
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("UPDATE users SET account_kind = %s WHERE id = %s", (account_kind, user_id))
+            return cursor.rowcount == 1
+    except mysql.connector.Error as err:
+        log_error("Could not set account kind", exc=err, user_id=user_id)
+        return False
 
 
 def get_user_geo(user_id: int) -> Optional[dict]:
