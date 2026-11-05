@@ -133,6 +133,12 @@ class TestUploadPath:
                 "auto_seed_comment_on_post": {},
                 "auto_second_wave_comment": {},
             }
+            # The account must READ as one that may send: the publish path fails closed on an
+            # unreadable or missing account kind (the user here does not exist in the test database).
+            stack.enter_context(patch(
+                "cqc_lem.utilities.engagement_mode.get_user_engagement_state",
+                return_value={"engagement_mode": "automate", "subscription_status": "active",
+                              "subscription_tier": "professional", "account_kind": "standard"}))
             mocks = {name: stack.enter_context(patch(f"{_POSTING}.{name}", **kw))
                      for name, kw in patched.items()}
             post_to_linkedin.run(1, 99)
