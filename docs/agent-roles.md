@@ -357,19 +357,23 @@ So revoke first. **Run by the on-call engineer or the account owner**, never by 
      ```
 
      or from GitHub: **Actions → "Redeploy / Rollback VPS" (`deploy-vps.yml`) → Run workflow**, enter
-     the tag and **tick `rollback`** (it uses `rollback.sh` and skips migrations). The workflow runs in
-     the `production` environment, so it waits for that environment's **required reviewers**;
-     `docs/DEPLOYMENT.md` says to configure reviewers there but does not name them, so ask the account
-     owner who they are before an incident. **`rollback.sh` runs no health check**: confirm the site
-     yourself with `curl -fsS https://app.<domain>/health`. **An image rollback does not undo the
+     the tag and **tick `rollback`** (it uses `rollback.sh` and skips migrations). The job declares
+     `environment: production`, but the required-reviewer gate was removed
+     (`.github/workflows/build-and-push.yml`, lines 155-156) and the live `production` environment has no
+     protection rules, so **the workflow runs without an approval wait** unless reviewers are re-added in
+     the repository settings. **`rollback.sh` runs no health check**: confirm the site yourself with
+     `curl -fsS "$BASE/health"`. **An image rollback does not undo the
      `account_kind` migration**: the migration is already applied, `rollback.sh` skips migrations by
      design, and the column stays (harmless).
    - **Slower path, a reverted merge.** Merge the revert to `main`; release-please opens a "chore:
-     release" PR; merging it tags a release, and `Build & Deploy Release` builds the image and deploys it
-     **after `production` approval** (same required reviewers), with `scripts/deploy.sh` health-checking
-     and auto-rolling-back on failure. Releases batch four times a day (05/11/17/23 UTC) unless the revert PR carries the
-     `release:now` label (`docs/release-fast-lane.md`, `docs/DEPLOYMENT.md`). Use this path for the lasting
-     fix; use the fast path first when the exposure is live.
+     release" PR; merging it tags a release, and `Build & Deploy Release` builds the image and deploys it,
+     with `scripts/deploy.sh` health-checking and auto-rolling-back on failure. The deploy job runs in
+     `production` with **no required reviewers**; it is gated only by `release-risk-check`, which skips the
+     deploy when a new migration is not provably additive (`build-and-push.yml`,
+     `if: needs.release-risk-check.outputs.flagged != 'true'`). So the revert PR **may auto-deploy at the
+     next release window** (05/11/17/23 UTC), or at merge if it carries the `release:now` label
+     (`docs/release-fast-lane.md`). Use this path for the lasting fix; use the fast path first when the
+     exposure is live.
 5. **Verify, and again after the revert is live.** Run the count; it must be `0`:
 
    ```sql
