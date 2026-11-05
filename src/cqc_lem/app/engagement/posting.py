@@ -140,6 +140,7 @@ from cqc_lem.utilities.dm_templates import render_dm_placeholders
 from cqc_lem.utilities.engagement_mode import (
     SANDBOX_DRY_RUN_MESSAGE,
     SUGGEST_ONLY_SKIP_MESSAGE,
+    may_send,
     sandbox_dry_run,
     skip_browser_lane,
 )
@@ -2667,6 +2668,18 @@ def post_to_linkedin(self, user_id: int, post_id: int):
     if sandbox_dry_run(user_id, "post_to_linkedin"):
         update_db_post_status(post_id, PostStatus.POSTED)
         return f"Post {post_id}: {SANDBOX_DRY_RUN_MESSAGE}"
+
+    # The other half of the sandbox gate, and the reason it is spelled out here rather than left to the
+    # publish helpers' `guard_send`: an account whose kind cannot be READ (a database fault, a missing
+    # row, a value nobody recognises) must not publish, and must not be turned into a task failure or a
+    # retry loop either. The post row is left exactly as it is (still approved or scheduled, so the
+    # next beat picks it up once the kind reads again), nothing is generated or sent, and the helpers'
+    # `guard_send` stays behind this as the backstop for any other caller.
+    if not may_send(user_id):
+        log_info(f"Post {post_id} not published: the account's kind cannot be read or may not send",
+                 user_id=user_id, post_id=post_id, task_name="post_to_linkedin",
+                 action_type="sandbox_refused")
+        return f"Post {post_id} not published — account may not send (left unchanged)"
 
     # An occasion/milestone draft publishes through LinkedIn's native composer, which has no API
     # entity (issue #1074) — sharing it here would post it as an ordinary text update, losing the

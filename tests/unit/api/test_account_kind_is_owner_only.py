@@ -45,6 +45,13 @@ class TestOnlyTheOwnerToolWritesTheColumn:
     def test_the_walk_reads_the_source_tree(self) -> None:
         assert len(list(_SRC.rglob("*.py"))) > 150
 
+    def test_the_queue_reader_is_only_used_by_the_owner_tool_and_tests(self) -> None:
+        callers = []
+        for path in _SRC.rglob("*.py"):
+            if "count_queued_sends" in _call_names(ast.parse(path.read_text())):
+                callers.append(str(path.relative_to(_SRC)))
+        assert callers == [_ONLY_CALLER], callers
+
     def test_the_writer_has_exactly_one_caller(self) -> None:
         callers = []
         for path in _SRC.rglob("*.py"):
@@ -63,13 +70,16 @@ class TestOnlyTheOwnerToolWritesTheColumn:
         assert not offenders, offenders
 
     def test_no_sql_outside_the_one_setter_updates_the_column(self) -> None:
-        offenders = []
+        """Exactly one statement under src/ sets the column, and it is in the users repository."""
+        found = []
         for path in _SRC.rglob("*.py"):
             for node in ast.walk(ast.parse(path.read_text())):
                 if isinstance(node, ast.Constant) and isinstance(node.value, str) \
                         and "SET account_kind" in node.value:
-                    offenders.append(f"{path.relative_to(_SRC)}:{node.lineno}")
-        assert offenders == [f"platform/db/repositories/users.py:{offenders[0].split(':')[1]}"], offenders
+                    found.append(str(path.relative_to(_SRC)))
+        assert found, "no statement sets the column at all — the walk or the writer is broken"
+        assert found == ["platform/db/repositories/users.py"], (
+            f"account_kind is updated outside the one setter: {found}")
 
     def test_the_generic_user_update_allow_list_does_not_name_it(self) -> None:
         from cqc_lem.platform.db.repositories.users import _ALLOWED_USER_CLAUSES

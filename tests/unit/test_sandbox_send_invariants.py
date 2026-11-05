@@ -234,9 +234,13 @@ _REGISTERED_CALLERS = {
         "completes a sandbox post as a dry run before any publish (sandbox_dry_run), and every "
         "share_* it calls opens with guard_send for an unreadable kind",
     ("app/engagement/feed.py", "auto_seed_comment_on_post"):
-        "an API comment lane that asks is_suggest_only first: a sandbox account stores a suggestion",
+        "an API comment lane that asks read_engagement_mode first: a sandbox account reads suggest and "
+        "gets the draft stored as a suggestion, an unreadable kind defers it; comment_on_linkedin_post "
+        "opens with guard_send behind that",
     ("app/engagement/feed.py", "auto_second_wave_comment"):
-        "an API comment lane that asks is_suggest_only first: a sandbox account stores a suggestion",
+        "an API comment lane that asks read_engagement_mode first: a sandbox account reads suggest and "
+        "gets the draft stored as a suggestion, an unreadable kind defers it; comment_on_linkedin_post "
+        "opens with guard_send behind that",
     ("app/run_curated_sources.py", "publish_curated_post"):
         "reached only from post_to_linkedin, after its sandbox dry run; the share_* helpers it calls "
         "open with guard_send",
@@ -386,18 +390,43 @@ class TestSandboxPostsAreDryRun:
             share.assert_not_called()
 
     @pytest.mark.parametrize("state", _UNREADABLE_KINDS)
-    def test_an_unreadable_kind_is_not_completed_as_a_dry_run(self, state: Any) -> None:
-        """It falls through to the publish helpers, whose `guard_send` refuses it."""
+    def test_an_unreadable_kind_publishes_nothing_changes_nothing_and_does_not_retry(
+            self, state: Any) -> None:
+        """Not a dry run (that would write a terminal state), not a failure and not a retry loop."""
         from cqc_lem.app.engagement.posting import post_to_linkedin
 
         with ExitStack() as stack:
             stack.enter_context(patch(_MODE, return_value=state))
             stack.enter_context(patch(f"{_POST}.get_post_status", return_value="approved"))
             update = stack.enter_context(patch(f"{_POST}.update_db_post_status", return_value=True))
-            stack.enter_context(patch(f"{_POST}.get_post_manual_publish", side_effect=_NetworkReached()))
+            creds = stack.enter_context(patch(f"{_POST}.get_user_password_pair_by_id"))
+            retry = stack.enter_context(patch.object(post_to_linkedin, "retry"))
+            info = stack.enter_context(patch(f"{_POST}.log_info"))
+            shares = [stack.enter_context(patch(f"{_POST}.{n}")) for n in (
+                "share_on_linkedin", "share_carousel_on_linkedin", "share_document_on_linkedin",
+                "share_animated_image_on_linkedin")]
+            result = post_to_linkedin.run(1, 40)
+        assert "not published" in result and "left unchanged" in result
+        update.assert_not_called()          # the row is exactly as it was: retryable on the next beat
+        retry.assert_not_called()           # no retry loop
+        creds.assert_not_called()           # nothing was read for a publish
+        for share in shares:
+            share.assert_not_called()
+        assert any("sandbox_refused" in repr(c) for c in info.call_args_list), "it must be logged"
+
+    @pytest.mark.parametrize("state", _SENDABLE)
+    def test_a_standard_or_internal_account_gets_past_the_kind_check(self, state: Any) -> None:
+        from cqc_lem.app.engagement.posting import post_to_linkedin
+
+        with ExitStack() as stack:
+            stack.enter_context(patch(_MODE, return_value=state))
+            stack.enter_context(patch(f"{_POST}.get_post_status", return_value="approved"))
+            stack.enter_context(patch(f"{_POST}.update_db_post_status", return_value=True))
+            reached = stack.enter_context(patch(f"{_POST}.get_post_manual_publish",
+                                                side_effect=_NetworkReached()))
             with pytest.raises(_NetworkReached):
-                post_to_linkedin.run(1, 40)  # got past the dry-run check to the next step
-        assert not [c for c in update.call_args_list if "POSTED" in repr(c)]
+                post_to_linkedin.run(1, 40)
+        reached.assert_called_once()
 
 
 class TestTheMockedClientIsNeverTouched:
@@ -446,3 +475,238 @@ class TestTheMockedClientIsNeverTouched:
         result, client, update = self._run_dm(kind)
         client.assert_not_called()
         update.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Discovery: nothing here depends on a hand-kept list of send paths
+# ---------------------------------------------------------------------------
+
+# Names a function calls to ask the sandbox / suggest gate (any of them is a gate).
+_GATE_CALLS = {"skip_browser_lane", "require_browser_automation", "sandbox_dry_run",
+               "read_engagement_mode", "resolve_engagement_mode", "is_suggest_only",
+               "browser_automation_allowed", "guard_send", "may_send", "_browser_lane_users"}
+
+
+def _all_modules() -> list[pathlib.Path]:
+    return sorted(p for p in _SRC.rglob("*.py") if p.name != "__init__.py")
+
+
+def _decorator_name(node: ast.AST) -> str:
+    target = node.func if isinstance(node, ast.Call) else node
+    parts = []
+    while isinstance(target, ast.Attribute):
+        parts.append(target.attr)
+        target = target.value
+    if isinstance(target, ast.Name):
+        parts.append(target.id)
+    return ".".join(reversed(parts))
+
+
+def _is_task_decorator(name: str) -> bool:
+    return name in ("shared_task", "task") or name.endswith(".task") or "shared_task" in name
+
+
+def _discover_tasks() -> dict[str, tuple[str, ast.AST]]:
+    """Every Celery task under src/cqc_lem, as name -> (module path, node).
+
+    Found by decorator, so a new `@shared_task.task` function is picked up without anyone remembering
+    to list it.
+    """
+    found: dict[str, tuple[str, ast.AST]] = {}
+    for path in _all_modules():
+        try:
+            tree = ast.parse(path.read_text())
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                    and any(_is_task_decorator(_decorator_name(d)) for d in node.decorator_list):
+                found[node.name] = (str(path.relative_to(_SRC)), node)
+    return found
+
+
+# Tasks that reach LinkedIn only THROUGH a named helper that carries the gate; the helper is asserted
+# to call a gate below, so this is a pointer, not an exemption.
+_DELEGATES = {
+    "send_lead_response": "_send_lead_response",
+}
+
+# Tasks with NO LinkedIn action of their own: content or media generation, analytics and cost jobs,
+# billing and email jobs, and dispatchers that only enqueue the gated tasks above. Each says why.
+# A task that calls a gate is NOT listed here (the test fails if one is: exactly one classification).
+_NO_LINKEDIN_ACTION = {
+    "test_task": "AWS smoke-test task: returns a string",
+    "test_get_my_profile": "read-only profile fetch through get_driver_wait_pair(user_id), whose "
+                           "get_docker_driver backstop refuses a sandbox account",
+    "auto_draft_group_post": "drafts text with an LLM and stores it; the publish is auto_post_to_group",
+    "render_avatar_samples_task": "image generation",
+    "auto_generate_content": "content generation (LLM), stores drafts",
+    "plan_content_for_user": "content planning (LLM), stores drafts",
+    "regenerate_post_video_task": "media generation",
+    "regenerate_post_carousel_task": "media generation",
+    "regenerate_post_task": "content generation (LLM)",
+    "draft_occasion_post_task": "drafts text; the publish is auto_publish_occasion_post",
+    "auto_create_weekly_content": "content generation (LLM), stores drafts",
+    "collect_curated_sources": "reads public sources; publishes nothing",
+    "dispatch_golden_hour_engagement": "only enqueues the gated reply-sweep tasks",
+    "auto_weekly_comment_quality": "analytics over stored comments",
+    "auto_suppression_tripwire": "analytics over stored impressions; pauses, never sends",
+    "auto_nightly_content_quality": "analytics over stored posts",
+    "auto_weekly_content_quality": "analytics over stored posts",
+    "auto_media_integrity_scan": "checks stored media files",
+    "auto_generate_newsletter_drafts": "content generation (LLM), stores drafts",
+    "generate_newsletter_drafts_for_user": "content generation (LLM), stores drafts",
+    "generate_newsletter_cover": "image generation",
+    "auto_notify_pending_covers": "email to the account owner",
+    "regenerate_newsletter_edition": "content generation (LLM)",
+    "auto_refresh_profile_syntheses": "LLM synthesis over a stored profile",
+    "auto_group_post_drafts": "only enqueues auto_draft_group_post",
+    "rebuild_leads_for_user": "scores stored engagement rows",
+    "rebuild_lead_scores": "only enqueues rebuild_leads_for_user",
+    "auto_sync_brand_account": "database config for the brand account",
+    "auto_notify_missing_linkedin_session": "email to the account owner",
+    "auto_refresh_linkedin_tokens": "OAuth token refresh: credential plumbing, not a content action",
+    "auto_onboarding_nudges": "email to the account owner",
+    "auto_survey_prompts": "analytics prompts",
+    "auto_backfill_missing_assets": "media generation",
+    "auto_encrypt_secrets_at_rest": "database maintenance",
+    "auto_clean_old_videos": "file cleanup",
+    "sync_stripe_subscriptions": "billing sync",
+    "auto_weekly_margin_report": "internal report",
+    "auto_daily_cost_alerts": "internal alert",
+    "auto_capacity_watch": "internal monitor",
+    "auto_file_feedback_issues": "files GitHub issues for feedback",
+    "auto_recluster_feedback": "analytics over stored feedback",
+    "auto_changelog_notify": "email to account owners",
+    "auto_update_faq": "content generation (LLM) for the FAQ",
+    "auto_accrue_monthly_costs": "internal accounting",
+    "auto_rollup_llm_costs": "internal accounting",
+    "auto_weekly_cost_routing": "internal analytics",
+    "auto_produce_feature_tutorial": "renders our own SPA; DEMO_MODE-gated, no account",
+    "auto_weekly_youtube_token_check": "YouTube token health check",
+}
+
+
+class TestEveryCeleryTaskIsClassified:
+    def test_the_discovery_found_the_tasks(self) -> None:
+        tasks = _discover_tasks()
+        assert len(tasks) > 90, f"found only {len(tasks)} — the decorator scan is not reading the tree"
+        assert {"send_scheduled_dm", "post_to_linkedin", "send_connection_request"} <= tasks.keys()
+
+    def _gated(self, node: ast.AST) -> set[str]:
+        return set(_call_names(node)) & _GATE_CALLS
+
+    def test_every_task_is_gated_delegated_or_registered_with_a_reason(self) -> None:
+        tasks = _discover_tasks()
+        unclassified = []
+        for name, (rel, node) in sorted(tasks.items()):
+            if self._gated(node) or name in _DELEGATES or name in _NO_LINKEDIN_ACTION:
+                continue
+            unclassified.append(f"{rel}:{name}")
+        assert not unclassified, (
+            "\n\nCelery tasks that neither call the sandbox/suggest gate nor appear in "
+            f"_NO_LINKEDIN_ACTION with a reason: {unclassified}\nIf the task can reach LinkedIn, gate it "
+            "(skip_browser_lane / sandbox_dry_run / guard_send); if it cannot, register it with why.\n")
+
+    def test_no_task_is_classified_twice(self) -> None:
+        tasks = _discover_tasks()
+        both = [name for name, (_rel, node) in tasks.items()
+                if name in _NO_LINKEDIN_ACTION and (self._gated(node) or name in _DELEGATES)]
+        assert not both, (
+            f"{both} are registered as having no LinkedIn action but call a gate (or delegate): "
+            "remove them from _NO_LINKEDIN_ACTION so each task has exactly one classification")
+        assert not set(_DELEGATES) & set(_NO_LINKEDIN_ACTION)
+
+    def test_every_registered_name_is_still_a_task(self) -> None:
+        tasks = _discover_tasks()
+        stale = [n for n in (*_NO_LINKEDIN_ACTION, *_DELEGATES) if n not in tasks]
+        assert not stale, f"registered but no longer a Celery task: {stale}"
+
+    def test_every_reason_is_stated(self) -> None:
+        assert all(len(reason.strip()) > 8 for reason in _NO_LINKEDIN_ACTION.values())
+
+    def test_a_delegating_task_points_at_a_helper_that_gates(self) -> None:
+        tasks = _discover_tasks()
+        for task, helper in _DELEGATES.items():
+            rel, node = tasks[task]
+            assert helper in _call_names(node), f"{task} no longer calls {helper}"
+            helper_node = next(n for p in _all_modules() for n in ast.walk(ast.parse(p.read_text()))
+                               if isinstance(n, ast.FunctionDef) and n.name == helper)
+            assert self._gated(helper_node), f"{helper} (behind {task}) calls no gate"
+
+
+# Every function under src/cqc_lem OUTSIDE poster.py/reshare.py that makes a mutating HTTP call
+# (requests/httpx post/put/delete/patch/request, or RestliClient) in code that mentions LinkedIn. Each
+# is OAuth credential plumbing, not a content action, which `guard_send` is for.
+_OAUTH_PLUMBING = {
+    ("api/main.py", "linkedin_callback"): "OAuth code-for-token exchange",
+    ("api/main.py", "member_analytics_callback"): "OAuth code-for-token exchange (analytics)",
+    ("utilities/linkedin/token_refresh.py", "attempt_token_refresh"): "OAuth token refresh",
+}
+_MUTATING = {"post", "put", "delete", "patch", "request"}
+_HTTP_LIBS = {"requests", "httpx"}
+
+
+def _linkedin_http_callers() -> set[tuple[str, str]]:
+    found = set()
+    for path in _all_modules():
+        text = path.read_text()
+        try:
+            tree = ast.parse(text)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            hit = False
+            for sub in ast.walk(node):
+                if not isinstance(sub, ast.Call):
+                    continue
+                f = sub.func
+                if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) \
+                        and f.value.id in _HTTP_LIBS and f.attr in _MUTATING:
+                    hit = True
+                if (f.id if isinstance(f, ast.Name) else getattr(f, "attr", "")) == "RestliClient":
+                    hit = True
+            if hit and "linkedin" in (ast.get_source_segment(text, node) or "").lower():
+                found.add((str(path.relative_to(_SRC)), node.name))
+    return found
+
+
+class TestEveryLinkedInHttpCallerIsAccountedFor:
+    def test_the_scan_finds_the_publish_helpers_and_the_oauth_calls(self) -> None:
+        found = _linkedin_http_callers()
+        assert ("utilities/linkedin/poster.py", "share_on_linkedin") in found
+        assert ("utilities/linkedin/token_refresh.py", "attempt_token_refresh") in found
+
+    def test_every_function_that_calls_linkedin_over_http_is_gated_or_registered(self) -> None:
+        offenders = []
+        publish_files = {"utilities/linkedin/poster.py", "utilities/linkedin/reshare.py"}
+        for rel, name in sorted(_linkedin_http_callers()):
+            if (rel, name) in _OAUTH_PLUMBING:
+                continue
+            if rel in publish_files:
+                fn = _functions(_SRC / rel)[name]
+                private = name.startswith("_")
+                token_only = name in _TOKEN_ONLY_HELPERS
+                if private or token_only or "guard_send" in _call_names(fn):
+                    continue
+            offenders.append(f"{rel}:{name}")
+        assert not offenders, (
+            f"\n\nThese functions make a mutating call to LinkedIn and are neither a gated publish "
+            f"helper nor registered OAuth plumbing: {offenders}\nGive a publish helper a user_id and a "
+            "guard_send, or register OAuth plumbing in _OAUTH_PLUMBING with why.\n")
+
+    def test_every_registered_oauth_function_still_makes_the_call(self) -> None:
+        found = _linkedin_http_callers()
+        stale = [k for k in _OAUTH_PLUMBING if k not in found]
+        assert not stale, f"registered but no longer an HTTP caller: {stale}"
+
+
+class TestEverySessionOpenerReachesTheBackstop:
+    def test_get_docker_driver_refuses_an_account_before_it_opens_a_session(self) -> None:
+        path = _SRC / "utilities" / "selenium_util.py"
+        fn = _functions(path)["get_docker_driver"]
+        source = ast.get_source_segment(path.read_text(), fn)
+        assert "require_browser_automation(" in source
+        assert source.index("require_browser_automation(") < source.index("webdriver.Remote(")

@@ -17,6 +17,13 @@ Refusals (exit code 2, nothing written):
   cannot be read, that counts as "may have some".
 - **A non-standard account cannot be reset to `standard` silently**: that turns a dry-run account into
   one whose approved items reach real people, so it needs `--allow-reset-to-standard`.
+- **A `sandbox` account cannot leave `sandbox` by accident.** Any change away from `sandbox`
+  (to `internal` as well as to `standard`) needs `--allow-leave-sandbox`. The kind is read when a task
+  RUNS, so every item already queued on the account goes live the moment the flag flips. The tool
+  therefore also refuses while the account has rows that could still send (pending, approved,
+  scheduled or sending items in the DM, connection-request, catch-up, lead-response, outreach-funnel
+  and post queues) unless `--cancel-queued` is passed, which cancels them in the SAME transaction as
+  the change. A queue count that cannot be read counts as "there are some".
 
 Every change writes an `account_kind_changed` row to `auth_audit_log` (best effort, reported on
 stderr if it could not be written) and is logged. `--dry-run` prints what would happen and writes
@@ -29,6 +36,7 @@ from typing import Optional, Sequence
 
 from cqc_lem.platform.db.enums import AuthAuditEvent
 from cqc_lem.utilities.db import (
+    count_queued_sends,
     get_linkedin_credential_flags,
     get_user_id,
     is_user_admin,
@@ -65,7 +73,8 @@ def _refuse(message: str) -> int:
 
 
 def run(email: str, kind: str, allow_credentials: bool = False,
-        allow_reset_to_standard: bool = False, dry_run: bool = False) -> int:
+        allow_reset_to_standard: bool = False, dry_run: bool = False,
+        allow_leave_sandbox: bool = False, cancel_queued: bool = False) -> int:
     """Apply one change, or refuse. Returns the process exit code.
 
     Args:
@@ -74,6 +83,9 @@ def run(email: str, kind: str, allow_credentials: bool = False,
         allow_credentials: permit flagging a sandbox account that stores LinkedIn credentials.
         allow_reset_to_standard: permit moving an `internal`/`sandbox` account back to `standard`.
         dry_run: report what would happen and write nothing.
+        allow_leave_sandbox: permit ANY change away from `sandbox`.
+        cancel_queued: when leaving `sandbox`, cancel the account's queued sends in the same
+            transaction instead of refusing while they exist.
     """
     if kind not in KINDS:
         return _refuse(f"unknown kind {kind!r}; expected one of {', '.join(KINDS)}")
@@ -93,6 +105,19 @@ def run(email: str, kind: str, allow_credentials: bool = False,
             and not allow_reset_to_standard:
         return _refuse(f"account {user_id} is {current}; moving it to standard makes its approved "
                        "items reach real people. Pass --allow-reset-to-standard to do it deliberately")
+    if current == ACCOUNT_KIND_SANDBOX and not allow_leave_sandbox:
+        return _refuse(f"account {user_id} is sandbox; moving it to {kind} makes everything already "
+                       "queued on it go live. Pass --allow-leave-sandbox to do it deliberately")
+    queued = None
+    leaving = current == ACCOUNT_KIND_SANDBOX
+    if leaving:
+        queued = count_queued_sends(user_id)
+        if (queued is None or any(queued.values())) and not cancel_queued:
+            held = "cannot be counted" if queued is None else \
+                ", ".join(f"{table}={n}" for table, n in queued.items() if n)
+            return _refuse(f"account {user_id} may have queued sends ({held}); they would go live. "
+                           "Cancel them first, or pass --cancel-queued to cancel them in the same "
+                           "transaction as the change")
     if kind == ACCOUNT_KIND_SANDBOX and not allow_credentials:
         flags = get_linkedin_credential_flags(user_id)
         if flags is None or any(flags.values()):
@@ -102,16 +127,20 @@ def run(email: str, kind: str, allow_credentials: bool = False,
                            "sandbox account should hold none. Pass --allow-credentials to override")
 
     if dry_run:
-        _out(f"dry run: would set account {user_id} from {current} to {kind}")
+        _out(f"dry run: would set account {user_id} from {current} to {kind}"
+             + (f" and cancel queued sends ({queued})" if cancel_queued and leaving else ""))
         return EXIT_OK
-    if not set_user_account_kind(user_id, kind):
+    # Cancelled even when the count could not be read: the cancel does not need the count.
+    if not set_user_account_kind(user_id, kind, cancel_queued=bool(cancel_queued and leaving)):
         _err("failed: the write did not change exactly one row")
         return EXIT_FAILED
     log_info(f"account_kind changed {current} -> {kind}", user_id=user_id, action_type="account_kind")
     if not record_auth_event(AuthAuditEvent.ACCOUNT_KIND_CHANGED, user_id=user_id,
                              details={"from": current, "to": kind,
                                       "allow_credentials": bool(allow_credentials),
-                                      "allow_reset_to_standard": bool(allow_reset_to_standard)}):
+                                      "allow_reset_to_standard": bool(allow_reset_to_standard),
+                                      "allow_leave_sandbox": bool(allow_leave_sandbox),
+                                      "cancelled_queued": queued if cancel_queued and leaving else None}):
         _err("warning: the audit row could not be written; record this change by hand")
     _out(f"ok: account {user_id} {current} -> {kind}")
     return EXIT_OK
@@ -124,10 +153,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--kind", required=True, choices=KINDS)
     parser.add_argument("--allow-credentials", action="store_true")
     parser.add_argument("--allow-reset-to-standard", action="store_true")
+    parser.add_argument("--allow-leave-sandbox", action="store_true")
+    parser.add_argument("--cancel-queued", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     return run(args.email, args.kind, allow_credentials=args.allow_credentials,
-               allow_reset_to_standard=args.allow_reset_to_standard, dry_run=args.dry_run)
+               allow_reset_to_standard=args.allow_reset_to_standard, dry_run=args.dry_run,
+               allow_leave_sandbox=args.allow_leave_sandbox, cancel_queued=args.cancel_queued)
 
 
 if __name__ == "__main__":

@@ -21,7 +21,7 @@ Three rules hold everywhere this module is used:
   falls back to an environment variable and is never read from PostHog (`utilities/flags.py`).
 
 A **sandbox** account (`users.account_kind = 'sandbox'`, set only by the owner with
-`scripts/set_account_kind.py`) is held to the same gate and then some: it never acts on LinkedIn, by
+`python -m cqc_lem.utilities.account_kind_admin`) is held to the same gate and then some: it never acts on LinkedIn, by
 any route. Its mode reads `suggest` whatever is stored, so every browser lane skips and
 `get_docker_driver` refuses it; `guard_send` refuses it at the API publish entry points; and the
 queue-fed send lanes (`send_scheduled_dm`, `send_connection_request`, `send_catchup_touch`,

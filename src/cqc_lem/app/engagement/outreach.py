@@ -3847,6 +3847,7 @@ CATCHUP_STATUS_CONTACT_COOLDOWN = "contact_cooldown"  # per-contact interval has
 CATCHUP_STATUS_CONTACT_CAP = "contact_cap"            # per-contact window cap reached (issue #1078)
 CATCHUP_STATUS_ALREADY_SENT = "already_sent"          # durable claim row already exists (issue #1078)
 CATCHUP_STATUS_DEMO_HELD = "demo_held"                # DEMO_MODE refused the send; held at pending (#2372)
+CATCHUP_STATUS_SANDBOX_DRY_RUN = "sandbox_dry_run"    # sandbox account: completed as a dry run, nothing sent
 
 # Ordered fallback chain for the catch-up cards. Live-grounded 2026-08-03 on a real session: the
 # surface is full SDUI — every card is a div[role='listitem'] (with a componentkey UUID) inside the
@@ -4522,7 +4523,7 @@ def send_catchup_touch(self, touch_id: int):
     user_id = touch["user_id"]
     if sandbox_dry_run(user_id, "send_catchup_touch"):
         update_catchup_touch_status(touch_id, CatchupTouchStatus.SENT)
-        _report(CATCHUP_STATUS_NOT_SENDABLE, user_id)
+        _report(CATCHUP_STATUS_SANDBOX_DRY_RUN, user_id)
         return f"Catch-up touch {touch_id}: {SANDBOX_DRY_RUN_MESSAGE}"
     if skip_browser_lane(user_id, "send_catchup_touch"):
         return SUGGEST_ONLY_SKIP_MESSAGE

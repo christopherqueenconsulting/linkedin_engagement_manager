@@ -347,6 +347,19 @@ _KNOWN_SESSION_HELPERS = {
     "_run_comment_outcomes_sweep",    # sweep_comment_outcomes
 }
 _SESSION_CALLS = {"get_current_profile", "get_driver_wait_pair", "browser_session", "get_docker_driver"}
+# Session openers OUTSIDE the lane modules, found by scanning the whole tree. Each reaches
+# `get_docker_driver(user_id=...)`, whose `require_browser_automation` backstop refuses a suggest-only
+# or sandbox account, or opens no account's session at all. A new one fails the check below by name.
+_NON_LANE_SESSION_OPENERS = {
+    "test_get_my_profile": "app/aws_test_celery_task.py: passes user_id to the backstop",
+    "_resolve_user_profile": "app/run_content_plan.py: passes user_id to the backstop",
+    "generate_carousel_content": "utilities/ai/ai_helper.py: passes user_id to the backstop",
+    "get_current_profile": "utilities/linkedin/session.py: wrapper, user_id reaches the backstop",
+    "browser_session": "utilities/linkedin/session.py: wrapper over get_current_profile",
+    "capture_flow": "utilities/marketing/video_tutorials.py: films our own SPA (demo_safe), no account",
+    "_open_and_hold": "utilities/selenium_load_test.py: capacity probe, no account",
+    "get_driver_wait_pair": "utilities/selenium_util.py: wrapper over get_docker_driver",
+}
 
 
 def _session_openers(path: pathlib.Path) -> set:
@@ -364,23 +377,32 @@ def _session_openers(path: pathlib.Path) -> set:
     return found
 
 
+def _all_session_openers() -> set:
+    """Top-level functions in EVERY module under src/cqc_lem that call one of `_SESSION_CALLS` —
+    not just the five lane modules, so a session opened from a new module is found too.
+    """
+    root = pathlib.Path(__file__).resolve().parents[3] / "src" / "cqc_lem"
+    openers = set()
+    for path in sorted(root.rglob("*.py")):
+        try:
+            openers |= _session_openers(path)
+        except SyntaxError:
+            continue
+    return openers
+
+
 class TestEveryBrowserLaneIsCovered:
     def test_every_function_that_opens_a_session_is_a_tested_lane_or_a_known_helper(self):
-        root = pathlib.Path(__file__).resolve().parents[3] / "src" / "cqc_lem" / "app" / "engagement"
-        openers = set()
-        for name in ("feed", "invites", "newsletter", "outreach", "posting"):
-            openers |= _session_openers(root / f"{name}.py")
+        openers = _all_session_openers()
         assert len(openers) > 20, "the walk found almost nothing — it is not reading the lanes"
         tested = {lane[1] for lane in _SKIP_LANES} | {lane[1] for lane in _SAVE_LANES}
-        uncovered = openers - tested - _KNOWN_SESSION_HELPERS
+        uncovered = openers - tested - _KNOWN_SESSION_HELPERS - set(_NON_LANE_SESSION_OPENERS)
         assert not uncovered, (
             f"{sorted(uncovered)} open a browser session but have no suggest-mode test — add the "
             "task to _SKIP_LANES (and a skip_browser_lane guard), or name the helper and its tasks")
 
     def test_the_known_helpers_still_exist(self):
         """A stale entry would silently widen what the check above lets through."""
-        root = pathlib.Path(__file__).resolve().parents[3] / "src" / "cqc_lem" / "app" / "engagement"
-        openers = set()
-        for name in ("feed", "invites", "newsletter", "outreach", "posting"):
-            openers |= _session_openers(root / f"{name}.py")
+        openers = _all_session_openers()
         assert _KNOWN_SESSION_HELPERS <= openers
+        assert set(_NON_LANE_SESSION_OPENERS) <= openers
