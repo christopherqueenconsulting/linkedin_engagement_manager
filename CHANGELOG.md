@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.203.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.202.0...v0.203.0) (2026-11-05)
+
+
+### Features
+
+* **auth:** operator session scope (maintenance seat, internal accounts only) ([#2517](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2517)) ([4b64c4f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4b64c4f7fb611fe9ba8fda963d789ba7fbf3816d))
+* **auth:** sandbox tenant (accounts whose sends are harmless by construction) ([#2526](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2526)) ([e201ae4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e201ae4ff96580162cefe8f397b5aab737b72fdb))
+
 ## [0.202.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.201.0...v0.202.0) (2026-11-04)
 
 
