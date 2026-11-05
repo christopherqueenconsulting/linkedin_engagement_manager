@@ -25,6 +25,12 @@ upsert's `ON DUPLICATE KEY UPDATE` half does not touch the column, so an account
 keeps its mode. The API exposes the resolved mode read-only (`GET /user/settings` →
 `engagement_mode`).
 
+**Sandbox accounts.** `users.account_kind = 'sandbox'` is read in the same query and the same gate: only
+`standard` and `internal` can read `automate`, so a sandbox account (and any account whose kind is
+missing, unreadable or unrecognised) reads `suggest` whatever its mode says. The API publish helpers
+add `guard_send`, and five queue-fed send lanes complete their row as a dry run. Posture, choke points
+and how an account is flagged: [`agent-roles.md` § Sandbox tenant](agent-roles.md#sandbox-tenant).
+
 **Fail closed.** A missing row, a DB fault, an exception from the reader, a reading without its
 subscription half, or any mode value other than exactly `automate` is `suggest`. `GET
 /user/settings` reports the same resolved value, so the SPA never shows `automate` for an account

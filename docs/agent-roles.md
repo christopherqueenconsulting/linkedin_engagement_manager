@@ -21,7 +21,9 @@ a route that imports around it is a bug.
 No machine role may approve a send to a real person — **with one exact exception**: an `operator`
 token acting on an account whose `users.account_kind` is `internal` or `sandbox` may approve an item
 explicitly (`action="approve"` or `"retry"`, or a create with `status="approved"`), and every such
-approval is audited as `operator_approval`. An operator on a `standard` account, an `agent` and an
+approval is audited as `operator_approval`. (On a `sandbox` account the approved send is then a dry
+run and reaches nobody; on an `internal` account it **does** reach a real person — see § Sandbox
+tenant.) An operator on a `standard` account, an `agent` and an
 `observer` may not, and **no** seat — the operator included, on any account kind — gets the passive
 `auto_approve` default. No machine role may touch a credential path
 (`/user/linkedin-cookie`, `/user/linkedin-password`, `/user/passkeys/*`, `/user/totp/*`,
@@ -423,8 +425,123 @@ SELECT id, account_kind FROM users WHERE account_kind <> 'standard';
 | Account kind (`users.account_kind`) | `agent` | `operator` | `observer` |
 |---|---|---|---|
 | `standard` (default) | queue only | queue only | read only |
-| `internal` / `sandbox` | queue only | queue, and **approve explicitly** (audited) | read only |
+| `internal` | queue only | queue, and **approve explicitly** (audited); the send is **real** | read only |
+| `sandbox` | queue only | queue, and **approve explicitly** (audited); the send is a **dry run** | read only |
 
 The passive `auto_approve` default never applies to a machine seat, and no seat may change caps or
 approval modes, on any account kind. Operator actions that are not reads, and every operator approval,
 are written to `auth_audit_log` with the role.
+
+## Sandbox tenant
+
+**What it is.** An account whose `users.account_kind` is `sandbox`. It is the one place an agent
+employee can QA end to end — queue work with an agent or operator token, have an operator approve it,
+watch it complete, read the result — with a guarantee that **nothing approved there ever reaches a real
+person**, however the account got there and whatever it stores. The operator may approve on a `sandbox`
+account (and on an `internal` one); the dry run is what makes the first of those safe.
+
+**The guarantee, and its choke points.** A `sandbox` account never acts on LinkedIn, at three layers.
+All three live in `utilities/engagement_mode.py`, the one place that decides what an account may do:
+
+| Layer | Where | What happens for a sandbox account |
+|---|---|---|
+| Every browser lane | `read_engagement_mode` → `browser_automation_allowed`, asked by each Selenium lane (`skip_browser_lane`), by the dispatchers (`_browser_lane_users`) and by `get_docker_driver` (`require_browser_automation`) | the mode reads `suggest` whatever is stored: every lane skips, and a session is refused before the Grid is contacted |
+| Every LinkedIn API publish helper | `guard_send`, the first statement of `share_on_linkedin`, `share_carousel_on_linkedin`, `share_document_on_linkedin`, `share_animated_image_on_linkedin`, `comment_on_linkedin_post`, `delete_linkedin_comment` (`poster.py`) and `share_reshare_on_linkedin`, `share_curated_image_on_linkedin`, `share_article_on_linkedin` (`reshare.py`) | raises `SandboxAccountRefused` before any network call |
+| The queue-fed send lanes | `sandbox_dry_run`, asked first by `send_scheduled_dm`, `send_connection_request`, `send_catchup_touch`, `send_lead_response` and `post_to_linkedin` | the row is completed **without any LinkedIn call**: `sent` for a DM, connection request, catch-up touch or lead response, `posted` for a post, with an INFO log line (`action_type="sandbox_dry_run"`) and the result text "Dry run — sandbox account, nothing was sent". On a sandbox account `sent` / `posted` therefore means "dry run completed"; the account kind is what says nothing went out. No migration: no new status exists |
+
+**Which way each failure goes.** For a **send**, anything but a readable `standard` or `internal` means
+*do not send*: an unreadable account kind (a database fault, a missing row, a reading without the
+`account_kind` key), and any value that is not exactly one of the three (`Sandbox`, `sandbox `, a typo)
+all read as "may not send". Such an account is **not** completed as a dry run either, because that would
+write a terminal state for a row that might be a real send; it does nothing, the row stays `approved`,
+and it is retried on the next beat. For a **permission** (`get_user_account_kind`, used by the operator's
+approval guard) the same failures read as `standard`, which is the safe direction there: no approval
+authority. The two readers deliberately disagree: `test_sandbox_send_invariants.py` pins the send reader and
+`TestAccountKindReader` in `test_operator_scope.py` pins the permission reader.
+A database fault therefore stops *all* automation until the database answers, which is the same
+behaviour an unreadable engagement mode already had.
+
+**What an agent employee can do on it, end to end.** Create work with an `agent` or `operator` token
+(drafts, DMs, connection requests, lead responses, catch-up touches, posts through the API); have the
+operator approve it (`action="approve"` or a create with `status="approved"`, audited as
+`operator_approval`); let the lanes complete the rows as dry runs; read the outcome with the same
+tokens or an `observer`. It cannot, on any account kind, set `account_kind`, change caps or approval
+modes, or touch a credential. Lanes that *discover* work on LinkedIn (feed commenting, profile-viewer
+walks, scans, follow-ups, group and newsletter lanes) skip on a sandbox account and leave their rows
+alone; they need a browser, and a sandbox account never gets one.
+
+**Who can set it: only the owner.** `users.account_kind` has exactly one writer, a command-line tool run
+on the host: no route, machine session or operator token can reach it
+(`tests/unit/api/test_account_kind_is_owner_only.py` walks the route table and the api package).
+
+1. Create the account the ordinary way (sign-up), and **do not connect LinkedIn to it**. A sandbox
+   account is meant to hold no password, access token or `li_at` cookie.
+2. Reach the host (`ssh deploy@<vps>`; the steps and the interactive and non-interactive SQL forms are
+   in § Operator rollback, step 0: use them, do not retype them) and run, from `/opt/lem`:
+
+   ```bash
+   ./scripts/compose.sh exec -T celery_worker python -m cqc_lem.utilities.account_kind_admin \
+     --email qa-sandbox@example.com --kind sandbox --dry-run     # read what it would do first
+   ./scripts/compose.sh exec -T celery_worker python -m cqc_lem.utilities.account_kind_admin \
+     --email qa-sandbox@example.com --kind sandbox
+   ```
+
+   It is a module under `src/` rather than a file in `scripts/` because the production image ships
+   `src/` and not `scripts/`.
+3. Confirm: `SELECT id, account_kind FROM users WHERE email = 'qa-sandbox@example.com';`, and look for
+   the `account_kind_changed` row in `auth_audit_log` (`SELECT id, created_at, user_id, details FROM
+   auth_audit_log WHERE event = 'account_kind_changed' ORDER BY id DESC LIMIT 5;`).
+
+The tool refuses (exit 2, nothing written) when:
+
+- the account is an **admin** (`users.is_admin` or `ADMIN_USER_EMAILS`) and the kind is `internal` or
+  `sandbox`. Both kinds hand approval authority to a machine seat, and the admin account is the one that
+  must never be handed over by a flag.
+- the kind is `sandbox` and the account **stores a LinkedIn credential** (a password, an access token or
+  an `li_at` cookie), or that cannot be read, unless `--allow-credentials` is passed. A sandbox account
+  should hold none, so one that does is almost always the wrong account; the dry run does not depend on
+  this check, it exists so a real account is not flagged by mistake.
+- the account is `internal` or `sandbox` and the kind asked for is `standard`, unless
+  `--allow-reset-to-standard` is passed. That move turns a dry-run account into one whose approved items
+  reach real people.
+
+**Warning: `internal` accounts are NOT dry-run.** An approval on an `internal` account reaches a real
+person exactly as on a `standard` one; what `internal` changes is only that an operator may approve
+there. Flag an account `internal` deliberately, for an account the owner is willing to have an agent
+send from, and use `sandbox` for anything that must not send.
+
+**Rollback, in this order.** There is nothing to revoke for the sandbox itself; operator and observer
+tokens are covered by their own runbooks above.
+
+1. **Before reverting, make sure no flagged account can send.** After a revert the gate is gone and a
+   `sandbox` account would act on LinkedIn again if it holds credentials. List them and their
+   credentials, and check for queued rows that would go out:
+
+   ```sql
+   SELECT id, account_kind FROM users WHERE account_kind <> 'standard';
+   SELECT user_id, COUNT(*) FROM scheduled_dms WHERE status IN ('approved','scheduled') GROUP BY user_id;
+   SELECT user_id, COUNT(*) FROM connection_requests WHERE status IN ('approved','sending') GROUP BY user_id;
+   ```
+
+   Cancel or reset those rows for any sandbox account, and pause automation first (the owner's secret;
+   § Operator rollback, step 1) so nothing runs while the revert deploys.
+2. **Revert** (`git revert <merge sha>`) and get it live. The fast path is `./scripts/rollback.sh
+   <previous good tag>` on the box, or Actions → "Redeploy / Rollback VPS" with `rollback` ticked; the
+   release path is a reverted merge through release-please. LEM's `production` GitHub environment has
+   **no required reviewers**, so green releases auto-deploy at the next window (05/11/17/23 UTC, or at
+   merge with the `release:now` label). `docs/DEPLOYMENT.md` still describes a reviewer approval and is
+   stale on this. `rollback.sh` runs no health check, so confirm `/health` yourself.
+3. **The flags stay.** `users.account_kind` keeps its values; nothing resets them, and the operator
+   approval guard (a separate, earlier change) keeps reading them. An image rolled back to a tag
+   from before this change has no sandbox gate at all.
+4. **Verify**: the first query above lists the same accounts, and a QA item approved on a sandbox
+   account is no longer completed as a dry run, which is the signal the gate is gone, so do not approve
+   anything there until the gate is back.
+
+**What is not dry-run, and why.** Only the five lanes above complete a row. Every other lane skips on a
+sandbox account through the browser layer, so their rows stay as they are (outreach-funnel stages,
+group posts, newsletter publishing, comments, follows, company-page invites): completing them would
+need a status per lane, and the guarantee (nothing is sent) already holds without it. A comment or
+direct DM that an agent drafts on a sandbox account is stored as an engagement suggestion, as it is for
+a trial account. Browser sessions opened with **no** account (the tutorial recorder, the live-validation
+probe, the load test) are not an account's and are outside this gate; `DEMO_MODE` covers the first.
