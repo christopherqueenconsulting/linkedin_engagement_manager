@@ -899,7 +899,13 @@ export interface paths {
          * @description Approve or reject the PENDING post a drafted source became.
          *
          *     `approve` records the CALLER as the approver (`user:<id>`), which is the only approval the
-         *     curated publisher accepts. An agent session is refused before anything is read.
+         *     curated publisher accepts. A queue-only machine session is refused before anything is read.
+         *
+         *     The session is resolved FIRST (`_caller`) and the approval guard runs second, on purpose. The
+         *     guard reads the scope the resolver stamps on the request; called before the resolver it saw no
+         *     scope at all and let EVERY caller through, an `agent` token included. Resolving first costs one
+         *     extra session lookup on a request that is about to be refused, and nothing is read from the
+         *     curated tables until the guard has passed.
          */
         put: operations["act_on_curated_source_api_curated_source_put"];
         /**
@@ -2782,6 +2788,33 @@ export interface paths {
         get: operations["onboarding_endpoint_api_user_onboarding_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/user/operator-token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mint Operator Token
+         * @description Mint a long-lived session for an operations agent that does maintenance.
+         *
+         *     Mirrors `mint_agent_token`: human session only, step-up gated, `extension_scope_ok` NOT passed,
+         *     fixed TTL that is never slid, revocable per device. `scope='operator'` reaches the agent's
+         *     queueing surface plus a short reviewed list of non-destructive maintenance routes
+         *     (`_OPERATOR_MAINTENANCE_SURFACE`), and may approve queued work ONLY on an account whose
+         *     `users.account_kind` is internal or sandbox; on any other account it behaves exactly like an
+         *     agent. It can never configure the account, touch a credential, revoke a session or mint a token.
+         */
+        post: operations["mint_operator_token_api_user_operator_token_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5479,6 +5512,27 @@ export interface components {
             scheduled_datetime?: string | null;
             /** Session Token */
             session_token?: string | null;
+        };
+        /**
+         * OperatorTokenRequest
+         * @description Body of `POST /user/operator-token`: the maintenance seat for an operations agent.
+         *
+         *     Same shape as `AgentTokenRequest`; `label` is what the owner will read on the Security card when
+         *     deciding which machine to revoke.
+         */
+        OperatorTokenRequest: {
+            /**
+             * Label
+             * @description Free text shown on the Security card and kept in the audit log. Letters, digits, space and . _ : - only, 120 characters at most. It must not hold personal data (no names or email addresses).
+             */
+            label?: string | null;
+            /** Session Token */
+            session_token?: string | null;
+            /**
+             * Ttl Days
+             * @default 30
+             */
+            ttl_days: number;
         };
         /**
          * OutreachTargetDeleteRequest
@@ -11402,6 +11456,39 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    mint_operator_token_api_user_operator_token_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OperatorTokenRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

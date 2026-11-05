@@ -23,6 +23,7 @@ reached as `_main.<name>`, an attribute resolved at REQUEST time. So
 `from cqc_lem.api import main as _main` sits at the BOTTOM; `routers/__init__.py` explains why.
 """
 
+import math
 from enum import StrEnum
 from typing import Any, List, Optional
 
@@ -70,7 +71,7 @@ from cqc_lem.utilities.env_constants import (
     DEFAULT_VIDEO_RATIO,
 )
 from cqc_lem.utilities.geocoding import GeocodeError, geocode_city
-from cqc_lem.utilities.logger import log_info
+from cqc_lem.utilities.logger import log_info, log_warning
 from cqc_lem.utilities.observability import FEATURE_CONTENT, llm_attribution
 
 router = APIRouter(prefix="/api/admin")
@@ -200,6 +201,37 @@ _admin_secret_scheme = APIKeyHeader(
 )
 
 
+# The longest pause an operator session may request. The pause is global across every user.
+OPERATOR_MAX_PAUSE_HOURS = 24
+
+
+def _operator_session(session_token: Optional[str]) -> bool:
+    """Is this request an `operator` session on a route the operator surface lists?
+
+    The role-based alternative to `X-Admin-Secret` for the FEW admin routes the operator seat was
+    given (`_OPERATOR_MAINTENANCE_SURFACE`). It is `operator` EXACTLY: a full session of a
+    non-admin user, an `agent`, an `observer` and no session at all all answer False, so they fall
+    through to the secret check and are refused there. The resolver already refused an `operator`
+    token on any path its surface does not list, so this cannot widen to a route nobody reviewed.
+    """
+    try:
+        user_id = _main.get_session_user_id(session_token)
+    except HTTPException:
+        return False
+    if not user_id or _main._request_session_scope.get() != _main.SESSION_SCOPE_OPERATOR:
+        return False
+    # Belt and braces for a token minted before the mint was gated (or on an account that has since
+    # lost its internal flag): the admin routes act on EVERY user, so a holder on an ordinary account
+    # is refused here, at use time. False falls through to the secret check, which refuses it (403)
+    # unless the caller also holds the owner's secret.
+    account_kind = (_main._request_operator.get() or {}).get("account_kind")
+    if not _main._operator_account_eligible(user_id, account_kind):
+        log_warning("Operator session refused: account is not internal, sandbox or admin",
+                    user_id=user_id)
+        return False
+    return True
+
+
 def _require_api_and_admin(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
     x_admin_secret: Optional[str] = Depends(_admin_secret_scheme),
@@ -217,11 +249,26 @@ def _require_api_and_admin(
 @router.post("/automation-pause", responses={200: {"description": "Automation paused"},
                                                     403: {"description": "Forbidden"}})
 def admin_pause_automation(hours: float = 24,
-                           x_admin_secret: Optional[str] = Header(default=None)) -> ResponseModel[dict[str, Any]]:
+                           x_admin_secret: Optional[str] = Header(default=None),
+                           session_token: Optional[str] = None) -> ResponseModel[dict[str, Any]]:
     """Kill-switch: pause ALL Selenium automation (comments/replies/DMs/stats/invites) for `hours` so
     a 429-rate-limited account/IP can recover. Posting (API) is unaffected. Default 24h.
+
+    Also open to an `operator` session on an internal, sandbox or admin account: pausing is the safe
+    direction, but it is GLOBAL — it stops automation for every user, and only the owner's secret can
+    lift it (`automation-resume` stays secret-only). So an operator is held to a finite 0–24 hours.
     """
-    _require_admin(x_admin_secret)
+    as_operator = _operator_session(session_token)
+    if not as_operator:
+        _require_admin(x_admin_secret)
+    # After authentication, so an unauthenticated caller learns nothing about the bounds. A
+    # non-finite value is refused for every caller: `int(inf * 3600)` is an OverflowError (a 500).
+    if not math.isfinite(hours):
+        raise HTTPException(status_code=422, detail="hours must be a finite number")
+    if as_operator and not 0 <= hours <= OPERATOR_MAX_PAUSE_HOURS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"hours must be between 0 and {OPERATOR_MAX_PAUSE_HOURS} for this session")
     from cqc_lem.utilities.linkedin.rate_limit import pause_automation
     seconds = int(max(0.0, hours) * 3600) or 3600
     ok = pause_automation(seconds, reason="admin")
@@ -239,9 +286,14 @@ def admin_resume_automation(x_admin_secret: Optional[str] = Header(default=None)
 
 @router.get("/automation-status", responses={200: {"description": "Automation status"},
                                                    403: {"description": "Forbidden"}})
-def admin_automation_status(x_admin_secret: Optional[str] = Header(default=None)) -> ResponseModel[dict[str, Any]]:
-    """Current pause + 429-breaker state (seconds remaining on each)."""
-    _require_admin(x_admin_secret)
+def admin_automation_status(x_admin_secret: Optional[str] = Header(default=None),
+                            session_token: Optional[str] = None) -> ResponseModel[dict[str, Any]]:
+    """Current pause + 429-breaker state (seconds remaining on each).
+
+    Read-only; also open to an `operator` session.
+    """
+    if not _operator_session(session_token):
+        _require_admin(x_admin_secret)
     from cqc_lem.utilities.linkedin.rate_limit import automation_pause_remaining, rate_limit_cooldown_remaining
     pause_s = automation_pause_remaining()
     return ResponseModel(status_code=200, detail={
@@ -554,14 +606,29 @@ def admin_test_dm_direct(
 })
 def admin_task_status(
     task_id: str,
-    _: None = Depends(_require_api_and_admin),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
+    x_admin_secret: Optional[str] = Depends(_admin_secret_scheme),
+    session_token: Optional[str] = None,
 ) -> ResponseModel[dict[str, Any]]:
-    """Poll a queued test task's state (PENDING/STARTED/SUCCESS/FAILURE)."""
+    """Poll a queued task's state (PENDING/STARTED/SUCCESS/FAILURE).
+
+    Read-only; also open to an `operator` session; the owner's bearer + secret pair works exactly
+    as before.
+    """
+    as_operator = _operator_session(session_token)
+    if not as_operator:
+        _require_api_and_admin(credentials, x_admin_secret)
     from cqc_lem.app.my_celery import app as celery_app
     res = celery_app.AsyncResult(task_id)
     detail = {"task_id": task_id, "state": res.state}
     if res.ready():
-        detail["result"] = str(res.result)[:500]
+        if as_operator:
+            # A task's return text can carry anything the task touched — a profile URL, a name, an
+            # address. An operator needs to know the job FINISHED, not what it returned, so the text
+            # is withheld for that seat; the owner's bearer + secret pair still gets it.
+            detail["result_withheld"] = True
+        else:
+            detail["result"] = str(res.result)[:500]
     return ResponseModel(status_code=200, detail=detail)
 
 

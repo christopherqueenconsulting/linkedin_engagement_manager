@@ -587,6 +587,11 @@ lock the owner out.
 
 ### An agent may queue work; only a human may approve it
 
+(One exact exception, below the guards: an `operator` token on an `internal` or `sandbox` account may
+approve an item explicitly; see [The fourth approval guard](#the-fourth-approval-guard--usersaccount_kind).
+An `agent`, an `observer`, and an operator on a `standard` account may not, and no machine seat ever
+gets the passive `auto_approve` default.)
+
 This **cannot** be a path list — saving a draft and approving one are the same `PUT` — so it is
 enforced server-side on the fields that turn a draft into a send. It took three guards, because
 there are three ways a row reaches APPROVED and only the first one says "approve":
@@ -601,6 +606,13 @@ Guarding only the first left the other two open, and the second is the one that 
 `POST /schedule_dm` carrying `status="approved"` lands a row `auto_check_scheduled_dms` then **sends
 to a real person**. The third is worse in a quieter way — it is the guarantee broken by the agent
 doing nothing at all, on nearly every account, because the account default is permissive.
+
+**The guard has to run after the session is resolved.** Each guard reads the scope the resolver stamps
+on the request. `act_on_curated_source` once called `_refuse_agent_approval` *before* resolving the
+caller, so the guard saw no scope and refused nobody: an `agent` token could approve a curated post, and
+an operator on a `standard` account could have too. It now resolves the session first.
+`test_role_surface_invariants.py::TestTheGuardRunsAfterTheSessionIsResolved` fails if any guarded
+handler runs its guard ahead of its session lookup.
 
 **`PUT /user/engagement-preferences` is refused for an agent** (403 `agent_may_not_configure`; the
 read still works). The scope surface matches on PATH, not method, so the entry added so the agent
@@ -719,6 +731,94 @@ verb, if a write-capable role reaches an approval-capable route whose handler no
 guard (`HANDLER_GUARDED_ROUTES`), or if a reachable write route with an `action`/`status` body field
 has not been classified. A new role is one more entry in `ROLE_SCOPES`. The set of roles, who mints
 each and what each cannot do: [`agent-roles.md`](agent-roles.md).
+
+## The `operator` scope — a maintenance seat that may approve only on an internal account
+
+An operations agent that does maintenance — look at the queues, re-score the leads, pause the
+automation, check a job — should not need the owner's session or the shared `X-Admin-Secret` either.
+`POST /api/user/operator-token` mints it exactly as it mints an agent token (human session, step-up,
+`extension_scope_ok` not passed, fixed TTL never slid, audited as `operator_token_minted`, no
+migration for the scope itself), with two differences that come from what the seat can do:
+
+- **Only an internal or sandbox account, or an admin, can mint one**, and only such an account can use
+  one on the admin routes. The seat includes `POST /admin/automation-pause`, which is **global**: it
+  stops automation for every user, and only the owner's secret can lift it. A token on an ordinary
+  account would be able to switch everyone's automation off and could not switch it back on, so the
+  mint answers 403 `operator_not_permitted` (before asking for a step-up) and `_operator_session` re-checks
+  the account on every use, failing closed. The pause is also capped for an operator at a finite 0–24
+  hours. See [`agent-roles.md`](agent-roles.md#operator-who-may-hold-one-data-exposure-access-record-and-rollback).
+- **`ttl_days` is 1–90, default 30**, shorter than the agent's and observer's, for the same reason.
+
+**Surface.** `_OPERATOR_SESSION_SURFACE` is `_AGENT_SESSION_SURFACE` — so every agent guard applies —
+plus `_OPERATOR_MAINTENANCE_SURFACE`:
+
+| Route | Why it is in |
+|---|---|
+| `POST /leads/refresh` | re-scores the caller's own lead pipeline from rows already stored; no LinkedIn call, no send |
+| `GET /admin/automation-status` | read the pause and 429-breaker state |
+| `POST /admin/automation-pause` | the SAFE direction of the kill switch (it stops automation rather than starting it), but **global across all users** and liftable only with the secret, so internal/sandbox/admin accounts only and capped at 24 hours |
+| `GET /admin/task-status/{id}` | read a queued task's state (the one templated entry: `_SCOPE_PATTERNS`, anchored full-match, one path segment). Not scoped to the caller's tasks: the result backend does not record a task's owner, so the limit is documented rather than enforced; the result text is withheld |
+
+Left out on purpose, each because it sends, deletes, spends, rewrites data, or touches a credential:
+`/admin/automation-resume` (re-starts what a human may have halted for account safety), every
+`/admin/test/*` route (they send comments and DMs), `/admin/consolidate-duplicate-comments`
+(deletes), `/admin/fix-video-urls`, `/admin/user/location`, `/admin/regenerate-*`,
+`/admin/generate-media-variants`, `/admin/youtube-token`, and every user-admin route. No background-job
+RETRY route exists in the API (the only `retry` is the connection-request action, which is an
+approval and is guarded as one), and no route flips a feature flag — flags are PostHog-side — so
+neither is on the surface.
+
+**Admin routes keep `X-Admin-Secret`.** The three admin routes above gain an alternative: a session
+that resolves as `operator` exactly. `_operator_session()` answers False for a full session of a
+non-admin user, an agent, an observer, or no session, and those fall through to the secret check
+unchanged. The secret works exactly as before on these and on every other admin route; it stays the
+owner's break-glass. A non-browser operator should present its token as the `lem_session` cookie (with
+`X-LEM-Client` on a state-changing call), not as a `session_token` query parameter, which can reach an
+access log; the cookie is also what clears the edge filter when `API_ACCESS_TOKENS` is set.
+
+### The fourth approval guard — `users.account_kind`
+
+The agent has three guards because a row reaches APPROVED three ways. The operator adds a fourth, on
+the *account*: an operator may approve only when the account is `internal` or `sandbox`.
+
+| `account_kind` | Operator, explicit approve (`action="approve"`/`"retry"`, create with `status="approved"`) | Operator, no status on an `auto_approve` account |
+|---|---|---|
+| `standard` (default, every existing row) | refused — **403 `agent_may_not_approve`**, exactly like an agent | queued PENDING |
+| `internal`, `sandbox` | allowed, and audited as `operator_approval` | **still queued PENDING** |
+
+A real-person send never auto-approves for an operator: the passive `auto_approve` default speaks
+for the human who left it set, not for a machine, on every account kind. `PUT
+/user/engagement-preferences` (the approval modes and every cap) is refused for an operator on every
+account kind too (`agent_may_not_configure`). `get_user_account_kind` fails closed — a missing row,
+a database fault or any value other than the two names reads `standard`. The acting account is the
+item's owner: every approving handler scopes the item to the caller's own user id, so another
+account's item is a 404 before it is a question.
+
+`users.account_kind` is `VARCHAR(16) NOT NULL DEFAULT 'standard'` (migration
+`V20261104170555__add_users_account_kind.sql`, rollback noted in the file). The default means nobody
+changes behaviour until a row is set by hand; there is deliberately no API or SPA control to set it.
+
+### Operator audit, access record and refusals
+
+An operator request that is not a read writes one `auth_audit_log` row before the handler runs
+(`operator_action`: role, method, path, account kind, client), and an approval writes an
+`operator_approval` row (role, whether it came by `action` or `status`, account kind). Reads are not
+audited one by one: the Security card shows the account's last 20 events, and a row per poll would
+bury every human sign-in. Instead the first successful operator request of each UTC day, per session,
+**reads included**, writes one `operator_access` row (scope, path, account kind, session row id; no
+body, no address) through the same fail-open Redis window as the observer's. The path it stores is
+the literal surface path, or the template `/admin/task-status/{id}` for the one templated entry —
+never a concrete task id. Every audit write is best effort and never turns a request into a 500.
+
+An operator refusal is **403 `session_scope_forbidden`** and a **WARNING log line** (the same
+`Machine session refused outside its scope` template as the agent and observer, with a salted hash
+of the session, never the token), not an audit row.
+
+`POST /user/operator-token` validates `label` like the observer's: letters, digits, space and
+`._:-` only, 120 characters at most, because it is shown on the Security card and kept in the audit
+log. `GET /admin/task-status/{id}` **withholds the task's result text from an operator**
+(`result_withheld: true`): a task's return value can carry whatever the task touched, and an operator
+needs to know the job finished, not what it returned. The owner's bearer + secret pair still gets it.
 
 ## The docs surface lives inside `/api` (issue #1020)
 

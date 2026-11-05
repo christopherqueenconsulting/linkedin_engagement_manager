@@ -67,6 +67,7 @@ FORBIDDEN_ROLE_ROUTES: tuple[Forbidden, ...] = (
     Forbidden("/user/extension-token", _ANY, "mints an extension-scoped session"),
     Forbidden("/user/agent-token", _ANY, "mints an agent-scoped session"),
     Forbidden("/user/observer-token", _ANY, "mints an observer-scoped session"),
+    Forbidden("/user/operator-token", _ANY, "mints an operator-scoped session"),
     # -- caps and approval modes: the config that decides what runs without a human ---------------
     # The agent legitimately reaches this PATH (to read it), and refuses the write in the handler —
     # see HANDLER_GUARDED_ROUTES. So at the resolver it is forbidden only for the read-only role,
@@ -117,8 +118,24 @@ _APPROVAL_FIELDS = frozenset({"action", "status"})
 
 def _scopes() -> Any:
     from cqc_lem.api import main
-    return {"observer": main.SESSION_SCOPE_OBSERVER, "agent": main.SESSION_SCOPE_AGENT}
+    return {"observer": main.SESSION_SCOPE_OBSERVER, "agent": main.SESSION_SCOPE_AGENT,
+            "operator": main.SESSION_SCOPE_OPERATOR}
 
+
+# The ONLY /admin routes any role may reach, by role. Every other /admin route stays behind
+# `X-Admin-Secret` or an admin human session, which a machine role never holds. The operator's are
+# the operational, non-destructive ones: two reads and the SAFE direction of the kill switch.
+# `automation-resume` is deliberately absent — it re-starts what a human may have halted.
+ALLOWED_ADMIN_REACH: dict[str, frozenset] = {
+    "operator": frozenset({
+        ("GET", "/admin/automation-status"),
+        ("POST", "/admin/automation-pause"),
+        ("GET", "/admin/task-status/{task_id}"),
+    }),
+}
+
+# Every non-admin route reachable by the operator that the agent cannot reach. One entry today.
+OPERATOR_EXTRA_NON_ADMIN_ROUTES = frozenset({("POST", "/leads/refresh")})
 
 # A new restricted machine role is one more entry here.
 ROLE_SCOPES = _scopes()
@@ -220,6 +237,31 @@ class TestNoRoleReachesAForbiddenRoute:
             "token-minting routes with no FORBIDDEN_ROLE_ROUTES entry:\n" + "\n".join(unclassified))
 
 
+class TestAdminAndMaintenanceReach:
+    @pytest.mark.parametrize("role", sorted(ROLE_SCOPES))
+    def test_a_role_reaches_exactly_its_reviewed_admin_routes(self, main_mod, route_table, role):
+        reached = {(m, p) for (m, p, _r) in _reachable(main_mod, route_table, ROLE_SCOPES[role])
+                   if p.startswith("/admin")}
+        allowed = ALLOWED_ADMIN_REACH.get(role, frozenset())
+        extra = sorted(reached - allowed)
+        missing = sorted(allowed - reached)
+        assert not extra, (
+            f"\n\nThe {role!r} role reaches /api/admin routes nobody reviewed for it (add to "
+            "ALLOWED_ADMIN_REACH only after arguing the route is operational and non-destructive):\n"
+            + "\n".join(f"  {role:<9} {m:<7} /api{p}" for (m, p) in extra) + "\n")
+        assert not missing, f"reviewed admin routes the {role!r} role can no longer reach: {missing}"
+
+    def test_the_operator_reaches_nothing_beyond_the_agent_but_the_reviewed_extras(
+            self, main_mod, route_table):
+        agent = {(m, p) for (m, p, _r) in _reachable(main_mod, route_table, ROLE_SCOPES["agent"])}
+        operator = {(m, p) for (m, p, _r) in _reachable(main_mod, route_table,
+                                                         ROLE_SCOPES["operator"])}
+        assert agent <= operator, "the operator must inherit the whole agent surface"
+        extra = operator - agent
+        assert extra == (ALLOWED_ADMIN_REACH["operator"] | OPERATOR_EXTRA_NON_ADMIN_ROUTES), (
+            f"operator reach beyond the agent changed: {sorted(extra)}")
+
+
 class TestReadOnlyRolesReachNoWriteVerb:
     @pytest.mark.parametrize("role", READ_ONLY_ROLES)
     def test_no_write_verb_is_reachable(
@@ -314,3 +356,195 @@ class TestWriteCapableRolesCannotApprove:
         stale = [n for n in (*HANDLER_GUARDED_ROUTES, *NOT_AN_APPROVAL_VECTOR)
                  if n not in reachable_names]
         assert not stale, f"classified but no longer reachable by {role!r}: {stale}"
+
+
+class TestOperatorApprovesOnlyOnInternalOrSandboxAccounts:
+    """The fourth approval guard, asserted from the guards themselves rather than from one route.
+
+    `HANDLER_GUARDED_ROUTES` proves every approval-capable route still calls `_refuse_agent_approval`
+    / `_refuse_agent_approved_status` / `_agent_scoped()`; this proves what those guards DO for the
+    operator, for every account kind, so a loosening of the guard fails here even if no route moved.
+    """
+
+    @staticmethod
+    def _as_operator(main_mod: ModuleType, kind: Any) -> Any:
+        scope_reset = main_mod._request_session_scope.set(main_mod.SESSION_SCOPE_OPERATOR)
+        state_reset = main_mod._request_operator.set({"account_kind": kind, "user_id": 1})
+        return scope_reset, state_reset
+
+    @staticmethod
+    def _restore(main_mod: ModuleType, resets: Any) -> None:
+        main_mod._request_operator.reset(resets[1])
+        main_mod._request_session_scope.reset(resets[0])
+
+    @pytest.mark.parametrize("kind", ["internal", "sandbox"])
+    @pytest.mark.parametrize("guard,arg", [("_refuse_agent_approval", "approve"),
+                                           ("_refuse_agent_approval", "retry"),
+                                           ("_refuse_agent_approved_status", "approved")])
+    def test_an_operator_may_approve_on_an_internal_or_sandbox_account(
+            self, main_mod: ModuleType, kind: str, guard: str, arg: str) -> None:
+        resets = self._as_operator(main_mod, kind)
+        try:
+            with patch_audit(main_mod):
+                getattr(main_mod, guard)(arg)  # must not raise
+        finally:
+            self._restore(main_mod, resets)
+
+    @pytest.mark.parametrize("kind", ["standard", "", None, "INTERNAL", "internal ", "admin", 0])
+    @pytest.mark.parametrize("guard,arg", [("_refuse_agent_approval", "approve"),
+                                           ("_refuse_agent_approval", "retry"),
+                                           ("_refuse_agent_approved_status", "approved")])
+    def test_every_other_account_kind_is_refused_with_a_403(
+            self, main_mod: ModuleType, kind: Any, guard: str, arg: str) -> None:
+        from fastapi import HTTPException
+
+        resets = self._as_operator(main_mod, kind)
+        try:
+            with pytest.raises(HTTPException) as exc:
+                getattr(main_mod, guard)(arg)
+        finally:
+            self._restore(main_mod, resets)
+        assert exc.value.status_code == 403
+        assert exc.value.detail["code"] == "agent_may_not_approve"
+
+    def test_an_operator_with_no_account_state_is_refused(self, main_mod: ModuleType) -> None:
+        """No resolver stamp at all (a direct call) must read as 'standard', never as 'internal'."""
+        from fastapi import HTTPException
+
+        reset = main_mod._request_session_scope.set(main_mod.SESSION_SCOPE_OPERATOR)
+        try:
+            with pytest.raises(HTTPException):
+                main_mod._refuse_agent_approval("approve")
+        finally:
+            main_mod._request_session_scope.reset(reset)
+
+    def test_the_only_kinds_that_grant_approval_are_internal_and_sandbox(self) -> None:
+        from cqc_lem.utilities.db import INTERNAL_ACCOUNT_KINDS
+
+        assert INTERNAL_ACCOUNT_KINDS == frozenset({"internal", "sandbox"})
+
+    def test_the_passive_default_and_the_preferences_write_never_open_for_an_operator(
+            self, main_mod: ModuleType) -> None:
+        """`_agent_scoped()` stays True for the operator on every account kind.
+
+        It is what keeps the passive `auto_approve` default and the caps closed.
+        """
+        for kind in ("standard", "internal", "sandbox"):
+            resets = self._as_operator(main_mod, kind)
+            try:
+                assert main_mod._agent_scoped() is True, kind
+            finally:
+                self._restore(main_mod, resets)
+
+    def test_the_operator_reaches_the_same_guarded_routes_as_the_agent(
+            self, main_mod: ModuleType, route_table: list[tuple[str, str, Any]]) -> None:
+        """The operator reaches the same approval-capable routes as the agent, and no others.
+
+        It is the same handler, so the same guards; nothing approval-capable is operator-only.
+        """
+        def names(role: str) -> set[str]:
+            return {getattr(r.endpoint, "__name__", "")
+                    for (_m, _p, r) in _reachable(main_mod, route_table, ROLE_SCOPES[role])
+                    if getattr(r.endpoint, "__name__", "") in HANDLER_GUARDED_ROUTES}
+
+        assert names("operator") == names("agent") != set()
+
+
+def patch_audit(main_mod: ModuleType) -> Any:
+    """Silence the operator-approval audit row, which the guard writes when it allows an approval."""
+    from unittest.mock import patch
+
+    return patch.object(main_mod, "record_auth_event", return_value=True)
+
+
+class TestTheGuardRunsAfterTheSessionIsResolved:
+    """A guard must run after the resolver, because it reads the scope the resolver stamps.
+
+    Called BEFORE the resolver it sees no scope and refuses nobody, which is how an `agent` could once
+    approve a curated post. Presence of the guard in a handler is not enough; its ORDER is part of the
+    guarantee.
+    """
+
+    _RESOLVERS = ("get_session_user_id(", "_caller(", "require_session_user_id(")
+
+    def test_every_guarded_handler_resolves_the_session_before_it_guards(
+            self, route_table: list[tuple[str, str, Any]]) -> None:
+        offenders = []
+        seen = set()
+        for _m, _p, route in route_table:
+            name = getattr(route.endpoint, "__name__", "")
+            if name not in HANDLER_GUARDED_ROUTES or name in seen:
+                continue
+            seen.add(name)
+            source = inspect.getsource(route.endpoint)
+            guard_at = min(source.index(g) for g in HANDLER_GUARDED_ROUTES[name][0])
+            resolver_at = min((source.index(r) for r in self._RESOLVERS if r in source), default=-1)
+            if resolver_at < 0 or resolver_at > guard_at:
+                offenders.append(f"  {name}: guard at {guard_at}, session resolved at {resolver_at}")
+        assert seen == set(HANDLER_GUARDED_ROUTES), "a guarded handler matched no route"
+        assert not offenders, ("\n\nThese handlers run an approval guard BEFORE resolving the session, "
+                               "so the guard sees no scope:\n" + "\n".join(offenders) + "\n")
+
+
+class TestOperatorEligibilityGatesStayInPlace:
+    """An operator token must only exist on, and act for, an internal, sandbox or admin account.
+
+    The operator surface includes a GLOBAL automation pause. Both ends are pinned from their source.
+    """
+
+    def test_the_mint_checks_eligibility_before_it_asks_for_a_step_up(self) -> None:
+        from cqc_lem.api.routers import user
+
+        source = inspect.getsource(user.mint_operator_token)
+        assert "_operator_account_eligible(" in source
+        assert source.index("_operator_account_eligible(") < source.index("_require_step_up(")
+
+    def test_every_use_of_the_admin_routes_re_checks_eligibility(self) -> None:
+        from cqc_lem.api.routers import admin
+
+        assert "_operator_account_eligible(" in inspect.getsource(admin._operator_session)
+
+    def test_the_eligible_kinds_are_exactly_internal_and_sandbox(self, main_mod: ModuleType) -> None:
+        from unittest.mock import patch
+
+        with patch.object(main_mod, "is_user_admin", return_value=False):
+            for kind, expected in (("internal", True), ("sandbox", True), ("standard", False),
+                                   ("", False), (None, None), ("admin", False)):
+                if kind is None:  # an unreadable kind is resolved by the reader, which fails closed
+                    with patch.object(main_mod, "get_user_account_kind", return_value="standard"):
+                        assert main_mod._operator_account_eligible(5) is False
+                else:
+                    assert main_mod._operator_account_eligible(5, kind) is expected, kind
+            assert main_mod._operator_account_eligible(None, "internal") is False
+        with patch.object(main_mod, "is_user_admin", return_value=True):
+            assert main_mod._operator_account_eligible(5, "standard") is True
+
+
+class TestPostMutatingRoutesStayOffEveryMachineSurface:
+    """The post-mutating routes stay off every machine surface.
+
+    `/schedule_post`, `/update_post` and `/posts/bulk_update` can move a post to `approved`, which
+    publishes it. None of them is on any machine surface today; this keeps it that way.
+    """
+
+    _PATHS = ("/schedule_post", "/update_post", "/posts/bulk_update")
+
+    @pytest.mark.parametrize("path", _PATHS)
+    def test_the_route_exists(self, route_table: list[tuple[str, str, Any]], path: str) -> None:
+        """Otherwise a rename turns the checks below into ones that cannot fail."""
+        assert [m for (m, p, _r) in route_table if p == path], path
+
+    @pytest.mark.parametrize("path", _PATHS)
+    def test_it_is_on_neither_the_agent_nor_the_operator_surface(self, main_mod: ModuleType,
+                                                                path: str) -> None:
+        assert path not in main_mod._AGENT_SESSION_SURFACE
+        assert path not in main_mod._OPERATOR_SESSION_SURFACE
+        assert path not in main_mod._OBSERVER_SESSION_SURFACE
+
+    @pytest.mark.parametrize("role", sorted(ROLE_SCOPES))
+    @pytest.mark.parametrize("path", _PATHS)
+    def test_no_role_can_reach_it_on_any_verb(self, main_mod: ModuleType,
+                                              route_table: list[tuple[str, str, Any]], role: str,
+                                              path: str) -> None:
+        reached = [m for (m, p, _r) in _reachable(main_mod, route_table, ROLE_SCOPES[role]) if p == path]
+        assert not reached, f"{role} reaches {path} on {reached}"

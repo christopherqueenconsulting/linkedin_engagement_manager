@@ -4520,6 +4520,45 @@
         "title": "OccasionPostRequest",
         "type": "object"
       },
+      "OperatorTokenRequest": {
+        "description": "Body of `POST /user/operator-token`: the maintenance seat for an operations agent.\n\nSame shape as `AgentTokenRequest`; `label` is what the owner will read on the Security card when\ndeciding which machine to revoke.",
+        "properties": {
+          "label": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "pattern": "^[A-Za-z0-9 ._:\\-]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Free text shown on the Security card and kept in the audit log. Letters, digits, space and . _ : - only, 120 characters at most. It must not hold personal data (no names or email addresses).",
+            "title": "Label"
+          },
+          "session_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Token"
+          },
+          "ttl_days": {
+            "default": 30,
+            "maximum": 90.0,
+            "minimum": 1.0,
+            "title": "Ttl Days",
+            "type": "integer"
+          }
+        },
+        "title": "OperatorTokenRequest",
+        "type": "object"
+      },
       "OutreachTargetDeleteRequest": {
         "description": "Body of `DELETE /outreach/target` \u2014 a SOFT cancel to `canceled`.\n\nNo further stage fires for this target afterwards.",
         "properties": {
@@ -9019,7 +9058,7 @@
         "summary": "Create Curated Source"
       },
       "put": {
-        "description": "Approve or reject the PENDING post a drafted source became.\n\n`approve` records the CALLER as the approver (`user:<id>`), which is the only approval the\ncurated publisher accepts. An agent session is refused before anything is read.",
+        "description": "Approve or reject the PENDING post a drafted source became.\n\n`approve` records the CALLER as the approver (`user:<id>`), which is the only approval the\ncurated publisher accepts. A queue-only machine session is refused before anything is read.\n\nThe session is resolved FIRST (`_caller`) and the approval guard runs second, on purpose. The\nguard reads the scope the resolver stamps on the request; called before the resolver it saw no\nscope at all and let EVERY caller through, an `agent` token included. Resolving first costs one\nextra session lookup on a request that is about to be refused, and nothing is read from the\ncurated tables until the guard has passed.",
         "operationId": "act_on_curated_source_api_curated_source_put",
         "requestBody": {
           "content": {
@@ -13241,6 +13280,45 @@
           }
         },
         "summary": "Onboarding Endpoint"
+      }
+    },
+    "/api/user/operator-token": {
+      "post": {
+        "description": "Mint a long-lived session for an operations agent that does maintenance.\n\nMirrors `mint_agent_token`: human session only, step-up gated, `extension_scope_ok` NOT passed,\nfixed TTL that is never slid, revocable per device. `scope='operator'` reaches the agent's\nqueueing surface plus a short reviewed list of non-destructive maintenance routes\n(`_OPERATOR_MAINTENANCE_SURFACE`), and may approve queued work ONLY on an account whose\n`users.account_kind` is internal or sandbox; on any other account it behaves exactly like an\nagent. It can never configure the account, touch a credential, revoke a session or mint a token.",
+        "operationId": "mint_operator_token_api_user_operator_token_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperatorTokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Mint Operator Token"
       }
     },
     "/api/user/passkeys/register/begin": {

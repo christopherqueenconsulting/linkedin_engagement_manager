@@ -131,13 +131,19 @@ def act_on_curated_source(request: CuratedSourceActionRequest) -> ResponseModel[
     """Approve or reject the PENDING post a drafted source became.
 
     `approve` records the CALLER as the approver (`user:<id>`), which is the only approval the
-    curated publisher accepts. An agent session is refused before anything is read.
+    curated publisher accepts. A queue-only machine session is refused before anything is read.
+
+    The session is resolved FIRST (`_caller`) and the approval guard runs second, on purpose. The
+    guard reads the scope the resolver stamps on the request; called before the resolver it saw no
+    scope at all and let EVERY caller through, an `agent` token included. Resolving first costs one
+    extra session lookup on a request that is about to be refused, and nothing is read from the
+    curated tables until the guard has passed.
     """
     if request.action not in ("approve", "reject"):
         raise HTTPException(status_code=422,
                             detail=f"Unknown action '{request.action}' — expected approve or reject")
-    _main._refuse_agent_approval(request.action)
     user_id = _caller(request.session_token)
+    _main._refuse_agent_approval(request.action)
     source = get_curated_source(request.source_id, user_id=user_id)
     if not source:
         raise HTTPException(status_code=404, detail="Curated source not found")

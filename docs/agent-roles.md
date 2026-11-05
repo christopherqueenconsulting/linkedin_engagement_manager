@@ -12,12 +12,18 @@ a route that imports around it is a bug.
 |---|---|---|---|---|---|---|
 | `observer` | the account owner, human session + step-up | `POST /api/user/observer-token` | `_OBSERVER_SESSION_SURFACE`: review-queue reads, preferences, automation status, dashboard stats, curated-source list, `/auth/session`, `/app-info`, `/flags`, `/user/security` | `GET` `HEAD` `OPTIONS` only, on every path | `ttl_days`, 1–365, default 90, fixed at mint | create, edit, delete or approve anything; read or write a credential; change caps or approval modes; revoke sessions; move the account email; mint any token |
 | `agent` | the account owner, human session + step-up | `POST /api/user/agent-token` | `_AGENT_SESSION_SURFACE`: the observer's queue reads plus the create/save routes for pending work | any verb on a granted path (path-only scope) | `ttl_days`, 1–365, default 90, fixed at mint | approve or retry anything that sends to a real person (refused in the handlers by `_refuse_agent_approval`, `_refuse_agent_approved_status` and the `_agent_scoped()` checks in the connection-request handlers); change caps or approval modes (the `PUT /user/engagement-preferences` handler refuses on `_agent_scoped()`); touch a credential; revoke sessions; move the account email; mint any token |
+| `operator` | the account owner, human session + step-up | `POST /api/user/operator-token` (internal, sandbox or admin account only) | the agent surface plus `_OPERATOR_MAINTENANCE_SURFACE`: `POST /leads/refresh`, `GET /admin/automation-status`, `POST /admin/automation-pause`, `GET /admin/task-status/{id}` | any verb on a granted path (path-only scope) | `ttl_days`, 1–**90**, default **30**, fixed at mint | everything the agent cannot do, plus: be minted on, or act through, a `standard` non-admin account; approve on a `standard` account; take the passive `auto_approve` default on any account; resume automation; pause for more than 24 hours; call any other admin route |
 | `extension` | the account owner, human session + step-up | `POST /api/user/extension-token` | `/user/linkedin-cookie` only | the verbs that route serves | idle window (slides) | everything else |
 | `enroll` | the sign-in flow, when a strong factor is required and none is enrolled | — | the enrolment ceremonies only; promoted to `full` on enrolment | the verbs those routes serve | idle window (slides) | everything else |
 
 ## The hard rules every machine role keeps
 
-No machine role may approve a send to a real person, touch a credential path
+No machine role may approve a send to a real person — **with one exact exception**: an `operator`
+token acting on an account whose `users.account_kind` is `internal` or `sandbox` may approve an item
+explicitly (`action="approve"` or `"retry"`, or a create with `status="approved"`), and every such
+approval is audited as `operator_approval`. An operator on a `standard` account, an `agent` and an
+`observer` may not, and **no** seat — the operator included, on any account kind — gets the passive
+`auto_approve` default. No machine role may touch a credential path
 (`/user/linkedin-cookie`, `/user/linkedin-password`, `/user/passkeys/*`, `/user/totp/*`,
 `/user/recovery-codes/*`), change the account mover (`/user/email/change/*`), revoke sessions, mint
 tokens, or change caps or approval modes. An unknown scope or an unknown path fails **closed**.
@@ -163,3 +169,262 @@ the day the code is redeployed. So revoke first.
 An observer cannot reach `/health/deep` (it is not on the surface). That endpoint is public and
 unauthenticated — it returns counts only — so an operations agent should call it **with no
 credential at all**, not with its observer token.
+
+## Operator: who may hold one, data exposure, access record and rollback
+
+**Who may hold an operator token, and why.** An operator token can call `POST /admin/automation-pause`,
+and **that pause is global**: it stops Selenium automation for **every user of the deployment**, not
+only the token's owner, and **only the owner's `X-Admin-Secret` can lift it** (`automation-resume` is
+secret-only on purpose). A token minted on an ordinary customer or owner account would therefore be a
+credential that can switch every other account's automation off and that its holder cannot switch
+back on. So the mint (`POST /api/user/operator-token`) answers **403 `operator_not_permitted`** unless
+the human caller's `users.account_kind` is `internal` or `sandbox`, or the caller is an admin
+(`users.is_admin` or `ADMIN_USER_EMAILS`), and it does so **before** asking for a step-up. The same
+check runs again on **every use** of the three operator admin routes (`_operator_session`), so a token
+minted before the gate existed, or on an account that has since lost its flag, is refused with a 403 at
+use time; the owner's secret still works beside it. The pause an operator may request is a finite
+0 to 24 hours (a non-finite or out-of-range `hours` is a 422 and nothing is paused); the secret holder is
+not capped. `hours=0` is accepted and means a **one-hour** pause (the handler turns a zero into
+3600 seconds), for an operator as for the secret holder; this is documented, not changed. The pause state
+is recorded with the reason `admin` for both, so the Redis state cannot tell an operator's pause from the
+owner's — the `operator_action` and `operator_access` audit rows are what tell them apart. The operator's
+TTL is capped at **90 days, default 30** — shorter than the agent's and the
+observer's 365 / 90, because this seat can act on every user.
+
+**Task status.** `GET /admin/task-status/{id}` shows an operator a task's *state* (and `result_withheld`),
+for any task id the operator holds. The limit: the Celery result backend here does not store which user
+a task belongs to (`result_extended` is off), so the route **cannot be scoped to tasks the caller owns**.
+The mitigations are that task ids are random UUIDs nobody is shown by another route, and that the
+result text is withheld; the state alone (`PENDING`, `SUCCESS`, `FAILURE`) is all that leaks.
+
+**Data.** An operator reads what an agent reads — the review queues, which contain third parties'
+names, profile URLs and message text — plus the automation pause state and a job's state. The
+observer's per-route field whitelist is observer-only, so an operator's queue responses are the
+agent's. No route the operator gained returns a contact detail: `POST /leads/refresh` returns fixed
+text, the two automation routes return counters, and `GET /admin/task-status/{id}` withholds the
+task's result text from an operator. The owner's obligations in § Observer data exposure apply to
+whatever agent or vendor holds an operator token, and the data must not be exported to a public
+surface. **Before any non-owner data enters a queue an operator can read, the owner must have recorded
+the model or tooling vendor that agent uses and the agreement that covers that data.**
+
+**Access record.** Operator actions that are not reads write one `operator_action` row each and every
+approval writes `operator_approval`; reads are not logged one by one. The first **authorised** operator
+request of each UTC day, per session, writes one `operator_access` row (scope, path, account kind,
+session row id), and it **fails open**: if Redis is unreachable the request is still served and the
+access is recorded rather than lost, so during an outage there can be more than one row a day. A
+refusal is a WARNING log line (same template and escalation as the observer's), not an audit row.
+`label` on the mint is limited to letters, digits, space and `._:-` (120 max).
+
+**Calling the admin routes without a query token.** `session_token` as a query parameter can end up in
+an access log, so the cookie form works and is the one to use: send the token as the `lem_session`
+cookie (the resolver falls back to it when no `session_token` is given); a state-changing call that
+authenticates on the cookie must also send `X-LEM-Client`. An `Authorization` header is **not** a
+session credential on these routes. A test calls all three operator admin routes with only the cookie.
+
+**Rotate, detect, store.** As for the observer (§ Observer incident and rollback), with
+`operator_token_minted`, `operator_access`, `operator_action` and `operator_approval` as the audit
+events to read, and the same rule that a token never goes in a URL. Token rotation is the account
+owner's: only a stepped-up human session can mint or revoke one. When operator refusals escalate (3 in
+24 hours become one grouped `$exception`) the daily error-to-issue job files a GitHub issue in this
+repository; there is no pager. **Owner:** the account owner, with the on-call engineer as the backup.
+**Cadence:** once a day after the job runs (`scripts/error_to_issues.sh`, cron `30 8 * * *` on the VPS
+host, `docs/error-tracking.md`), search the repository's open issues for the title text
+`Machine session refused outside its scope`, and triage the same day. The job files each issue with the
+`bug` and `agent:ready` labels, and `agent:ready` lets the agent pipeline pick it up, so the owner
+should hold or relabel one that is really a security question. The issue is filed in a **public**
+repository: the log line it is built from carries `user_id`, `scope`, `method`, `path` and a salted
+session hash, never a token, an address or a name.
+The number of active operator tokens per account is **not capped** — the mint will create as many as
+are asked for — so count them: `SELECT COUNT(*) FROM sessions WHERE scope = 'operator' AND revoked_at IS NULL AND expires_at > NOW();`.
+
+**An ops agent that gets a 401 or 403** stops and reports. It does not retry, rotate to another token
+or fall back to the owner's secret; a 403 `operator_not_permitted` or `session_scope_forbidden` means
+the seat is not allowed to do that, and retrying only writes more WARNING lines.
+
+### Operator rollback, in this order
+
+Reverting leaves any minted operator session an unknown scope (every request refused, fail closed),
+but it would slide its expiry like a browser session and work again the day the code is redeployed.
+So revoke first. **Run by the on-call engineer or the account owner**, never by an operator token.
+
+**0. Reach the production database, and the admin secret.** Everything here runs on the VPS, from an
+**interactive** `ssh deploy@<vps>` session (a terminal is allocated, which the `-it` form below needs).
+
+- **Access.** `ssh deploy@<vps>` (`docs/DEPLOYMENT.md`; the host is the `VPS_HOST` repo secret). SSH is
+  held by whoever has a public key in `/home/deploy/.ssh/authorized_keys`: the account owner, and the CI
+  deploy key (`VPS_SSH_KEY`). The repository lists nobody else, so **if you are the on-call engineer
+  and you cannot log in, you do not have access: go to the fallback below**. Docker commands need
+  `sudo`.
+- **Confirm the container name first, and use that name.** Compose names the MySQL container
+  `${MYSQL_HOST}` (`docker-compose.yml`), which is `mysql_db` in `.env.prod.example`, but this host's
+  `.env` is what decides, so read it from Docker rather than assuming:
+
+  ```bash
+  sudo docker ps --format '{{.Names}}'        # find the MySQL container in the list
+  CONTAINER=<that name>                       # every command below uses $CONTAINER, not a literal mysql_db
+  ```
+
+- **Load the password without printing it.** It is `MYSQL_ROOT_PASSWORD` in `/opt/lem/.env` (owned by
+  `deploy:deploy`, mode 600, so read it as `deploy`, without `sudo`). Read that one line, never the whole
+  file (`docs/AUTOMATION_COOLDOWN.md`), and hand it to the container by variable **name** so it is not on
+  any command line or in `ps`:
+
+  ```bash
+  export MYSQL_PWD="$(grep -E '^MYSQL_ROOT_PASSWORD=' /opt/lem/.env | cut -d= -f2-)"
+  ```
+
+  **If the value in `.env` is quoted, the quotes come along and the login fails with "access denied".**
+  Strip them (`... | tr -d '"'`) or fix the line; do not retry in a loop.
+  (Sourcing the file with `set -a; . /opt/lem/.env; set +a` also works, but it executes the file as shell
+  and exports every secret into your session; the one-line form is safer.) Never paste the value into a
+  ticket or the incident note. Run `unset MYSQL_PWD` when you are done.
+- **Open a SQL prompt (interactive).** `-it` allocates the terminal, so a `mysql>` prompt appears:
+
+  ```bash
+  sudo -E docker exec -it -e MYSQL_PWD "$CONTAINER" mysql -u root linkedin_manager
+  ```
+
+- **Or run one statement at a time (non-interactive).** Steps 2, 3 and 5 below work either way; this is
+  the same command with the SQL passed in, and no terminal is needed:
+
+  ```bash
+  lemsql() { sudo -E docker exec -i -e MYSQL_PWD "$CONTAINER" mysql -u root linkedin_manager -e "$1"; }
+  lemsql "SELECT COUNT(*) FROM sessions WHERE scope = 'operator' AND revoked_at IS NULL;"
+  ```
+
+  If your `sudo` strips the environment and the password is not found, run `sudo MYSQL_PWD="$MYSQL_PWD" docker
+  exec -i -e MYSQL_PWD ...` instead; the value is then visible in the process list for the length of
+  that command, so do it on a host nobody else is logged into.
+- **The admin secret** that `POST /api/admin/automation-pause` and `automation-resume` need is
+  `ADMIN_SECRET` in the same `/opt/lem/.env`; it is server-side only and is never issued to a browser
+  or to a machine token. **Only the account owner uses it**; the on-call engineer uses it only when the
+  owner has handed it over for the incident, and an ops agent never does. To pause without putting the
+  value on a command line, write it to a header file and pass `-H @file`. `BASE` is the deployment's
+  base URL (also in `docs/TESTING_ENGAGEMENT_API.md`):
+
+  ```bash
+  BASE=https://lem.christopherqueenconsulting.com
+  umask 077; HDR="$(mktemp)"
+  grep -E '^ADMIN_SECRET=' /opt/lem/.env | sed 's/^ADMIN_SECRET=/X-Admin-Secret: /' > "$HDR"
+  curl -sS -o /dev/null -w '%{http_code}\n' -X POST "$BASE/api/admin/automation-pause?hours=24" -H @"$HDR"
+  rm -f "$HDR"
+  ```
+
+  The same quoted-value caution applies: a quoted `ADMIN_SECRET` is sent with its quotes and answers 403.
+- **Fallback if the on-call engineer has no VPS access.** Call the account owner, found on the **private
+  on-call roster** the owner keeps outside this public repository (no names or phone numbers are in this
+  document): they hold the SSH key and the secret, and the bulk revoke, the pause and the migration
+  steps are theirs. Meanwhile the owner can, without the host, revoke each operator token one at a time:
+  **Account → Security → sign out** the device, or `POST /api/user/sessions/revoke` with
+  `{"session_id": <id>}` (a stepped-up human session is required). That stops each token but cannot
+  pause automation or revoke in bulk, which need the host.
+- **The incident note** is a **private** record, never a GitHub issue or comment (this repository is
+  public, and the note holds user ids, session ids and counts). The account owner names where it is kept
+  on the same private roster; if no such place exists yet, create one **before** step 2, because the
+  pre-count has to be saved somewhere durable.
+
+1. **Pause, and stop new tokens, before you revoke.** The revoke-to-revert window is the dangerous one:
+   until the revert is live, anyone who can mint can mint again. Pause automation if it is not
+   already paused (the `curl` above, run by the account owner, or by the engineer they authorise).
+   **Check the HTTP status it prints: `200` means paused. If it is anything else (403 is a wrong or
+   quoted secret), do not retry; go straight to step 3**, because the revoke is what removes the risk
+   and the pause only limits the damage while you get there. **Nobody mints an operator token until the
+   revert is deployed.**
+2. **Save a pre-count**, and paste the result into the incident note:
+
+   ```sql
+   SELECT id, user_id, expires_at FROM sessions WHERE scope = 'operator' AND revoked_at IS NULL;
+   ```
+
+3. **Revoke every active operator session**:
+
+   ```sql
+   UPDATE sessions SET revoked_at = NOW() WHERE scope = 'operator' AND revoked_at IS NULL;
+   ```
+
+   The statement is **safe to re-run**: it only touches rows that are still live, so a second run
+   changes zero rows. Or one token at a time: Account → Security, or `POST /api/user/sessions/revoke`
+   with `{"session_id": <id>}` (step-up required). **A bulk SQL revoke writes no audit row**; record what
+   was run, when, by whom and how many rows it changed.
+4. **Get the revert live.** Read "The migration after the revert" below first, then pick a path from
+   `docs/DEPLOYMENT.md`:
+   - **Fast path, an image rollback** (minutes). Roll back to the last release tag from **before** the
+     one that shipped this change (the repository's Releases page lists them; `/opt/lem/.last_good_tag`
+     is what is running *now*, not the previous one). Either on the box, as `deploy`:
+
+     ```bash
+     cd /opt/lem && ./scripts/rollback.sh <previous good tag>
+     ```
+
+     or from GitHub: **Actions → "Redeploy / Rollback VPS" (`deploy-vps.yml`) → Run workflow**, enter
+     the tag and **tick `rollback`** (it uses `rollback.sh` and skips migrations). The job declares
+     `environment: production`, but the required-reviewer gate was removed
+     (`.github/workflows/build-and-push.yml`, lines 155-156) and the live `production` environment has no
+     protection rules, so **the workflow runs without an approval wait** unless reviewers are re-added in
+     the repository settings. **`rollback.sh` runs no health check**: confirm the site yourself with
+     `curl -fsS "$BASE/health"`. **An image rollback does not undo the
+     `account_kind` migration**: the migration is already applied, `rollback.sh` skips migrations by
+     design, and the column stays (harmless).
+   - **Slower path, a reverted merge.** Merge the revert to `main`; release-please opens a "chore:
+     release" PR; merging it tags a release, and `Build & Deploy Release` builds the image and deploys it,
+     with `scripts/deploy.sh` health-checking and auto-rolling-back on failure. The deploy job runs in
+     `production` with **no required reviewers**; it is gated only by `release-risk-check`, which skips the
+     deploy when a new migration is not provably additive (`build-and-push.yml`,
+     `if: needs.release-risk-check.outputs.flagged != 'true'`). So the revert PR **may auto-deploy at the
+     next release window** (05/11/17/23 UTC), or at merge if it carries the `release:now` label
+     (`docs/release-fast-lane.md`). Use this path for the lasting fix; use the fast path first when the
+     exposure is live.
+5. **Verify, and again after the revert is live.** Run the count; it must be `0`:
+
+   ```sql
+   SELECT COUNT(*) FROM sessions WHERE scope = 'operator' AND revoked_at IS NULL;
+   ```
+
+   Re-run it once the rollback or release has deployed, check that no `operator_token_minted` event
+   appeared in the window, and confirm a former operator token answers `401` or `403`.
+
+**Scoping an incident.** The audit table is `auth_audit_log` (columns `id`, `user_id`, `email`, `event`,
+`ip_hash`, `user_agent`, `session_id`, `success`, `details` (JSON), `created_at`):
+
+```sql
+SELECT id, created_at, user_id, session_id, event, success, details
+  FROM auth_audit_log
+ WHERE event IN ('operator_token_minted', 'operator_access', 'operator_action', 'operator_approval')
+   AND created_at >= '<start of window, UTC>'
+ ORDER BY id;
+```
+
+**The migration after the revert.** `git revert` of the merge also deletes
+`V20261104170555__add_users_account_kind.sql`, but the migration was already **applied**: its row stays
+in the `flyway_schema_history` table and the `users.account_kind` column stays in `users`. `compose/local/database/flyway-entrypoint.sh`
+runs `flyway repair` and then `flyway migrate` on **every deploy**; whether that pair tolerates an applied
+migration whose file has gone is not something this repository verifies, so do not rely on it. **Keep the migration file in the revert**: after `git revert`, restore it
+(`git checkout <merge sha> -- compose/local/database/migrations/V20261104170555__add_users_account_kind.sql`)
+and commit it. The column is harmless once the code is gone: every row reads `standard` and nothing
+else reads it. To remove the column, do it with a **new forward migration** (`V<timestamp>__drop_users_account_kind.sql`
+containing `ALTER TABLE users DROP COLUMN account_kind;`), never by hand, so the history and the schema
+stay in step. After a revert deploys, check what Flyway recorded:
+
+```sql
+SELECT version, description, success FROM flyway_schema_history ORDER BY installed_rank DESC LIMIT 5;
+```
+
+`success` must be `1` on every row, and the `add_users_account_kind` row should still be present. A
+`0`, or a deploy that failed at the migration step, means the history and the files disagree: stop and
+restore the migration file as above rather than repairing by hand. Before any `DROP`, save the accounts that were flagged, so the owner knows who loses
+operator approval:
+
+```sql
+SELECT id, account_kind FROM users WHERE account_kind <> 'standard';
+```
+
+## Where the roles differ on approval
+
+| Account kind (`users.account_kind`) | `agent` | `operator` | `observer` |
+|---|---|---|---|
+| `standard` (default) | queue only | queue only | read only |
+| `internal` / `sandbox` | queue only | queue, and **approve explicitly** (audited) | read only |
+
+The passive `auto_approve` default never applies to a machine seat, and no seat may change caps or
+approval modes, on any account kind. Operator actions that are not reads, and every operator approval,
+are written to `auth_audit_log` with the role.

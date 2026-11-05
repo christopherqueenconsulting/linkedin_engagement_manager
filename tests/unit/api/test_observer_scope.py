@@ -52,11 +52,12 @@ _CLOSED_DOORS = (
     "/user/totp/enroll/begin", "/user/recovery-codes/regenerate",
     "/user/email/change/init", "/user/email/change/verify",
     "/user/sessions/revoke",
-    "/user/extension-token", "/user/agent-token", "/user/observer-token",
+    "/user/extension-token", "/user/agent-token", "/user/observer-token", "/user/operator-token",
     "/user/auth-factors", "/user/step-up/begin",
     # Capacity rather than a credential: one press opens a Chrome session from the fixed pool.
     "/user/linkedin-profile/refresh",
-    # Write routes the agent reaches and an observer must not.
+    # Write routes the agent reaches and an observer must not, and the operator's maintenance routes.
+    "/leads/refresh", "/admin/automation-status", "/admin/automation-pause",
     "/connection_request", "/outreach/target", "/schedule_dm", "/lead_signal", "/lead",
     "/curated/source",
 )
@@ -363,7 +364,7 @@ class TestObserverTokenTTL:
 
     def test_the_fixed_ttl_scopes_are_exactly_the_machine_held_ones(self) -> None:
         from cqc_lem.platform.db.repositories.auth import FIXED_TTL_SCOPES
-        assert FIXED_TTL_SCOPES == frozenset({"agent", "observer"})
+        assert FIXED_TTL_SCOPES == frozenset({"agent", "observer", "operator"})
 
 
 class TestObserverTokenMint:
