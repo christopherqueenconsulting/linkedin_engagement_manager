@@ -71,11 +71,11 @@ class _FakeCursor:
         elif s.startswith("UPDATE posts SET status"):
             posts[params[1]]["status"] = params[0]
             self.rowcount = 1
-        elif s.startswith("SELECT engagement_mode, subscription_status, subscription_tier FROM users"):
+        elif s.startswith("SELECT engagement_mode, subscription_status, subscription_tier,"):
             # Issue #2367: this fixture's account is a pre-existing, PAID `automate` one, so its seed
             # comment publishes through the API rather than being stored as a suggestion.
             self._rows([self.store["users"][params[0]]],
-                       ["engagement_mode", "subscription_status", "subscription_tier"])
+                       ["engagement_mode", "subscription_status", "subscription_tier", "account_kind"])
         elif s.startswith("SELECT email, password FROM users"):
             self._rows([self.store["users"][params[0]]], ["email", "password"])
         elif s.startswith("SELECT subscription_status, subscription_tier, trial_started_at"):
@@ -138,7 +138,7 @@ def _store(link_pref_row=None):
                        "curated_source_id": None}},
         "users": {1: {"email": "u@example.com", "password": "pw",
                       "engagement_mode": "automate", "subscription_status": "active",
-                      "subscription_tier": "professional"}},
+                      "subscription_tier": "professional", "account_kind": "standard"}},
         "prefs": ({1: link_pref_row} if link_pref_row else {}),
         "logs": [],
     }

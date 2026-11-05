@@ -198,7 +198,7 @@ def _engagement_mode_defaults_to_automate():
 
     with patch("cqc_lem.utilities.engagement_mode.get_user_engagement_state",
                return_value={"engagement_mode": "automate", "subscription_status": "active",
-                             "subscription_tier": "professional"}):
+                             "subscription_tier": "professional", "account_kind": "standard"}):
         yield
 
 

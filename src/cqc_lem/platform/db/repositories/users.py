@@ -1686,25 +1686,117 @@ def get_users_with_reply_mode(mode: str) -> list:
         log_error(f"Could not get users with reply mode {mode}", exc=err)
         return []
 def get_user_engagement_state(user_id: int) -> Optional[dict]:
-    """What decides a user's engagement mode (issue #2367), read in ONE query — or None.
+    """What decides whether LEM may act on a user's LinkedIn account, read in ONE query — or None.
 
-    Returns `engagement_mode`, `subscription_status` and `subscription_tier` together, because a
-    trial account is suggest-only whatever its stored mode says, and reading the two halves in
-    separate round trips would let them disagree. None covers a missing row as well as a DB fault.
-    This reader does not decide what anything MEANS — `utilities/engagement_mode.py` is the one place
-    that does, and it reads None as `suggest`.
+    Returns `engagement_mode`, `subscription_status`, `subscription_tier` and `account_kind`
+    together, because a trial account is suggest-only whatever its stored mode says and a `sandbox`
+    account never acts on LinkedIn at all, and reading the halves in separate round trips would let
+    them disagree. None covers a missing row as well as a DB fault. This reader does not decide what
+    anything MEANS — `utilities/engagement_mode.py` is the one place that does, and it reads None
+    as `suggest`.
     """
     try:
         with db_cursor() as cursor:
-            cursor.execute("SELECT engagement_mode, subscription_status, subscription_tier"
-                           " FROM users WHERE id = %s", (user_id,))
+            cursor.execute("SELECT engagement_mode, subscription_status, subscription_tier,"
+                           " account_kind FROM users WHERE id = %s", (user_id,))
             row = cursor.fetchone()
     except mysql.connector.Error as err:
         log_warning("Could not read engagement mode", exc=err, user_id=user_id)
         return None
     if not row:
         return None
-    return {"engagement_mode": row[0], "subscription_status": row[1], "subscription_tier": row[2]}
+    return {"engagement_mode": row[0], "subscription_status": row[1], "subscription_tier": row[2],
+            "account_kind": row[3]}
+
+
+def get_linkedin_credential_flags(user_id: int) -> Optional[dict]:
+    """Which kinds of stored LinkedIn credential an account holds — presence only, never a value.
+
+    Returns `{"password": bool, "access_token": bool, "li_at": bool}`, or None for a missing row or a
+    DB fault. Callers that must refuse on "has credentials" treat None as "may have some".
+    """
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT (password IS NOT NULL AND password <> ''),"
+                " (access_token IS NOT NULL AND access_token <> ''),"
+                " EXISTS(SELECT 1 FROM cookies WHERE user_id = users.id AND name = 'li_at')"
+                " FROM users WHERE id = %s", (user_id,))
+            row = cursor.fetchone()
+    except mysql.connector.Error as err:
+        log_error("Could not read LinkedIn credential flags", exc=err, user_id=user_id)
+        return None
+    if not row:
+        return None
+    return {"password": bool(row[0]), "access_token": bool(row[1]), "li_at": bool(row[2])}
+
+
+# Every queue whose rows could still reach LinkedIn once an account stops being `sandbox`:
+# (table, the statuses that have not gone out yet, the status they are cancelled to, rejection reason).
+# The cancelled-to values are the real "not sent" members of each table's status enum
+# (`platform/db/enums.py`): `canceled`, `dismissed` for a lead signal, `rejected` for a post.
+QUEUED_SEND_QUEUES = (
+    ("scheduled_dms", ("pending", "approved", "scheduled"), "canceled", None),
+    ("connection_requests", ("pending", "approved", "sending"), "canceled", None),
+    ("catchup_touches", ("pending", "approved", "sending"), "canceled", None),
+    ("lead_signals", ("new", "approved"), "dismissed", None),
+    ("outreach_funnel_targets", ("pending", "approved"), "canceled", None),
+    ("posts", ("pending", "approved", "scheduled"), "rejected",
+     "cancelled when the account left sandbox"),
+)
+
+
+def count_queued_sends(user_id: int) -> Optional[dict]:
+    """How many rows per queue could still send for this account, or None when that cannot be read.
+
+    Keys are the table names in `QUEUED_SEND_QUEUES`. None (a DB fault) must be treated by the caller
+    as "there may be some".
+    """
+    counts = {}
+    try:
+        with db_cursor() as cursor:
+            for table, statuses, _cancelled, _reason in QUEUED_SEND_QUEUES:
+                marks = ", ".join(["%s"] * len(statuses))
+                cursor.execute(f"SELECT COUNT(*) FROM {table} WHERE user_id = %s AND status IN ({marks})",
+                               (user_id, *statuses))
+                counts[table] = int(cursor.fetchone()[0])
+    except mysql.connector.Error as err:
+        log_error("Could not count queued sends", exc=err, user_id=user_id)
+        return None
+    return counts
+
+
+def set_user_account_kind(user_id: int, account_kind: str, *, cancel_queued: bool = False) -> bool:
+    """Write `users.account_kind`. True only when exactly one row changed hands.
+
+    With `cancel_queued=True` every row in `QUEUED_SEND_QUEUES` that has not gone out yet is cancelled
+    in the SAME transaction, so the account can never be seen in its new kind with the old queue (or
+    the reverse). Nothing is cancelled when the kind row itself did not change.
+
+    Called ONLY by `python -m cqc_lem.utilities.account_kind_admin`, run by the owner on the host. No
+    API route may call it: a machine session must never be able to flag an account
+    (`test_account_kind_is_owner_only.py` walks the route table and the api package for it). The
+    value is validated here too, so a typo can never write something the readers would treat as a
+    third kind.
+    """
+    if account_kind not in (ACCOUNT_KIND_STANDARD, ACCOUNT_KIND_INTERNAL, ACCOUNT_KIND_SANDBOX):
+        raise ValueError(f"unknown account_kind {account_kind!r}")
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("UPDATE users SET account_kind = %s WHERE id = %s", (account_kind, user_id))
+            if cursor.rowcount != 1:
+                return False
+            if cancel_queued:
+                for table, statuses, cancelled, reason in QUEUED_SEND_QUEUES:
+                    marks = ", ".join(["%s"] * len(statuses))
+                    extra = ", rejection_reason = %s" if reason else ""
+                    cursor.execute(
+                        f"UPDATE {table} SET status = %s{extra} WHERE user_id = %s AND status IN ({marks})",
+                        (cancelled, *((reason,) if reason else ()), user_id, *statuses))
+            return True
+    except mysql.connector.Error as err:
+        log_error("Could not set account kind", exc=err, user_id=user_id)
+        return False
 
 
 def get_user_geo(user_id: int) -> Optional[dict]:

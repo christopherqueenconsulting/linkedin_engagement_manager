@@ -784,7 +784,8 @@ the *account*: an operator may approve only when the account is `internal` or `s
 | `account_kind` | Operator, explicit approve (`action="approve"`/`"retry"`, create with `status="approved"`) | Operator, no status on an `auto_approve` account |
 |---|---|---|
 | `standard` (default, every existing row) | refused — **403 `agent_may_not_approve`**, exactly like an agent | queued PENDING |
-| `internal`, `sandbox` | allowed, and audited as `operator_approval` | **still queued PENDING** |
+| `internal` | allowed, and audited as `operator_approval`; the send is **real** (an `internal` account is NOT dry-run) | **still queued PENDING** |
+| `sandbox` | allowed, and audited as `operator_approval`; the send is a **dry run**: the lane completes the row without any LinkedIn call | **still queued PENDING** |
 
 A real-person send never auto-approves for an operator: the passive `auto_approve` default speaks
 for the human who left it set, not for a machine, on every account kind. `PUT
@@ -797,6 +798,24 @@ account's item is a 404 before it is a question.
 `users.account_kind` is `VARCHAR(16) NOT NULL DEFAULT 'standard'` (migration
 `V20261104170555__add_users_account_kind.sql`, rollback noted in the file). The default means nobody
 changes behaviour until a row is set by hand; there is deliberately no API or SPA control to set it.
+Its one writer is the owner's command-line tool (`python -m cqc_lem.utilities.account_kind_admin`),
+which refuses an admin account and a sandbox account holding LinkedIn credentials; a test walks the
+route table to prove no machine role can reach it.
+
+**The sandbox direction is the opposite one.** The reader above reads an unknown kind as `standard`,
+the safe answer for an *approval*. For a *send* the safe answer is "do not send", so the send path
+reads the kind with a separate, three-valued reader (`read_account_kind`) and allows only a readable
+`standard` or `internal`; a `sandbox` account never acts on LinkedIn at all. See
+[`agent-roles.md` § Sandbox tenant](agent-roles.md#sandbox-tenant).
+
+**Leaving sandbox.** Because the send path reads the kind when a task runs, flipping an account off
+`sandbox` makes everything already queued on it go live, including items an operator approved while it
+was a dry run. The owner's tool refuses any move away from `sandbox` without `--allow-leave-sandbox`, and
+refuses while the account has queued sends (DMs, connection requests, catch-up touches, lead responses,
+outreach-funnel targets, posts) unless `--cancel-queued` cancels them in the same transaction. The
+procedure, with the commands and the status each queue is cancelled to, is in
+[`agent-roles.md` § Sandbox tenant](agent-roles.md#sandbox-tenant); it applies to a plain flip, not only
+to a code rollback.
 
 ### Operator audit, access record and refusals
 

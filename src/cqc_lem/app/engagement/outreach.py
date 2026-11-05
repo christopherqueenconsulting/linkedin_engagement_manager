@@ -191,9 +191,11 @@ from cqc_lem.utilities.db import (
 from cqc_lem.utilities.demo_mode import DemoModeError
 from cqc_lem.utilities.dm_templates import _draft_connect_note, render_dm_placeholders
 from cqc_lem.utilities.engagement_mode import (
+    SANDBOX_DRY_RUN_MESSAGE,
     SUGGEST_ONLY_SKIP_MESSAGE,
     SUGGESTION_SAVED_MESSAGE,
     dm_suggestion_key,
+    sandbox_dry_run,
     save_suggestion,
     skip_browser_lane,
 )
@@ -2958,6 +2960,11 @@ def send_scheduled_dm(self, dm_id: int):
                            f"Scheduled DM {dm_id} not sendable (status={dm['status'] if dm else 'missing'})")
 
     user_id = dm["user_id"]
+    if sandbox_dry_run(user_id, "send_scheduled_dm"):
+        # A sandbox account never reaches LinkedIn: complete the row so a QA run can finish. SENT is
+        # the account's "delivered" — the account kind, not the row, says nothing went out.
+        update_scheduled_dm_status(dm_id, ScheduledDmStatus.SENT)
+        return lane_result(TaskOutcome.NO_OP, f"Scheduled DM {dm_id}: {SANDBOX_DRY_RUN_MESSAGE}")
     if skip_browser_lane(user_id, "send_scheduled_dm"):
         return SUGGEST_ONLY_SKIP_MESSAGE
     if scheduled_dm_is_stale(dm.get("scheduled_time")):
@@ -3095,6 +3102,9 @@ def _send_lead_response(signal_id: int) -> str:
         return f"Lead signal {signal_id} has no draft to send"
 
     user_id = signal["user_id"]
+    if sandbox_dry_run(user_id, "send_lead_response"):
+        update_lead_signal(signal_id, status=LeadSignalStatus.SENT)
+        return f"Lead signal {signal_id}: {SANDBOX_DRY_RUN_MESSAGE}"
     if skip_browser_lane(user_id, "send_lead_response"):
         return SUGGEST_ONLY_SKIP_MESSAGE
     if str(signal.get("channel")) == str(LeadSignalChannel.DM):
@@ -3837,6 +3847,7 @@ CATCHUP_STATUS_CONTACT_COOLDOWN = "contact_cooldown"  # per-contact interval has
 CATCHUP_STATUS_CONTACT_CAP = "contact_cap"            # per-contact window cap reached (issue #1078)
 CATCHUP_STATUS_ALREADY_SENT = "already_sent"          # durable claim row already exists (issue #1078)
 CATCHUP_STATUS_DEMO_HELD = "demo_held"                # DEMO_MODE refused the send; held at pending (#2372)
+CATCHUP_STATUS_SANDBOX_DRY_RUN = "sandbox_dry_run"    # sandbox account: completed as a dry run, nothing sent
 
 # Ordered fallback chain for the catch-up cards. Live-grounded 2026-08-03 on a real session: the
 # surface is full SDUI — every card is a div[role='listitem'] (with a componentkey UUID) inside the
@@ -4510,6 +4521,10 @@ def send_catchup_touch(self, touch_id: int):
         return f"Catch-up touch {touch_id} skipped (no message)"
 
     user_id = touch["user_id"]
+    if sandbox_dry_run(user_id, "send_catchup_touch"):
+        update_catchup_touch_status(touch_id, CatchupTouchStatus.SENT)
+        _report(CATCHUP_STATUS_SANDBOX_DRY_RUN, user_id)
+        return f"Catch-up touch {touch_id}: {SANDBOX_DRY_RUN_MESSAGE}"
     if skip_browser_lane(user_id, "send_catchup_touch"):
         return SUGGEST_ONLY_SKIP_MESSAGE
     prefs = get_engagement_preferences(user_id)

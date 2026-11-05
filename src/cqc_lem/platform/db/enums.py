@@ -357,6 +357,8 @@ class AuthAuditEvent(StrEnum):
     OBSERVER_TOKEN_MINTED = "observer_token_minted"
     # At most one per observer session per UTC day (utilities/observer_access.py): the access record.
     OBSERVER_ACCESS = "observer_access"
+    # Written by the owner-only `utilities/account_kind_admin.py`; no machine session can write one.
+    ACCOUNT_KIND_CHANGED = "account_kind_changed"
     OPERATOR_TOKEN_MINTED = "operator_token_minted"
     # One row per operator request that is not a read, and one per approval an operator makes.
     OPERATOR_ACTION = "operator_action"

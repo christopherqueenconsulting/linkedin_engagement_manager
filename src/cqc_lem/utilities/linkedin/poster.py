@@ -35,6 +35,7 @@ from cqc_lem.utilities.ai.outbound_qa import (
 from cqc_lem.utilities.curated_sources import escape_little_text
 from cqc_lem.utilities.db import get_user_access_token, get_user_linked_sub_id
 from cqc_lem.utilities.demo_mode import guard_linkedin
+from cqc_lem.utilities.engagement_mode import guard_send
 from cqc_lem.utilities.env_constants import LI_API_VERSION
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
 from cqc_lem.utilities.mime_type_helper import get_file_mime_type
@@ -214,6 +215,7 @@ def share_on_linkedin(user_id: int, content: str,
         means no amount of retrying will post.
     """
     guard_linkedin("poster.share_on_linkedin")
+    guard_send(user_id, "poster.share_on_linkedin")
     restli_client = RestliClient()
     restli_client.session.hooks["response"].append(lambda r: r.raise_for_status())
 
@@ -326,6 +328,7 @@ def share_carousel_on_linkedin(user_id: int, content: str, slide_texts: list[str
     All images are uploaded individually and included as a multi-image ugcPost.
     """
     guard_linkedin("poster.share_carousel_on_linkedin")
+    guard_send(user_id, "poster.share_carousel_on_linkedin")
     import os
 
     from cqc_lem.utilities.carousel_creator import get_pexels_image_path
@@ -556,6 +559,7 @@ def share_document_on_linkedin(user_id: int, content: str, slides: list[str],
     (the caller flags the post 'error' instead), matching share_carousel_on_linkedin.
     """
     guard_linkedin("poster.share_document_on_linkedin")
+    guard_send(user_id, "poster.share_document_on_linkedin")
     from cqc_lem.utilities.carousel_creator import create_carousel_pdf
 
     linked_sub_id = get_user_linked_sub_id(user_id)
@@ -733,6 +737,7 @@ def share_animated_image_on_linkedin(user_id: int, content: str, gif_path: str,
         The post URN, or None (no credentials, or an unconfirmed publish).
     """
     guard_linkedin("poster.share_animated_image_on_linkedin")
+    guard_send(user_id, "poster.share_animated_image_on_linkedin")
     from cqc_lem.utilities.animated_loop import gif_within_limits
 
     def _static() -> Optional[str]:
@@ -808,6 +813,7 @@ def comment_on_linkedin_post(user_id: int, object_urn: str, text: str,
     socialActions API. Returns the created comment URN, or None on missing creds/failure.
     """
     guard_linkedin("poster.comment_on_linkedin_post")
+    guard_send(user_id, "poster.comment_on_linkedin_post")
     sub_id = get_user_linked_sub_id(user_id)
     access_token = get_user_access_token(user_id)
     if not sub_id or not access_token:
@@ -848,6 +854,7 @@ def comment_on_linkedin_post(user_id: int, object_urn: str, text: str,
 def delete_linkedin_comment(user_id: int, object_urn: str, comment_urn: str) -> bool:
     """Delete one of the user's own comments on object_urn via the socialActions API."""
     guard_linkedin("poster.delete_linkedin_comment")
+    guard_send(user_id, "poster.delete_linkedin_comment")
     sub_id = get_user_linked_sub_id(user_id)
     access_token = get_user_access_token(user_id)
     if not sub_id or not access_token or not object_urn or not comment_urn:
