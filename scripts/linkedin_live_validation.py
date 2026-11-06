@@ -39,7 +39,8 @@ It navigates and reads: it publishes nothing, comments on nothing, sends no
 invites or DMs and changes no settings. ``--probe-composer`` additionally OPENS the post
 composer to capture the "add a document" affordance's anchors and closes it with Escape without
 attaching or posting anything; ``--permalink-comment`` does the same for a POST's comment composer
-(#966) and ``--group-feed-composer`` for every sampled card of a GROUP feed (#928) — each clicks
+(#966), ``--home-feed-composer`` for the home feed (#2467), and
+``--group-feed-composer`` for every sampled card of a GROUP feed (#928) — each clicks
 Comment so the box mounts, describes it, and Escapes, typing and submitting nothing;
 ``--comment-outcome-url`` and ``--feed-sort`` flip a sort control, exactly as the production readers
 they are grounding do.
@@ -75,11 +76,13 @@ import json
 import re
 import sys
 import time
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import parse_qs, urlparse
 
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
+
+from cqc_lem.utilities.logger import log_debug
 
 SIGNALS = ("reactions", "comments", "reposts", "impressions", "saves")
 ANALYTICS_URL = "https://www.linkedin.com/analytics/post-summary/{urn}/"
@@ -636,6 +639,9 @@ SURFACES = (
     {"key": "group_feed_composer", "surface": "Group feed post card → Comment → inline composer",
      "code": "engagement.feed._post_composer_for_card / _single_post_scope / auto_comment_in_groups",
      "flag": "--group-feed-composer", "sweep": True},
+    {"key": "home_feed_composer", "surface": "Home feed post card → Comment → inline composer",
+     "code": "engagement.feed._post_composer_for_card / _single_post_scope",
+     "flag": "--home-feed-composer", "sweep": True},
     {"key": "company_invite", "surface": "Company-page invite modal (credits / invitees / Invite)",
      "code": "company_page_inviter.automate_invitations", "flag": "--company-invite",
      "sweep": True},
@@ -6283,6 +6289,53 @@ def card_urn_evidence(driver, card) -> dict:
     return reading
 
 
+def _visible_editable_candidates(
+    driver: Any, scope: Optional[Any] = None,
+) -> Optional[list[dict[str, Any]]]:
+    """Read editable DOM candidates without returning labels or user-entered values."""
+    script = """
+const start = arguments[0] || document;
+const selector = 'div[role="textbox"], [contenteditable="true"], textarea, input:not([type="hidden"])';
+const seen = new Set();
+const out = [];
+function visit(root, depth) {
+  if (!root || depth > 6) return;
+  let nodes = [];
+  try { nodes = root.querySelectorAll(selector); } catch (e) { return; }
+  for (const node of nodes) {
+    if (seen.has(node)) continue;
+    seen.add(node);
+    const rect = node.getBoundingClientRect();
+    if (!(rect.width && rect.height)) continue;
+    const labels = [node.getAttribute('aria-label'), node.getAttribute('title'),
+      node.getAttribute('placeholder'), node.getAttribute('data-placeholder')].filter(Boolean);
+    const hasComment = labels.some(s => /comment/i.test(s));
+    const hasReply = labels.some(s => /reply/i.test(s));
+    out.push({tag: node.tagName.toLowerCase(), role: node.getAttribute('role') || '',
+      contenteditable: node.getAttribute('contenteditable') || '',
+      testid_present: !!(node.getAttribute('data-testid') || node.getAttribute('data-test-id')),
+      comment_labelled: hasComment && !hasReply, reply_labelled: hasReply});
+    if (node.shadowRoot) visit(node.shadowRoot, depth + 1);
+  }
+  let all = [];
+  try { all = root.querySelectorAll('*'); } catch (e) { return; }
+  for (const node of all) if (node.shadowRoot) visit(node.shadowRoot, depth + 1);
+}
+visit(start, 0);
+return out;
+"""
+    try:
+        return driver.execute_script(script, scope if scope is not None else None) or []
+    except Exception as error:
+        log_debug("Editable candidate census failed", error_type=type(error).__name__)
+        return None
+
+
+def _is_post_comment_editable_candidate(candidate: dict[str, Any]) -> bool:
+    """True for a comment composer label, never a reply box beneath an existing comment."""
+    return bool(candidate.get("comment_labelled")) and not bool(candidate.get("reply_labelled"))
+
+
 def _walk_feed_composers(driver, feed: str, url: str, max_cards: int = 3,
                          sleep: Callable[[float], None] = time.sleep) -> dict:
     """Walk ONE feed and report, per card, whether a comment composer resolves — and from WHERE.
@@ -6290,6 +6343,11 @@ def _walk_feed_composers(driver, feed: str, url: str, max_cards: int = 3,
     Read-only in the sense `--permalink-comment` already is: it clicks each card's own Comment
     button so the composer mounts, describes what mounted, and presses Escape. Nothing is typed and
     nothing is submitted, so no comment can be left.
+
+    The read-only editable census records page candidates before, while, and after clicks using
+    `page_editable_candidates_before`, `page_comment_editables_before`, per-card
+    `page_editable_candidate_shapes`, and `editable_candidate_scan_readable`. This distinguishes a
+    mounted but unresolved comment editor from a surface where no editor appeared.
 
     It calls the SHIPPED chain (`_card_for_textbox` → `_COMMENT_ACTION_LOCATORS` →
     `_post_composer_for_card`), never a copy of it: an inlined duplicate grounds whatever the
@@ -6352,6 +6410,12 @@ def _walk_feed_composers(driver, feed: str, url: str, max_cards: int = 3,
         if card is not None:
             cards.append(card)
     reading["cards_found"] = len(cards)
+    initial_editables = _visible_editable_candidates(driver)
+    editable_scans_readable = initial_editables is not None
+    initial_editables = initial_editables or []
+    reading["page_editable_candidates_before"] = len(initial_editables)
+    reading["page_comment_editables_before"] = sum(
+        _is_post_comment_editable_candidate(candidate) for candidate in initial_editables)
 
     for index, card in enumerate(cards):
         entry: dict = {"index": index, "locator_hits": _locator_hits(card, _COMMENT_ACTION_LOCATORS)}
@@ -6363,8 +6427,10 @@ def _walk_feed_composers(driver, feed: str, url: str, max_cards: int = 3,
         entry["comment_action"] = element_evidence(action) if action is not None else None
         composer = None
         if action is not None:
-            click_first(driver, wait, _COMMENT_ACTION_LOCATORS, "Open comment composer",
-                        parent_element=card, required=False, max_try=1, warn_on_miss=False)
+            clicked = click_first(driver, wait, _COMMENT_ACTION_LOCATORS, "Open comment composer",
+                                  parent_element=card, required=False, max_try=1,
+                                  warn_on_miss=False)
+            entry["comment_click_succeeded"] = clicked is not None
             sleep(2)
             composer = _post_composer_for_card(driver, card)
         in_card = [box for box, _rect in _visible_composers(card)]
@@ -6375,6 +6441,10 @@ def _walk_feed_composers(driver, feed: str, url: str, max_cards: int = 3,
         scope = _single_post_scope(driver, card)
         entry["scope_widened"] = bool(scope is not None and scope != card)
         entry["textboxes_in_scope"] = len(_visible_composers(scope)) if scope is not None else 0
+        scoped_editables = _visible_editable_candidates(driver, scope)
+        entry["editable_candidates_in_scope"] = (
+            len(scoped_editables) if scoped_editables is not None else None)
+        editable_scans_readable = editable_scans_readable and scoped_editables is not None
         entry["composer"] = element_evidence(composer) if composer is not None else None
         entry["composer_source"] = ("none" if composer is None else
                                     "in_card" if any(composer == box for box in in_card) else
@@ -6388,8 +6458,15 @@ def _walk_feed_composers(driver, feed: str, url: str, max_cards: int = 3,
             # (the surface has no inline composer, #1084) — collapse into the second one.
             try:
                 entry["page_textboxes_open"] = len(_visible_composers(driver))
+                editables = _visible_editable_candidates(driver)
+                editable_scans_readable = editable_scans_readable and editables is not None
+                entry["page_editable_candidates_open"] = len(editables or [])
+                entry["page_editable_candidate_shapes"] = editables or []
             except Exception:
                 entry["page_textboxes_open"] = 0
+                entry["page_editable_candidates_open"] = 0
+                entry["page_editable_candidate_shapes"] = []
+                editable_scans_readable = False
         try:
             ActionChains(driver).send_keys(Keys.ESCAPE).perform()
         except Exception:
@@ -6413,6 +6490,19 @@ def _walk_feed_composers(driver, feed: str, url: str, max_cards: int = 3,
         page_after = 0
     reading["page_textboxes_after_click"] = max(
         [page_after] + [c.get("page_textboxes_open") or 0 for c in reading["cards"]])
+    trailing_editables = _visible_editable_candidates(driver)
+    editable_scans_readable = editable_scans_readable and trailing_editables is not None
+    reading["page_editable_candidates_after_click"] = max(
+        [len(trailing_editables or [])]
+        + [c.get("page_editable_candidates_open") or 0 for c in reading["cards"]])
+    reading["editable_candidate_scan_readable"] = editable_scans_readable
+    reading["new_page_editable_candidates"] = max(
+        0, reading["page_editable_candidates_after_click"]
+        - reading["page_editable_candidates_before"])
+    reading["new_page_comment_editable_candidates"] = max(
+        [0] + [sum(_is_post_comment_editable_candidate(candidate)
+                for candidate in (c.get("page_editable_candidate_shapes") or []))
+               - reading["page_comment_editables_before"] for c in reading["cards"]])
     reading["visible_controls"] = visible_button_labels(driver, limit=30)
     return graded(reading, feed_composer_state(reading), feed_composer_verdict(reading))
 
@@ -6473,6 +6563,15 @@ def feed_composer_verdict(feed: Optional[dict]) -> str:
                 f"{feed.get('page_textboxes_after_click')} composer(s) are mounted on the page, but "
                 f"`_post_composer_for_card` claimed none of them for their card — the #916 widening "
                 f"does not reach this surface")
+    if any(c.get("comment_click_succeeded") is False for c in (feed.get("cards") or [])):
+        return (f"Comment action was found on the {name} feed, but its click did not complete on at "
+                f"least one card — re-ground the click path before changing composer selectors")
+    if feed.get("new_page_comment_editable_candidates"):
+        return (f"an editable candidate appeared after Comment on the {name} feed but no "
+                f"role=textbox composer resolved — re-ground candidate role/label within the card")
+    if feed.get("editable_candidate_scan_readable") is False:
+        return (f"the {name} feed's editable-candidate census failed; this run cannot distinguish "
+                f"a missing composer from a rotated element; re-run")
     return (f"Comment was clicked on {feed.get('cards_found')} card(s) of the {name} feed and NO "
             f"composer mounted anywhere on the page — this surface has no inline composer, so "
             f"production can never post here and must stop generating a comment per post (#1084)")
@@ -6556,6 +6655,12 @@ def probe_group_feed_composer(driver, user_id: int = 1, group_id: Optional[str] 
         reading["home"] = _walk_feed_composers(driver, "home", FEED_URL, max_cards=max_cards,
                                                sleep=sleep)
     return graded(reading, group_feed_composer_state(reading), group_feed_composer_verdict(reading))
+
+
+def probe_home_feed_composer(driver: Any, user_id: int = 1, max_cards: int = 3,
+                             sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
+    """Grade home-feed Comment → composer independently (#2467)."""
+    return _walk_feed_composers(driver, "home", FEED_URL, max_cards=max_cards, sleep=sleep)
 
 
 # ─────────────────────────── company-page invite modal (#732) ────────────────────────────────
@@ -7069,7 +7174,11 @@ def probe_message_thread(driver, profile_url: str, person_name: str = "", self_n
     from selenium.webdriver.support.ui import WebDriverWait
 
     from cqc_lem.utilities.linkedin.message_thread import (
-        ROUTE_MESSAGING_SEARCH, open_message_thread, profile_urn_from_page, read_last_sender)
+        ROUTE_MESSAGING_SEARCH,
+        open_message_thread,
+        profile_urn_from_page,
+        read_last_sender,
+    )
 
     wait = WebDriverWait(driver, 10)
     windows_before = _window_count(driver)
@@ -7368,6 +7477,7 @@ def run_sweep(driver, user_id: int, runners: Optional[dict] = None,
         "catchup_cards": lambda: probe_catchup_cards(driver),
         "group_membership": lambda: probe_group_membership(driver, user_id),
         "group_feed_composer": lambda: probe_group_feed_composer(driver, user_id),
+        "home_feed_composer": lambda: probe_home_feed_composer(driver, user_id),
         "company_invite": lambda: probe_company_invite(driver, user_id),
         "sent_invites": lambda: probe_sent_invites(driver),
         "appreciation_sources": lambda: probe_appreciation_sources(driver, user_id),
@@ -7598,6 +7708,9 @@ def build_parser() -> "argparse.ArgumentParser":
                              "Escapes it; nothing is typed and no comment is left.")
     parser.add_argument("--group-feed-cards", type=int, default=3,
                         help="how many cards per feed to sample for --group-feed-composer")
+    parser.add_argument("--home-feed-composer", action="store_true",
+                        help="walk home-feed cards and grade the Comment → composer path on its "
+                             "own key (#2467). Opens each composer and Escapes it; no text is typed.")
     parser.add_argument("--company-invite", action="store_true",
                         help="open the company page's invite panel and report the credit counter, "
                              "invitee rows and checkboxes the invite lane reads (#732). Ticks no "
@@ -7635,6 +7748,7 @@ def main(argv: Optional[list] = None) -> int:
             or args.group_composer or args.group_membership is not None
             or args.occasion_composer is not None
             or args.group_feed_composer is not None
+            or args.home_feed_composer
             or args.company_invite or args.permalink_comment or args.newsletter_url
             or args.newsletter_edition
             or args.sweep):
@@ -7644,7 +7758,7 @@ def main(argv: Optional[list] = None) -> int:
                      "--profile-views, --profile-scrape, --profile-experiences, "
                      "--connect-dialog, --catchup-cards, "
                      "--group-composer, --group-membership, --group-feed-composer, "
-                     "--company-invite, --reaction-probe, "
+                     "--company-invite, --reaction-probe, --home-feed-composer, "
                      "--roster-follow, "
                      "--roster-connect, --appreciation-sources, --sent-invites, "
                      "--permalink-comment, --newsletter-url, --newsletter-edition and/or "
@@ -7678,7 +7792,8 @@ def main(argv: Optional[list] = None) -> int:
     # images-blocked, `/article/new/` rendered ZERO buttons and graded every editor route MISSING
     # (live 2026-09-25) — the same unmounted page, never selector rot.
     needs_images = bool(args.group_composer or args.group_membership is not None
-                        or args.group_feed_composer is not None or args.sweep
+                        or args.group_feed_composer is not None or args.home_feed_composer
+                        or args.sweep
                         or args.roster_follow or args.roster_connect or args.company_invite
                         or args.article_editor_url)
     try:
@@ -7763,6 +7878,8 @@ def main(argv: Optional[list] = None) -> int:
             report["group_feed_composer"] = probe_group_feed_composer(
                 driver, args.user_id, group_id=args.group_feed_composer or None,
                 max_cards=args.group_feed_cards)
+        if args.home_feed_composer:
+            report["home_feed_composer"] = probe_home_feed_composer(driver, args.user_id)
         if args.company_invite:
             report["company_invite"] = probe_company_invite(driver, args.user_id, args.company_url)
         if args.permalink_comment:

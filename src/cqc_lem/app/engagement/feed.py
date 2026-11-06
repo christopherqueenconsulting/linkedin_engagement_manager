@@ -846,10 +846,14 @@ def _is_post_comment_box(box: WebElement) -> bool:
     """Return True for the box LinkedIn labels as the POST's own comment composer.
 
     A reply box under an existing comment is a role=textbox too, and typing this post's comment into
-    one answers a stranger instead of the author.
+    one answers a stranger instead of the author. LinkedIn's label has rotated from
+    "Text editor for creating comment" to shorter comment labels, so accept comment-labeled boxes
+    while rejecting any label that identifies a reply.
     """
     try:
-        return "creating comment" in (box.get_attribute("aria-label") or "").lower()
+        labels = " ".join(box.get_attribute(name) or "" for name in
+                          ("aria-label", "placeholder", "title", "data-placeholder")).lower()
+        return "comment" in labels and "reply" not in labels
     except Exception:
         return False
 
