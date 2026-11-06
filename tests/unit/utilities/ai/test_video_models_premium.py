@@ -26,8 +26,9 @@ class TestTiers:
 
 # Every audio-capable prompt now carries ai_helper._audio_direction()'s clause (issue #548);
 # create_runway_video refuses to enable audio without it.
-_WITH_AUDIO_DIRECTION = ("a scene with motion. Audio: natural ambient sound only, at low volume. "
-                         "No spoken dialogue, no voiceover, no narration.")
+_WITH_AUDIO_DIRECTION = ("a scene with motion. Audio: instrumental background music only, at low "
+                         "volume, with no vocals. No human voices, spoken words, dialogue, "
+                         "voiceover, narration, singing, lyrics, or vocal samples.")
 
 
 class TestEndpointSelection:

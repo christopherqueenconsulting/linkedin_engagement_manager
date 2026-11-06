@@ -80,7 +80,7 @@ from cqc_lem.utilities.carousel_creator import (
 )
 from cqc_lem.utilities.env_constants import DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_RATIO, DEFAULT_VIDEO_MODEL
 from cqc_lem.utilities.flags import NEWSLETTER_EDITOR, VIDEO_MOTION_LINT_HOLD, flag_enabled
-from cqc_lem.utilities.geocoding import DEFAULT_CONTENT_LANGUAGE, language_name
+from cqc_lem.utilities.geocoding import DEFAULT_CONTENT_LANGUAGE
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.linkedin_formatter import (
     PLAIN_PUNCTUATION_DIRECTIVE,
@@ -3647,20 +3647,19 @@ def _record_avatar_media(image_path: str, post_id: "int | None", user_id: "int |
 MAX_MOTION_PROMPT_CHARS = 512
 
 
-def _audio_direction(model: str, language: str = DEFAULT_CONTENT_LANGUAGE) -> str:
-    """The audio clause appended to the motion prompt of every audio-capable video model.
+def _audio_direction(model: str) -> str:
+    """Request instrumental music and forbid vocals in native-audio video prompts.
 
-    Veo exposes no language/voice API parameter, so audio is prompt-controlled only: with native
-    audio ON and no audio direction, it invents a voiceover and picks its language freely (issue
-    #548, posts #34/#36). Ambience-only removes the failure class outright, and the language is
-    still stated so any incidental speech lands in the user's language. Empty for models without
-    native audio (gen4_turbo/gen4.5/seedance) — they ignore audio cues.
+    Veo exposes no speech/voice API parameter, so the prompt is the only control. A prior
+    ambience-only direction still allowed an unintended non-English voiceover (issue #2501). Ask
+    for instrumental music explicitly, with no human voice, spoken words, singing, lyrics or vocal
+    samples. Empty for models without native audio (gen4_turbo/gen4.5/seedance).
     """
     if not supports_audio(model):
         return ""
-    return (f"{AUDIO_DIRECTION_MARKER} {AUDIO_DIRECTION_LEAD}, at low volume. No spoken "
-            f"dialogue, no voiceover, no narration, no singing, no lyrics. Any incidental "
-            f"speech must be in {language_name(language)}.")
+    return (f"{AUDIO_DIRECTION_MARKER} {AUDIO_DIRECTION_LEAD}, at low volume, with no vocals. "
+            "No human voices, no spoken words, no dialogue, no voiceover, no narration, "
+            "no singing, no lyrics, no vocal samples.")
 
 
 # Motion discipline (PR #2249 video gauntlet): unattended, Runway let the camera AND the subject
@@ -3802,7 +3801,7 @@ def get_runway_ml_video_prompt_from_ai(post_content: str, image_prompt: str, *,
     Raises:
         MotionPromptHeld: enforcement is on and the last attempt still violates the contract.
     """
-    audio_direction = _audio_direction(model, language)
+    audio_direction = _audio_direction(model)
     audio_note = ("\n        - Say NOTHING about audio, speech, dialogue or narration — an audio "
                   "direction is appended automatically." if audio_direction else "")
 
