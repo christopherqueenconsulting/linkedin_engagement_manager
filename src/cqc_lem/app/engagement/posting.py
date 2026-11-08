@@ -2392,13 +2392,13 @@ def _run_comment_outcomes_sweep(user_id: int) -> str:
                   task_name="sweep_comment_outcomes")
         release_run_lock(lock_name, lock_token)
         return f"Failed to start comment outcome sweep: {e}"
+    checked = skipped = 0
     try:
         our_slug = profile_slug(str(my_profile.profile_url))
         if not our_slug:
             log_warning("Comment outcomes: no profile slug — cannot identify our own comments",
                         user_id=user_id, task_name="sweep_comment_outcomes")
             return "Skipped — no profile slug"
-        checked = skipped = 0
         for row in targets:
             key = row.get("post_url")
             url = _post_url_from_key(key)
@@ -2408,6 +2408,10 @@ def _run_comment_outcomes_sweep(user_id: int) -> str:
                 outcome = _read_comment_outcome(driver, wait, user_id, url, our_slug,
                                                 row.get("message") or "")
             except Exception as e:
+                if is_tab_crashed(e):
+                    # Same as the follow-up sweep: every later post would fail on the dead tab and
+                    # warn once each, recurring into a grouped $exception. End the sweep instead.
+                    raise
                 log_warning("Comment outcome check failed", exc=e, user_id=user_id,
                             task_name="sweep_comment_outcomes")
                 continue
@@ -2419,6 +2423,11 @@ def _run_comment_outcomes_sweep(user_id: int) -> str:
                 checked += 1
             time.sleep(random.uniform(4, 9))  # human pacing between post visits
         return f"Comment outcomes: checked {checked}, skipped {skipped} of {len(targets)} comment(s)"
+    except Exception as e:
+        if not note_tab_crash(e, task_name="sweep_comment_outcomes", user_id=user_id):
+            raise
+        return (f"Comment outcomes stopped — browser tab crashed: checked {checked}, "
+                f"skipped {skipped} of {len(targets)} comment(s)")
     finally:
         quit_gracefully(driver)
         release_run_lock(lock_name, lock_token)
