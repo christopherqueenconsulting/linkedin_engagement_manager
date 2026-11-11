@@ -448,8 +448,11 @@ class TestDeckCoverConcept:
 
         with patch("cqc_lem.utilities.ai.image_brief.build_image_brief",
                    return_value=self._brief()), \
-                patch("cqc_lem.utilities.ai.image_gen.render_image_gated", side_effect=_gated):
+                patch("cqc_lem.utilities.ai.image_gen.render_image_gated", side_effect=_gated), \
+                patch("cqc_lem.utilities.logger.log_warning") as warning:
             assert cc.render_deck_cover_concept(self._Scope(_concept(_REPORT)), 1, 2) is None
+        warning.assert_called_once()
+        assert warning.call_args.kwargs["gate_verdict"] == "rejected"
 
     def test_any_fault_is_none(self):
         with patch("cqc_lem.utilities.ai.image_brief.build_image_brief",
