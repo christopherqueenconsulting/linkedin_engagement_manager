@@ -129,6 +129,97 @@ class TestSweepCommentFollowups:
         logs["debug"].assert_not_called()
 
 
+class TestSweepCommentOutcomes:
+    """The read-only outcome sweep: a crash ends it like the follow-up sweep, not one warning a post."""
+
+    def _run(self, es: ExitStack, *, reader=None, session=None) -> str:
+        from cqc_lem.app.engagement.posting import _run_comment_outcomes_sweep
+
+        p = lambda name, **kw: es.enter_context(patch(f"{_POST}.{name}", **kw))  # noqa: E731
+        p("get_comment_outcome_targets",
+          return_value=[{"post_url": f"feedurn://urn:li:activity:{i}", "log_id": i, "message": "m"}
+                        for i in (1, 2, 3)])
+        p("acquire_run_lock", return_value="tok")
+        self.release = p("release_run_lock")
+        p("get_current_profile",
+          **(session or {"return_value": (MagicMock(), MagicMock(), "e", MagicMock())}))
+        p("profile_slug", return_value="me")
+        p("time.sleep")
+        self.record = p("record_comment_outcome")
+        p("track_comment_outcome")
+        self.quit = p("quit_gracefully")
+        self.lane_error = p("log_error")
+        self.lane_warning = p("log_warning")
+        self.reader = p("_read_comment_outcome", **(reader or {}))
+        return _run_comment_outcomes_sweep(1)
+
+    def test_a_login_crash_is_debug_because_the_session_layer_warned(self):
+        with ExitStack() as es:
+            logs = _logs(es)
+            out = self._run(es, session={"side_effect": _crash()})
+        assert out.startswith("Failed to start comment outcome sweep")
+        logs["debug"].assert_called_once()
+        logs["warning"].assert_not_called()
+        self.lane_error.assert_not_called()
+        self.reader.assert_not_called()
+        self.release.assert_called_once()
+
+    def test_a_non_crash_login_fault_is_still_an_error(self):
+        with ExitStack() as es:
+            logs = _logs(es)
+            self._run(es, session={"side_effect": RuntimeError("db down")})
+        self.lane_error.assert_called_once()
+        assert self.lane_error.call_args.args[0] == "Error starting comment outcome sweep"
+        logs["warning"].assert_not_called()
+        logs["debug"].assert_not_called()
+
+    def test_a_crash_mid_sweep_stops_on_one_warning(self):
+        """The first post is read, the second crashes, the third is never tried on the dead tab."""
+        with ExitStack() as es:
+            logs = _logs(es)
+            out = self._run(es, reader={"side_effect": [{"status": "checked"}, _crash(),
+                                                        {"status": "checked"}]})
+        assert self.reader.call_count == 2
+        assert "browser tab crashed" in out and "checked 1" in out
+        self.record.assert_called_once()
+        logs["warning"].assert_called_once()
+        assert "sweep_comment_outcomes" in logs["warning"].call_args.args[0]
+        self.lane_error.assert_not_called()
+        self.lane_warning.assert_not_called()  # no per-post "Comment outcome check failed"
+        self.quit.assert_called_once()
+        self.release.assert_called_once()
+
+    def test_a_non_crash_per_post_fault_still_warns_and_continues(self):
+        with ExitStack() as es:
+            logs = _logs(es)
+            out = self._run(es, reader={"side_effect": [RuntimeError("boom"), {"status": "checked"},
+                                                        {"status": "skipped"}]})
+        assert self.reader.call_count == 3
+        assert out == "Comment outcomes: checked 1, skipped 1 of 3 comment(s)"
+        self.lane_warning.assert_called_once()
+        assert self.lane_warning.call_args.args[0] == "Comment outcome check failed"
+        logs["warning"].assert_not_called()
+
+    def test_a_non_crash_run_fault_still_raises(self):
+        with ExitStack() as es, pytest.raises(RuntimeError):
+            logs = _logs(es)
+            es.enter_context(patch(f"{_POST}.record_comment_outcome",
+                                   side_effect=RuntimeError("db down")))
+            from cqc_lem.app.engagement.posting import _run_comment_outcomes_sweep
+            p = lambda name, **kw: es.enter_context(patch(f"{_POST}.{name}", **kw))  # noqa: E731
+            p("get_comment_outcome_targets",
+              return_value=[{"post_url": "feedurn://urn:li:activity:1", "log_id": 1}])
+            p("acquire_run_lock", return_value="tok")
+            release = p("release_run_lock")
+            p("get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock()))
+            p("profile_slug", return_value="me")
+            p("_read_comment_outcome", return_value={"status": "checked"})
+            p("quit_gracefully")
+            _run_comment_outcomes_sweep(1)
+        logs["warning"].assert_not_called()
+        release.assert_called_once()
+
+
 class TestAutomateCommenting:
     """#2402."""
 
