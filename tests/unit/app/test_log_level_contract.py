@@ -372,7 +372,10 @@ class TestFailuresAHumanHasToFixAreErrors:
             assert _create_content_for_planned_post(post, {}) is False
             lv.only("error")
         assert failed.called
-        assert lv.error.call_args.kwargs.get("exc") is not None
+        error_context = lv.error.call_args.kwargs
+        assert error_context.get("exc") is not None
+        assert error_context["terminal_state"] == "failed"
+        assert error_context["reason"] == "generation_exception"
 
     def test_generation_returning_nothing_errors_without_an_exception(self):
         """A loud log line, not a filed $exception — there is no exception to attach."""
@@ -385,6 +388,8 @@ class TestFailuresAHumanHasToFixAreErrors:
             assert _create_content_for_planned_post(post, {}) is False
             lv.only("error")
         assert "exc" not in lv.error.call_args.kwargs
+        assert lv.error.call_args.kwargs["terminal_state"] == "failed"
+        assert lv.error.call_args.kwargs["reason"] == "empty_generation_result"
 
     def test_c2pa_signing_that_raises_warns(self, tmp_path):
         """C2PA signing that RAISES is the best-effort module itself broken, so it warns.
