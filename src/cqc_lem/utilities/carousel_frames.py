@@ -97,7 +97,31 @@ def retain_carousel_keyframes(image_paths: list, slide_receipts: list) -> list:
             continue
         if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
             written.append(out_path)
+    if written:
+        _drop_stale_keyframes(os.path.dirname(written[0]), keep=written)
     return written
+
+
+def _drop_stale_keyframes(directory: str, keep: list) -> None:
+    """Remove keyframes a previous render of this deck left in `directory` (issue #2500).
+
+    Each render names its slides uniquely, so a regenerated deck's keyframes no longer overwrite
+    the old ones. `retained_carousel_keyframes` pairs whatever it finds by sorted order and keeps
+    at most two, so a stale pair left beside the new one could be graded as this deck's pixels.
+    """
+    from cqc_lem.utilities.logger import log_debug
+
+    keep_names = {os.path.basename(p) for p in keep}
+    try:
+        entries = os.listdir(directory)
+    except OSError:
+        return
+    for entry in entries:
+        if is_carousel_keyframe(entry) and entry not in keep_names:
+            try:
+                os.remove(os.path.join(directory, entry))
+            except OSError as e:
+                log_debug(f"Could not remove stale carousel keyframe: {e}")
 
 
 def retained_carousel_keyframes(output_dir: Optional[str]) -> list:
