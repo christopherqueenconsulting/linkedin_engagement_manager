@@ -3419,11 +3419,19 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
         # actually was looks different — the URN resolver finding NOTHING anywhere, so not one post
         # in the whole scan yields a URN. Only that shape warns (and escalates); the occasional
         # URN-less card is DEBUG so it never files an issue for working behaviour.
+        # The rebuilt roster activity page carries no per-post URN at all (#2422, probed live
+        # 2026-11-11), so a roster-only scan keying on the hash is the page, not resolver drift:
+        # it is recorded at INFO and only a scan that examined home-feed posts can warn.
         urn_examined = examined_key_sources.get("permalink", 0) + examined_key_sources.get("card", 0)
         if urn_examined:
             log_debug(f"{hash_commented} of {posted} feed comments fell back to the content-hash "
                       f"key; the URN resolver still read {urn_examined} of the posts examined",
                       user_id=user_id, action_type="comment", task_name="comment_on_feed_inline")
+        elif not key_source_by_key:
+            log_info(f"{hash_commented} roster comment(s) keyed on the content hash — the roster "
+                     f"activity page carries no post URN (#2422); key sources "
+                     f"{roster_stats['key_sources']}",
+                     user_id=user_id, action_type="comment", task_name="comment_on_feed_inline")
         else:
             log_warning("No activity URN on ANY feed post examined this scan — every comment "
                         "keyed on the unstable content hash (URN resolver drift, #580)",
