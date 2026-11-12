@@ -270,3 +270,13 @@ def test_the_cli_passes_the_diff_through():
             "--owner", OWNER]
     assert main([*args, "--diff", _diff(CI, CHECKOUT)]) == 0
     assert main(args) == 1
+
+
+def test_the_cli_reads_the_diff_from_a_file_path(tmp_path):
+    """The workflow passes `--diff <path>`: a real PR diff can exceed the argument-length limit."""
+    args = ["gate", "--changed", json.dumps([CI]), "--author", DEPENDABOT, "--approvers", "[]",
+            "--owner", OWNER]
+    diff_file = tmp_path / "pr.diff"
+    diff_file.write_text(_diff(CI, CHECKOUT), encoding="utf-8")
+    assert main([*args, "--diff", str(diff_file)]) == 0
+    assert main([*args, "--diff", str(tmp_path / "missing.diff")]) == 1
