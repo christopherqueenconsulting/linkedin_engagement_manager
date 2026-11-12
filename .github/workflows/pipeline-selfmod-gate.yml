@@ -46,14 +46,39 @@ jobs:
             > /tmp/approvers.json
           echo "changed=$(cat /tmp/changed.json)"     >> "$GITHUB_OUTPUT"
           echo "approvers=$(cat /tmp/approvers.json)" >> "$GITHUB_OUTPUT"
+      # Dependabot only: the script can allow a PR whose diff changes nothing but `uses:` lines, so
+      # it needs the diff itself (a file PATH, not the text — a diff can outgrow an argv). Any other
+      # author is decided on paths and approvals alone, exactly as before. The --help probe keeps
+      # this step working against a script that predates `--diff`: it then decides without it.
+      - name: Collect the diff (Dependabot only)
+        id: diff
+        if: github.event.pull_request.user.login == 'dependabot[bot]'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if python3 scripts/pipeline_selfmod_gate.py --help | grep -q -- --diff; then
+            gh pr diff "$PR" > /tmp/pr.diff
+            echo "path=/tmp/pr.diff" >> "$GITHUB_OUTPUT"
+          else
+            echo "pipeline_selfmod_gate.py has no --diff yet; deciding without the diff."
+          fi
       - name: Decide
         env:
           CHANGED: ${{ steps.facts.outputs.changed }}
           AUTHOR: ${{ github.event.pull_request.user.login }}
           APPROVERS: ${{ steps.facts.outputs.approvers }}
+          DIFF_PATH: ${{ steps.diff.outputs.path }}
         run: |
+          set -euo pipefail
+          extra=()
+          if [ -n "$DIFF_PATH" ]; then
+            extra=(--diff "$DIFF_PATH")
+          fi
           python3 scripts/pipeline_selfmod_gate.py \
             --changed "$CHANGED" \
             --author "$AUTHOR" \
             --approvers "$APPROVERS" \
-            --owner "gitchrisqueen"
+            --owner "gitchrisqueen" \
+            "${extra[@]}"
