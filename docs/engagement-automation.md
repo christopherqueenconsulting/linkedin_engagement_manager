@@ -430,7 +430,8 @@ roster-only scan whose comments keyed on the hash logs at INFO (`… the roster 
 no post URN (#2422)`, with its key sources), and the `Engagement scan:` line still records the
 counts. The hash stays safe across runs for these posts: `logs.post_url` keeps the `feedpost://`
 key, `_norm_prefix` makes it proof against truncation, and each roster target is also bounded by
-`_ROSTER_MAX_POSTS_PER_AUTHOR`, its weekly cap and the 30-minute author cooldown.
+`_ROSTER_MAX_POSTS_PER_AUTHOR` and its weekly cap. (A roster comment starts the 30-minute author
+cooldown, but the roster pass does not check it; only the home-feed walk does.)
 
 ## Replies on our own posts, and the seed comment (`sweep_reply_comments`, `auto_seed_comment_on_post`)
 
