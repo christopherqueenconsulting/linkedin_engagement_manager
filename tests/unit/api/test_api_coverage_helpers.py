@@ -117,6 +117,24 @@ class TestAssetsEndpoint:
         assert resp.content == b"\x00videobytes"
         assert resp.headers["content-type"].startswith("video/")
 
+    def test_serves_render_versioned_carousel_slide_and_keeps_cache_contract(
+            self, api_client, tmp_path) -> None:
+        render_id = "1a2b3c4d5e6f7788"
+        slide = tmp_path / "images" / "carousel" / "42" / f"slide_01_{render_id}.png"
+        slide.parent.mkdir(parents=True)
+        slide.write_bytes(b"rendered-slide")
+
+        with patch(f"{_M}.assets_dir", str(tmp_path)):
+            resp = api_client.get(
+                "/api/assets",
+                params={"file_name": f"images/carousel/42/slide_01_{render_id}.png"},
+            )
+
+        assert resp.status_code == 200
+        assert resp.content == b"rendered-slide"
+        assert resp.headers["content-type"].startswith("image/png")
+        assert "Cache-Control" not in resp.headers
+
     # Both a name that resolves to nothing and one that tries to climb out read as 404 — the
     # traversal attempt must not be distinguishable from a plain miss.
     @pytest.mark.parametrize("file_name", ["videos/none.mp4", "../etc/passwd"],

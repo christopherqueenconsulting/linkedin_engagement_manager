@@ -62,6 +62,17 @@ class TestRetainCarouselKeyframes:
         assert not any(keyframe_path(p) and __import__("os").path.exists(keyframe_path(p))
                        for p in paths[2:])
 
+    def test_a_rerender_replaces_the_previous_decks_keyframes(self, tmp_path):
+        receipts = [{"index": 1, "role": "cover"}, {"index": 2, "role": "body"}]
+        old = [_make_png(tmp_path / f"slide_0{i}_aaaa.png") for i in (1, 2)]
+        retain_carousel_keyframes(old, receipts)
+        new = [_make_png(tmp_path / f"slide_0{i}_ffff.png") for i in (1, 2)]
+        written = retain_carousel_keyframes(new, receipts)
+
+        assert written == [keyframe_path(new[0]), keyframe_path(new[1])]
+        assert retained_carousel_keyframes(str(tmp_path)) == [
+            ("cover", keyframe_path(new[0])), ("body", keyframe_path(new[1]))]
+
     def test_a_two_slide_deck_only_yields_a_cover(self, tmp_path):
         paths = [_make_png(tmp_path / "slide_01.png"), _make_png(tmp_path / "slide_02.png")]
         receipts = [{"index": 1, "role": "cover"}, {"index": 2, "role": "cta"}]
