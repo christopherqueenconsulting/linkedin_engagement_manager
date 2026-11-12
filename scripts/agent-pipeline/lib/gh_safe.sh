@@ -37,7 +37,11 @@ REPO="christopherqueenconsulting/linkedin_engagement_manager"
 # Labels whose PRESENCE grants work or a deploy: agent:ready (start), release:now (fast lane), and
 # every lane label v2 maps to a mode (observe.LANE_LABEL_MODES). The trust walk verifies who applied
 # them, so an agent applying one would at best be refused there and at worst be the actor it trusts.
-PROTECTED=(agent:ready release:now agent:revise agent:phasefix agent:depfix agent:docfix)
+PROTECTED=(agent:ready release:now agent:revise agent:phasefix agent:depfix agent:depmajor agent:docfix)
+# Labels a run may add only in ONE mode. `deps:validated` is MODE=depmajor's verdict, and a
+# workflow-side reconciler arms auto-merge on it — any other lane adding it to its own PR would be
+# that lane merging itself.
+MODE_ONLY_LABELS=("deps:validated=depmajor")
 LABEL_RE='^[a-z0-9][a-z0-9:_./ -]{0,49}$'
 LOGIN_RE='^@?[A-Za-z0-9-]{1,39}$'
 BRANCH_RE='^[A-Za-z0-9._/-]{1,200}$'
@@ -59,6 +63,10 @@ norm_label() {
     local p
     for p in "${PROTECTED[@]}"; do
       [ "$l" = "$p" ] && die "REFUSING to add '$p' — it is provenance-gated; ask the owner in a comment"
+    done
+    for p in "${MODE_ONLY_LABELS[@]}"; do
+      [ "$l" = "${p%%=*}" ] && [ "${MODE:-}" != "${p#*=}" ] \
+        && die "REFUSING to add '${p%%=*}' outside MODE=${p#*=} (MODE=${MODE:-unset})"
     done
   fi
   printf '%s' "$l"

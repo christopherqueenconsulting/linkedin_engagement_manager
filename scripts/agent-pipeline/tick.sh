@@ -473,7 +473,7 @@ newest_owner_answer() {
   # `|` and not a tab: a tab is IFS whitespace, so an empty login would collapse into the body.
   while IFS='|' read -r login dec agent body; do
     if [ "$dec" = 1 ]; then
-      if [ -n "$login" ] && { comment_login_names_app "$login" || comment_author_trusted "$login"; }; then
+      if [ -n "$login" ] && { comment_login_names_app "$login" || answer_author_trusted "$login"; }; then
         [ -n "$found" ] && printf '%s\n' "$found"
         return 0
       fi
@@ -483,7 +483,7 @@ newest_owner_answer() {
     [ "$agent" = 1 ] && continue
     [ -n "$login" ] || continue
     comment_login_names_app "$login" && continue
-    comment_author_trusted "$login" || continue
+    answer_author_trusted "$login" || continue
     found="$body"
   done <<< "$rows"
   return 0   # no Decision Comment from anyone who may ask: nothing was asked, nothing answered

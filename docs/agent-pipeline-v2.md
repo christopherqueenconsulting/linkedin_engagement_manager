@@ -432,6 +432,7 @@ close path.
 | 25 | lane label, by declared priority: `agent:revise` | dispatch `revise` | `owner_requested_changes` | — |
 | 26 | …then `agent:phasefix` | dispatch `phasefix` | `phase_scope_untracked` | — |
 | 27 | …then `agent:depfix` | dispatch `depfix` | `dependabot_ci_failure` | — |
+| 27a | …then `agent:depmajor` | dispatch `depmajor` | `dependabot_major_bump` | — |
 | 28 | …then `agent:docfix` | dispatch `docfix` | `lint_gate_failure` | — |
 | 28a | an OPEN `🧩 phase-gap:` declaration on the PR | dispatch `phasefix` | `phase_scope_untracked` | — |
 | 29 | `mergeStateStatus` is `UNKNOWN` or `""` | none | `merge_state_unknown` | 120s |
@@ -444,6 +445,20 @@ close path.
 | 36 | unresolved Copilot threads | dispatch `review` | `unresolved_review_threads` | — |
 | 37 | no review at/after the head | dispatch `selfreview` | `no_fresh_review` | — |
 | 38 | green, reviewed, threads clear | **merge** | `gate_satisfied` | 15m |
+
+**Row 27a is the major-bump lane (`depmajor`).** A workflow applies `agent:depmajor` with
+`GITHUB_TOKEN` to a Dependabot PR that crosses a major version, or to the `runtime-core` minor/patch
+group (`selenium`, `celery`, `kombu`, `redis`, `mysql-connector-python`, `openai`). It is admitted
+exactly as `agent:depfix` is: `github-actions[bot]` is in `AGENT_CI_LABEL_ACTORS`, and
+`label_actor_trusted` lists `agent:depmajor` among the CI-routed labels; `pr_is_upstream` is still
+the boundary. The run (`runbook/depmajor.md`) reads the upstream notes, finds every usage, makes the
+minimal compat fixes on the Dependabot branch, runs the suite (plus the UI build and vitest for npm)
+and either adds `deps:validated` or parks with `needs-human`. For runtime-core packages it states in
+its decision comment that it could not run a live probe. A workflow-side reconciler (separate PR)
+arms auto-merge on `deps:validated`; `gh_safe.sh` lets only MODE=depmajor add that label. The lane
+is Claude-only (`lane.CLAUDE_ONLY`) — never Ollama, even past the weekly flip — because its verdict
+is what arms a merge. It sits behind `depfix`: a red build is fixed before it is reviewed. v1's
+`tick.sh` does not run it; an `agent:depmajor` PR waits for the daemon.
 
 **Row 24 is the merge-queue gate (#1388), and its position is the whole rule: while the queue holds
 a live entry, no lane that pushes a commit may run.** `queue_state` used to be read last, below rows
@@ -599,7 +614,7 @@ right-hand column below describes.
 | an unresolved Copilot thread | ✅ row 24, `withheld = review` | dispatched `review` — the reply/resolve pushed |
 | a stale review | ✅ row 24, `withheld = selfreview` | dispatched `selfreview` — same |
 | checks pending | ✅ row 24, `withheld = ""` — the queue is reported, not CI | reported `ci_running`, misleading an operator reading the state |
-| a lane label (`revise`/`phasefix`/`depfix`/`docfix`) | ✅ row 24, `withheld = <mode>` | dispatched that lane — every one of them pushes |
+| a lane label (`revise`/`phasefix`/`depfix`/`depmajor`/`docfix`) | ✅ row 24, `withheld = <mode>` | dispatched that lane — every one of them pushes |
 | an open `🧩 phase-gap:` declaration | ✅ row 24, `withheld = phasefix` — the declaration survives anything the queue does, so the lane runs if the entry clears. The daemon cannot queue such a PR itself (row 28a is above row 38, and the declaration arrives in the very comment that makes the review fresh), so this combination means a HUMAN armed it — and a human's arm outranks our bookkeeping | — (row 28a is new in #1396) |
 | auto-merge armed **and** a failed check / stale review / unresolved thread | ✅ row 24, `withheld = ""` — row 32 is above the checks ladder, so nothing would dispatch once the entry cleared either | dispatched nothing then either (row 32 already outranked those rows) |
 | `mergeStateStatus == DIRTY` | ✅ row 23 → `rebase`, the **one documented exception**: the queue cannot merge a conflicted PR either | same |
@@ -619,7 +634,7 @@ every value means "the queue is mid-flight on this ref", and the answer is the s
 
 | Combination | Today |
 |---|---|
-| `agent:revise`/`depfix`/`docfix` on an **ISSUE** | never read — those branches are PR-only, so the issue falls to `issue_not_ready`. `reconcile` queries them for PRs only, so it does not even enter the queue |
+| `agent:revise`/`depfix`/`depmajor`/`docfix` on an **ISSUE** | never read — those branches are PR-only, so the issue falls to `issue_not_ready`. `reconcile` queries them for PRs only, so it does not even enter the queue |
 | `agent:ready` on a **PR** | inert; it satisfies the `agent:` admission test and nothing else |
 | fork PR / release-please PR | `not_admissible` → DB `parked`, `wake_in=None`, **and no GitHub side effect at all** (see §4 ⚠️). Invisible and permanent |
 
@@ -641,6 +656,7 @@ and never writes.
 | `rebase` | agent | 2 | 1200s |
 | `revise` | agent | 2 | 1500s |
 | `depfix` | agent | 3 | 1200s |
+| `depmajor` | agent | 3 | 2400s |
 | `docfix` | agent | 3 | 600s |
 | `merge` | gh | **3, but not from this table** — see below | 180s |
 | `park` / `unpark` | gh | **none — they charge no ledger at all** | 180s |
@@ -995,6 +1011,29 @@ worktree and orphan sweeps. `V1_RETIRED` demotes v1 to the failsafe cron and is
 what `cutover.sh` writes — deliberately not `PAUSED`, because `tick.sh` exits unconditionally on
 PAUSED and that would disable the failsafe too.
 
+The daemon logs `PAUSED file present` once when the file appears and `PAUSED file removed` once when
+it goes — never per pass. Logged per pass, a long pause wrote 1.87M identical lines.
+
+### A second trusted answer login (`LEMD_TRUSTED_ANSWER_LOGINS`)
+
+`config.env` may set `LEMD_TRUSTED_ANSWER_LOGINS` — a comma list, **empty by default** — naming
+further logins the owner answers from. A listed login counts for exactly two things:
+
+* **Decision-Comment answers** — `lemd/answers.py:read_thread` (daemon), `v2_owner_answered`
+  (v2 action re-check), `decision_context` (the answer URL handed to MODE=start/revise) and v1's
+  `newest_owner_answer`, all through `answer_author_trusted` / `trusted_answer_login` in
+  `lib/guards.sh` and `github.parse_answer_logins` in the daemon. It may also post a Decision
+  Comment, since a boundary can only narrow the answer window.
+* **Provenance-gated label provenance** — `label_actor_trusted` accepts it as the applier of
+  `agent:ready` and the lane labels, alongside `AGENT_LABEL_TRUSTED_ACTORS`.
+
+It **never** counts for the Self-Modification Gate (`scripts/pipeline_selfmod_gate.py` takes the
+owner login and nothing else, and its tests pin that a listed login's approval is refused), and it is
+not read for review evidence (`review_state`) or comment directives. **The pipeline App is refused
+explicitly**, in both runners, even when someone lists it — as are every `[bot]` login and anything
+that is not a GitHub login (the daemon logs a WARNING per refused entry). An agent posting as the App
+must never answer its own question.
+
 ### Rolling back comment authority
 
 The trusted-author rule for comments (`docs/contribution-security.md` §1, "Comment authority") lives
@@ -1132,8 +1171,10 @@ Pattern denies remain only for read-only commands and as belt-and-braces.
     `--remove-assignee` (plus `--body-file tmp/<name>` on `pr-edit`, which MODE=phasefix uses);
     labels are trimmed, lower-cased, limited to `[a-z0-9:_./ -]` and may not contain a newline; it
     refuses to ADD `agent:ready`, `release:now` or any lane label v2 maps to a mode (`agent:revise`,
-    `agent:phasefix`, `agent:depfix`, `agent:docfix` — a test checks the list against
-    `observe.LANE_LABEL_MODES`). Removing one is allowed (escalation removes `agent:ready`).
+    `agent:phasefix`, `agent:depfix`, `agent:depmajor`, `agent:docfix` — a test checks the list
+    against `observe.LANE_LABEL_MODES`). Removing one is allowed (escalation removes `agent:ready`).
+    `deps:validated` may be ADDED only in MODE=depmajor (`MODE_ONLY_LABELS`): the workflow-side
+    reconciler arms auto-merge on it, so any other lane adding it would be that lane merging itself.
   - `issue-create` / `pr-create --title T --body-file tmp/<name> [--label L]`; `pr-create` also takes
     `--base main` (nothing else), `--head` (this run's `$BRANCH`, or a new `fix/*` in MODE=depfix —
     the same rule as `git_push.sh`; default: the checked-out branch) and `--draft`.
@@ -1158,6 +1199,12 @@ Pattern denies remain only for read-only commands and as belt-and-braces.
   most flagged forms trip it). `git mv` needs BOTH paths under `compose/local/database/migrations/`
   and never `..`.
 - **`poetry install --with test`** — the preamble's documented fix for a venv with no test plugins.
+- **`npm --prefix src/cqc_lem/ui ci` / `run build` / `test`** — MODE=depmajor validates an npm bump
+  with the UI build and vitest. Exact forms only, pinned to the UI directory. `npm ci` runs the
+  bumped packages' install scripts as the runner's uid — the same class of trust as `poetry run
+  pytest` importing them, and no wider: the profile is a guard rail, not a boundary.
+- **`mcp__graft`** — read-only code-graph queries (the repo's graft index). The live profile on the
+  box already carried it; the repo copy now matches.
 - **`scripts/deploy.sh`** — executing it is denied (`scripts/deploy.sh*`, `./scripts/…`, an absolute
   path, `bash`/`sh`/`source`/`.`); naming it in `git add` / `git diff` is not, so a PR touching it
   can be committed.

@@ -21,6 +21,7 @@ mode file below that matches your MODE.
 | `fix` | [`runbook/fix.md`](runbook/fix.md) | A required CI check is failing on an open PR — diagnose and fix it. |
 | `review` | [`runbook/review.md`](runbook/review.md) | Address and resolve Copilot's unresolved review threads on a PR. |
 | `depfix` | [`runbook/depfix.md`](runbook/depfix.md) | A Dependabot PR's CI is failing — smart-triage whether the bump or something else broke it. |
+| `depmajor` | [`runbook/depmajor.md`](runbook/depmajor.md) | A Dependabot MAJOR bump (or the `runtime-core` group) — read the upstream notes, fix compat on the branch, then `deps:validated` or `needs-human`. |
 | `docfix` | [`runbook/docfix.md`](runbook/docfix.md) | The Docstring & Lint Gate ratchet fired — fix only what this PR added. |
 | `revise` | [`runbook/revise.md`](runbook/revise.md) | The owner requested changes on a PR — implement their feedback (distinct from Copilot's threads). |
 | `selfreview` | [`runbook/selfreview.md`](runbook/selfreview.md) | Adversarial review pass on a PR before merge — the default review gate when Copilot isn't invoked. |

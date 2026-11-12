@@ -15,7 +15,7 @@
 #
 # Expects from the caller, at CALL time (not source time): BASE, REPO, SLUG, OWNER, ASSIGNEE (the
 # owner's login), WORKROOT, TRUSTED_ASSOCIATIONS, AGENT_LABEL_TRUSTED_ACTORS, AGENT_CI_LABEL_ACTORS,
-# and a log() function.
+# LEMD_TRUSTED_ANSWER_LOGINS (optional), and a log() function.
 
 # Per-branch work claim so concurrent slots never touch the same PR/issue. Re-opening fd 10
 # releases any previously held claim (fd close drops the flock).
@@ -63,14 +63,20 @@ label_actor_trusted() {
                     | .actor.login] | last // empty" 2>/dev/null)"
   [ -n "$actor" ] || { log "TRUST: #$n — no readable '$label' labeler; refusing."; return 1; }
   case " $AGENT_LABEL_TRUSTED_ACTORS " in *" $actor "*) return 0 ;; esac
+  # The owner's second answering login (LEMD_TRUSTED_ANSWER_LOGINS) may apply `agent:ready` and the
+  # lane labels too. It is read HERE and for Decision-Comment answers only — never by the
+  # Self-Modification Gate (scripts/pipeline_selfmod_gate.py), which takes the owner login alone.
+  trusted_answer_login "$actor" && return 0
   # CI-ROUTED labels are the one place our own workflows are the legitimate applier. A router runs
   # `actions/github-script` with the default GITHUB_TOKEN, so the timeline actor is
   # `github-actions[bot]` — never a human, and never in the human allowlist. Refusing it made BOTH
   # auto-fix lanes dead on arrival: `agent:depfix` has been shipped since the Dependabot router
-  # landed and has dispatched exactly ZERO times.
+  # landed and has dispatched exactly ZERO times. `agent:depmajor` is the third such label, applied
+  # by the major-bump router the same way, so it is admitted the same way.
   #
-  # This is deliberately narrow, and it is not the hole the allowlist exists to close. These two
-  # labels grant nothing: they say "this EXISTING pull request has failing CI", not "build this".
+  # This is deliberately narrow, and it is not the hole the allowlist exists to close. These
+  # labels grant nothing: they say "look at this EXISTING pull request" (its CI is red, or it is a
+  # major bump to review), not "build this".
   # `pr_is_upstream` still gates the work onto a branch inside this repo, and the labels that DO
   # grant privilege — `agent:ready`, `release:now` — stay human-only.
   #
@@ -84,7 +90,7 @@ label_actor_trusted() {
   # branch into this repo at all already requires write access, which is a stronger statement than
   # any association string.
   case " $label " in
-    " agent:depfix "|" agent:docfix ")
+    " agent:depfix "|" agent:depmajor "|" agent:docfix ")
       case " $AGENT_CI_LABEL_ACTORS " in
         *" $actor "*) return 0 ;;
       esac
@@ -194,6 +200,36 @@ comment_author_trusted() {
   return 1
 }
 
+trusted_answer_login() {
+  # trusted_answer_login <login> -> 0 when <login> is listed in LEMD_TRUSTED_ANSWER_LOGINS (a comma
+  # list, default empty): the owner's SECOND login. It counts for two things only — answering a
+  # Decision Comment (`answer_author_trusted`) and applying a provenance-gated label
+  # (`label_actor_trusted`). Never for the Self-Modification Gate, never for review evidence.
+  #
+  # The pipeline App is refused even when someone lists it: an agent posting as the App must never
+  # be able to answer its own question. So is every `[bot]` login, and anything that is not a
+  # GitHub login. `read -a`, not an unquoted expansion: a `*` in the list must not glob.
+  # `lemd/github.py:parse_answer_logins` is the daemon's twin and must keep agreeing with it.
+  local login="${1:-}" lc entry entries=()
+  [ -n "$login" ] && [ -n "${LEMD_TRUSTED_ANSWER_LOGINS:-}" ] || return 1
+  lc="$(printf '%s' "$login" | tr '[:upper:]' '[:lower:]')"
+  case "$lc" in *"[bot]") return 1 ;; esac
+  comment_login_names_app "$login" && return 1
+  IFS=', ' read -r -a entries <<< "$LEMD_TRUSTED_ANSWER_LOGINS"
+  for entry in "${entries[@]}"; do
+    [[ "$entry" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]] || continue
+    [ "$(printf '%s' "$entry" | tr '[:upper:]' '[:lower:]')" = "$lc" ] && return 0
+  done
+  return 1
+}
+
+answer_author_trusted() {
+  # answer_author_trusted <login> -> 0 when a reply by <login> may ANSWER a Decision Comment (or
+  # post one): a trusted comment author, or a LEMD_TRUSTED_ANSWER_LOGINS login. The extra login is
+  # checked first so it costs no permission lookup and logs no refusal.
+  trusted_answer_login "${1:-}" || comment_author_trusted "${1:-}"
+}
+
 decision_context() {
   # decision_context <number> -> "<menu-url> <answer-url>" ("none" for either) on that thread.
   #
@@ -213,7 +249,7 @@ decision_context() {
     [[ "$url" =~ ^https://github\.com/[A-Za-z0-9._/-]+#issuecomment-[0-9]+$ ]] || continue
     [ -n "$login" ] || continue
     if [ "$dec" = 1 ]; then
-      if comment_login_is_app "$login" "$type" || comment_author_trusted "$login"; then
+      if comment_login_is_app "$login" "$type" || answer_author_trusted "$login"; then
         menu="$url"; break
       fi
       continue
@@ -222,7 +258,7 @@ decision_context() {
     [ "$agent" = 1 ] && continue
     comment_login_is_app "$login" "$type" && continue
     comment_login_names_app "$login" && continue
-    comment_author_trusted "$login" || continue
+    answer_author_trusted "$login" || continue
     answer="$url"
   done <<< "$rows"
   # No menu from anyone who may ask: nothing was asked, so nothing was answered.

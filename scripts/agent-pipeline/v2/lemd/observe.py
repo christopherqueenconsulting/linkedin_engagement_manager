@@ -199,8 +199,10 @@ HOLD_LABELS = frozenset({"needs-human", "agent:blocked"})
 #:
 #: `agent:revise` leads because it carries the owner's own instruction, and the owner outranks CI.
 #: `depfix` before `docfix` because a Dependabot PR whose build is broken cannot usefully be
-#: lint-fixed first.
-LANE_LABEL_PRIORITY = ("agent:revise", "agent:phasefix", "agent:depfix", "agent:docfix")
+#: lint-fixed first. `depmajor` sits right behind `depfix`: a major bump whose CI is ALSO red is a
+#: CI fix first, and the compatibility review is only meaningful on a build that runs.
+LANE_LABEL_PRIORITY = ("agent:revise", "agent:phasefix", "agent:depfix", "agent:depmajor",
+                       "agent:docfix")
 
 #: The mode and reason each lane label maps to.
 LANE_LABEL_MODES = {
@@ -212,6 +214,11 @@ LANE_LABEL_MODES = {
     # clears. Same mode, same reason string, so the two entrances are one lane in the ledger.
     "agent:phasefix": ("phasefix", "phase_scope_untracked"),
     "agent:depfix": ("depfix", "dependabot_ci_failure"),
+    # A Dependabot MAJOR bump, or a `runtime-core` minor/patch group (selenium, celery, kombu,
+    # redis, mysql-connector-python, openai). Applied by a workflow with GITHUB_TOKEN, exactly as
+    # the router applies `agent:depfix`; the lane reads the upstream notes, makes the compat fixes
+    # and marks the PR `deps:validated` or parks it. It never merges anything itself.
+    "agent:depmajor": ("depmajor", "dependabot_major_bump"),
     "agent:docfix": ("docfix", "lint_gate_failure"),
 }
 
@@ -641,7 +648,7 @@ _THREAD_NOT_READ = answers.Thread(answer=None, menu_posted=None)
 
 
 def _thread_for(slug: str, kind: str, number: int, labels: frozenset[str],
-                owner: str | None) -> answers.Thread:
+                owner: str | None, answer_logins: frozenset[str] = frozenset()) -> answers.Thread:
     """Read the held item's thread — the owner's newest reply AND whether a menu exists.
 
     Gated on the hold labels for cost, not for correctness: this is one `gh view --json comments`
@@ -652,11 +659,12 @@ def _thread_for(slug: str, kind: str, number: int, labels: frozenset[str],
     """
     if not owner or not (labels & HOLD_LABELS):
         return _THREAD_NOT_READ
-    return answers.read_thread(slug, kind, number, owner)
+    return answers.read_thread(slug, kind, number, owner, answer_logins=answer_logins)
 
 
 def snapshot_pr(slug: str, number: int, *, owner: str | None = None,
                 answer_routed: str | None = None,
+                answer_logins: frozenset[str] = frozenset(),
                 review: github.ReviewState | None = None) -> Snapshot:
     """Build a `Snapshot` for a PR from live GitHub reads.
 
@@ -680,7 +688,7 @@ def snapshot_pr(slug: str, number: int, *, owner: str | None = None,
         return Snapshot(kind="pr", number=number, readable=False)
 
     labels = frozenset(github.label_names(facts))
-    thread = _thread_for(slug, "pr", number, labels, owner)
+    thread = _thread_for(slug, "pr", number, labels, owner, answer_logins)
     pending = github.owner_review_pending(facts, owner or "")
     # Only asked when it can change anything. The CODEOWNERS read is cached for an hour, but the
     # path match runs per observation, and there is nothing to match FOR once the owner is already
@@ -734,7 +742,8 @@ def _dismissed_prs(number: int) -> frozenset[int]:
 
 
 def snapshot_issue(slug: str, number: int, *, owner: str | None = None,
-                   answer_routed: str | None = None) -> Snapshot:
+                   answer_routed: str | None = None,
+                   answer_logins: frozenset[str] = frozenset()) -> Snapshot:
     """Build a `Snapshot` for an issue.
 
     The answer read is not PR-only, and that is the half v1 got right and is easy to drop: a
@@ -750,7 +759,7 @@ def snapshot_issue(slug: str, number: int, *, owner: str | None = None,
         LOG.warning("issue #%s unreadable: %s", number, exc)
         return Snapshot(kind="issue", number=number, readable=False)
     labels = frozenset(github.label_names(facts))
-    thread = _thread_for(slug, "issue", number, labels, owner)
+    thread = _thread_for(slug, "issue", number, labels, owner, answer_logins)
     # Only when row 9a could fire — the one decision this fact changes.
     trusted = (github.author_trusted(slug, number)
                if "needs-human" in labels and thread.menu_posted is False else None)

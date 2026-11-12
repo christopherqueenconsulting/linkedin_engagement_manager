@@ -576,3 +576,20 @@ def test_owner_review_wait_does_not_notify_when_reached_from_itself(tmp_path, mo
         assert calls == []
     finally:
         dm.conn.close()
+
+
+def test_a_major_bump_label_dispatches_the_depmajor_lane():
+    """Routed by a workflow with GITHUB_TOKEN, exactly like `agent:depfix`."""
+    got = d(pr(labels=frozenset({"agent:depmajor"})))
+    assert got.action == observe.ACT_DISPATCH
+    assert got.mode == "depmajor"
+    assert got.reason == "dependabot_major_bump"
+
+
+def test_depmajor_sits_right_behind_depfix():
+    """A red build is fixed before the major bump is reviewed; docfix waits behind both."""
+    prio = observe.LANE_LABEL_PRIORITY
+    assert prio.index("agent:depmajor") == prio.index("agent:depfix") + 1
+    got = d(pr(labels=frozenset({"agent:depfix", "agent:depmajor", "agent:docfix"}), checks=RED))
+    assert got.mode == "depfix"
+    assert got.details["lanes_pending"] == ["agent:depmajor", "agent:docfix"]

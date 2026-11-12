@@ -46,7 +46,8 @@ GIT_COMMIT = PIPELINE / "lib" / "git_commit.sh"
 GIT_COMMIT_INSTALLED = "/home/lem/agent-pipeline/lib/git_commit.sh"
 
 #: Every MODE agent_run.sh / tick.sh dispatches through run_lane.
-MODES = ["start", "fix", "review", "selfreview", "rebase", "revise", "depfix", "docfix", "phasefix"]
+MODES = ["start", "fix", "review", "selfreview", "rebase", "revise", "depfix", "depmajor", "docfix",
+         "phasefix"]
 
 FAKE_CLAUDE = """#!/bin/sh
 printf '%s\\n' "$@" > "$ARGV_FILE"
@@ -288,6 +289,10 @@ def test_matcher_follows_the_documented_examples():
         "poetry run ruff check src/a.py tests/b.py",
         # the preamble's venv trap
         "poetry install --with test",
+        # MODE=depmajor's npm validation
+        "npm --prefix src/cqc_lem/ui ci",
+        "npm --prefix src/cqc_lem/ui run build",
+        "npm --prefix src/cqc_lem/ui test",
     ],
 )
 def test_every_documented_runbook_command_is_allowed(command):
@@ -1271,6 +1276,8 @@ def test_gh_safe_only_edits_this_runs_item(tmp_path, args, env_extra):
         ("pr-edit", "9", "--add-label", "Release:Now"),
         ("pr-edit", "9", "--add-label", "agent:revise"),
         ("pr-edit", "9", "--add-label", "agent:depfix"),
+        ("pr-edit", "9", "--add-label", "Agent:DepMajor"),
+        ("pr-edit", "9", "--add-label", "deps:validated"),               # MODE=depmajor only
         ("pr-edit", "9", "--add-label", "AGENT:DOCFIX"),
         ("pr-edit", "9", "--add-label", "agent:phasefix"),
         ("pr-edit", "9", "--add-label", "needs-human\n"),                  # newline in a label
@@ -1587,3 +1594,43 @@ def test_git_commit_refuses_every_other_shape(tmp_path, args):
     assert r.returncode == 2, (r.stdout, r.stderr)
     assert msg == "", "nothing may be committed"
     assert "s3cret" not in r.stdout + r.stderr
+
+
+# ---------------------------------------------------------------- MODE=depmajor and the graft MCP
+
+
+def test_mcp_graft_is_allowed_right_after_playwright():
+    """The live copy on the box already carried it; the repo copy must match it."""
+    allow = _profile()["permissions"]["allow"]
+    assert allow[allow.index("mcp__playwright") + 1] == "mcp__graft"
+
+
+@pytest.mark.parametrize("command", [
+    "npm ci",
+    "npm --prefix src/cqc_lem/ui install evil",
+    "npm --prefix /tmp run build",
+    "npm --prefix src/cqc_lem/ui run gen:api-types",
+    "npx vitest run",
+])
+def test_npm_is_allowed_only_in_the_exact_ui_forms(command):
+    assert _decide(command) == "deny", command
+
+
+@pytest.mark.parametrize("mode", ["depmajor", "DEPMAJOR"])
+def test_gh_safe_lets_only_depmajor_validate_a_dependency_pr(tmp_path, mode):
+    r, calls = _gh_safe(tmp_path, "pr-edit", "9", "--add-label", "Deps:Validated",
+                        "--remove-label", "agent:depmajor", env_extra={"MODE": mode})
+    if mode == "depmajor":
+        assert r.returncode == 0, r.stderr
+        assert _writes(calls) == [["pr", "edit", "9", "--repo", REPO_SLUG, "--add-label",
+                                   "deps:validated", "--remove-label", "agent:depmajor"]]
+    else:  # MODE is matched exactly: the runner exports it lower-case
+        assert r.returncode == 2
+        assert "outside MODE=depmajor" in r.stderr
+        assert _writes(calls) == []
+
+
+def test_gh_safe_any_mode_may_remove_deps_validated(tmp_path):
+    r, calls = _gh_safe(tmp_path, "pr-edit", "9", "--remove-label", "deps:validated",
+                        env_extra={"MODE": "fix"})
+    assert r.returncode == 0, r.stderr

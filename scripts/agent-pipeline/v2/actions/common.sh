@@ -142,7 +142,8 @@ v2_trust_ok() {
 # v2_owner_answered <issue|pr> <number> <answer-id> -> 0 when <answer-id> IS the newest reply from
 # a TRUSTED author after the latest Decision Comment: the owner, or an account with
 # admin/maintain/write on this repo (`comment_author_trusted` in lib/guards.sh — the owner ruling on
-# comment authority), judged on a FRESH lookup.
+# comment authority), judged on a FRESH lookup — or a LEMD_TRUSTED_ANSWER_LOGINS login, which never
+# includes the App (`answer_author_trusted`, the same rule as the daemon's `answers.read_thread`).
 #
 # This is the AUTHORSHIP half of an un-park, re-asked at execution time and BOUND to the comment
 # the daemon routed. The daemon classified that reply (`lemd/answers.py`) from a permission cache
@@ -169,7 +170,7 @@ v2_owner_answered() {
   while IFS='|' read -r id login dec agent; do
     [ -n "$id$login" ] || continue
     if [ "$dec" = 1 ]; then
-      if [ -n "$login" ] && { comment_login_names_app "$login" || comment_author_trusted "$login"; }; then
+      if [ -n "$login" ] && { comment_login_names_app "$login" || answer_author_trusted "$login"; }; then
         asked=1; break
       fi
       continue
@@ -178,7 +179,7 @@ v2_owner_answered() {
     [ "$agent" = 1 ] && continue
     [ -n "$login" ] || continue
     comment_login_names_app "$login" && continue
-    comment_author_trusted "$login" || continue
+    answer_author_trusted "$login" || continue
     candidate="$id"
   done <<< "$rows"
   # Unreadable is a refusal, as everywhere else in this file — and so is an unreadable permission.

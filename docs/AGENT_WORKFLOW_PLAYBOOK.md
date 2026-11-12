@@ -33,6 +33,8 @@ it. **An issue without `agent:ready` does not exist to the pipeline.**
 | `agent:revise` | (PR) Owner requested changes / answered a Decision Comment | Runner |
 | `agent:blocked` | Held after escalation; runner skips it | Runner/agent |
 | `agent:depfix` | (PR) Dependabot PR with failing CI, priority fix lane | CI router |
+| `agent:depmajor` | (PR) Dependabot MAJOR bump or `runtime-core` group: agent reads upstream notes, fixes compat, then `deps:validated` or `needs-human` | Dependabot workflow |
+| `deps:validated` | (PR) MODE=depmajor judged the bump safe; a workflow reconciler arms auto-merge on it | MODE=depmajor only |
 | `agent:phasefix` | (PR) Phase-scope hold: agent files/links the follow-up for a multi-phase close. v2 also enters this lane from a `🧩 phase-gap:` declaration, with no label | Runner |
 | `needs-human` | Waiting on a human decision or human-only action | Agent (on escalation) or human |
 

@@ -32,7 +32,8 @@ from lemd import observe  # noqa: E402
 #: the two apart teaches people to rename their reasons around it.
 NOT_DECIDE_REASONS = tuple(
     f"{mode}_exhausted" for mode in
-    ("start", "fix", "review", "selfreview", "rebase", "revise", "depfix", "docfix", "merge")
+    ("start", "fix", "review", "selfreview", "rebase", "revise", "depfix", "depmajor", "docfix",
+     "merge")
 )
 
 
@@ -117,7 +118,7 @@ def test_the_doc_lists_no_reason_the_code_cannot_return():
     backticks, and those are checked by their own tests below.
     """
     code = _reasons_in_code()
-    modes = {"start", "fix", "review", "selfreview", "rebase", "revise", "depfix", "docfix",
+    modes = {"start", "fix", "review", "selfreview", "rebase", "revise", "depfix", "depmajor", "docfix",
              "merge", "park", "unpark", "phasefix"}
     labels = {"needs", "agent", "human", "hold", "verdict", "close", "dispatch", "none"}
     stale = {

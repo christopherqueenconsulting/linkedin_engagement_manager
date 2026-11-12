@@ -393,4 +393,4 @@ def test_v1s_call_site_is_still_behind_the_retired_gate():
     assert tick.index("V1_RETIRED_FILE=") < tick.index("\nsweep_stale_worktrees\n")
     src = (_V2 / "lemd" / "daemon.py").read_text()
     assert src.index("self.collect()") < src.index("self.sweep_worktrees()") \
-        < src.index("if self.cfg.is_paused():")
+        < src.index("paused = self.cfg.is_paused()")

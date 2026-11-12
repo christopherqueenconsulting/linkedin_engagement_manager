@@ -647,6 +647,32 @@ def names_pipeline_app(login: str) -> bool:
     return bool(login) and _bare_login(login) == _bare_login(pipeline_app_login())
 
 
+def parse_answer_logins(raw: str) -> frozenset[str]:
+    """Parse `LEMD_TRUSTED_ANSWER_LOGINS`: the owner's second login(s), lower-cased.
+
+    These count for Decision-Comment ANSWERS (`answers.read_thread`) and, in the shell twin, for
+    provenance-gated labels. Never for the Self-Modification Gate or review evidence.
+
+    Refused, each with a WARNING because a login the operator believes is trusted but is not is the
+    failure nobody notices: anything that is not a GitHub login, every `[bot]` login, and above all
+    the pipeline App itself — an agent posting as the App must never answer its own question.
+    `trusted_answer_login` in `lib/guards.sh` applies the same rules and must keep agreeing.
+    """
+    out: set[str] = set()
+    for entry in re.split(r"[,\s]+", raw or ""):
+        if not entry:
+            continue
+        if names_pipeline_app(entry):
+            LOG.warning("LEMD_TRUSTED_ANSWER_LOGINS: refusing %r — the pipeline App never answers "
+                        "its own question", entry)
+            continue
+        if entry.lower().endswith("[bot]") or not _LOGIN_RE.fullmatch(entry):
+            LOG.warning("LEMD_TRUSTED_ANSWER_LOGINS: refusing %r — not a human GitHub login", entry)
+            continue
+        out.add(entry.lower())
+    return frozenset(out)
+
+
 def collaborator_permission(slug: str, login: str, *, timeout: int = 30) -> frozenset[str] | None:
     """`login`'s permission on `slug`: `{permission, role_name}`, or None when unreadable.
 

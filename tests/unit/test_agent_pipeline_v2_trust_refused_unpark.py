@@ -48,7 +48,7 @@ def held_issue(**kw) -> observe.Snapshot:
 
 def _observe(dmn: daemon.Daemon, monkeypatch, snap_kw: dict) -> None:
     """One observation of #2268, routed through the real `_observe_one`."""
-    def fake_snapshot(slug, number, *, owner=None, answer_routed=None):
+    def fake_snapshot(slug, number, *, owner=None, answer_routed=None, answer_logins=frozenset()):
         return held_issue(answer_routed=answer_routed, **snap_kw)
 
     monkeypatch.setattr(observe, "snapshot_issue", fake_snapshot)

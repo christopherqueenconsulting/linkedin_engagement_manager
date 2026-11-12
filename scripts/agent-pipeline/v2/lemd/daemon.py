@@ -103,6 +103,9 @@ class Daemon:
         self.sup = dispatch.Supervisor(cfg, self.conn)
         self._stop = False
         self._last_reconcile = 0.0
+        #: Pause state as of the last pass, so the PAUSED line is logged on each TRANSITION rather
+        #: than every pass — logged per pass it wrote 1.87M lines. None until the first pass.
+        self._was_paused: bool | None = None
         self._decisions = 0
         self._degraded = False
         self._last_usage_probe = 0.0
@@ -242,6 +245,7 @@ class Daemon:
                 ("agent:working", "pr"),
                 ("agent:revise", "pr"),
                 ("agent:depfix", "pr"),
+                ("agent:depmajor", "pr"),
                 ("agent:docfix", "pr"),
                 ("agent:phasefix", "pr"),
                 # The HOLD labels, both kinds, and this is not bookkeeping. `park.sh` strips
@@ -379,10 +383,12 @@ class Daemon:
         routed = str(routed) if routed is not None else None
         if kind == "pr":
             snap = observe.snapshot_pr(self.cfg.slug, number, owner=self.cfg.assignee,
-                                       answer_routed=routed)
+                                       answer_routed=routed,
+                                       answer_logins=self.cfg.trusted_answer_logins)
         else:
             snap = observe.snapshot_issue(self.cfg.slug, number, owner=self.cfg.assignee,
-                                          answer_routed=routed)
+                                          answer_routed=routed,
+                                          answer_logins=self.cfg.trusted_answer_logins)
 
         parked_reason = row["parked_reason"]
         snap = dataclasses.replace(
@@ -1011,8 +1017,14 @@ class Daemon:
         self.sweep_orphans()
         # The triage scorer only reads GitHub and appends to a log, so it too runs while PAUSED.
         self.run_scorer()
-        if self.cfg.is_paused():
-            LOG.info("PAUSED file present — observing nothing this pass")
+        paused = self.cfg.is_paused()
+        if paused != self._was_paused:
+            if paused:
+                LOG.info("PAUSED file present — observing nothing until it is removed")
+            elif self._was_paused:
+                LOG.info("PAUSED file removed — resuming observation")
+            self._was_paused = paused
+        if paused:
             return
         self.drain_events()
         if time.time() - self._last_reconcile >= self.reconcile_interval():

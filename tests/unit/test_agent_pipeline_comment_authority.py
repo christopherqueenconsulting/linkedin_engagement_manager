@@ -74,7 +74,7 @@ def _fn(src: str, name: str) -> str:
 
 HELPERS = "".join(_fn(GUARDS, n) for n in
                   ("pipeline_app_login", "comment_login_is_app", "comment_login_names_app",
-                   "comment_author_trusted"))
+                   "comment_author_trusted", "trusted_answer_login", "answer_author_trusted"))
 
 _GH_STUB = r'''#!/usr/bin/env bash
 # Stub gh: comment reads come from $COMMENTS ({"body": ..., "comments": [...]}) — through
@@ -520,3 +520,102 @@ def test_the_daemon_never_un_parks_what_the_action_refuses(tmp_path, monkeypatch
     parsed = answers.parse(thread, OWNER, lambda login: github.comment_author_trusted("a/w", login, OWNER))
     if parsed is not None:
         assert _v2(tmp_path, thread, want=parsed.comment_id), "the action must accept the SAME comment"
+
+
+# ------------------------------------------------------------------ LEMD_TRUSTED_ANSWER_LOGINS
+
+#: The owner's second login: no repository permission at all (absent from PERMS -> unreadable).
+SECOND = "owner-second"
+_EXTRA = {"LEMD_TRUSTED_ANSWER_LOGINS": f"someone-else, {SECOND}"}
+
+
+class TestTrustedAnswerLogins:
+    """A second answering login counts for answers in BOTH runners — and never as the App."""
+
+    def _yes(self, tmp_path, call: str, env: dict | None = None, comments=None) -> bool:
+        r = _run(tmp_path, call + " && echo YES || echo NO", comments, env=env)
+        return r.stdout.strip().splitlines()[-1] == "YES"
+
+    def test_a_listed_login_answers_without_a_permission_lookup(self, tmp_path):
+        assert self._yes(tmp_path, f'answer_author_trusted "{SECOND}"', _EXTRA)
+        assert _calls(tmp_path) == [], "the extra login must cost no permission lookup"
+
+    def test_matching_is_case_insensitive(self, tmp_path):
+        assert self._yes(tmp_path, 'answer_author_trusted "Owner-SECOND"', _EXTRA)
+
+    def test_unset_means_nobody_extra(self, tmp_path):
+        assert not self._yes(tmp_path, f'answer_author_trusted "{SECOND}"')
+
+    @pytest.mark.parametrize("listed", [APP, SPOOF, "CQC-LEM-Agent-Pipeline", "codecov[bot]"])
+    def test_the_app_and_bots_are_refused_even_when_listed(self, tmp_path, listed):
+        """An agent posting as the App must never answer its own question."""
+        env = {"LEMD_TRUSTED_ANSWER_LOGINS": listed}
+        assert not self._yes(tmp_path, f'trusted_answer_login "{listed}"', env)
+
+    def test_a_glob_in_the_list_matches_nothing(self, tmp_path):
+        (tmp_path / "mallory").write_text("")
+        env = {"LEMD_TRUSTED_ANSWER_LOGINS": "*"}
+        assert not self._yes(tmp_path, 'cd "$HOME" && trusted_answer_login mallory', env)
+
+    def test_v2_owner_answered_accepts_the_second_login(self, tmp_path):
+        thread = [c(DECISION, APP), c("1B", SECOND)]
+        call = V2_OWNER_ANSWERED + f'v2_owner_answered pr 7 "{thread[-1]["id"]}"'
+        assert self._yes(tmp_path, call, _EXTRA, thread)
+        assert not self._yes(tmp_path, call, None, thread)
+
+    def test_v1_newest_owner_answer_agrees(self, tmp_path):
+        thread = [c(DECISION, APP), c("1B", SECOND)]
+        r = _run(tmp_path, NEWEST + "newest_owner_answer pr 7", thread, env=_EXTRA)
+        out = [ln for ln in r.stdout.splitlines() if not ln.startswith("LOG:")]
+        assert base64.b64decode(out[0]).decode() == "1B"
+
+    def test_decision_context_hands_the_second_logins_answer_to_the_agent(self, tmp_path):
+        menu, answer = c(DECISION, APP), c("1B", SECOND)
+        r = _run(tmp_path, DECISION_CTX + "decision_context 7", [menu, answer], env=_EXTRA)
+        got = [ln for ln in r.stdout.splitlines() if not ln.startswith("LOG:")][-1].split()
+        assert got == [menu["html_url"], answer["html_url"]]
+
+
+def test_parse_answer_logins_refuses_the_app_and_non_logins(caplog, monkeypatch):
+    monkeypatch.delenv("GH_APP_BOT_LOGIN", raising=False)
+    got = github.parse_answer_logins(f"{SECOND}, Other-Login {APP},{SPOOF} codecov[bot] bad/login")
+    assert got == frozenset({SECOND, "other-login"})
+    assert sum("refusing" in r.message for r in caplog.records) == 4
+
+
+def test_parse_answer_logins_defaults_to_nobody():
+    assert github.parse_answer_logins("") == frozenset()
+
+
+def test_the_daemon_reads_the_second_logins_answer(monkeypatch):
+    """`read_thread` with `answer_logins` un-parks on the second login; without it, it does not."""
+    monkeypatch.setattr(github, "_PERMISSION_CACHE", {})
+    thread = [c(DECISION, APP), c("1B", SECOND)]
+
+    def gh(args, **_k):
+        if args[0] == "api":
+            raise github.GitHubUnavailable("(HTTP 404)")
+        return {"comments": thread}
+
+    monkeypatch.setattr(github, "gh_json", gh)
+    got = answers.read_thread("a/w", "pr", 7, OWNER, answer_logins=frozenset({SECOND}))
+    assert got.answer is not None and got.answer.comment_id == thread[-1]["id"]
+    assert answers.read_thread("a/w", "pr", 7, OWNER).answer is None
+    # The App never answers, even if a caller hands its login back in.
+    app_thread = [c(DECISION, APP), c("1B", SPOOF)]
+    monkeypatch.setattr(github, "gh_json", lambda args, **_k: {"comments": app_thread})
+    assert answers.read_thread("a/w", "pr", 7, OWNER,
+                               answer_logins=frozenset({SPOOF})).answer is None
+
+
+def test_both_runners_agree_on_the_second_login(tmp_path, monkeypatch):
+    """The daemon's answer is one the action re-check accepts (the un-park must not be refused)."""
+    monkeypatch.setattr(github, "_PERMISSION_CACHE", {})
+    thread = [c(DECISION, APP), c("noise", "outsider"), c("1A", SECOND), c("x", "codecov")]
+    monkeypatch.setattr(github, "gh_json", lambda args, **_k: (_ for _ in ()).throw(
+        github.GitHubUnavailable("(HTTP 404)")) if args[0] == "api" else {"comments": thread})
+    got = answers.read_thread("a/w", "pr", 7, OWNER, answer_logins=frozenset({SECOND}))
+    assert got.answer is not None
+    r = _run(tmp_path, V2_OWNER_ANSWERED + f'v2_owner_answered pr 7 "{got.answer.comment_id}" '
+             "&& echo YES || echo NO", thread, env=_EXTRA)
+    assert r.stdout.strip().splitlines()[-1] == "YES"

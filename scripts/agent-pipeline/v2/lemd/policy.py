@@ -46,6 +46,7 @@ MODE_BUDGET: dict[str, int] = {
     "rebase": 2,
     "revise": 2,
     "depfix": 3,
+    "depmajor": 3,
     "docfix": 3,
     "phasefix": 2,
     "merge": 3,
@@ -65,6 +66,9 @@ MODE_TIMEOUT: dict[str, int] = {
     "rebase": 1200,
     "revise": 1500,
     "depfix": 1200,
+    # Longer than depfix: the run reads upstream release notes and migration guides for every bumped
+    # package and searches every usage before it runs the suite, which a CI-log triage never does.
+    "depmajor": 2400,
     "docfix": 600,
     "phasefix": 600,
 }

@@ -213,7 +213,7 @@ def parse(comments: list[dict[str, Any]], owner: str,
 
 
 def read_thread(slug: str, kind: str, number: int, owner: str, *,
-                timeout: int = 30) -> Thread:
+                answer_logins: frozenset[str] = frozenset(), timeout: int = 30) -> Thread:
     """Read one thread ONCE: the newest trusted reply, and whether a menu was ever posted.
 
     One API call, made only for items already carrying a hold label — every other observation
@@ -237,6 +237,10 @@ def read_thread(slug: str, kind: str, number: int, owner: str, *,
     comments = list(facts.get("comments") or [])
 
     def trusted(login: str) -> bool:
+        # `answer_logins` is LEMD_TRUSTED_ANSWER_LOGINS, already stripped of the App at parse time;
+        # the App check is repeated here so no caller can hand it back in.
+        if login.lower() in answer_logins and not github.names_pipeline_app(login):
+            return True
         return github.comment_author_trusted(slug, login, owner, timeout=timeout)
 
     return Thread(answer=parse(comments, owner, trusted),

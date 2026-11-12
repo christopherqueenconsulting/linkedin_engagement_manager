@@ -47,6 +47,11 @@ if [ "$KIND" = "pr" ]; then
     --add-label "agent:abandoned" --add-label "needs-human" \
     --remove-label "agent:working" --remove-label "agent:revise" \
     --remove-label "agent:depfix" --remove-label "agent:docfix" >/dev/null 2>&1
+  # Separate call: a label the repo does not define yet fails the whole `gh pr edit`, and these two
+  # are newer than the ones above. `deps:validated` must not survive an abandon — the workflow-side
+  # reconciler arms auto-merge on it.
+  gh pr edit "$NUMBER" --repo "$SLUG" \
+    --remove-label "agent:depmajor" --remove-label "deps:validated" >/dev/null 2>&1
   gh pr edit "$NUMBER" --repo "$SLUG" --add-assignee "$ASSIGNEE" >/dev/null 2>&1
 else
   gh issue edit "$NUMBER" --repo "$SLUG" \

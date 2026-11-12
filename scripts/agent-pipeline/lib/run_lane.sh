@@ -2,7 +2,7 @@
 # Lane executor — the single place a `claude -p` run is launched, wrapped with capacity-aware lane
 # env, PostHog lifecycle telemetry, outcome recording, and GitHub labeling. run_claude() in tick.sh
 # and v2's agent_run.sh delegate here so every MODE (start/fix/review/selfreview/rebase/revise/
-# depfix/docfix/phasefix — all nine) gets identical
+# depfix/depmajor/docfix/phasefix — all ten) gets identical
 # routing + observability without per-call-site edits. Every MODE runs headless under the `dontAsk`
 # permission profile ($BASE/config/claude-headless.json) — anything the profile does not allow is
 # denied, never prompted. LEM_PERMISSION_PROFILE=off is the emergency opt-out back to the old
@@ -124,7 +124,7 @@ guard_ledger_charge_with_profile() {
   eval "_ledger_charge_unguarded() $(declare -f ledger_charge | tail -n +2)"
   ledger_charge() {
     case "${3:-}" in
-      start|fix|review|selfreview|rebase|revise|depfix|docfix|phasefix)
+      start|fix|review|selfreview|rebase|revise|depfix|depmajor|docfix|phasefix)
         if ! permission_profile_ready "$3"; then
           # stderr: callers capture or discard this function's stdout (the attempt number).
           log "LEDGER: not charging $1 #$2 $3 — run_lane would refuse it (permission profile missing)." >&2

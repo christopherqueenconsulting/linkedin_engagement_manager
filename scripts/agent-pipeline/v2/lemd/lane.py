@@ -35,8 +35,13 @@ LOG = logging.getLogger("lemd.lane")
 #: resolution that has to understand both sides (`rebase`).
 CLAUDE_PREFERRED = frozenset({"start", "revise", "rebase"})
 
-#: Modes that are mechanical enough to run on the cheap lane by default.
+#: Modes that are mechanical enough to run on the cheap lane by default. `depmajor` is NOT one of
+#: them: its output is a judgement ("this major bump is safe for our usage") that arms auto-merge,
+#: so it runs on Claude only — see `CLAUDE_ONLY`.
 OLLAMA_ELIGIBLE = frozenset({"review", "phasefix", "docfix", "depfix"})
+
+#: Modes that never route to Ollama, whatever the weekly headroom.
+CLAUDE_ONLY = frozenset({"depmajor"})
 
 #: `selfreview` is neither: it produces the merge gate's review evidence, so starving it does not
 #: slow merges, it STOPS them (plan H4). It prefers Claude and accepts a BOUNDED wait, then falls
@@ -78,6 +83,12 @@ def decide(mode: str, usage: spend.Usage, *, paused_seconds: float = 0.0,
         A `LaneChoice`. `lane=None` means "no opinion" — the caller keeps the health-based routing
         it already computed, which is the correct answer when the meter cannot answer.
     """
+    if mode in CLAUDE_ONLY:
+        # Ahead of the probe and the weekly flip on purpose: "no opinion" would hand the run to the
+        # health-based routing, and that can pick Ollama. These runs are rare (a few Dependabot
+        # PRs a week), and a weaker verdict here is the one that arms auto-merge.
+        return LaneChoice("claude", "claude_only_mode")
+
     if not usage.readable or usage.week_pct is None:
         # Say so rather than pick. The whole defect this module fixes was a lane being chosen for a
         # reason nobody could see afterwards.
