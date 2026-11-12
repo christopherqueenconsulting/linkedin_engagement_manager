@@ -52,12 +52,14 @@ class TestCodeownersResolves:
             "a `*` catch-all blocks every PR once required approvals >= 1 — list the control "
             "surfaces explicitly instead")
 
-    def test_the_measured_enforcement_limit_is_recorded(self):
-        # `require_code_owner_reviews: true` with `required_approving_review_count: 0` enforces
-        # nothing (measured 2026-08-04). A reader who assumes otherwise will believe a control
-        # exists that does not, so the finding has to survive in the file itself.
+    def test_the_enforcing_gate_is_recorded(self):
+        # Code-owner review is OFF (owner ruling, 2026-11-12); the Pipeline Self-Modification Gate
+        # enforces this file. A reader who assumes GitHub still enforces it, or that nothing does,
+        # will misjudge what a change here does, so the arrangement has to survive in the file.
         text = CODEOWNERS.read_text(encoding="utf-8")
-        assert "enforces NOTHING" in text and "required_approving_review_count: 0" in text
+        assert "Pipeline Self-Modification Gate" in text
+        assert "code-owner review is OFF" in text
+        assert "docs/codeowners-enforcement-limit.md" in text
 
 
 class TestControlSurfacesAreCovered:

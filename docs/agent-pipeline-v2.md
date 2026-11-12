@@ -968,7 +968,8 @@ on a hand run logs `mirror fast-forwarded <old> -> <new>` whenever `main` has mo
 ⚠️ **The timer is deliberately not enabled.** Auto-deploy closes a loop: agents merge their own PRs
 (`required_approving_review_count` is 0), so a merged pipeline change would reach the box unattended.
 `scripts/pipeline_selfmod_gate.py` is the control, and it only works once the workflow calling it is
-a REQUIRED check on `main` — an owner-only branch-protection setting (#1397).
+a REQUIRED check on `main` — an owner-only branch-protection setting (#1397). It is now the
+enforced owner review that replaces code-owner review (`docs/codeowners-enforcement-limit.md`).
 
 `--sync` refuses a file whose on-box hash differs from both the repo and the recorded manifest — a
 box-local edit is never silently overwritten.

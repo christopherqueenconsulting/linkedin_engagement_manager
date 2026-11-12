@@ -1,70 +1,101 @@
 name: Pipeline Self-Modification Gate
 
-# A change to the machinery that would deploy it does not get to merge itself. Agents merge their
-# own PRs (required_approving_review_count is 0, and CODEOWNERS enforces nothing at that setting),
-# so without this the deploy automation in #1398 closes the loop: an agent could rewrite its own
-# trust boundary and have it running with the owner's credentials minutes later. Verdict logic
-# lives in scripts/pipeline_selfmod_gate.py (#1413, unit-tested) — this workflow only collects the
-# PR facts and calls it.
+# The enforced owner review on `main` (owner ruling, 2026-11-12). It REPLACES GitHub's code-owner
+# review: a PR touching any path `.github/CODEOWNERS` lists (or the gate itself) needs an APPROVED
+# review from the owner, unless the owner wrote it, or it is a Dependabot bump whose diff only moves
+# action refs or image tags. Verdict logic lives in scripts/pipeline_selfmod_gate.py (unit-tested);
+# this workflow only collects the PR facts and calls it. docs/codeowners-enforcement-limit.md.
 #
-# NOTE: this check is not yet marked "required" in branch protection. That is a separate, owner-only
-# `gh api` action taken after this workflow has run green at least once on a real PR (#1397).
+# The judge is the BASE branch's code. Checking out the PR would let a PR rewrite the gate script,
+# or shrink CODEOWNERS, and approve itself. So the script and CODEOWNERS come from
+# `pull_request.base.sha`, and the PR's files and diff arrive as DATA via `gh pr view` / `gh pr diff`.
+# PR code is never executed here. (This YAML itself still runs from the PR, as every
+# `pull_request` workflow does. The pipeline's credential has no `workflows` permission, so it
+# cannot edit this file; docs/contribution-security.md.)
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+  # An owner approval (or its dismissal) changes the verdict, so it must re-run the check.
   pull_request_review:
     types: [submitted, dismissed]
+  # main uses a MERGE QUEUE, and a required check that never reports on `merge_group` blocks every
+  # queue entry forever. The verdict was already decided on the PR before it could be enqueued, and
+  # nothing it reads can change inside the queue: reviews are not submitted to a queue entry, and
+  # the queue only adds commits already on main. So the queue run reports the SAME job name and
+  # passes without re-deciding.
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
   pull-requests: read
 
-# Supersede a PR's own in-flight runs when it is pushed to again. Not gated to pull_request-only
-# here because pull_request_review runs never overlap with a concurrent pull_request run for the
-# same head ref in a way that would evict a merge-queue entry -- this workflow never runs in
-# merge_group.
+# Supersede a PR's own in-flight runs when it is pushed to again. A merge-queue run has no PR
+# number, so it is keyed on its own unique queue ref and never cancelled: cancelling one would
+# evict that entry from the queue.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 jobs:
   gate:
     name: Pipeline Self-Modification Gate
     runs-on: ubuntu-latest
     steps:
+      - name: Merge queue (already decided on the PR)
+        if: github.event_name == 'merge_group'
+        run: echo "Decided on the PR before enqueue; approvals cannot change inside the queue."
       - uses: actions/checkout@v7
+        if: github.event_name != 'merge_group'
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
       - name: Collect the PR facts
         id: facts
+        if: github.event_name != 'merge_group'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          gh pr view "$PR" --json files --jq '[.files[].path]' > /tmp/changed.json
-          gh pr view "$PR" --json reviews \
+          gh pr view "$PR" --repo "$REPO" --json files,changedFiles > /tmp/pr.json
+          jq '[.files[].path]' /tmp/pr.json > /tmp/changed.json
+          # Fail closed on a truncated file list: an unlisted path is an unjudged path.
+          listed=$(jq 'length' /tmp/changed.json)
+          total=$(jq '.changedFiles' /tmp/pr.json)
+          if [ "$listed" != "$total" ]; then
+            echo "::error title=Pipeline self-modification::listed $listed of $total changed files"
+            exit 1
+          fi
+          gh pr view "$PR" --repo "$REPO" --json reviews \
             --jq '[.reviews[] | select(.state=="APPROVED") | .author.login] | unique' \
             > /tmp/approvers.json
-          echo "changed=$(cat /tmp/changed.json)"     >> "$GITHUB_OUTPUT"
-          echo "approvers=$(cat /tmp/approvers.json)" >> "$GITHUB_OUTPUT"
-      # Dependabot only: the script can allow a PR whose diff changes nothing but `uses:` lines, so
-      # it needs the diff itself (a file PATH, not the text — a diff can outgrow an argv). Any other
-      # author is decided on paths and approvals alone, exactly as before. The --help probe keeps
-      # this step working against a script that predates `--diff`: it then decides without it.
-      - name: Collect the diff (Dependabot only)
+          echo "changed=$(jq -c . /tmp/changed.json)"    >> "$GITHUB_OUTPUT"
+          echo "approvers=$(cat /tmp/approvers.json)"  >> "$GITHUB_OUTPUT"
+      # The diff names a rename's SOURCE (which the file list does not) and is what the Dependabot
+      # allowances judge. Passed as a file PATH, since a diff can outgrow an argv. A diff GitHub
+      # refuses to render (too large) is left out: the paths alone still decide, and a Dependabot
+      # allowance then fails closed. The --help probe keeps this working against a base script
+      # that predates `--diff`.
+      - name: Collect the diff
         id: diff
-        if: github.event.pull_request.user.login == 'dependabot[bot]'
+        if: github.event_name != 'merge_group'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          if python3 scripts/pipeline_selfmod_gate.py --help | grep -q -- --diff; then
-            gh pr diff "$PR" > /tmp/pr.diff
+          if ! python3 scripts/pipeline_selfmod_gate.py --help | grep -q -- --diff; then
+            echo "base pipeline_selfmod_gate.py has no --diff; deciding without the diff."
+          elif gh pr diff "$PR" --repo "$REPO" > /tmp/pr.diff; then
             echo "path=/tmp/pr.diff" >> "$GITHUB_OUTPUT"
           else
-            echo "pipeline_selfmod_gate.py has no --diff yet; deciding without the diff."
+            echo "::warning::gh pr diff failed; deciding on the file list alone."
           fi
       - name: Decide
+        if: github.event_name != 'merge_group'
         env:
           CHANGED: ${{ steps.facts.outputs.changed }}
           AUTHOR: ${{ github.event.pull_request.user.login }}

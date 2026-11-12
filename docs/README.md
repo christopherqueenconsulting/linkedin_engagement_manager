@@ -139,6 +139,7 @@ index and the `CLAUDE.md` row that points at it, or the pointer becomes a dead e
 
 - ★ [Agent pipeline v2](agent-pipeline-v2.md) — the `lem-agentd` daemon, its state machine, and the full `decide()` table
 - ★ [Contribution security](contribution-security.md) — a label is not an access control; provenance, not presence
+- [Owner review on `main`](codeowners-enforcement-limit.md) — the Self-Modification Gate is the enforced owner review; code-owner review is off; scope = CODEOWNERS
 - ★ [Branch cleanup](branch-cleanup.md) — the two layers that keep merged branches from reaccumulating
 - [PostHog PR takeover](posthog-pr-takeover.md) — PostHog self-driving PRs become our issue + branch + PR, so `lem-agentd` iterates instead of PostHog's billed agent
 - ★ [Git safety & multi-agent concurrency](git-safety-multi-agent.md) — worktree isolation, the stash race, the safe stash form, one-venv-many-worktrees
