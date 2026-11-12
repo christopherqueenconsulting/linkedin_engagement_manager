@@ -4,8 +4,12 @@ name: Dependabot Merge Reconciler
 # auto-merge whenever it briefly becomes conflicted (e.g. while another Dependabot PR merges
 # and this one is rebased); the re-enqueue can then be missed, and GITHUB_TOKEN-enabled
 # auto-merge doesn't reliably enter the merge queue. This job re-enqueues Dependabot PRs that
-# ALREADY have auto-merge enabled (the auto-merge workflow only enables it for minor/patch —
-# MAJOR bumps never get it, so this never merges a major) using RELEASE_DISPATCH_TOKEN.
+# ALREADY have auto-merge enabled, using RELEASE_DISPATCH_TOKEN.
+#
+# It also ARMS auto-merge on the depmajor lane's output: semver-major and `runtime-core` bumps never
+# get auto-merge from the event-driven workflow — they are labeled `agent:depmajor` instead — and
+# become eligible only once the lane has labeled them `deps:validated`. A PR carrying `needs-human`
+# is never armed, whatever else it carries.
 
 on:
   schedule:
@@ -34,8 +38,7 @@ jobs:
       - name: Re-enqueue auto-merge-enabled Dependabot PRs
         run: |
           set -euo pipefail
-          # Only PRs already flagged for auto-merge (minor/patch, approved by the auto-merge
-          # workflow) and mergeable. Majors never have auto-merge enabled → never touched here.
+          # Only PRs already flagged for auto-merge and mergeable. Arming is the next step's job.
           prs=$(gh pr list --repo "$REPO" --author "app/dependabot" --state open \
                   --json number,mergeStateStatus,autoMergeRequest \
                   --jq '.[] | select((.mergeStateStatus=="CLEAN" or .mergeStateStatus=="UNSTABLE") and .autoMergeRequest != null) | .number')
@@ -46,4 +49,24 @@ jobs:
           for pr in $prs; do
             echo "Re-enqueuing Dependabot PR #$pr"
             gh pr merge "$pr" --repo "$REPO" --auto || echo "  (could not enqueue #$pr; will retry next run)"
+          done
+
+      - name: Arm auto-merge on validated Dependabot PRs
+        run: |
+          set -euo pipefail
+          # deps:validated is the depmajor lane's green light. needs-human always wins over it.
+          prs=$(gh pr list --repo "$REPO" --author "app/dependabot" --state open \
+                  --json number,mergeStateStatus,autoMergeRequest,labels \
+                  --jq '.[] | select(any(.labels[]; .name == "deps:validated")
+                                     and (any(.labels[]; .name == "needs-human") | not)
+                                     and (.mergeStateStatus == "CLEAN" or .mergeStateStatus == "UNSTABLE")
+                                     and .autoMergeRequest == null)
+                            | .number')
+          if [ -z "$prs" ]; then
+            echo "No validated Dependabot PRs waiting to be armed."
+            exit 0
+          fi
+          for pr in $prs; do
+            echo "Arming auto-merge on validated Dependabot PR #$pr"
+            gh pr merge "$pr" --repo "$REPO" --auto || echo "  (could not arm #$pr; will retry next run)"
           done

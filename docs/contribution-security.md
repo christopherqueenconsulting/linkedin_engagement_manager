@@ -83,27 +83,23 @@ backstop for a misconfiguration in layers 1–2, not a substitute for them.
 
 - **CODEOWNERS** (`.github/CODEOWNERS`) names every control surface: workflows, the agent pipeline,
   deploy scripts, auth/crypto, migrations, and the two label writers.
+- **The Pipeline Self-Modification Gate enforces it** (owner ruling, 2026-11-12). It is a required
+  check whose scope is CODEOWNERS. A non-owner PR touching an owned path needs an APPROVED review
+  from the owner. Owner-authored PRs are exempt, and Dependabot passes only on a diff that moves
+  nothing but action refs or image tags. GitHub's code-owner review is switched **off**, because it
+  cannot exempt the owner (GitHub forbids self-approval) or a mechanical bump. The gate judges with
+  the BASE branch's script and CODEOWNERS, so a PR cannot rewrite either to approve itself. Full
+  arrangement and owner commands: `docs/codeowners-enforcement-limit.md`.
 - **The pipeline's credential has no `workflows` permission**, so editing `.github/workflows/**` is
-  impossible at the API level — not merely reviewable.
+  impossible at the API level, not merely reviewable. This also covers the gate's own YAML, which
+  runs from the PR like every `pull_request` workflow.
 
-> **Measured, because the GitHub docs do not say it.** `require_code_owner_reviews: true` combined
-> with `required_approving_review_count: 0` **enforces nothing**. Verified 2026-08-04: a PR touching
-> `.github/CODEOWNERS`, with a `*` catch-all live on the base branch and code-owner review enabled,
-> reported `mergeStateStatus: CLEAN` and requested no reviewer. The code-owner setting is a
-> *qualifier* on the approval count, not an independent gate — with zero required approvals there is
-> nothing for it to qualify.
->
-> So **CODEOWNERS is currently documentation and an auto-review-request, not enforcement.** Raising
-> the count to 1 makes it real but requires an approval on *every* PR, which ends the pipeline's
-> autonomy while agent and owner share an identity. The planned resolution is both halves of that
-> problem at once: a **bot identity** for the pipeline, and a **gated pre-release branch** where the
-> agent self-merges freely while `main` requires a reviewed promotion.
-
-**Read this limit honestly:** the pipeline authenticates as `@gitchrisqueen`, so GitHub cannot
-distinguish an agent PR from an owner PR. Against the *agent*, CODEOWNERS is a speed bump and a
-paper trail; the token scope is the real control. CODEOWNERS is a wall against *outside
-contributors*, and becomes a wall against the agent the moment the pipeline gets its own bot
-identity. That migration is the highest-value follow-up.
+> **Corrected 2026-11-12.** An earlier version of this section said `require_code_owner_reviews:
+> true` with `required_approving_review_count: 0` "enforces nothing". That was measured on
+> 2026-08-04, while the pipeline still authenticated as the owner. Once the pipeline had its own App
+> identity (#1251), GitHub DID enforce it: every non-owner PR touching an owned path needed the
+> owner's approval. That is the daemon's `awaiting_owner_review` (#1501). The gate now provides that
+> enforcement, with the exemptions code-owner review could not express.
 
 ## Contribution triage
 
@@ -222,8 +218,8 @@ cannot silently pull vendored code back into the gate.
 
 ## Known gaps
 
-- **Shared identity.** The pipeline is `@gitchrisqueen`. A bot account or GitHub App would let
-  branch protection distinguish agent from human, and would make CODEOWNERS a real wall.
+- **Shared identity** (resolved by #1251). The pipeline is its own GitHub App, so the
+  Self-Modification Gate can tell agent PRs from owner PRs, and CODEOWNERS is a real wall through it.
 - **Self-review.** With no Copilot review requested (only `risk:*` / `review:copilot` PRs get one),
   the merge gate is satisfied by the same agent reviewing its own work.
 - **`risk:*` is advisory.** `stage-pr.sh` says `risk:migration` PRs are "handed to a human to

@@ -13,7 +13,9 @@ name: Dependabot CI Auto-Fix Router
 # red with no label and no agent, indistinguishable from the lane never firing.
 #
 # `workflow_run.workflows` matches a workflow's `name:` field, not a check name. Keep this list in
-# step with the required contexts on `main`.
+# step with the required contexts on `main` — tests/unit/test_dependabot_autofix_watchlist.py fails
+# the build when a workflow producing one of CLAUDE.md's seven required contexts is missing, or when
+# a listed name no longer exists (a deleted workflow is silently never matched).
 on:
   workflow_run:
     workflows:
@@ -24,8 +26,7 @@ on:
       - "GitGuardian Security Scan"           # GitGuardian Scan
       - "Migration Versions"                  # Migration Versions
       - "CodeQL PR Gate"                      # CodeQL PR Quality Gate
-      # Not required, but a failure here is still worth an agent's attention
-      - "CI / E2E Test w/ Coverage"
+      - "Docstring & Lint Gate"               # Docstring & Lint Gate
     types:
       - completed
 

@@ -1,14 +1,23 @@
 name: Dependabot Auto-Merge
 
-# Auto-approves and enables auto-merge for Dependabot minor/patch updates (majors are left
-# for manual review). Works with grouped updates: fetch-metadata reports the highest semver
-# change in the group, and our dependabot.yml groups are minor/patch-only, so grouped PRs
-# match the condition below while any major arrives as its own ungrouped PR.
+# Routes every Dependabot PR down exactly one of three lanes, decided by fetch-metadata:
 #
-# Token: uses RELEASE_DISPATCH_TOKEN (a fine-grained PAT with Contents:R/W + Pull requests:R/W)
-# when present, falling back to GITHUB_TOKEN. A PAT is needed because auto-merge enabled via the
-# built-in GITHUB_TOKEN does not reliably enter this repo's merge queue (bot-token actions don't
-# kick the queue) — the PAT behaves like a human enqueue, which is what actually drains it.
+#   1. github_actions bumps (any semver): approve + auto-merge with RELEASE_DISPATCH_TOKEN. These
+#      edit .github/workflows/**, so the Pipeline Self-Modification Gate still has to pass before
+#      the merge queue takes them, and the merging token needs Workflows:write.
+#   2. semver-major pip/npm/docker bumps, or ANY bump in the `runtime-core` group: label
+#      `agent:depmajor` and leave one comment. No approval, no auto-merge here — the depmajor lane
+#      validates the bump and labels it `deps:validated`; the scheduled Dependabot Merge Reconciler
+#      is what arms auto-merge after that.
+#   3. Everything else (minor/patch outside `runtime-core`): approve + auto-merge, as before.
+#
+# Grouped updates: fetch-metadata reports the HIGHEST semver change in the group, so a group that
+# contains one major routes as a major.
+#
+# Token: RELEASE_DISPATCH_TOKEN is a fine-grained PAT (Contents:R/W, Pull requests:R/W, and
+# Workflows:R/W for lane 1). A PAT is needed because auto-merge enabled via the built-in
+# GITHUB_TOKEN does not reliably enter this repo's merge queue (bot-token actions don't kick the
+# queue) — the PAT behaves like a human enqueue, which is what actually drains it.
 #
 # NOTE: this job runs in the DEPENDABOT event context, which can ONLY read secrets from the
 # *Dependabot* secret store — not Actions secrets. RELEASE_DISPATCH_TOKEN is set in BOTH the
@@ -36,10 +45,30 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Decide the route
+        id: route
+        env:
+          ECOSYSTEM: ${{ steps.metadata.outputs.package-ecosystem }}
+          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+          GROUP: ${{ steps.metadata.outputs.dependency-group }}
+        run: |
+          set -euo pipefail
+          if [ "$ECOSYSTEM" = "github_actions" ]; then
+            route=actions
+          elif [ "$UPDATE_TYPE" = "version-update:semver-major" ] || [ "$GROUP" = "runtime-core" ]; then
+            route=depmajor
+          elif [ "$UPDATE_TYPE" = "version-update:semver-minor" ] || [ "$UPDATE_TYPE" = "version-update:semver-patch" ]; then
+            route=minor
+          else
+            # Unknown update type (e.g. a digest-only bump): leave it for a human, as before.
+            route=none
+          fi
+          echo "ecosystem=$ECOSYSTEM update-type=$UPDATE_TYPE group=${GROUP:-<none>} route=$route"
+          echo "route=$route" >> "$GITHUB_OUTPUT"
+
+      # --- Lane 3: minor/patch outside runtime-core -------------------------------------------
       - name: Auto-approve minor and patch updates
-        if: |
-          steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
-          steps.metadata.outputs.update-type == 'version-update:semver-minor'
+        if: steps.route.outputs.route == 'minor'
         run: gh pr review --approve "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
@@ -47,10 +76,52 @@ jobs:
 
       # No `--merge`: the strategy is fixed by the merge queue and passing one is rejected.
       - name: Enable auto-merge for minor and patch updates
-        if: |
-          steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
-          steps.metadata.outputs.update-type == 'version-update:semver-minor'
+        if: steps.route.outputs.route == 'minor'
         run: gh pr merge --auto "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.RELEASE_DISPATCH_TOKEN || secrets.GITHUB_TOKEN }}
+
+      # --- Lane 1: GitHub Actions bumps ------------------------------------------------------
+      - name: Auto-approve GitHub Actions updates
+        if: steps.route.outputs.route == 'actions'
+        run: gh pr review --approve "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # RELEASE_DISPATCH_TOKEN only, no GITHUB_TOKEN fallback: a token without Workflows:write
+      # cannot merge a workflow-file change, so a missing PAT should fail here, visibly.
+      - name: Enable auto-merge for GitHub Actions updates
+        if: steps.route.outputs.route == 'actions'
+        run: gh pr merge --auto "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.RELEASE_DISPATCH_TOKEN }}
+
+      # --- Lane 2: majors and runtime-core -> the depmajor lane ------------------------------
+      # The label is idempotent; the comment is posted once per PR (a hidden marker guards it),
+      # so a Dependabot rebase does not stack duplicate comments.
+      - name: Route majors and runtime-core to the depmajor lane
+        if: steps.route.outputs.route == 'depmajor'
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+          GROUP: ${{ steps.metadata.outputs.dependency-group }}
+        run: |
+          set -euo pipefail
+          gh pr edit "$PR_URL" --add-label "agent:depmajor"
+          marker='<!-- lem:dependabot-depmajor-route -->'
+          seen=$(gh pr view "$PR_URL" --json comments \
+                   --jq "[.comments[].body | select(contains(\"$marker\"))] | length")
+          if [ "$seen" != "0" ]; then
+            echo "Route comment already present; label refreshed only."
+            exit 0
+          fi
+          if [ "$GROUP" = "runtime-core" ]; then
+            why="it is in the \`runtime-core\` group"
+          else
+            why="it is a semver-major update (\`$UPDATE_TYPE\`)"
+          fi
+          gh pr comment "$PR_URL" --body "$(printf '%s\nNot auto-merged: %s. Labeled `agent:depmajor` so the depmajor lane validates it. Once it carries `deps:validated` (and no `needs-human`), the Dependabot Merge Reconciler enables auto-merge.\n' "$marker" "$why")"

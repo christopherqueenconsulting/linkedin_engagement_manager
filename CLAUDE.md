@@ -270,8 +270,8 @@ Tests`, `UI Build`, `Migration Versions`, `GitGuardian Scan`, `CodeQL PR Quality
 declares, all `-m "not slow"`; never a whole-suite workflow. `slow` tests are live probes —
 nightly (`slow-tests.yml`), never a PR gate.
 
-`CodeQL Security Analysis` runs but is NOT required. **`required_approving_review_count` is 0**, so
-`require_code_owner_reviews` enforces nothing (`docs/contribution-security.md`).
+`CodeQL Security Analysis` is NOT required. Owner review: required `Pipeline Self-Modification
+Gate`, scope CODEOWNERS; code-owner review off (`docs/codeowners-enforcement-limit.md`).
 
 ## Production Deployment & Environment
 

@@ -1,12 +1,10 @@
-"""An agent must not be able to merge a change to its own trust boundary (#1397).
+"""An agent must not be able to merge a change to an owned path unreviewed (#1397).
 
-The pipeline merges its own PRs — `required_approving_review_count` is 0 and CODEOWNERS enforces
-nothing at that setting. That is survivable only because a merged pipeline change still needs a
-human to reach the box. Automating the deploy (#1398) removes that step and closes the loop: an
-agent could rewrite `scripts/agent-pipeline/**`, merge it unattended, and have it running with the
-owner's credentials minutes later.
-
-So this gate is the precondition for that automation, not an accessory to it.
+This gate is the enforced owner review on `main` (owner ruling, 2026-11-12): its scope is every
+path `.github/CODEOWNERS` lists, plus the gate itself, and it replaces GitHub's code-owner review.
+Automating the deploy (#1398) is what makes it load-bearing: without it an agent could rewrite
+`scripts/agent-pipeline/**`, merge it unattended, and have it running with the owner's credentials
+minutes later.
 """
 
 from __future__ import annotations
@@ -21,7 +19,18 @@ import pytest
 _ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT / "scripts"))
 
-from pipeline_selfmod_gate import PROTECTED, decide, main, touches_protected  # noqa: E402
+from pipeline_selfmod_gate import (  # noqa: E402
+    CODEOWNERS,
+    PROTECTED,
+    CodeownersUnreadable,
+    codeowners_regex,
+    decide,
+    dependabot_bump,
+    diff_paths,
+    load_codeowners,
+    main,
+    touches_protected,
+)
 
 OWNER = "gitchrisqueen"
 BOT = "cqc-lem-agent-pipeline[bot]"
@@ -36,6 +45,8 @@ BOT = "cqc-lem-agent-pipeline[bot]"
     "scripts/agent-pipeline/v2/actions/agent_run.sh",
     ".github/workflows/deploy-vps.yml",
     ".github/CODEOWNERS",
+    "scripts/pipeline_selfmod_gate.py",
+    "tests/unit/test_pipeline_selfmod_gate.py",
 ])
 def test_the_machinery_and_its_credentials_are_protected(path):
     """The pipeline's own code, and the workflows that hold the secrets it would use."""
@@ -43,16 +54,20 @@ def test_the_machinery_and_its_credentials_are_protected(path):
 
 
 @pytest.mark.parametrize("path", [
-    "src/cqc_lem/api/main.py",
+    "src/cqc_lem/app/engagement/feed.py",
     "docs/agent-pipeline-v2.md",
     "tests/unit/test_agent_pipeline_v2_observe.py",
     "README.md",
+    "poetry.lock",
+    "pyproject.toml",
+    "src/cqc_lem/ui/package.json",
 ])
 def test_ordinary_changes_are_not_protected(path):
     """Deliberately narrow. A gate that fires on everything is one people route around.
 
     Note the doc and the pipeline's TESTS are not protected: they cannot change what the runner
-    does. Only the code it executes can.
+    does. Only the code it executes can. Lockfiles and manifests stay out too: Dependabot bumps
+    them every week, and CODEOWNERS does not list them.
     """
     assert touches_protected([path]) == []
 
@@ -62,7 +77,8 @@ def test_ordinary_changes_are_not_protected(path):
 
 def test_an_untouched_pr_passes_without_review():
     """The overwhelming majority of PRs, which this must not slow down."""
-    got = decide(changed=["src/cqc_lem/api/main.py"], author=BOT, approvers=[], owner=OWNER)
+    got = decide(changed=["src/cqc_lem/app/engagement/feed.py"], author=BOT, approvers=[],
+                 owner=OWNER)
     assert got.allowed
 
 
@@ -145,7 +161,7 @@ def test_the_cli_exits_non_zero_on_a_refusal():
 
 def test_the_cli_exits_zero_when_allowed():
     """And must not fail the ordinary case."""
-    got = _run(["src/cqc_lem/api/main.py"], BOT, [])
+    got = _run(["src/cqc_lem/app/engagement/feed.py"], BOT, [])
     assert got.returncode == 0
     assert "PASS" in got.stdout
 
@@ -280,3 +296,210 @@ def test_the_cli_reads_the_diff_from_a_file_path(tmp_path):
     diff_file.write_text(_diff(CI, CHECKOUT), encoding="utf-8")
     assert main([*args, "--diff", str(diff_file)]) == 0
     assert main([*args, "--diff", str(tmp_path / "missing.diff")]) == 1
+
+
+# ---------------------------------------------------------------- scope = CODEOWNERS
+
+
+@pytest.mark.parametrize("path", [
+    "src/cqc_lem/api/main.py",
+    "src/cqc_lem/utilities/crypto.py",
+    "compose/local/database/migrations/V20261112000000__x.sql",
+    "compose/local/Dockerfile",
+    "docker-compose.yml",
+    "docker-compose.prod.yml",
+    ".github/dependabot.yml",
+    ".github/actions/setup/action.yml",
+    ".litellm/config.yaml",
+    "scripts/deploy.sh",
+    "scripts/systemd/lem.service",
+    "scripts/triage_issues.py",
+])
+def test_every_codeowners_path_is_in_scope(path):
+    """The gate replaces code-owner review, so it must cover what code-owner review covered."""
+    assert touches_protected([path]) == [path]
+
+
+def test_every_live_codeowners_rule_reaches_the_gate():
+    """Each rule in the real file protects the path it names (or something inside a directory)."""
+    patterns = load_codeowners()
+    assert len(patterns) > 20
+    for pattern in patterns:
+        probe = pattern.strip("/") + ("/probe" if pattern.endswith("/") else "")
+        assert touches_protected([probe], patterns) == [probe], pattern
+
+
+@pytest.mark.parametrize(("pattern", "path", "hit"), [
+    ("/docs/", "docs/a.md", True),
+    ("/docs/", "docs", False),                    # a trailing `/` owns what is INSIDE
+    ("/docs/", "src/docs/a.md", False),           # a leading `/` anchors at the root
+    ("docs/", "src/docs/a.md", True),             # unanchored: any depth
+    ("/scripts/deploy.sh", "scripts/deploy.sh", True),
+    ("/scripts/deploy.sh", "scripts/deploy.sh.bak", False),
+    ("/scripts/deploy.sh", "x/scripts/deploy.sh", False),
+    ("/build", "build/out/x.js", True),           # no trailing `/`: the path or anything under it
+    ("*.sql", "a/b/V1__x.sql", True),
+    ("/a/*.sql", "a/b/V1__x.sql", False),         # `*` stays inside one segment
+    ("/a/**/x.sql", "a/b/c/x.sql", True),
+    ("/a/**/x.sql", "a/x.sql", True),
+    ("a/b", "z/a/b", False),                      # a middle `/` anchors too
+    ("Dockerfile", "compose/local/Dockerfile", True),
+])
+def test_codeowners_patterns_follow_gitignore_rules(pattern, path, hit):
+    assert bool(codeowners_regex(pattern).fullmatch(path)) is hit
+
+
+def test_a_codeowners_change_cannot_drop_the_gate_itself():
+    """`PROTECTED` holds the gate's own files, so a CODEOWNERS that forgets them changes nothing."""
+    got = decide(changed=["scripts/pipeline_selfmod_gate.py"], author=BOT, approvers=[],
+                 owner=OWNER, codeowners=["/README.md"])
+    assert not got.allowed
+
+
+def test_scope_comes_from_the_codeowners_passed_in():
+    assert not decide(changed=["x/y.py"], author=BOT, approvers=[], owner=OWNER,
+                      codeowners=["/x/"]).allowed
+    assert decide(changed=["x/y.py"], author=BOT, approvers=[], owner=OWNER,
+                  codeowners=["/z/"]).allowed
+
+
+def test_the_default_codeowners_is_the_one_beside_the_script():
+    """The workflow checks out the BASE commit, so this is the base branch's copy."""
+    assert CODEOWNERS == _ROOT / ".github" / "CODEOWNERS"
+
+
+# ---------------------------------------------------------------- CODEOWNERS unreadable fails closed
+
+
+def test_a_missing_codeowners_refuses_every_author(tmp_path):
+    missing = tmp_path / "CODEOWNERS"
+    with pytest.raises(CodeownersUnreadable):
+        load_codeowners(missing)
+    for author in (BOT, OWNER, "dependabot[bot]"):
+        rc = main(["gate", "--changed", json.dumps(["README.md"]), "--author", author,
+                   "--approvers", json.dumps([OWNER]), "--owner", OWNER,
+                   "--codeowners", str(missing)])
+        assert rc == 1, author
+
+
+def test_a_codeowners_with_no_rule_refuses(tmp_path):
+    empty = tmp_path / "CODEOWNERS"
+    empty.write_text("# only comments\n\n", encoding="utf-8")
+    with pytest.raises(CodeownersUnreadable):
+        load_codeowners(empty)
+
+
+def test_an_undecodable_codeowners_refuses(tmp_path):
+    bad = tmp_path / "CODEOWNERS"
+    bad.write_bytes(b"\xff\xfe\x00bad")
+    with pytest.raises(CodeownersUnreadable):
+        load_codeowners(bad)
+
+
+def test_decide_refuses_when_it_has_to_read_an_unreadable_file(monkeypatch, tmp_path):
+    import pipeline_selfmod_gate as gate
+
+    monkeypatch.setattr(gate, "CODEOWNERS", tmp_path / "gone")
+    got = decide(changed=["README.md"], author=OWNER, approvers=[], owner=OWNER)
+    assert not got.allowed
+    assert "CODEOWNERS" in got.reason
+
+
+def test_the_cli_reports_the_unreadable_file(tmp_path, capsys):
+    rc = main(["gate", "--changed", "[]", "--author", BOT, "--approvers", "[]",
+               "--codeowners", str(tmp_path / "gone")])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "REFUSED" in out and "restore .github/CODEOWNERS" in out
+
+
+# ---------------------------------------------------------------- renames are judged at both ends
+
+
+def test_a_rename_out_of_an_owned_path_is_owned():
+    """Moving a protected file away deletes it from its protected home."""
+    diff = ("diff --git a/scripts/deploy.sh b/docs/deploy.sh\nsimilarity index 100%\n"
+            "rename from scripts/deploy.sh\nrename to docs/deploy.sh\n")
+    got = decide(changed=["docs/deploy.sh"], author=BOT, approvers=[], owner=OWNER, diff=diff)
+    assert not got.allowed
+    assert "scripts/deploy.sh" in got.reason
+
+
+def test_diff_paths_reads_both_ends():
+    diff = "diff --git a/a.py b/b.py\nrename from a.py\nrename to b.py\n"
+    assert diff_paths(diff) == ["a.py", "b.py"]
+    assert diff_paths(None) == []
+
+
+# ---------------------------------------------------------------- the Dependabot Docker allowance
+
+DOCKERFILE = "compose/local/Dockerfile"
+COMPOSE = "docker-compose.yml"
+SHA_A = "a" * 64
+SHA_B = "b" * 64
+
+
+@pytest.mark.parametrize(("path", "pair"), [
+    (DOCKERFILE, ("FROM python:3.12-slim", "FROM python:3.13-slim")),
+    (DOCKERFILE, ("FROM python:3.12-slim AS base", "FROM python:3.13-slim AS base")),
+    (DOCKERFILE, (f"FROM python@sha256:{SHA_A}", f"FROM python@sha256:{SHA_B}")),
+    (DOCKERFILE, (f"FROM python:3.12@sha256:{SHA_A}", f"FROM python:3.13@sha256:{SHA_B}")),
+    (DOCKERFILE, ("FROM --platform=linux/amd64 node:20", "FROM --platform=linux/amd64 node:22")),
+    (DOCKERFILE, ("FROM ghcr.io/org/img:1.0", "FROM ghcr.io/org/img:1.1")),
+    (DOCKERFILE, ("FROM reg.local:5000/img:1.0", "FROM reg.local:5000/img:1.1")),
+    (COMPOSE, ("    image: redis:7.2", "    image: redis:7.4")),
+    (COMPOSE, ('    image: "mysql:8.0"', '    image: "mysql:8.4"')),
+    (COMPOSE, ("    image: selenium/standalone-chrome:130.0  # pinned",
+               "    image: selenium/standalone-chrome:131.0  # pinned")),
+    ("docker-compose.prod.yml", ("    image: redis:7.2", "    image: redis:7.4")),
+])
+def test_dependabot_moving_an_image_tag_is_allowed(path, pair):
+    got = _gate([path], _diff(path, pair))
+    assert got.allowed, got.reason
+    assert "Dependabot" in got.reason
+
+
+@pytest.mark.parametrize(("path", "pair"), [
+    (DOCKERFILE, ("FROM python:3.12-slim", "FROM evil/python:3.12-slim")),        # image swapped
+    (DOCKERFILE, ("FROM python:3.12-slim", "FROM python:3.12-slim")),             # nothing moved
+    (DOCKERFILE, ("FROM python:3.12 AS base", "FROM python:3.13 AS other")),      # stage renamed
+    (DOCKERFILE, ("FROM python:3.12", "FROM ${BASE}")),                           # variable
+    (DOCKERFILE, ("FROM python:3.12", "FROM python:3.13 && curl x")),
+    (DOCKERFILE, ("RUN pip install x==1", "RUN pip install x==2")),               # not a FROM
+    (DOCKERFILE, ("FROM python:3.12", "  FROM python:3.13")),                     # re-indented
+    (COMPOSE, ("    image: redis:7.2", "    image: evil:7.2")),
+    (COMPOSE, ("    image: redis:7.2", "    command: redis:7.4")),
+    (COMPOSE, ("    image: redis:7.2", "      image: redis:7.4")),
+    (COMPOSE, ("    image: redis:7.2", "    image: ${REDIS_IMAGE}")),
+    (COMPOSE, ("    environment: A=1", "    environment: A=2")),
+])
+def test_anything_but_an_image_version_move_refuses(path, pair):
+    assert not _gate([path], _diff(path, pair)).allowed
+
+
+def test_the_docker_allowance_is_dependabot_only():
+    pair = ("FROM python:3.12", "FROM python:3.13")
+    assert not _gate([DOCKERFILE], _diff(DOCKERFILE, pair), author=BOT).allowed
+
+
+def test_a_uses_line_in_a_dockerfile_does_not_ride_the_workflow_rule():
+    """Each file kind has ONE allowed line shape."""
+    assert not _gate([DOCKERFILE], _diff(DOCKERFILE, CHECKOUT)).allowed
+    assert not _gate([CI], _diff(CI, ("FROM python:3.12", "FROM python:3.13"))).allowed
+
+
+def test_a_docker_bump_plus_another_owned_file_refuses():
+    pair = ("FROM python:3.12", "FROM python:3.13")
+    path = "scripts/deploy.sh"
+    assert not _gate([DOCKERFILE, path], _diff(DOCKERFILE, pair) + _diff(path, pair)).allowed
+
+
+def test_dependabot_bump_needs_a_known_file_kind():
+    assert not dependabot_bump(["Makefile"], _diff("Makefile", ("a", "b")))
+    assert not dependabot_bump([DOCKERFILE], "garbage before any header\n")
+
+
+def test_dependabot_on_unowned_paths_is_allowed_as_today():
+    got = _gate(["poetry.lock", "pyproject.toml"], None)
+    assert got.allowed
+    assert "no owned path" in got.reason

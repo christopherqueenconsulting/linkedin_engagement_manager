@@ -129,6 +129,66 @@ class TestItCallsTheExistingHelperRatherThanReimplementing:
         assert "github.event.pull_request.user.login" in workflow_text
 
 
+def _steps(workflow: dict[str, Any]) -> list[dict[str, Any]]:
+    return workflow["jobs"]["gate"]["steps"]
+
+
+class TestItJudgesWithTheBaseBranchCode:
+    """A PR must not be able to rewrite the gate script, or CODEOWNERS, and approve itself."""
+
+    def test_the_checkout_is_the_base_commit(self):
+        checkouts = [s for s in _steps(_load()) if str(s.get("uses", "")).startswith(
+            "actions/checkout@")]
+        assert len(checkouts) == 1
+        assert checkouts[0]["with"]["ref"] == "${{ github.event.pull_request.base.sha }}"
+        assert checkouts[0]["with"]["persist-credentials"] is False
+
+    def test_the_pr_head_is_never_checked_out(self):
+        text = _WORKFLOW_PATH.read_text(encoding="utf-8")
+        assert "pull_request.head" not in text
+        assert "refs/pull/" not in text
+
+    def test_the_pr_files_and_diff_arrive_as_data(self):
+        run_text = _all_run_steps(_load())
+        assert "gh pr view" in run_text
+        assert "gh pr diff" in run_text
+        assert "--diff \"$DIFF_PATH\"" in run_text
+
+    def test_the_diff_is_collected_for_every_author(self):
+        # A rename's SOURCE is only in the diff, so it is not a Dependabot-only fact any more.
+        diff_step = next(s for s in _steps(_load()) if s.get("id") == "diff")
+        assert "dependabot" not in str(diff_step.get("if", ""))
+
+    def test_a_truncated_file_list_fails_closed(self):
+        run_text = _all_run_steps(_load())
+        assert "changedFiles" in run_text
+
+
+class TestItIsSafeAsARequiredCheckInTheMergeQueue:
+    """A required check that never reports on `merge_group` blocks the queue."""
+
+    def test_it_triggers_on_merge_group(self):
+        assert "merge_group" in _triggers(_load())
+
+    def test_the_merge_group_run_reports_the_same_job_name(self):
+        jobs = _load()["jobs"]
+        assert list(jobs) == ["gate"]
+        assert jobs["gate"]["name"] == "Pipeline Self-Modification Gate"
+        assert "if" not in jobs["gate"], "a skipped job-level `if` must not decide the context"
+
+    def test_the_merge_group_run_decides_nothing(self):
+        for step in _steps(_load()):
+            cond = str(step.get("if", ""))
+            if "scripts/pipeline_selfmod_gate.py" in str(step.get("run", "")) \
+                    or "uses" in step:
+                assert "github.event_name != 'merge_group'" in cond, step.get("name")
+
+    def test_a_queue_run_is_never_cancelled(self):
+        concurrency = _load()["concurrency"]
+        assert "github.ref" in concurrency["group"]
+        assert "merge_group" in str(concurrency["cancel-in-progress"])
+
+
 class TestItActsOnAPullRequestNotAPush:
     def test_no_push_trigger_is_present(self):
         # This gate's entire model is "a PR touching a protected path needs the owner's review
