@@ -1187,3 +1187,22 @@ output so `$LOG` and the usage-limit detector see text as before.
 
 Settings merge across sources: a deny anywhere wins, and allows add up. Keep any `hooks` key at the
 TOP level of a settings file, never inside `permissions`.
+
+## Claude lane credential: CLIProxyAPI (2026-11-12)
+
+The Claude lane no longer authenticates with a `claude setup-token` value. The pipeline's
+`CLAUDE_CODE_OAUTH_TOKEN` was revoked on 2026-11-12, and the owner ruled that the lane goes
+through the CLIProxyAPI instance on quinvps, reached over Tailscale. Set two keys in
+`$BASE/secrets.env`:
+
+```
+CLIPROXY_BASE_URL=http://<quinvps tailscale ip>:8317
+CLIPROXY_AUTH_TOKEN=<CLIProxyAPI client key>
+```
+
+When `CLIPROXY_BASE_URL` is non-empty, `lib/run_lane.sh` (agent runs) and `lib/capacity.sh` (the
+recovery probe) export them as `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` on the Claude lane and
+unset `CLAUDE_CODE_OAUTH_TOKEN`. When it is empty, the old token behaviour is unchanged. The Ollama
+lane is untouched. `lemd/spend.py`'s `/usage` probe still reads the subscription token. Without one
+it fails closed, and lane routing falls back to the health estimate.
+Rollback: empty `CLIPROXY_BASE_URL` and restore a `CLAUDE_CODE_OAUTH_TOKEN`.

@@ -327,6 +327,8 @@ never run in the shared checkout. MODE=${MODE:-?} BRANCH=${BRANCH:-?} ISSUE=${IS
   else
     ( cd "$wt" && \
       unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY 2>/dev/null || true
+      # Claude lane via CLIProxyAPI (owner ruling 2026-11-12): no subscription token on this box.
+      if [ -n "${CLIPROXY_BASE_URL:-}" ]; then export ANTHROPIC_BASE_URL="$CLIPROXY_BASE_URL" ANTHROPIC_AUTH_TOKEN="${CLIPROXY_AUTH_TOKEN:-}"; unset CLAUDE_CODE_OAUTH_TOKEN; fi
       GIT_EDITOR=true timeout "${CLAUDE_TIMEOUT:-45m}" claude -p "$prompt" \
         "${perm_args[@]}" --add-dir "$runbook_dir" "${model_arg[@]}" "${mcp_arg[@]}" ) >"$out" 2>&1
     rc=$?

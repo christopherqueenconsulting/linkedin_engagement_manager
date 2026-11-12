@@ -163,6 +163,8 @@ _claude_probe() {
   # `dontAsk`, not the skip-permissions flag: the probe needs no tool at all, so the mode that
   # denies every un-allowed tool call costs it nothing. No `--settings` — no rule is needed.
   ( unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY 2>/dev/null || true
+      # Claude lane via CLIProxyAPI (owner ruling 2026-11-12): no subscription token on this box.
+      if [ -n "${CLIPROXY_BASE_URL:-}" ]; then export ANTHROPIC_BASE_URL="$CLIPROXY_BASE_URL" ANTHROPIC_AUTH_TOKEN="${CLIPROXY_AUTH_TOKEN:-}"; unset CLAUDE_CODE_OAUTH_TOKEN; fi
     timeout "${CLAUDE_PROBE_TIMEOUT:-40}" claude -p "Reply with the single word OK." \
       --permission-mode dontAsk 2>&1 ) >"$out" 2>&1
   rc=$?
