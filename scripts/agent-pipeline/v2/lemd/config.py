@@ -19,6 +19,8 @@ import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import github
+
 LOG = logging.getLogger("lemd.config")
 
 BASE = Path(os.environ.get("BASE", "/home/lem/agent-pipeline"))
@@ -112,6 +114,9 @@ class Config:
     #: The owner's GitHub login. The answer lane reads it to tell whose reply un-parks work — an
     #: agent posting under the App identity must never be able to answer its own Decision Comment.
     assignee: str
+    #: `LEMD_TRUSTED_ANSWER_LOGINS`: further logins (lower-cased) whose reply may answer a Decision
+    #: Comment. Answers only — never the Self-Modification Gate. The App is refused at parse time.
+    trusted_answer_logins: frozenset[str]
     db_path: Path
     #: Concurrency. `agent_slots` bounds `claude -p` children; `gh_slots` bounds cheap gh-only
     #: mutations so a merge-enable never queues behind a 20-minute implementation run.
@@ -195,6 +200,9 @@ def load(base: str | Path | None = None) -> Config:
         repo=Path(_str(env, "REPO", "/home/lem/linkedin_engagement_manager")),
         slug=_str(env, "SLUG", "christopherqueenconsulting/linkedin_engagement_manager"),
         assignee=_str(env, "ASSIGNEE", "gitchrisqueen"),
+        trusted_answer_logins=github.parse_answer_logins(
+            str(os.environ.get("LEMD_TRUSTED_ANSWER_LOGINS",
+                               env.get("LEMD_TRUSTED_ANSWER_LOGINS", "")))),
         db_path=Path(_str(env, "LEMD_DB", str(b / "v2" / "state" / "queue.db"))),
         # LEMD_MAX_AGENTS, not MAX_AGENTS: v1's knob is 5 on this box, and reading it here made the
         # documented "cap v2 at 3 until the CPU envelope is measured" a fallback that never applied.

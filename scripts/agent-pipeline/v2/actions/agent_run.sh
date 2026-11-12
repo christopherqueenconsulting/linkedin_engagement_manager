@@ -36,6 +36,7 @@ case "$MODE" in
   start)   LANE_LABEL="agent:ready" ;;
   revise)  LANE_LABEL="agent:revise" ;;
   depfix)  LANE_LABEL="agent:depfix" ;;
+  depmajor) LANE_LABEL="agent:depmajor" ;;
   docfix)  LANE_LABEL="agent:docfix" ;;
   *)       LANE_LABEL="" ;;
 esac
@@ -172,6 +173,7 @@ case "$MODE" in
   rebase)    PROMPT="Read $RUNBOOK_DIR/rebase.md and follow it. PR=$PR ISSUE=$ISSUE BRANCH=$BRANCH." ;;
   revise)    PROMPT="Read $RUNBOOK_DIR/revise.md and follow it. PR=$PR BRANCH=$BRANCH OWNER=$ASSIGNEE. $(decision_prompt_args "$PR" "$ISSUE")" ;;
   depfix)    PROMPT="Read $RUNBOOK_DIR/depfix.md and follow it. PR=$PR BRANCH=$BRANCH." ;;
+  depmajor)  PROMPT="Read $RUNBOOK_DIR/depmajor.md and follow it. PR=$PR BRANCH=$BRANCH." ;;
   docfix)    PROMPT="Read $RUNBOOK_DIR/docfix.md and follow it. PR=$PR BRANCH=$BRANCH." ;;
   phasefix)  PROMPT="Read $RUNBOOK_DIR/phasefix.md and follow it. PR=$PR ISSUE=$ISSUE BRANCH=$BRANCH." ;;
   *) log "unknown MODE '$MODE' — refusing."; exit 2 ;;

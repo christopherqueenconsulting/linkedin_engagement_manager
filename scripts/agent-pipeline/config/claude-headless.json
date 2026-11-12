@@ -50,6 +50,9 @@
       "Bash(python3 scripts/check_claude_md_size.py *)",
       "Bash(poetry install --with test)",
       "Bash(poetry lock)",
+      "Bash(npm --prefix src/cqc_lem/ui ci)",
+      "Bash(npm --prefix src/cqc_lem/ui run build)",
+      "Bash(npm --prefix src/cqc_lem/ui test)",
       "Bash(git status)",
       "Bash(git status *)",
       "Bash(git diff)",
@@ -84,7 +87,8 @@
       "Bash(/home/lem/agent-pipeline/lib/gh_safe.sh *)",
       "mcp__perplexity__research",
       "mcp__perplexity__fact_check",
-      "mcp__playwright"
+      "mcp__playwright",
+      "mcp__graft"
     ],
     "deny": [
       "Bash(sudo *)",

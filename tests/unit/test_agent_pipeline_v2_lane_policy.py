@@ -234,3 +234,15 @@ def test_ready_state_names_stay_in_sync():
     """A cheap guard: these strings are compared across three files."""
     assert db.STATE_READY == "ready"
     assert db.STATE_WAIT_REVIEW == "awaiting_review"
+
+
+@pytest.mark.parametrize("week", [20.0, 49.0, 50.0, 95.0])
+def test_depmajor_is_claude_only_even_past_the_flip(week):
+    """Its verdict arms auto-merge, so it never takes the cheap lane."""
+    assert "depmajor" not in lane.OLLAMA_ELIGIBLE
+    assert lane.decide("depmajor", _usage(week)).lane == "claude"
+
+
+def test_depmajor_does_not_defer_to_health_routing_on_an_unreadable_probe():
+    """`None` would let lib/dispatch.sh pick Ollama on its health estimate."""
+    assert lane.decide("depmajor", spend.Usage(readable=False)).lane == "claude"

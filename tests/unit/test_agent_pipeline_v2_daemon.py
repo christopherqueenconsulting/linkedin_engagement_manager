@@ -116,3 +116,43 @@ def test_reconcile_ingests_working_issues_not_only_working_prs(tmp_path, monkeyp
     assert ("agent:working", "issue") in asked
     assert ("agent:working", "pr") in asked, "the PR half must not be traded away for the issue half"
     assert db.get_item(dm.conn, "issue", 1091) is not None
+
+
+def test_paused_is_logged_once_per_transition(tmp_path, monkeypatch, caplog):
+    """Logged every pass, a long pause wrote 1.87M identical lines."""
+    import logging  # noqa: PLC0415
+
+    dm = daemon.Daemon(_cfg(tmp_path))
+    for name in ("collect", "sweep_worktrees", "sweep_orphans", "run_scorer", "drain_events",
+                 "reconcile", "takeover_posthog", "refresh_usage", "observe_dirty", "sweep_ttls",
+                 "act", "_apply_caps"):
+        monkeypatch.setattr(dm, name, lambda *a, **k: 0)
+    caplog.set_level(logging.INFO, logger="lemd")
+
+    def passes(n: int) -> None:
+        for _ in range(n):
+            dm.tick()
+
+    def lines(word: str) -> int:
+        return sum(word in r.getMessage() for r in caplog.records)
+
+    passes(3)                                            # never paused: nothing said
+    assert lines("PAUSED") == 0
+    dm.cfg.paused_file.touch()
+    passes(5)
+    assert lines("PAUSED file present") == 1
+    dm.cfg.paused_file.unlink()
+    passes(4)
+    assert lines("PAUSED file removed") == 1
+    dm.cfg.paused_file.touch()
+    passes(2)
+    assert lines("PAUSED file present") == 2
+
+
+def test_trusted_answer_logins_are_read_from_config_env(tmp_path, monkeypatch):
+    monkeypatch.delenv("LEMD_TRUSTED_ANSWER_LOGINS", raising=False)
+    monkeypatch.delenv("GH_APP_BOT_LOGIN", raising=False)
+    assert _cfg(tmp_path).trusted_answer_logins == frozenset()
+    with (tmp_path / "config.env").open("a") as f:
+        f.write('LEMD_TRUSTED_ANSWER_LOGINS="Owner-Second,cqc-lem-agent-pipeline[bot]"\n')
+    assert load(tmp_path).trusted_answer_logins == frozenset({"owner-second"})

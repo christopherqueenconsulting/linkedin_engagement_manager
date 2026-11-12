@@ -59,7 +59,8 @@ Repo: `christopherqueenconsulting/linkedin_engagement_manager`. Owner/escalation
     - `gh_safe.sh pr-ready <PR> [--undo]`
     It writes only to THIS run's issue/PR (or the PR on your branch), and it refuses to ADD the
     provenance-gated labels — `agent:ready`, `release:now`, `agent:revise`, `agent:phasefix`,
-    `agent:depfix`, `agent:docfix` — in any spelling. Removing one is fine. Leave a follow-up issue without
+    `agent:depfix`, `agent:depmajor`, `agent:docfix` — in any spelling. Removing one is fine.
+    `deps:validated` can be added only by MODE=depmajor. Leave a follow-up issue without
     `agent:ready`; the owner or a trusted labeler decides when it is ready.
   - `gh api` is denied. Review threads are read and resolved through
     `/home/lem/agent-pipeline/lib/review_threads.sh` (`list <PR>` / `resolve <PR> <thread-id>`);

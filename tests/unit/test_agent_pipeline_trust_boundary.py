@@ -147,6 +147,43 @@ class TestLabelActorTrusted:
         assert "NO" in r.stdout
 
 
+def _answer_login_helpers() -> str:
+    """`trusted_answer_login` and what it calls, lifted verbatim (they live below `pr_admissible`)."""
+    out = ""
+    for name in ("pipeline_app_login", "comment_login_names_app", "trusted_answer_login"):
+        m = re.search(rf"\n{name}\(\) \{{.*?\n\}}\n", GUARDS, re.S)
+        assert m, f"{name} not found in lib/guards.sh"
+        out += m.group(0)
+    return out
+
+
+class TestCiRoutedAndSecondLoginLabels:
+    """`agent:depmajor` is admitted like `agent:depfix`; the owner's second login may label too."""
+
+    def _label(self, tmp_path, label, actor, extra_env=None):
+        env = {"ACTOR": actor, "LABEL": label, **(extra_env or {})}
+        body = (_answer_login_helpers()
+                + 'AGENT_CI_LABEL_ACTORS="github-actions[bot]"\n'
+                + f'label_actor_trusted 7 "{label}" && echo YES || echo NO')
+        return _run(tmp_path, body, _GH_TIMELINE, env).stdout
+
+    def test_the_major_bump_router_label_is_admitted_from_github_actions(self, tmp_path):
+        assert "YES" in self._label(tmp_path, "agent:depmajor", "github-actions[bot]")
+
+    def test_github_actions_still_cannot_mint_agent_ready(self, tmp_path):
+        assert "NO" in self._label(tmp_path, "agent:ready", "github-actions[bot]")
+
+    def test_the_second_login_may_apply_agent_ready(self, tmp_path):
+        env = {"LEMD_TRUSTED_ANSWER_LOGINS": "owner-second"}
+        assert "YES" in self._label(tmp_path, "agent:ready", "owner-second", env)
+        assert "NO" in self._label(tmp_path, "agent:ready", "owner-second")
+
+    def test_the_app_listed_as_a_second_login_is_refused(self, tmp_path):
+        env = {"LEMD_TRUSTED_ANSWER_LOGINS": "cqc-lem-agent-pipeline[bot],cqc-lem-agent-pipeline"}
+        assert "NO" in self._label(tmp_path, "agent:ready", "cqc-lem-agent-pipeline[bot]", env)
+        assert "NO" in self._label(tmp_path, "agent:ready", "cqc-lem-agent-pipeline", env)
+
+
 def _comment_helpers() -> str:
     """lib/guards.sh's comment-authority helpers, verbatim."""
     out = ""

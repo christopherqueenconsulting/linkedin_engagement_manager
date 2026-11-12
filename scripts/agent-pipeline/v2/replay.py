@@ -43,7 +43,7 @@ from lemd.config import load  # noqa: E402
 _V1_DISPATCH = {
     "mode_start": "start", "mode_fix": "fix", "mode_review": "review",
     "mode_selfreview": "selfreview", "mode_rebase": "rebase", "mode_revise": "revise",
-    "mode_depfix": "depfix", "mode_docfix": "docfix", "mode_phasefix": "phasefix",
+    "mode_depfix": "depfix", "mode_depmajor": "depmajor", "mode_docfix": "docfix", "mode_phasefix": "phasefix",
 }
 #: v1 reasons that mean "v1 asked the merge queue to take this PR".
 _V1_MERGE = {"mode_merge", "mode_merge_fastpath"}
