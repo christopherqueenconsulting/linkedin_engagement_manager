@@ -216,7 +216,17 @@ so the image is never asked to carry the thesis alone. `image_gen.rubric_floors`
 |---|---|---|---|---|---|
 | `photo_only` post (no headline) | ≥3 | **≥4** | ≥4 | 5 | strict |
 | video frame (with OR without a caption) | ≥3 | **≥4** | ≥4 | 5 | strict |
+| carousel art — deck cover AND AI slide images (no headline) | ≥3 | — | ≥4 | 5 | strict |
 | anything with a typeset headline | ≥4 | ≥4 (cover/post) | ≥4 | 5 | strict |
+
+The deck cover row came later: `render_deck_cover_concept` renders the art with no headline, and
+`_concept_cover` typesets the deck title directly under it. At specificity 4 every deck cover was
+rejected ("thesis not clear without headline") and every deck shipped the template cover. Only
+specificity drops: round 3 keeps scroll_stop off carousel art, because the composed cover is what
+stops the feed. `carousel` is not in `image_brief.HOOK_SURFACES`, so EVERY carousel render is
+headline-free: the same floor also applies to AI slide images (`generate_post_image(surface=
+"carousel")`), whose art sits beside the slide's own typeset title. A rejected deck cover now logs
+at WARNING, so a run of rejections escalates instead of staying silent.
 
 This is a trade, not a relaxation. Specificity drops one point where the post text supplies the
 thesis, and scroll_stop rises to 4 on video too, so a headline-free image must be visually strong.

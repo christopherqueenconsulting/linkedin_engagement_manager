@@ -47,6 +47,12 @@ class TestHeadlineFreeFloors:
         assert (floors["specificity"], floors["scroll_stop"], floors["craft"]) == (3, 4, 4)
         assert floors["no_cliche"] == 5
 
+    def test_a_headline_free_deck_cover_takes_only_the_specificity_floor(self):
+        floors = image_gen.rubric_floors("carousel", None)
+        assert floors == dict(image_gen._RUBRIC_FLOORS, specificity=3)
+        assert image_gen.rubric_floors("carousel", "Late invoices starve agencies")[
+            "specificity"] == 4
+
     def test_covers_and_code_drawn_graphics_are_unchanged(self):
         assert image_gen.rubric_floors("newsletter", "Hook")["specificity"] == 4
         assert image_gen.rubric_floors("post_image", None, code_drawn=True) == dict(
@@ -72,6 +78,9 @@ class TestHeadlineFreeFloors:
     def test_but_a_weak_photo_still_fails(self, tmp_path, criterion):
         verdict = self._judge(tmp_path, "post_image", None, **{criterion: 3})
         assert not verdict.acceptable and criterion in verdict.failing
+
+    def test_a_deck_cover_at_specificity_3_now_passes(self, tmp_path):
+        assert self._judge(tmp_path, "carousel", None).acceptable
 
     def test_a_typeset_card_scene_at_specificity_3_still_fails(self, tmp_path):
         verdict = self._judge(tmp_path, "post_image", "Late invoices starve agencies")

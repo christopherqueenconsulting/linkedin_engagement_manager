@@ -688,6 +688,11 @@ _SCROLL_STOP_SURFACES = frozenset({"newsletter", "post_image"})
 # thesis alone. Headline-free renders pass specificity at 3 and must instead be visually strong:
 # scroll_stop and craft at 4; no_cliche 5 and stray text stay strict. A render WITH a typeset
 # headline keeps specificity 4. Video frames take the photo floors with or without a caption.
+# A carousel deck cover's art is rendered with no headline, but `_concept_cover` typesets the deck
+# title directly under it: at 4 every deck cover was rejected at specificity 1-3 ("thesis not clear
+# without headline") and every deck shipped the template cover. It takes the specificity floor
+# only; round 3 keeps scroll_stop off carousel art, because the composed cover stops the feed.
+# Carousel carries no hook (not in HOOK_SURFACES), so AI slide images take this floor too.
 _HEADLINE_FREE_SPECIFICITY_FLOOR = 3
 
 
@@ -713,6 +718,8 @@ def rubric_floors(surface: Optional[str], hook_text: Optional[str],
         floors["specificity"] = _HEADLINE_FREE_SPECIFICITY_FLOOR
         floors["scroll_stop"] = _SCROLL_STOP_FLOOR
         floors["craft"] = max(floors.get("craft", 0), 4)
+    elif surface == "carousel" and not hook_text:
+        floors["specificity"] = _HEADLINE_FREE_SPECIFICITY_FLOOR
     return floors
 _SCROLL_STOP_FLOOR = 4
 _REQUIRED_SCORES = ("specificity", "no_cliche", "craft")

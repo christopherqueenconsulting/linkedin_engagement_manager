@@ -2946,7 +2946,7 @@ def render_deck_cover_concept(scope: "_CarouselImageScope", user_id: Optional[in
     Returns:
         The render's path, or None.
     """
-    from cqc_lem.utilities.logger import log_debug, log_info
+    from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 
     if not isTrue(os.environ.get("DECK_AI_COVER_ENABLED", "True")):
         return None
@@ -2979,9 +2979,10 @@ def render_deck_cover_concept(scope: "_CarouselImageScope", user_id: Optional[in
                                   post_id=post_id, render_info=info, concept=brief.concept,
                                   brand_kit=scope.brand(), enforce=True)
         if not path or info.get("gate_verdict") == "rejected" or not os.path.isfile(path):
-            log_info("Deck cover concept was not accepted — next cover treatment",
-                     user_id=user_id, post_id=post_id, action_type="carousel_image",
-                     gate_verdict=info.get("gate_verdict"))
+            # A paid render thrown away: at INFO, every deck silently fell back to the template.
+            log_warning("Deck cover concept was not accepted — next cover treatment",
+                        user_id=user_id, post_id=post_id, action_type="carousel_image",
+                        gate_verdict=info.get("gate_verdict"))
             return None
         return path
     except Exception as e:
