@@ -3,8 +3,23 @@ version: 2
 # Grouping strategy: batch each ecosystem's minor+patch bumps into ONE PR per week so a
 # single lockfile change carries them all — this eliminates the poetry.lock/package-lock
 # race where N separate PRs each rewrite the lockfile and mutually conflict. MAJOR bumps are
-# intentionally left OUT of the version groups so they arrive as individual PRs for manual
-# review (they can break APIs / test collection). github-actions & docker are grouped wholesale.
+# intentionally left OUT of the version groups so they arrive as individual PRs; the
+# dependabot-auto-merge workflow routes them to the pipeline's depmajor lane.
+#
+# Commit prefix: runtime bumps are `fix(deps): …` so release-please cuts a patch release and the
+# bump actually DEPLOYS (a `chore` commit is hidden and never releases). Development-only bumps keep
+# `chore(deps-dev): …`. The old `prefix: "chore(deps)"` + `include: scope` produced the malformed
+# `chore(deps)(deps):` title. GitHub Actions bumps are `ci(deps):` — they change CI, not prod.
+#
+# Cooldown: a version must be public for N days before Dependabot proposes it. A brand-new release
+# is where missing wheels (c2pa-python 0.38.2 broke every python group in Nov 2026), yanked
+# versions and compromised packages show up. Security updates are not delayed by cooldown.
+#
+# runtime-core: the libraries the live LinkedIn automation stack runs on (browser, queue, broker,
+# DB driver, LLM client). Green hermetic CI does not prove these against a live session, so their
+# minor/patch bumps arrive as their OWN group, which the auto-merge workflow routes to the depmajor
+# lane (live validation probe) instead of merging blind. It is listed BEFORE python-minor-patch
+# because a dependency lands in the first group that matches it.
 updates:
   - package-ecosystem: "pip"
     directory: "/"
@@ -13,13 +28,29 @@ updates:
       day: "monday"
       time: "09:00"
     open-pull-requests-limit: 10
+    cooldown:
+      default-days: 3
+      semver-major-days: 7
     labels:
       - "dependencies"
       - "python"
     commit-message:
-      prefix: "chore(deps)"
+      prefix: "fix"
+      prefix-development: "chore"
       include: "scope"
     groups:
+      runtime-core:
+        applies-to: version-updates
+        patterns:
+          - "selenium"
+          - "celery"
+          - "kombu"
+          - "redis"
+          - "mysql-connector-python"
+          - "openai"
+        update-types:
+          - "minor"
+          - "patch"
       python-minor-patch:
         applies-to: version-updates
         update-types:
@@ -29,15 +60,16 @@ updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "weekly"
-      day: "monday"
+      interval: "monthly"
       time: "09:00"
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
     labels:
       - "dependencies"
       - "github-actions"
     commit-message:
-      prefix: "chore(deps)"
+      prefix: "ci"
       include: "scope"
     groups:
       github-actions:
@@ -52,11 +84,14 @@ updates:
       day: "monday"
       time: "09:00"
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 3
+      semver-major-days: 7
     labels:
       - "dependencies"
       - "docker"
     commit-message:
-      prefix: "chore(deps)"
+      prefix: "fix"
       include: "scope"
     groups:
       docker:
@@ -71,11 +106,15 @@ updates:
       day: "monday"
       time: "09:00"
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 3
+      semver-major-days: 7
     labels:
       - "dependencies"
       - "javascript"
     commit-message:
-      prefix: "chore(deps)"
+      prefix: "fix"
+      prefix-development: "chore"
       include: "scope"
     groups:
       npm-minor-patch:
