@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.205.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.204.0...v0.205.0) (2026-11-12)
+
+
+### Features
+
+* **auth:** OAuth-only LinkedIn connection for suggest-mode accounts (closes [#2368](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2368)) ([#2494](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2494)) ([8ae3153](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8ae3153502409f7afcefd6a27033130925f81c7d))
+* **pipeline:** depmajor lane, trusted answer logins, Dependabot action-ref gate allowance ([#2542](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2542)) ([bf92797](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/bf9279759287d0c00be8b96f81d612914d3d9dad))
+
+
+### Bug Fixes
+
+* **comments:** resolve home feed composer drift ([#2518](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2518)) ([0e513f8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0e513f8b3fc496473577b4def2df78d3835838ad))
+* **logs:** record carousel gate outcomes ([#2519](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2519)) ([fe4adf8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/fe4adf8a0bfe1285599eb7c54a2f6101aab9ae4c))
+* **perf:** log why snapshot count reads fail and read .env like compose (refs [#2431](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2431)) ([#2548](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2548)) ([5980bc8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5980bc895c3dd6a6d6dc85d874e8c053296748f0))
+* **perf:** name why snapshot count reads fail; read .env like compose and target ${MYSQL_HOST} (refs [#2431](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2431)) ([5980bc8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5980bc895c3dd6a6d6dc85d874e8c053296748f0))
+* **pipeline:** label the Ollama lane's unrecognized_model notice and rc=124 timeouts ([#2546](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2546)) ([4663d1d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4663d1d0c188d63c85ee293e7f0ca250e1f9df0f))
+
 ## [0.204.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.203.0...v0.204.0) (2026-11-12)
 
 
