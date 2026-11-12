@@ -25,8 +25,10 @@ _LI_AT = "AQEDAReallyLongLinkedInSessionTokenValue1234567890"
 _REFUSAL = "suggest_mode_oauth_only"
 
 
-def _state(mode: str = "automate", status: str = "active", tier: str = "professional") -> dict:
-    return {"engagement_mode": mode, "subscription_status": status, "subscription_tier": tier}
+def _state(mode: str = "automate", status: str = "active", tier: str = "professional",
+           kind: str = "standard") -> dict:
+    return {"engagement_mode": mode, "subscription_status": status, "subscription_tier": tier,
+            "account_kind": kind}
 
 
 #: Readings that must all refuse: suggest, a trial on `automate`, and three unreadable answers.
