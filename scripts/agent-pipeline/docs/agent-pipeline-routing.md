@@ -379,6 +379,15 @@ and a comment explains why, rather than cycling forever on whatever keeps killin
   recreate the container (above). Verify with `curl -X POST http://127.0.0.1:4000/v1/messages
   -H "x-api-key: $LITELLM_MASTER_KEY" -H "anthropic-version: 2023-06-01" -H 'content-type:
   application/json' -d '{"model":"lem-agent-tier2","max_tokens":5,"messages":[{"role":"user","content":"ok"}]}'`.
+- **`[claude-code:unrecognized_model] {"model":"lem-agent-tier2",…}` in an Ollama-lane run** →
+  harmless. The CLI prints it to stderr once per process for any model name outside its own
+  catalogue, then sends the request anyway, so every `lem-*` run carries it, rc=0 runs included.
+  `run_lane` logs a `note:` beside it saying so. An alias LiteLLM really refuses fails as
+  `Invalid model name` (see *Lane health* above), and the alias probe holds the lane on that. On
+  2026-11-12 the line sat next to an `rc=124` and read as the cause. The real cause was the docfix
+  600s budget (`policy.py`), and rc=124 is now logged as the `CLAUDE_TIMEOUT` budget running out.
+  Do not "fix" the notice with a `modelOverrides` mapping or a Claude model name: that would make
+  the CLI assume a Claude model's context window and features for a model that is not Claude.
 - **Ollama cloud model times out** → `glm-5.2` (tier1) is a slow thinking model and
   intermittently times out; that's why it's opt-in (`agent:tier:1`) and the default is tier2
   (`kimi-k2.7-code`). LiteLLM's fallback chain should drop to tier2/tier3 automatically.
