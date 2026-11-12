@@ -692,6 +692,7 @@ _SCROLL_STOP_SURFACES = frozenset({"newsletter", "post_image"})
 # title directly under it: at 4 every deck cover was rejected at specificity 1-3 ("thesis not clear
 # without headline") and every deck shipped the template cover. It takes the specificity floor
 # only; round 3 keeps scroll_stop off carousel art, because the composed cover stops the feed.
+# Carousel carries no hook (not in HOOK_SURFACES), so AI slide images take this floor too.
 _HEADLINE_FREE_SPECIFICITY_FLOOR = 3
 
 
