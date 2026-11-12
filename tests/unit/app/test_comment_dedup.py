@@ -55,7 +55,8 @@ def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=1
               prefs=None, matches=True, real_key=False, urn_scan=None, find_elements=None,
               urn_by_text=None, is_group_feed=False, click_first_return=_UNSET,
               post_composer_return=_UNSET, deadline_ts=None, roster_posted=None,
-              comment_text="A thoughtful comment.", own_history=None, on_post=None):
+              comment_text="A thoughtful comment.", own_history=None, on_post=None,
+              roster_key_sources=None):
     """Drive `comment_on_feed_inline` with all the SDUI/DB collaborators mocked.
 
     Returns a dict of the key mocks so assertions can inspect calls. `find_elements` overrides the
@@ -167,6 +168,7 @@ def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=1
         p("release_post_claim", new=release)
         warn = p("log_warning")
         debug = p("log_debug")
+        info = p("log_info")
         p("insert_new_log")
         p("pace_read", return_value=0.0)
         click_first_mock = MagicMock(return_value=click_first_return)
@@ -176,14 +178,15 @@ def _run_feed(boxes, *, claim_side_effect=None, has_commented=False, max_posts=1
         if roster_posted is not None:
             p("comment_on_roster_posts",
               return_value={"posted": roster_posted, "targets_visited": 1, "examined": roster_posted,
-                            "off_topic_skipped": 0, "key_sources": {}, "commented_key_sources": {}})
+                            "off_topic_skipped": 0, "key_sources": dict(roster_key_sources or {}),
+                            "commented_key_sources": dict(roster_key_sources or {})})
             p("navigate_to_feed")
         posted = ra.comment_on_feed_inline(driver, wait, MagicMock(), user_id=1, max_posts=max_posts,
                                            is_group_feed=is_group_feed, deadline_ts=deadline_ts)
 
     return {"posted": posted, "claim": claim, "post_inline": post_inline, "react": react,
             "mark": mark, "mark_reacted": mark_reacted, "release": release, "gen": gen,
-            "funnel": funnel_holder, "warn": warn, "debug": debug,
+            "funnel": funnel_holder, "warn": warn, "debug": debug, "info": info,
             "click_first": click_first_mock, "_post_composer_for_card": ppc}
 
 
@@ -254,6 +257,17 @@ class TestFeedDedup:
         assert r["funnel"]["key_sources"] == {"hash": 1}
         assert _messages(r["warn"], "URN resolver drift")
         assert not _messages(r["debug"], "content-hash")   # the two branches are exclusive
+        assert not _messages(r["info"], "#2422")
+
+    def test_roster_only_hash_scan_is_info_not_a_warning(self):
+        # #2422: the rebuilt roster activity page carries no post URN (live probe 2026-11-11), so
+        # a scan that only examined roster posts keys on the hash by design. Blaming the resolver
+        # for that re-filed an issue every run; it is recorded at INFO instead.
+        r = _run_feed([], max_posts=1, roster_posted=1, roster_key_sources={"hash": 1})
+        assert r["posted"] == 1
+        assert r["funnel"]["key_sources"] == {"hash": 1}
+        assert not _messages(r["warn"], "URN resolver drift")
+        assert _messages(r["info"], "#2422")
 
     def test_all_urn_keyed_scan_says_nothing_about_hashes(self):
         r = _run_feed([_box("A feed post whose card carries its activity urn.")], real_key=True,

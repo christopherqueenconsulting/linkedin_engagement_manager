@@ -422,6 +422,17 @@ scan`. `--roster-follow <url>` now reports `urn_evidence` for the page's first t
 the same capture as the group walk, so the next rung is grounded from a live reading rather than
 guessed.
 
+That reading (2026-11-11, one roster profile, 3 card groups) found no URN in any attribute or href
+on the rebuilt activity page: every card keyed `hash`, and the only post hrefs were the profile's
+own activity URL. There is no rung to add, so the warning was scoped instead. It now fires only
+when the scan examined home-feed posts and none resolved a URN, which is the #580 shape. A
+roster-only scan whose comments keyed on the hash logs at INFO (`… the roster activity page carries
+no post URN (#2422)`, with its key sources), and the `Engagement scan:` line still records the
+counts. The hash stays safe across runs for these posts: `logs.post_url` keeps the `feedpost://`
+key, `_norm_prefix` makes it proof against truncation, and each roster target is also bounded by
+`_ROSTER_MAX_POSTS_PER_AUTHOR` and its weekly cap. (A roster comment starts the 30-minute author
+cooldown, but the roster pass does not check it; only the home-feed walk does.)
+
 ## Replies on our own posts, and the seed comment (`sweep_reply_comments`, `auto_seed_comment_on_post`)
 
 Two different jobs on the user's own post: **seed** the thread, then **answer** it.
