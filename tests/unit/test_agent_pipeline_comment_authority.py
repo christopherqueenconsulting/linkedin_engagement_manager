@@ -74,12 +74,20 @@ def _fn(src: str, name: str) -> str:
 
 HELPERS = "".join(_fn(GUARDS, n) for n in
                   ("pipeline_app_login", "comment_login_is_app", "comment_login_names_app",
-                   "comment_author_trusted", "trusted_answer_login", "answer_author_trusted"))
+                   "comment_author_trusted", "trusted_answer_login", "typed_answer_login",
+                   "answer_author_trusted"))
 
 _GH_STUB = r'''#!/usr/bin/env bash
 # Stub gh: comment reads come from $COMMENTS ({"body": ..., "comments": [...]}) — through
 # `gh pr/issue view --json` or, as one slurped page, through REST `api .../issues/N/comments` —
 # permission reads from $PERMS ({login: permission}); every permission lookup is logged to $CALLS.
+if [ "$1" = api ] && [ "${2#*/issues/comments/}" != "$2" ]; then
+  cid="${2##*/}"; shift 2; expr="."
+  while [ $# -gt 0 ]; do [ "$1" = "--jq" ] && expr="$2"; shift; done
+  printf '%s' "$COMMENTS" | jq -r --arg c "$cid" \
+    "(.comments[] | select(.html_url | endswith(\"-\" + \$c))) | $expr" | grep . || exit 1
+  exit 0
+fi
 if [ "$1" = api ] && [ "${2%/comments}" != "$2" ]; then
   printf '%s' "$COMMENTS" | jq -c '[.comments]'
   exit 0
@@ -580,7 +588,9 @@ def test_parse_answer_logins_refuses_the_app_and_non_logins(caplog, monkeypatch)
     monkeypatch.delenv("GH_APP_BOT_LOGIN", raising=False)
     got = github.parse_answer_logins(f"{SECOND}, Other-Login {APP},{SPOOF} codecov[bot] bad/login")
     assert got == frozenset({SECOND, "other-login"})
-    assert sum("refusing" in r.message for r in caplog.records) == 4
+    assert sum("refused" in r.message for r in caplog.records) == 4
+    assert not any("bad/login" in r.message or "codecov" in r.message for r in caplog.records), \
+        "a refused entry is configuration and must not be echoed"
 
 
 def test_parse_answer_logins_defaults_to_nobody():
@@ -619,3 +629,92 @@ def test_both_runners_agree_on_the_second_login(tmp_path, monkeypatch):
     r = _run(tmp_path, V2_OWNER_ANSWERED + f'v2_owner_answered pr 7 "{got.answer.comment_id}" '
              "&& echo YES || echo NO", thread, env=_EXTRA)
     assert r.stdout.strip().splitlines()[-1] == "YES"
+
+
+# ------------------------------------------------------------------ an App as the answer login
+
+EA_APP = "cqc-ea[bot]"
+_EA = {"LEMD_TRUSTED_ANSWER_LOGINS": EA_APP}
+
+
+def test_parse_answer_logins_accepts_a_dedicated_app_and_refuses_shared_bots(monkeypatch):
+    monkeypatch.delenv("GH_APP_BOT_LOGIN", raising=False)
+    got = github.parse_answer_logins(f"{EA_APP}, dependabot[bot] github-actions[bot] posthog[bot]")
+    assert got == frozenset({EA_APP})
+
+
+class TestAppAnswerLogin:
+    """The EA answers as its own GitHub App; a human holding the bare slug never does."""
+
+    def _yes(self, tmp_path, call: str, env: dict | None = None, comments=None) -> bool:
+        r = _run(tmp_path, call + " && echo YES || echo NO", comments, env=env)
+        return r.stdout.strip().splitlines()[-1] == "YES"
+
+    def test_the_shell_trusts_the_apps_rest_login_only(self, tmp_path):
+        assert self._yes(tmp_path, f'trusted_answer_login "{EA_APP}"', _EA)
+        assert not self._yes(tmp_path, 'trusted_answer_login "cqc-ea"', _EA)
+
+    @pytest.mark.parametrize("bot", ["dependabot[bot]", "github-actions[bot]", "posthog[bot]"])
+    def test_the_shell_refuses_shared_bots_even_when_listed(self, tmp_path, bot):
+        env = {"LEMD_TRUSTED_ANSWER_LOGINS": bot}
+        assert not self._yes(tmp_path, f'trusted_answer_login "{bot}"', env)
+
+    def test_v2_owner_answered_accepts_the_app_but_not_an_impostor(self, tmp_path):
+        thread = [c(DECISION, APP), c("1A", EA_APP)]
+        call = V2_OWNER_ANSWERED + f'v2_owner_answered pr 7 "{thread[-1]["id"]}"'
+        assert self._yes(tmp_path, call, _EA, thread)
+        impostor = [c(DECISION, APP), c("1A", "cqc-ea")]
+        call = V2_OWNER_ANSWERED + f'v2_owner_answered pr 7 "{impostor[-1]["id"]}"'
+        assert not self._yes(tmp_path, call, _EA, impostor)
+
+
+def _daemon_thread(monkeypatch, thread, rest_users):
+    """Stub gh for the daemon: bare-login comment lists, typed REST comment reads.
+
+    `--json comments` returns the bare-login shape; a REST comment read returns the typed user for
+    the comment id in `rest_users`, else 404.
+    """
+    monkeypatch.setattr(github, "_PERMISSION_CACHE", {})
+
+    def gh(args, **_k):
+        if args[0] == "api":
+            cid = args[1].rsplit("/", 1)[-1]
+            if args[1].startswith("repos/a/w/issues/comments/") and cid in rest_users:
+                return {"user": rest_users[cid]}
+            raise github.GitHubUnavailable("(HTTP 404)")
+        return {"comments": thread}
+
+    monkeypatch.setattr(github, "gh_json", gh)
+
+
+def test_the_daemon_takes_the_apps_answer_only_when_rest_says_bot(monkeypatch):
+    menu, answer = c(DECISION, APP), c("1A", EA_APP)
+    cid = answer["html_url"].rsplit("-", 1)[-1]
+    _daemon_thread(monkeypatch, [menu, answer], {cid: {"login": EA_APP, "type": "Bot"}})
+    got = answers.read_thread("a/w", "pr", 7, OWNER, answer_logins=frozenset({EA_APP}))
+    assert got.answer is not None and got.answer.comment_id == answer["id"]
+
+
+def test_a_human_holding_the_bare_slug_is_not_the_app(monkeypatch):
+    menu, answer = c(DECISION, APP), c("1A", "cqc-ea")
+    cid = answer["html_url"].rsplit("-", 1)[-1]
+    _daemon_thread(monkeypatch, [menu, answer], {cid: {"login": "cqc-ea", "type": "User"}})
+    got = answers.read_thread("a/w", "pr", 7, OWNER, answer_logins=frozenset({EA_APP}))
+    assert got.answer is None
+
+
+def test_an_unreadable_rest_check_fails_closed(monkeypatch):
+    menu, answer = c(DECISION, APP), c("1A", EA_APP)
+    _daemon_thread(monkeypatch, [menu, answer], {})
+    got = answers.read_thread("a/w", "pr", 7, OWNER, answer_logins=frozenset({EA_APP}))
+    assert got.answer is None
+
+
+def test_v1_newest_owner_answer_takes_the_app_but_not_an_impostor(tmp_path):
+    thread = [c(DECISION, APP), c("1A", EA_APP)]
+    r = _run(tmp_path, NEWEST + "newest_owner_answer pr 7", thread, env=_EA)
+    out = [ln for ln in r.stdout.splitlines() if not ln.startswith("LOG:")]
+    assert out and base64.b64decode(out[0]).decode() == "1A"
+    impostor = [c(DECISION, APP), c("1A", "cqc-ea")]
+    r = _run(tmp_path, NEWEST + "newest_owner_answer pr 7", impostor, env=_EA)
+    assert [ln for ln in r.stdout.splitlines() if not ln.startswith("LOG:")] == []

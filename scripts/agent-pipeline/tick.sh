@@ -463,15 +463,16 @@ newest_owner_answer() {
   # the owner can't bury the answer. A Decision Comment closes the window only when its author may
   # ask (the App's slug, the owner, a trusted author) — the same walk as `lemd/answers.py:parse`
   # and `v2_owner_answered`, so an outsider's "Human decision needed" cannot push an answer out.
-  local rows login dec agent body found=""
+  local rows login url dec agent body found=""
   rows="$(gh "$1" view "$2" --repo "$SLUG" --json comments 2>/dev/null \
     | jq -r '
         def isdecision: ((.body // "") | test("Human decision needed"; "i"));
         def isagent:    ((.body // "") | test("Generated with \\[Claude Code\\]"));
         (.comments // []) | reverse | .[]
-        | "\(.author.login // "")|\(if isdecision then 1 else 0 end)|\(if isagent then 1 else 0 end)|\((.body // "") | @base64)"' 2>/dev/null)"
+        | "\(.author.login // "")|\(.url // .html_url // "")|\(if isdecision then 1 else 0 end)|\(if isagent then 1 else 0 end)|\((.body // "") | @base64)"' 2>/dev/null)"
   # `|` and not a tab: a tab is IFS whitespace, so an empty login would collapse into the body.
-  while IFS='|' read -r login dec agent body; do
+  while IFS='|' read -r login url dec agent body; do
+    login="$(typed_answer_login "$login" "$url")"
     if [ "$dec" = 1 ]; then
       if [ -n "$login" ] && { comment_login_names_app "$login" || answer_author_trusted "$login"; }; then
         [ -n "$found" ] && printf '%s\n' "$found"

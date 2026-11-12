@@ -647,30 +647,66 @@ def names_pipeline_app(login: str) -> bool:
     return bool(login) and _bare_login(login) == _bare_login(pipeline_app_login())
 
 
+#: Shared bots that act for many people (or for GitHub itself). Never accepted as an answer login,
+#: even when listed: their comments are written by whoever triggers them, not by one trusted actor.
+SHARED_BOT_SLUGS = frozenset({
+    "github-actions", "dependabot", "copilot", "copilot-pull-request-reviewer", "codecov",
+    "github-advanced-security", "gitguardian", "posthog", "renovate", "claude",
+})
+
+
 def parse_answer_logins(raw: str) -> frozenset[str]:
-    """Parse `LEMD_TRUSTED_ANSWER_LOGINS`: the owner's second login(s), lower-cased.
+    """Parse `LEMD_TRUSTED_ANSWER_LOGINS`: the owner's extra answer identities, lower-cased.
 
     These count for Decision-Comment ANSWERS (`answers.read_thread`) and, in the shell twin, for
     provenance-gated labels. Never for the Self-Modification Gate or review evidence.
 
+    An entry is a human login or a GitHub App's bot login in REST form (`<slug>[bot]`, e.g. the
+    `cqc-ea` App the EA answers with). Bot entries keep their `[bot]` suffix, so they only match a
+    comment proven to be a Bot (`answers.read_thread` verifies it over REST: GraphQL drops the
+    suffix, and a human could register the bare slug as a user login on this public repo).
+
     Refused, each with a WARNING because a login the operator believes is trusted but is not is the
-    failure nobody notices: anything that is not a GitHub login, every `[bot]` login, and above all
-    the pipeline App itself — an agent posting as the App must never answer its own question.
-    `trusted_answer_login` in `lib/guards.sh` applies the same rules and must keep agreeing.
+    failure nobody notices: anything that is not a GitHub login, a shared bot (`SHARED_BOT_SLUGS`),
+    and above all the pipeline App itself, because an agent posting as the App must never answer its
+    own question. The refused value is not echoed, because it is configuration. `trusted_answer_login`
+    in `lib/guards.sh` applies the same rules and must keep agreeing.
     """
     out: set[str] = set()
-    for entry in re.split(r"[,\s]+", raw or ""):
-        if not entry:
-            continue
+    for pos, entry in enumerate(e for e in re.split(r"[,\s]+", raw or "") if e):
         if names_pipeline_app(entry):
-            LOG.warning("LEMD_TRUSTED_ANSWER_LOGINS: refusing %r — the pipeline App never answers "
-                        "its own question", entry)
+            LOG.warning("LEMD_TRUSTED_ANSWER_LOGINS entry %d refused: the pipeline App never "
+                        "answers its own question", pos + 1)
             continue
-        if entry.lower().endswith("[bot]") or not _LOGIN_RE.fullmatch(entry):
-            LOG.warning("LEMD_TRUSTED_ANSWER_LOGINS: refusing %r — not a human GitHub login", entry)
+        if not _LOGIN_RE.fullmatch(entry):
+            LOG.warning("LEMD_TRUSTED_ANSWER_LOGINS entry %d refused: not a GitHub login", pos + 1)
+            continue
+        if entry.lower().endswith("[bot]") and _bare_login(entry) in SHARED_BOT_SLUGS:
+            LOG.warning("LEMD_TRUSTED_ANSWER_LOGINS entry %d refused: a shared bot answers for "
+                        "nobody in particular", pos + 1)
             continue
         out.add(entry.lower())
     return frozenset(out)
+
+
+def verified_bot_login(slug: str, comment_url: str, *, timeout: int = 30) -> str | None:
+    """The REST login (`<slug>[bot]`) of a comment's author IF GitHub types it as a Bot, else None.
+
+    GraphQL comment lists (`gh … --json comments`) drop the `[bot]` suffix and carry no actor type,
+    so an App and a same-named human look identical there. One REST read of the comment settles it.
+    Fails closed: an unreadable comment or a non-Bot author is None.
+    """
+    m = re.search(r"#issuecomment-(\d+)$", comment_url or "")
+    if not m:
+        return None
+    try:
+        got = gh_json(["api", f"repos/{slug}/issues/comments/{m.group(1)}"], timeout=timeout) or {}
+    except GitHubUnavailable:
+        return None
+    user = got.get("user") or {}
+    if user.get("type") != "Bot" or not user.get("login"):
+        return None
+    return str(user["login"]).lower()
 
 
 def collaborator_permission(slug: str, login: str, *, timeout: int = 30) -> frozenset[str] | None:

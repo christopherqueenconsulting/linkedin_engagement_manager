@@ -235,6 +235,18 @@ def read_thread(slug: str, kind: str, number: int, owner: str, *,
         LOG.warning("%s #%s comments unreadable — staying parked: %s", kind, number, exc)
         return UNREADABLE
     comments = list(facts.get("comments") or [])
+    # A listed App (`<slug>[bot]`) shows up here as its bare slug, indistinguishable from a human
+    # who registered that login. Re-type those comments over REST; only a proven Bot gets the
+    # `[bot]` login back, so an impostor's bare login never matches a bot entry.
+    bot_slugs = {e[:-5] for e in answer_logins if e.endswith("[bot]")}
+    for comment in comments:
+        author = comment.get("author") or {}
+        login = str(author.get("login") or "").lower()
+        if login in bot_slugs:
+            verified = github.verified_bot_login(slug, str(comment.get("url") or comment.get("html_url") or ""),
+                                                 timeout=timeout)
+            if verified == f"{login}[bot]":
+                comment["author"] = {**author, "login": verified}
 
     def trusted(login: str) -> bool:
         # `answer_logins` is LEMD_TRUSTED_ANSWER_LOGINS, already stripped of the App at parse time;

@@ -611,7 +611,7 @@ def test_the_authorship_check_cannot_be_buried_by_a_bot():
     body = body[:body.index("\n}\n")]
     assert "(last // empty)" not in body, "picking the newest comment before judging it buries answers"
     assert "| reverse | .[]" in body
-    loop = body.index("while IFS='|' read -r id login dec agent")
+    loop = body.index("while IFS='|' read -r id login url dec agent")
     # `answer_author_trusted` = `comment_author_trusted` + LEMD_TRUSTED_ANSWER_LOGINS (lib/guards.sh).
     assert body.index("answer_author_trusted", loop) > loop
 

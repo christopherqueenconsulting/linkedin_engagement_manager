@@ -159,16 +159,17 @@ v2_trust_ok() {
 #   * an untrusted reply is skipped, never terminal — a bot commenting after the answer (codecov
 #     posts on every push) cannot bury it.
 v2_owner_answered() {
-  local kind="$1" n="$2" want="${3:-}" rows id login dec agent candidate="" asked=0
+  local kind="$1" n="$2" want="${3:-}" rows id login url dec agent candidate="" asked=0
   if [ -z "$want" ]; then
     log "TRUST: #$n — no answer id routed with this un-park; refusing."
     return 1
   fi
   rows="$(gh "$kind" view "$n" --repo "$SLUG" --json comments --jq '
     (.comments // []) | reverse | .[]
-    | "\(.id // .url // "")|\(.author.login // "")|\(if ((.body // "") | test("Human decision needed"; "i")) then 1 else 0 end)|\(if ((.body // "") | test("Generated with \\[Claude Code\\]")) then 1 else 0 end)"' 2>/dev/null)" || rows=""
-  while IFS='|' read -r id login dec agent; do
+    | "\(.id // .url // "")|\(.author.login // "")|\(.url // .html_url // "")|\(if ((.body // "") | test("Human decision needed"; "i")) then 1 else 0 end)|\(if ((.body // "") | test("Generated with \\[Claude Code\\]")) then 1 else 0 end)"' 2>/dev/null)" || rows=""
+  while IFS='|' read -r id login url dec agent; do
     [ -n "$id$login" ] || continue
+    login="$(typed_answer_login "$login" "$url")"
     if [ "$dec" = 1 ]; then
       if [ -n "$login" ] && { comment_login_names_app "$login" || answer_author_trusted "$login"; }; then
         asked=1; break

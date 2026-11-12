@@ -207,20 +207,52 @@ trusted_answer_login() {
   # (`label_actor_trusted`). Never for the Self-Modification Gate, never for review evidence.
   #
   # The pipeline App is refused even when someone lists it: an agent posting as the App must never
-  # be able to answer its own question. So is every `[bot]` login, and anything that is not a
-  # GitHub login. `read -a`, not an unquoted expansion: a `*` in the list must not glob.
+  # be able to answer its own question. So is every shared bot, and anything that is not a GitHub
+  # login. A dedicated App (the EA's `cqc-ea[bot]`) may be listed in its `<slug>[bot]` form.
+  # `read -a`, not an unquoted expansion: a `*` in the list must not glob.
   # `lemd/github.py:parse_answer_logins` is the daemon's twin and must keep agreeing with it.
   local login="${1:-}" lc entry entries=()
   [ -n "$login" ] && [ -n "${LEMD_TRUSTED_ANSWER_LOGINS:-}" ] || return 1
   lc="$(printf '%s' "$login" | tr '[:upper:]' '[:lower:]')"
-  case "$lc" in *"[bot]") return 1 ;; esac
+  # A listed App is matched only in its REST form `<slug>[bot]` (these callers read REST comments,
+  # whose user.login carries the suffix), never by its bare slug, which a human could register.
+  # Shared bots are refused even when listed: they comment for whoever triggers them.
+  case "${lc%\[bot\]}" in
+    github-actions|dependabot|copilot|copilot-pull-request-reviewer|codecov|github-advanced-security|gitguardian|posthog|renovate|claude)
+      case "$lc" in *"[bot]") return 1 ;; esac ;;
+  esac
   comment_login_names_app "$login" && return 1
   IFS=', ' read -r -a entries <<< "$LEMD_TRUSTED_ANSWER_LOGINS"
   for entry in "${entries[@]}"; do
-    [[ "$entry" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]] || continue
+    [[ "$entry" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}(\[bot\])?$ ]] || continue
     [ "$(printf '%s' "$entry" | tr '[:upper:]' '[:lower:]')" = "$lc" ] && return 0
   done
   return 1
+}
+
+typed_answer_login() {
+  # typed_answer_login <login> <comment_url> -> prints the login to judge a comment by.
+  # `gh … --json comments` drops an App's `[bot]` suffix and carries no actor type, so a listed App
+  # (`<slug>[bot]` in LEMD_TRUSTED_ANSWER_LOGINS) and a human who registered `<slug>` look alike.
+  # When the bare login matches a listed App, ONE REST read of the comment decides: a Bot gets its
+  # `<slug>[bot]` login back, anyone else keeps the bare login (which matches no bot entry).
+  # Fails closed: an unreadable comment keeps the bare login. Twin: `answers.read_thread`.
+  local login="${1:-}" url="${2:-}" lc cid entry entries=() got
+  lc="$(printf '%s' "$login" | tr '[:upper:]' '[:lower:]')"
+  printf '%s' "$login"
+  [ -n "$login" ] && [ -n "${LEMD_TRUSTED_ANSWER_LOGINS:-}" ] || return 0
+  case "$lc" in *"[bot]") return 0 ;; esac
+  IFS=', ' read -r -a entries <<< "$LEMD_TRUSTED_ANSWER_LOGINS"
+  for entry in "${entries[@]}"; do
+    [ "$(printf '%s' "$entry" | tr '[:upper:]' '[:lower:]')" = "${lc}[bot]" ] || continue
+    cid="${url##*#issuecomment-}"
+    [[ "$cid" =~ ^[0-9]+$ ]] || return 0
+    got="$(gh api "repos/$SLUG/issues/comments/$cid" \
+             --jq 'select(.user.type == "Bot") | .user.login' 2>/dev/null)" || return 0
+    [ "$(printf '%s' "$got" | tr '[:upper:]' '[:lower:]')" = "${lc}[bot]" ] && printf '[bot]'
+    return 0
+  done
+  return 0
 }
 
 answer_author_trusted() {
