@@ -166,10 +166,14 @@ stated preference — a US-based user whose content is in Spanish would be mis-s
 Ordered by risk-reduction per unit of work. Items 1–2 are the reported production defects.
 
 **1. Video language (fixes Posts #34 / #36).** ✅ **shipped in this PR** (Decisions 1A + 2A)
-- `ai_helper._audio_direction(model, language)` gates on `video_models.supports_audio(model)`
-  (**not** an `== "veo3.1"` string match) and returns an **ambience-only** clause: natural ambient
-  sound, *no spoken dialogue / voiceover / narration / singing*, plus the user's language stated
-  explicitly for any incidental speech.
+- `ai_helper._audio_direction(model)` gates on `video_models.supports_audio(model)`
+  (**not** an `== "veo3.1"` string match) and returns a **no-vocals** clause. As first shipped it
+  asked for natural ambient sound and named the user's language for any incidental speech; that
+  still let through a non-English voiceover (issue #2501, post #135). It now asks for
+  *instrumental background music only, with no vocals* and bans human voices, spoken words,
+  dialogue, voiceover, narration, singing, lyrics and vocal samples. No language is stated: once
+  speech is banned, naming a language only invites it. `language` is still threaded to
+  `get_runway_ml_video_prompt_from_ai()` (below) but no longer reaches the audio clause.
 - The clause is **appended deterministically** to the LLM's motion prompt rather than requested from
   it — the system prompt forbids negatives, and the clause is made of them. The LLM is instead told
   to say nothing about audio. The motion half is trimmed so a caller's `[:512]` cap can never eat
