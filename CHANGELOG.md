@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.204.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.203.0...v0.204.0) (2026-11-12)
+
+
+### Features
+
+* **pipeline:** route the Claude lane through CLIProxyAPI instead of a setup-token ([#2541](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2541)) ([c0ffff6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c0ffff67b6d5c37ea24669831315147fe3c11f20))
+
+
+### Bug Fixes
+
+* **carousel:** judge headline-free deck cover art at the headline-free specificity floor (closes [#2536](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2536)) ([#2538](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2538)) ([fb81e1d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/fb81e1db01fa0d7aba2df0e038e5b5a86a842a8c))
+* **carousels:** bust cached slide assets after regeneration ([#2523](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2523)) ([98bd98a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/98bd98a27c7f81bd55040a57d043bfaa34ce95ac))
+* **engagement:** end the comment outcomes sweep on a crashed tab (closes [#2537](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2537)) ([#2539](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2539)) ([e8c5d30](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e8c5d301559b9e418116dc5938dd7a93e701fdb3))
+* **video:** prevent spoken audio in premium clips ([#2522](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2522)) ([27a6cce](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/27a6cced3156541acddb3d7f58d55c8c113c8e61))
+
 ## [0.203.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.202.0...v0.203.0) (2026-11-05)
 
 
