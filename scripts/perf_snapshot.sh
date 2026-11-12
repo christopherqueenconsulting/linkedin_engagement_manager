@@ -26,15 +26,26 @@ mkdir -p "$DIR"
 
 . "$(dirname "${BASH_SOURCE[0]}")/lib/app_container.sh"
 MARGIN_CONTAINER="${MARGIN_CONTAINER:-$(active_api_container)}"
-DBU=$(sudo -n grep -E "^MYSQL_USER=" "$ENVF"|cut -d= -f2-)
-DBP=$(sudo -n grep -E "^MYSQL_PASSWORD=" "$ENVF"|cut -d= -f2-)
-DBN=$(sudo -n grep -E "^MYSQL_DATABASE=" "$ENVF"|cut -d= -f2-)
+# One .env value the way compose reads it (#2431): the LAST assignment wins, and surrounding quotes
+# and a trailing ` # comment` are not part of the value. A bare grep|cut kept every duplicate line and
+# any quotes, so a credential that compose reads fine reached the mysql client mangled.
+envv(){ sudo -n grep -E "^$1=" "$ENVF" 2>/dev/null | tail -n1 | cut -d= -f2- | \
+  sed -E "s/^['\"](.*)['\"][[:space:]]*(#.*)?$/\1/; t; s/[[:space:]]+(#.*)?$//"; }
+DBU=$(envv MYSQL_USER)
+DBP=$(envv MYSQL_PASSWORD)
+DBN=$(envv MYSQL_DATABASE)
+# The DB container is named ${MYSQL_HOST} (docker-compose.yml), not a fixed `mysql_db`. The value
+# becomes a `docker exec` target, so anything but a plain container name falls back to the default.
+DBH=$(envv MYSQL_HOST)
+[[ "$DBH" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || DBH=mysql_db
 # The password reaches the mysql client as MYSQL_PWD from a 0600 env-file, never as a `-p` CLI arg:
 # an argv password is readable in the container's process list (and by anything scraping it).
 PWF=$(mktemp)                       # mktemp creates 0600
-trap 'rm -f "$PWF"' EXIT
+QERR=$(mktemp)                      # the queries' stderr: an unreadable count must name its cause
+trap 'rm -f "$PWF" "$QERR"' EXIT
 printf 'MYSQL_PWD=%s\n' "$DBP" > "$PWF"
-q(){ sudo -n docker exec --env-file "$PWF" mysql_db mysql -u"$DBU" -N -B -e "$1" 2>/dev/null | grep -vi "using a password" | head -1; }
+q(){ sudo -n docker exec --env-file "$PWF" "$DBH" mysql -u"$DBU" -N -B -e "$1" 2>>"$QERR" \
+  | grep -vi "using a password" | head -1; }
 # A count that could not be read is null, never 0 ("unscored is never zero"). metrics.jsonl has
 # all-zero d1 and cumulative rows from 2026-10-08 through 2026-10-15 (posts_tracked was 61 on
 # 10-07): the old `:-0` defaults turned empty reads into rows that looked like real measurements.
@@ -70,14 +81,20 @@ if [ -n "$DBU" ] && [ -n "$DBP" ] && [ -n "$DBN" ]; then
            cumulative.followups:$fu; do
     [ "${f#*:}" = null ] && nulls="${nulls:+$nulls,}${f%%:*}"
   done
-  [ -n "$nulls" ] && note "engagement counts unavailable: query returned no number for null fields: $nulls"
+  if [ -n "$nulls" ]; then
+    # The first error line the queries printed (docker or mysql), so the log names the cause rather
+    # than only the null fields — 2026-10-20 onward logged nulls with no cause at all (#2431).
+    why=$(grep -vi "using a password" "$QERR" | grep -m1 . | cut -c1-300)
+    note "engagement counts unavailable: query returned no number for null fields: $nulls;\
+ container $DBH; first error: ${why:-none printed}"
+  fi
 fi
 
 # Cost/margin block. Never fatal: an unreachable container or a broken block leaves the engagement
 # line intact (with "margin": null) rather than losing the whole day's snapshot.
 # stderr is kept (last line only) so a null block says WHY — 48 nulls went unexplained under #2109.
 ERRF=$(mktemp)
-trap 'rm -f "$PWF" "$ERRF"' EXIT
+trap 'rm -f "$PWF" "$QERR" "$ERRF"' EXIT
 margin=$(sudo -n docker exec "$MARGIN_CONTAINER" python -m cqc_lem.utilities.margin --daily-json 2>"$ERRF" | tail -1)
 if ! printf '%s' "${margin:-}" | python3 -c "import json,sys; json.loads(sys.stdin.read())" 2>/dev/null; then
   echo "[$(date -u +%FT%TZ)] margin block unavailable from $MARGIN_CONTAINER: $(tail -1 "$ERRF")" >> "$DIR/snapshot.log"
