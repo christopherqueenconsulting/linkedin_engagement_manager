@@ -111,3 +111,60 @@ class TestUnreadableCountsAreNull:
         row, _ = _run(tmp_path, body)
 
         assert row["cumulative"]["engagers"] == 7
+
+
+class TestTheCauseIsNamed:
+    """#2431: every count went null from 2026-10-20 with no cause in snapshot.log."""
+
+    def test_the_first_query_error_is_logged_with_the_container(self, tmp_path):
+        body = (
+            'if [ "$2" = grep ]; then case "$4" in '
+            '*USER*) echo MYSQL_USER=u;; *PASSWORD*) echo MYSQL_PASSWORD=p;; *DATABASE*) echo MYSQL_DATABASE=d;; '
+            "esac; exit 0; fi\n"
+            'case "$*" in *mysql*) echo "mysql: [Warning] Using a password on the command line" >&2; '
+            "echo \"ERROR 1045 (28000): Access denied for user 'u'@'localhost'\" >&2; exit 1;; esac\nexit 1"
+        )
+        row, log = _run(tmp_path, body)
+
+        assert row["cumulative"]["posts_tracked"] is None
+        assert "container mysql_db; first error: ERROR 1045 (28000): Access denied" in log
+        assert "Using a password" not in log
+
+    def test_no_stderr_says_none_printed(self, tmp_path):
+        body = (
+            'if [ "$2" = grep ]; then case "$4" in '
+            '*USER*) echo MYSQL_USER=u;; *PASSWORD*) echo MYSQL_PASSWORD=p;; *DATABASE*) echo MYSQL_DATABASE=d;; '
+            "esac; exit 0; fi\nexit 1"
+        )
+        _, log = _run(tmp_path, body)
+
+        assert "first error: none printed" in log
+
+
+class TestEnvValuesAreReadLikeCompose:
+    def test_quoted_duplicated_values_and_mysql_host_reach_the_client_clean(self, tmp_path):
+        # Quotes, a trailing comment and a duplicate (last wins) — all of which compose reads fine.
+        body = (
+            'if [ "$2" = grep ]; then case "$4" in '
+            "*USER*) printf 'MYSQL_USER=old\\nMYSQL_USER=\"u\"\\n';; "
+            "*PASSWORD*) echo \"MYSQL_PASSWORD='p w'  # rotated\";; "
+            "*DATABASE*) echo 'MYSQL_DATABASE=d # prod';; *HOST*) echo MYSQL_HOST=lem_mysql;; "
+            "esac; exit 0; fi\n"
+            'case "$*" in *"--env-file "*" lem_mysql mysql -uu -N"*" d.post_engagers "*) '
+            'grep -qx "MYSQL_PWD=p w" "$5" && echo 7 || exit 1;; *) exit 1;; esac'
+        )
+        row, _ = _run(tmp_path, body)
+
+        assert row["cumulative"]["engagers"] == 7
+
+    def test_an_unsafe_mysql_host_falls_back_to_mysql_db(self, tmp_path):
+        body = (
+            'if [ "$2" = grep ]; then case "$4" in '
+            '*USER*) echo MYSQL_USER=u;; *PASSWORD*) echo MYSQL_PASSWORD=p;; *DATABASE*) echo MYSQL_DATABASE=d;; '
+            "*HOST*) echo 'MYSQL_HOST=--privileged';; esac; exit 0; fi\n"
+            'case "$*" in *" mysql_db mysql "*) echo 7;; *) exit 1;; esac'
+        )
+        row, log = _run(tmp_path, body)
+
+        assert row["cumulative"]["engagers"] == 7
+        assert "--privileged" not in log

@@ -103,10 +103,13 @@ error-issues-cron}` clones can be removed once a week of runs shows up in the lo
 - `tail -7 /home/lem/perf-tracking/metrics.jsonl` — the `d1` and `cumulative` counts are integers.
   A count may be `null`, and null means **unmeasured, never zero**: every line with a null count has
   a matching `engagement counts unavailable:` line in `/home/lem/perf-tracking/snapshot.log` naming
-  the cause or the null fields (`grep 'engagement counts unavailable' snapshot.log | tail`).
+  the cause or the null fields (`grep 'engagement counts unavailable' snapshot.log | tail`). A
+  query failure line also names the DB container (`${MYSQL_HOST}` from `/opt/lem/.env`, default
+  `mysql_db`) and the first docker/mysql error the queries printed (`first error: …`); `.env`
+  values are read as compose reads them — last assignment wins, quotes and a ` # comment` dropped.
   Rows from **2026-10-08 until the release carrying this null handling is deployed** are all-zero
-  read failures, not measurements (posts_tracked was 61 on 2026-10-07): exclude them from any
-  series. Restoring the reads is tracked in #2431.
+  read failures, not measurements (posts_tracked was 61 on 2026-10-07), and from 2026-10-20 every
+  count is null: exclude both from any series. Restoring the reads is tracked in #2431.
 - Alert emails (`weekly_sdui_drift_check.sh`, `weekly_model_check.sh`,
   `weekly_linkedin_version_check.sh`, `error_to_issues.sh`, `triage_issues.sh`) had the same defect:
   each `alert()` exec'd python into `web_app` and swallowed the failure, so none ever sent (#2160).
