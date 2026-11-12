@@ -2388,8 +2388,12 @@ def _run_comment_outcomes_sweep(user_id: int) -> str:
         release_run_lock(lock_name, lock_token)
         return "Skipped — rate limited"
     except Exception as e:
-        log_error("Error starting comment outcome sweep", exc=e, user_id=user_id,
-                  task_name="sweep_comment_outcomes")
+        # A tab that crashed on the first login navigation was already warned about by
+        # `get_current_profile`; this wrapper only notes it, as the follow-up sweep does (#2393).
+        if not note_tab_crash(e, task_name="sweep_comment_outcomes", crash_logged_upstream=True,
+                              user_id=user_id):
+            log_error("Error starting comment outcome sweep", exc=e, user_id=user_id,
+                      task_name="sweep_comment_outcomes")
         release_run_lock(lock_name, lock_token)
         return f"Failed to start comment outcome sweep: {e}"
     checked = skipped = 0

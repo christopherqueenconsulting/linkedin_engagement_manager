@@ -132,7 +132,7 @@ class TestSweepCommentFollowups:
 class TestSweepCommentOutcomes:
     """The read-only outcome sweep: a crash ends it like the follow-up sweep, not one warning a post."""
 
-    def _run(self, es: ExitStack, *, reader) -> str:
+    def _run(self, es: ExitStack, *, reader=None, session=None) -> str:
         from cqc_lem.app.engagement.posting import _run_comment_outcomes_sweep
 
         p = lambda name, **kw: es.enter_context(patch(f"{_POST}.{name}", **kw))  # noqa: E731
@@ -141,7 +141,8 @@ class TestSweepCommentOutcomes:
                         for i in (1, 2, 3)])
         p("acquire_run_lock", return_value="tok")
         self.release = p("release_run_lock")
-        p("get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock()))
+        p("get_current_profile",
+          **(session or {"return_value": (MagicMock(), MagicMock(), "e", MagicMock())}))
         p("profile_slug", return_value="me")
         p("time.sleep")
         self.record = p("record_comment_outcome")
@@ -149,8 +150,28 @@ class TestSweepCommentOutcomes:
         self.quit = p("quit_gracefully")
         self.lane_error = p("log_error")
         self.lane_warning = p("log_warning")
-        self.reader = p("_read_comment_outcome", **reader)
+        self.reader = p("_read_comment_outcome", **(reader or {}))
         return _run_comment_outcomes_sweep(1)
+
+    def test_a_login_crash_is_debug_because_the_session_layer_warned(self):
+        with ExitStack() as es:
+            logs = _logs(es)
+            out = self._run(es, session={"side_effect": _crash()})
+        assert out.startswith("Failed to start comment outcome sweep")
+        logs["debug"].assert_called_once()
+        logs["warning"].assert_not_called()
+        self.lane_error.assert_not_called()
+        self.reader.assert_not_called()
+        self.release.assert_called_once()
+
+    def test_a_non_crash_login_fault_is_still_an_error(self):
+        with ExitStack() as es:
+            logs = _logs(es)
+            self._run(es, session={"side_effect": RuntimeError("db down")})
+        self.lane_error.assert_called_once()
+        assert self.lane_error.call_args.args[0] == "Error starting comment outcome sweep"
+        logs["warning"].assert_not_called()
+        logs["debug"].assert_not_called()
 
     def test_a_crash_mid_sweep_stops_on_one_warning(self):
         """The first post is read, the second crashes, the third is never tried on the dead tab."""
