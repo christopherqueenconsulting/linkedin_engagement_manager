@@ -1736,6 +1736,18 @@ Three separate books, and #1867 is what stopped them being one:
   `Adjacent author harvest: <url> activity= posts= commenters=`. A future zero shows where it
   came from: `activity=0` means the page parsed no posts, which points at the legacy activity-page
   selectors. `commenters=0` means the posts had no readable commenters.
+- **After the images fix, the adjacent set is still empty, at `activity=0` (issue #2495).** The
+  owner grepped `/opt/lem/logs` on 2026-11-12. There were 42 `Connection candidate funnel` scans
+  from 2026-10-01 to 2026-11-11, all `user_id=1` with `budget=5`. `own_post` was above zero in 22
+  of them. `adjacent`, `ranked` and `filed` were zero in all 42, so 0 of 42 met the "≥ 1 ranked
+  candidate in ≥ 50% of scans" bar. There were 59 `Adjacent author harvest` lines from 2026-10-27
+  on, covering the 3 configured authors, and every line read `activity=0 posts=0 commenters=0`.
+  So the set empties at the FIRST stage: `get_profile_recent_activity` parses no posts from a
+  `/recent-activity/` page even with images on. The permalink walker, dedup and the ICP floor were
+  never reached. `own_post>0` with `ranked=0` is a separate question, because the own-post
+  engagers did not survive ranking either. The `connection_requests` count for
+  `source='adjacent_post'` was not run; `filed=0` on every scan already shows none was filed. The
+  next step is a live `/recent-activity/` probe and new activity-page selectors (#2551).
 
 ## A lane run ends in the Celery state its outcome earned (`app/task_outcome.py`, issue #2097)
 
