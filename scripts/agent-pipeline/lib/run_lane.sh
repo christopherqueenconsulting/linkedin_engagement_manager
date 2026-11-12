@@ -338,6 +338,17 @@ never run in the shared checkout. MODE=${MODE:-?} BRANCH=${BRANCH:-?} ISSUE=${IS
   fi
   ms=$(( ($(date +%s) - t0) * 1000 ))
   cat "$out" >> "${LOG:-/dev/null}"
+  # `[claude-code:unrecognized_model] {"model":"lem-agent-tier2",...}` is NOT a rejection. The CLI
+  # prints it to stderr once per process for any model name outside its own catalogue, and then
+  # sends the request anyway — every `lem-*` alias draws it on every Ollama-lane run, rc=0 runs
+  # included. A model the endpoint refuses fails as `Invalid model name` instead, and the alias
+  # probe in capacity.sh already holds the lane on that. Without this note the line, which lands
+  # next to an unrelated timeout, reads as the cause (it did on 2026-11-12).
+  if grep -qF '[claude-code:unrecognized_model]' "$out" 2>/dev/null; then
+    log "note: [claude-code:unrecognized_model] is the CLI's non-fatal notice for a model name" \
+      "it does not know (${AGENT_TIER:-${AGENT_MODEL:-default}}); the request still went to the" \
+      "endpoint. Judge this run by its rc."
+  fi
 
   # The lane alone does not answer #1229's motivating question ("do Ollama-lane runs fail more often
   # than Claude-lane runs?"): a tick that dispatched an agent records tick_outcome="dispatched"
@@ -415,7 +426,14 @@ never run in the shared checkout. MODE=${MODE:-?} BRANCH=${BRANCH:-?} ISSUE=${IS
     _emit "issue_completed"
   else
     _EMIT_EXTRA="{\"error_type\":\"nonzero_exit\",\"error_message\":\"claude rc=$rc ($LANE)\"}" _emit "issue_failed"
-    log "$LANE claude exited rc=$rc (timeout/interrupt/limit) — will retry next tick."
+    # 124 is coreutils `timeout`: the run spent its whole CLAUDE_TIMEOUT budget. Say so, rather
+    # than a generic triple that invites hunting for a model or endpoint fault that is not there.
+    if [ $rc -eq 124 ]; then
+      log "$LANE claude exited rc=124 — ran out its ${CLAUDE_TIMEOUT:-45m} budget (CLAUDE_TIMEOUT)," \
+        "not a model error — will retry next tick."
+    else
+      log "$LANE claude exited rc=$rc (timeout/interrupt/limit) — will retry next tick."
+    fi
   fi
   rm -f "$out"
   return $rc
