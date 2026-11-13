@@ -212,6 +212,15 @@ default; tier1 is opt-in only). To force a Claude model, the existing `agent:mod
 labels work. The whole `agent:tier:*` family is bootstrapped by `ensure_ai_labels()` — a label that
 does not exist makes `gh issue edit --add-label` fail the ENTIRE edit silently (#1228).
 
+### Claude lane default model
+
+With no `agent:model:*` label the Claude lane runs `CLAUDE_DEFAULT_MODEL` (default
+`claude-sonnet-5-5`) instead of whatever the pipeline host's `settings.json` names, which was Opus.
+`MODE=depmajor` runs `CLAUDE_JUDGMENT_MODEL` (default `claude-opus-5-5`) because its verdict arms
+auto-merge. Both are read in `lib/dispatch.sh` and can be set in `config.env`. To restore the old
+"CLI default" behaviour, set `CLAUDE_DEFAULT_MODEL=` (empty) and `CLAUDE_JUDGMENT_MODEL=`. Full model
+ids map onto the existing `ai:claude-subscription:sonnet|haiku|opus` labels.
+
 ## Perplexity research MCP server
 
 `mcp/perplexity_server.py` is a FastMCP server exposing `research(query, recency)` and

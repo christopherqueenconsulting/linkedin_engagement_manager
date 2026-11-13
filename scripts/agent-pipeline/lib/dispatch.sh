@@ -24,6 +24,16 @@ BASE="${BASE:-/home/lem/agent-pipeline}"
 OLLAMA_PARALLEL_ENABLED="${OLLAMA_PARALLEL_ENABLED:-1}"
 OLLAMA_DEFAULT_TIER="${OLLAMA_DEFAULT_TIER:-lem-agent-tier2}"   # kimi-k2.7-code:cloud
 
+# Claude lane model when the issue carries no agent:model:* label. Without this the run passes no
+# --model and the CLI uses the host's settings.json default, which on the pipeline box was Opus
+# (`opus[1m]`): every unlabelled run billed the most expensive model by accident. `-` and not `:-`
+# on purpose: setting CLAUDE_DEFAULT_MODEL= (empty) in config.env restores the old CLI-default
+# behaviour, which is the one-line rollback.
+CLAUDE_DEFAULT_MODEL="${CLAUDE_DEFAULT_MODEL-claude-sonnet-5-5}"
+# `depmajor` is a judgement ("this major bump is safe") that arms auto-merge, so it keeps the
+# stronger model rather than inheriting the cheaper default.
+CLAUDE_JUDGMENT_MODEL="${CLAUDE_JUDGMENT_MODEL-claude-opus-5-5}"
+
 # ── preflight (once per tick) ───────────────────────────────────────────────
 capacity_preflight() {
   local c o cp ct op ot
@@ -141,6 +151,12 @@ _export_lane_context_window() {
 # $1 = claude_model_hint (sonnet|haiku|opus|"" from model_for_issue). Exports LANE etc.
 dispatch_lane() {
   local claude_hint="${1:-}"
+  if [ -z "$claude_hint" ]; then
+    case "${MODE:-}" in
+      depmajor) claude_hint="$CLAUDE_JUDGMENT_MODEL" ;;
+      *)        claude_hint="$CLAUDE_DEFAULT_MODEL" ;;
+    esac
+  fi
   LANE=""; AGENT_MODEL=""; AGENT_TIER=""; ROUTE_REASON=""; FALLBACK_FROM=""; FALLBACK_TO=""
 
   # Determine issue/PR context for telemetry + tier labels (env set by tick.sh before the call).
