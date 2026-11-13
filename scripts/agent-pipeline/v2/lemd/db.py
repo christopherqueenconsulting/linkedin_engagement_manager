@@ -143,7 +143,11 @@ CREATE TABLE IF NOT EXISTS runs (
   started_at   INTEGER NOT NULL,
   ended_at     INTEGER,
   rc           INTEGER,
-  log_path     TEXT
+  log_path     TEXT,
+  -- Real spend from the CLI's JSON result. NULL = unmeasured (a run that died before printing one),
+  -- never 0: the router must be able to tell "spent nothing" from "nobody counted".
+  tokens_in    INTEGER,
+  tokens_out   INTEGER
 );
 CREATE INDEX IF NOT EXISTS runs_open ON runs(ended_at) WHERE ended_at IS NULL;
 
@@ -209,6 +213,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     have = {row["name"] for row in conn.execute("PRAGMA table_info(items)").fetchall()}
     if "pending_mode" not in have:
         conn.execute("ALTER TABLE items ADD COLUMN pending_mode TEXT")
+    run_cols = {row["name"] for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
+    for col in ("tokens_in", "tokens_out"):
+        if col not in run_cols:
+            conn.execute(f"ALTER TABLE runs ADD COLUMN {col} INTEGER")
 
 
 @contextmanager
@@ -766,3 +774,46 @@ def set_run_lane(conn: sqlite3.Connection, run_id: int, *, lane: str | None,
         "route_reason=COALESCE(?, route_reason) WHERE id=?",
         (lane, model, route_reason, run_id),
     )
+
+
+def set_run_usage(conn: sqlite3.Connection, run_id: int, *, tokens_in: int | None,
+                  tokens_out: int | None) -> None:
+    """Attach a run's measured token counts. A zero or missing report is left NULL (unmeasured)."""
+    conn.execute(
+        "UPDATE runs SET tokens_in=COALESCE(?, tokens_in), tokens_out=COALESCE(?, tokens_out) "
+        "WHERE id=?",
+        (tokens_in or None, tokens_out or None, run_id),
+    )
+
+
+#: Providers the router tracks pauses for. A pause belongs to the PROVIDER that refused, never to a
+#: lane or to the whole pipeline: a Codex 5h window running out must not stop Claude code runs.
+PROVIDERS = ("claude", "codex", "ollama")
+
+
+def _pause_key(provider: str) -> str:
+    """The kv key for one provider's pause, refusing a name the router does not track."""
+    if provider not in PROVIDERS:
+        raise ValueError(f"unknown provider {provider!r}; expected one of {PROVIDERS}")
+    return f"pause_until:{provider}"
+
+
+def pause_provider(conn: sqlite3.Connection, provider: str, until: float) -> None:
+    """Pause ONE provider until the epoch second `until`; every other provider is untouched."""
+    kv_set(conn, _pause_key(provider), str(int(until)))
+
+
+def resume_provider(conn: sqlite3.Connection, provider: str) -> None:
+    """Clear one provider's pause (a no-op when it is not paused)."""
+    kv_delete(conn, _pause_key(provider))
+
+
+def provider_paused_until(conn: sqlite3.Connection, provider: str, *,
+                          now: float | None = None) -> float:
+    """Epoch second the provider is paused until, or 0.0 when it is not paused now."""
+    raw = kv_get(conn, _pause_key(provider))
+    try:
+        until = float(raw) if raw is not None else 0.0
+    except ValueError:
+        return 0.0
+    return until if until > float(now if now is not None else time.time()) else 0.0

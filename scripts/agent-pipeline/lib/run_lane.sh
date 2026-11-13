@@ -224,7 +224,37 @@ os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
 with open(log_path, "a", encoding="utf-8") as fh:
     fh.write(json.dumps(entry) + "\n")
 
+def _usage(obj):
+    """Real token counts and the model that carried the run, from the CLI's result object.
+
+    tokens_in counts every input token the run was billed or served for (fresh + cache write + cache
+    read), because the router reads spend, not prompt size. The model is the one with the most tokens
+    in `modelUsage`: a run can touch a small helper model, but the main model dominates.
+    """
+    usage = obj.get("usage") if isinstance(obj.get("usage"), dict) else {}
+
+    def _n(value):
+        return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+
+    t_in = sum(_n(usage.get(k)) for k in (
+        "input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+    t_out = _n(usage.get("output_tokens"))
+    model, best = "", -1
+    by_model = obj.get("modelUsage") if isinstance(obj.get("modelUsage"), dict) else {}
+    for name, stats in by_model.items():
+        if not isinstance(stats, dict):
+            continue
+        total = sum(_n(stats.get(k)) for k in (
+            "inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens"))
+        if total > best:
+            model, best = str(name), total
+    return t_in, t_out, model
+
+
 if result is not None:
+    t_in, t_out, used_model = _usage(result)
+    with open(out_path + ".usage", "w", encoding="utf-8") as fh:
+        fh.write(f"tokens_in={t_in}\ntokens_out={t_out}\nmodel_used={used_model}\n")
     tmp = out_path + ".text"
     with open(tmp, "w", encoding="utf-8") as fh:
         fh.write("\n".join(kept) + "\n")
@@ -336,6 +366,16 @@ never run in the shared checkout. MODE=${MODE:-?} BRANCH=${BRANCH:-?} ISSUE=${IS
   if [ -n "$perm_profile" ]; then
     _record_permission_run "$out" "$rc" "$perm_profile"
   fi
+  # Real spend from the CLI's JSON result. Absent (an `off` profile run, a crash that printed no
+  # result object) stays 0 — unmeasured, never a guess.
+  local tok_in=0 tok_out=0 model_used=""
+  if [ -f "$out.usage" ]; then
+    tok_in="$(sed -n 's/^tokens_in=\([0-9]*\)$/\1/p' "$out.usage" | head -n1)"
+    tok_out="$(sed -n 's/^tokens_out=\([0-9]*\)$/\1/p' "$out.usage" | head -n1)"
+    model_used="$(sed -n 's/^model_used=\(.*\)$/\1/p' "$out.usage" | head -n1)"
+    rm -f "$out.usage"
+  fi
+  tok_in="${tok_in:-0}"; tok_out="${tok_out:-0}"
   ms=$(( ($(date +%s) - t0) * 1000 ))
   cat "$out" >> "${LOG:-/dev/null}"
   # `[claude-code:unrecognized_model] {"model":"lem-agent-tier2",...}` is NOT a rejection. The CLI
@@ -386,7 +426,7 @@ never run in the shared checkout. MODE=${MODE:-?} BRANCH=${BRANCH:-?} ISSUE=${IS
     record_lane_outcome "$LANE" $([ $rc -eq 0 ] && echo 1 || echo 0) "$ul"
   fi
 
-  _EMIT_EXTRA="{\"success\":$([ $rc -eq 0 ] && echo true || echo false),\"latency_ms\":$ms,\"retry_count\":0,\"tokens_in\":0,\"tokens_out\":0,\"total_tokens\":0,\"estimated_cost\":0,\"error_type\":\"$([ $rc -ne 0 ] && echo nonzero_exit)\",\"fallback_from\":\"${FALLBACK_FROM}\",\"fallback_to\":\"${FALLBACK_TO}\"}" \
+  _EMIT_EXTRA="{\"success\":$([ $rc -eq 0 ] && echo true || echo false),\"latency_ms\":$ms,\"retry_count\":0,\"tokens_in\":$tok_in,\"tokens_out\":$tok_out,\"total_tokens\":$(( tok_in + tok_out )),\"estimated_cost\":0,\"error_type\":\"$([ $rc -ne 0 ] && echo nonzero_exit)\",\"fallback_from\":\"${FALLBACK_FROM}\",\"fallback_to\":\"${FALLBACK_TO}\"}" \
     _emit "$([ $rc -eq 0 ] && echo ai_call_completed || echo ai_call_failed)"
 
   # Report the lane back to whoever spawned us. The v2 daemon opens the `runs` row BEFORE the lane
@@ -399,8 +439,10 @@ never run in the shared checkout. MODE=${MODE:-?} BRANCH=${BRANCH:-?} ISSUE=${IS
   # it), a write is atomic enough at this size, and a child that dies before writing simply leaves
   # the columns NULL — the status quo, never a wrong attribution.
   if [ -n "${LEMD_RUN_META:-}" ]; then
-    printf 'lane=%s\nmodel=%s\nroute_reason=%s\n' \
-      "$LANE" "${AGENT_TIER:-${AGENT_MODEL:-}}" "${ROUTE_REASON:-}" >"$LEMD_RUN_META" 2>/dev/null || true
+    # `model` is what the CLI reported it ran, falling back to the routed name when unmeasured.
+    printf 'lane=%s\nmodel=%s\nroute_reason=%s\ntokens_in=%s\ntokens_out=%s\n' \
+      "$LANE" "${model_used:-${AGENT_TIER:-${AGENT_MODEL:-}}}" "${ROUTE_REASON:-}" \
+      "$tok_in" "$tok_out" >"$LEMD_RUN_META" 2>/dev/null || true
   fi
 
   local kind="pr" num="${ISSUE:-${PR:-}}"

@@ -485,7 +485,8 @@ def test_run_lane_sh_writes_the_meta_file_the_daemon_reads(tmp_path):
            / "run_lane.sh").read_text()
     assert "LEMD_RUN_META" in src, "run_lane.sh must report its lane back"
     # The daemon parses `key=value` lines; anything else reads as no attribution at all.
-    block = re.search(r"printf 'lane=%s\\nmodel=%s\\nroute_reason=%s\\n'", src)
+    block = re.search(
+        r"printf 'lane=%s\\nmodel=%s\\nroute_reason=%s\\ntokens_in=%s\\ntokens_out=%s\\n'", src)
     assert block, "the meta format must stay key=value, one per line"
 
 

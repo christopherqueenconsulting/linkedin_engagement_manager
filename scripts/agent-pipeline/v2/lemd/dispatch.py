@@ -53,6 +53,14 @@ ORPHAN_SWEEP_OFF = "ORPHAN_SWEEP_OFF"
 SWEEP_MODE = "sweep"
 
 
+def _as_int(raw: str | None) -> int | None:
+    """Parse a meta-file count; anything non-numeric is unmeasured (None), never 0."""
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+
+
 @dataclass
 class Child:
     """One running action."""
@@ -441,6 +449,11 @@ class Supervisor:
             lane=fields.get("lane") or None,
             model=fields.get("model") or None,
             route_reason=fields.get("route_reason") or None,
+        )
+        db.set_run_usage(
+            self.conn, child.run_id,
+            tokens_in=_as_int(fields.get("tokens_in")),
+            tokens_out=_as_int(fields.get("tokens_out")),
         )
 
     def _reap_adopted(self, now: float) -> None:

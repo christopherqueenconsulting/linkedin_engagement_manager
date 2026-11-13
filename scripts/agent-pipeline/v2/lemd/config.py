@@ -169,6 +169,15 @@ class Config:
     trigger_log: Path
     scorer_interval: int
     scorer_remind_seconds: int
+    #: Provider-quota poller (`lemd.usage_signal`): seconds between `auth-files` reads, floored at 60.
+    quota_poll_interval: int
+    #: Router thresholds, read by later phases through the accessor. Defined here so one place owns
+    #: the defaults: Claude weekly at or above `claude_weekly_ollama_pct` drops Opus and Sonnet code
+    #: runs to Ollama (the owner's rule); Opus only below `claude_opus_max_pct`; Codex 5h or weekly at
+    #: or above `codex_review_sonnet_pct` sends reviews to Sonnet.
+    claude_weekly_ollama_pct: int
+    claude_opus_max_pct: int
+    codex_review_sonnet_pct: int
     raw: dict[str, str] = field(default_factory=dict, repr=False)
 
     @property
@@ -232,5 +241,9 @@ def load(base: str | Path | None = None) -> Config:
         trigger_log=Path(_str(env, "LEMD_TRIGGER_LOG", "/home/lem/ea/state/lem-triggers.log")),
         scorer_interval=_scorer_seconds(env, "LEMD_SCORER_INTERVAL", 600),
         scorer_remind_seconds=_scorer_seconds(env, "LEMD_SCORER_REMIND_SECONDS", 86400),
+        quota_poll_interval=_scorer_seconds(env, "LEMD_QUOTA_POLL_INTERVAL", 90),
+        claude_weekly_ollama_pct=_int(env, "ROUTER_CLAUDE_WEEKLY_OLLAMA_PCT", 50),
+        claude_opus_max_pct=_int(env, "ROUTER_CLAUDE_OPUS_MAX_PCT", 35),
+        codex_review_sonnet_pct=_int(env, "ROUTER_CODEX_REVIEW_SONNET_PCT", 90),
         raw=env,
     )
