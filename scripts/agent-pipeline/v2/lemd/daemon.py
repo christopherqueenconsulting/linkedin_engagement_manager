@@ -24,7 +24,7 @@ import signal
 import time
 from typing import Any
 
-from . import capacity, db, dispatch, github, observe, policy, posthog, score, spend
+from . import capacity, db, dispatch, github, observe, policy, posthog, score, spend, usage_signal
 from .config import Config, load
 
 LOG = logging.getLogger("lemd")
@@ -109,6 +109,7 @@ class Daemon:
         self._decisions = 0
         self._degraded = False
         self._last_usage_probe = 0.0
+        self._last_quota_poll = 0.0
         #: (kind, number) -> the gate that last refused this item, so a standing refusal is
         #: recorded ONCE rather than on every pass. Under a hold with a 48-issue backlog the
         #: undeduped form would write ~40 rows a pass for ever, which is the volume problem that
@@ -1031,6 +1032,7 @@ class Daemon:
             self.reconcile()
         self.takeover_posthog()
         self.refresh_usage()
+        self.refresh_quota()
         self.observe_dirty()
         self.sweep_ttls()
         self.act()
@@ -1140,6 +1142,21 @@ class Daemon:
                      usage.week_pct, usage.session_pct, usage.week_resets or "unknown")
         else:
             LOG.warning("usage probe unreadable — routing falls back to the health estimate")
+
+    def refresh_quota(self) -> None:
+        """Poll the proxy's provider quota into `state/usage_signal.json` (read-only, no model run).
+
+        Observation only in phase 1: nothing reads the cache to route yet. A failed poll leaves the
+        old cache to age into `stale`; it never raises into the loop.
+        """
+        now = time.time()
+        if now - self._last_quota_poll < self.cfg.quota_poll_interval:
+            return
+        self._last_quota_poll = now
+        try:
+            usage_signal.poll_once(self.cfg.base / "state" / "usage_signal.json", now=now)
+        except Exception as exc:  # noqa: BLE001 - metering must never break the loop
+            LOG.warning("quota poll failed: %s", type(exc).__name__)
 
     def reconcile_interval(self) -> int:
         """How often to re-derive from GitHub — faster when the event path looks broken.
