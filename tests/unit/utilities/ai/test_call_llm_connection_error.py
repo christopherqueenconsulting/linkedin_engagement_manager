@@ -1,5 +1,5 @@
 """`_call_llm` treats a proxy connection error as a warning, any other failure as an error (#2557)."""
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import httpx
 import openai
