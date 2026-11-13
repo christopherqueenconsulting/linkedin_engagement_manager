@@ -382,16 +382,161 @@ def get_profile_education(driver, employee_link):
     return profile_education
 
 
+# --- Recent-activity post cards (issue #2551) ----------------------------------------------------
+# The old reader zipped three document-wide queries (`div[data-urn*=activity]`, `.update-components-
+# text`, an actor sub-description span) by POSITION. None of them is an SDUI anchor, so with images
+# on the adjacent-author harvest still read `activity=0` on every author for 59 runs (#2495).
+#
+# The rebuild reads PER CARD: an ordered chain of post-text anchors, and from each text box it walks
+# UP to the post's card, reading the URN, the text and the relative date off that ONE card. A card
+# whose fields are partly missing can no longer shift the pairing of every card after it. Rungs are
+# exhausted in order, and only an exhausted chain means "no posts" (docs/sdui-selenium-notes.md).
+# The first rung is the anchor the roster lane already reads on this same page
+# (`cards._FEED_POST_TEXT_SEL`); the legacy rung keeps the pre-SDUI render working.
+_RECENT_ACTIVITY_TEXT_CHAIN = (
+    ("sdui_expandable_text", "[data-testid='expandable-text-box']"),
+    ("legacy_update_text", ".update-components-text"),
+)
+# A text box shorter than this is a label or a truncated control, not a post — the roster lane's floor.
+_RECENT_ACTIVITY_MIN_TEXT = 20
+# How far up from a text box the card walk climbs before giving up on it.
+_RECENT_ACTIVITY_MAX_DEPTH = 15
+_ACTIVITY_URN_RE = re.compile(r"urn:li:(?:activity|ugcPost|share):\d+", re.I)
+# The SDUI relative caption: "now", "3h", "5d •", "2w • Edited". Same shape the feed lane reads.
+_ACTIVITY_AGE_RE = re.compile(r"^(now|(\d+)\s?(mo|[smhdwy]))(?:\s*[•·].*)?$", re.I)
+_FEED_UPDATE_PREFIX = 'https://www.linkedin.com/feed/update/'
+
+
+def _own_attr_urn(el) -> Optional[str]:
+    """First activity/ugcPost/share URN in one element's OWN attribute values."""
+    for value in (getattr(el, "attrs", None) or {}).values():
+        values = value if isinstance(value, list) else [value]
+        for v in values:
+            m = _ACTIVITY_URN_RE.search(str(v or ""))
+            if m:
+                return m.group(0)
+    return None
+
+
+def _is_comment_action(tag) -> bool:
+    """A post's Comment button, matched the way `cards._COMMENT_ACTION_JS` matches it."""
+    if tag.name != "button" and tag.get("role") != "button":
+        return False
+    aria = (tag.get("aria-label") or "").strip().lower()
+    return aria == "comment" or aria.startswith("comment on") \
+        or tag.get_text(" ", strip=True).lower() == "comment"
+
+
+def _card_scope(box, selector: str, by_comment_action: bool):
+    """The highest ancestor of `box` that still holds ONE post — the card the box belongs to.
+
+    The climb stops before any ancestor spanning two posts, so a card can never borrow a neighbour's
+    URN or date. Two posts are counted by Comment buttons when the page renders them — a reshare
+    carries two text boxes but ONE Comment button — and by text boxes when it does not.
+    Falls back to the box itself when no ancestor qualifies.
+    """
+    scope, el, depth = box, box.parent, 0
+    while el is not None and getattr(el, "name", None) not in (None, "[document]") \
+            and depth < _RECENT_ACTIVITY_MAX_DEPTH:
+        spans = len(el.find_all(_is_comment_action)) if by_comment_action else len(el.select(selector))
+        if spans > 1:
+            break
+        scope, el, depth = el, el.parent, depth + 1
+    return scope
+
+
+def _card_urn(box, scope) -> Optional[str]:
+    """The post's URN, by rung: an attribute on the box or an ancestor within its card, then the
+    card's `/feed/update/` anchor, then any attribute inside the card.
+
+    The ancestor attribute outranks the anchor for the reason `engagement.feed._feed_post_identity`
+    gives: a reshare's anchor names the ORIGINAL post, not the one on this card.
+    """
+    el = box
+    while el is not None:
+        urn = _own_attr_urn(el)
+        if urn:
+            return urn
+        if el is scope:
+            break
+        el = el.parent
+    for a in scope.select("a[href*='/feed/update/']"):
+        m = _ACTIVITY_URN_RE.search(a.get("href") or "")
+        if m:
+            return m.group(0)
+    for d in scope.find_all(True):
+        urn = _own_attr_urn(d)
+        if urn:
+            return urn
+    return None
+
+
+def _card_posted(scope):
+    """The card's relative caption as the start of its DAY, or None when no caption reads.
+
+    None is never "today": a post we cannot date is left out of day-window filters, not counted in.
+    """
+    for el in scope.find_all(["span", "time"]):
+        text = el.get_text(" ", strip=True)
+        if not text or len(text) >= 20:
+            continue
+        m = _ACTIVITY_AGE_RE.match(text)
+        if not m:
+            continue
+        try:
+            moment = convert_viewed_on_to_date("0s" if m.group(1).lower() == "now"
+                                               else f"{m.group(2)}{m.group(3)} ago")
+        except ValueError:
+            return None
+        return convert_datetime_to_start_of_day(moment)
+    return None
+
+
+def parse_recent_activity(source) -> "tuple[list, Optional[str]]":
+    """(posts, rung) off a `/recent-activity/` page's soup; rung is the chain entry that matched.
+
+    Each post is `{'text', 'link', 'posted'}`; `posted` may be None (see `_card_posted`). A card
+    with no readable URN is skipped — the harvest needs a permalink, and a guessed one is worse
+    than none. One URN is read once, so a reshare's two text boxes yield one post.
+    """
+    by_comment_action = source.find(_is_comment_action) is not None
+    for rung, selector in _RECENT_ACTIVITY_TEXT_CHAIN:
+        posts: list = []
+        seen: set = set()
+        for box in source.select(selector):
+            text = re.sub(r"\s+", " ", box.get_text(" ", strip=True)).strip()
+            if len(text) < _RECENT_ACTIVITY_MIN_TEXT:
+                continue
+            scope = _card_scope(box, selector, by_comment_action)
+            urn = _card_urn(box, scope)
+            if not urn or urn.lower() in seen:
+                continue
+            seen.add(urn.lower())
+            posts.append({'text': text, 'link': _FEED_UPDATE_PREFIX + urn, 'posted': _card_posted(scope)})
+        if posts:
+            return posts, rung
+    return [], None
+
+
+def recent_activity_page_posts(source) -> int:
+    """How many post-text boxes ANY rung of the chain sees on the page — the zero-walk cross-check.
+
+    Independent of the card walk: it counts text boxes, not resolved cards, so "the page renders
+    posts but no card resolved a permalink" reads as drift rather than as a quiet author.
+    """
+    return sum(len(source.select(selector)) for _rung, selector in _RECENT_ACTIVITY_TEXT_CHAIN)
+
+
 def get_profile_recent_activity(driver, employee_link):
     """Recent posts/comments as `{'text', 'link', 'posted'}` dicts, newest first as LinkedIn orders.
 
     `posted` is derived from the card's relative caption ("2d") and floored to the start of that day,
     so it is a DAY, never a moment — the recency filters downstream are day-granular for that reason.
+    It is None when the card carries no readable caption.
 
-    Text, links and dates come from three independent document-wide queries zipped by POSITION: they
-    must return the same cards in the same order, and a surface that renders one of them for a card
-    but not the others shifts every pairing after it. Zip also truncates to the shortest, so the
-    count returned is the count of whichever query read fewest.
+    Read per card through `parse_recent_activity` (#2551). An empty result is graded against the
+    page: text boxes on the page but no resolved card is selector drift and WARNS; a page with no
+    post text at all is a quiet author and logs DEBUG.
     """
     go_to_base_employee_link(driver, employee_link)
     url = driver.current_url.rstrip('/') + '/recent-activity/all/'
@@ -399,29 +544,14 @@ def get_profile_recent_activity(driver, employee_link):
     wait_for_ajax(driver)
 
     source = get_page_source(driver, url, 2)
-    # activities = source.find_all('li')
-    # Find all the links that have 'activity' in the url
-    links = source.find_all('div', attrs={'data-urn': re.compile('activity')})
-    found_links = ['https://www.linkedin.com/feed/update/' + link.get('data-urn') for link in links]
-    texts = source.find_all('div', class_='update-components-text')
-    found_text = [text.getText().strip() for text in texts]
-    posted_dates = source.select(
-        'div[class*="fie-impression-container"] div.relative span[class*="update-components-actor__sub-description"] span[aria-hidden="true"]')
-    found_dates = [date.getText().strip() for date in posted_dates]
-
-    # print_header("Recent Activity")
-    # print("Found Links", found_links)
-    # print("Found Test", found_text)
-
-    # combine the profile activity and the found links into a mapped dict list
-    profile_activity = [{'text': text,
-                         'link': link,
-                         'posted': convert_datetime_to_start_of_day(convert_viewed_on_to_date(date + " ago"))} for
-                        text, link, date in zip(found_text, found_links, found_dates)]
-
-    # print(f"Profile URL: {employee_link} | Recent Activity Links {profile_activity}")
-
-    return profile_activity
+    posts, rung = parse_recent_activity(source)
+    if posts:
+        log_debug(f"Recent activity read {len(posts)} posts via {rung}",
+                  task_name="get_profile_recent_activity")
+        return posts
+    grade_zero_walk(recent_activity_page_posts(source), "Recent-activity post-card chain",
+                    task_name="get_profile_recent_activity")
+    return []
 
 
 # --- Experience parsing (issue #970) -------------------------------------------------------------

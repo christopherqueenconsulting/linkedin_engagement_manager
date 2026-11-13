@@ -2575,8 +2575,11 @@ def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
                     log_info(f"Recent Activities Count: {len(recent_activities)}")
 
                     # Filter activities by posted date less than a week ago
+                    # An undated card (#2551: `posted` is None when no caption reads) is not
+                    # known to be recent, so it is left out rather than crashing the filter.
                     recent_activities = [activity for activity in recent_activities if
-                                         (datetime.now() - activity.posted).days <= 7]
+                                         activity.posted is not None
+                                         and (datetime.now() - activity.posted).days <= 7]
 
                     log_info(f"Recent Activities Filtered (1 week) Count: {len(recent_activities)}")
 

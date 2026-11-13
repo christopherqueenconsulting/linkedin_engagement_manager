@@ -1764,6 +1764,22 @@ Three separate books, and #1867 is what stopped them being one:
   funnel line does not say which of the four applied. The `connection_requests` count for
   `source='adjacent_post'` was not run; `filed=0` on every scan already shows none was filed. The
   next step is a live `/recent-activity/` probe and new activity-page selectors (#2551).
+- **With images on, `activity=0` persisted, so the reader is now a per-card chain (issue #2551).**
+  The #2495 re-check read 59 `Adjacent author harvest` lines from 2026-10-27 to 2026-11-11, and
+  every one was `activity=0`. The old reader zipped three document-wide queries by position
+  (`div[data-urn*=activity]`, `.update-components-text`, an actor sub-description span). None of
+  them is an SDUI anchor. `parse_recent_activity` (`utilities/linkedin/scrapper.py`) now reads per
+  card. An ordered chain of post-text anchors (`[data-testid='expandable-text-box']`, which the
+  roster lane already reads on this page, then the legacy `.update-components-text`) finds each
+  text box. From each box the walk climbs to its card and reads that card's URN (its own or an
+  ancestor's attribute first, then its `/feed/update/` anchor), its text and its relative caption.
+  The climb stops before any ancestor that spans two posts. A card with no readable caption keeps
+  its post with `posted=None`; the day-window filter leaves it out. An empty result is graded
+  through `grade_zero_walk`: text boxes on the page but no card resolved WARNS as drift, and a page
+  with no post text is DEBUG. The chain is grounded by the `--roster-follow <url> --require-debug-node`
+  probe's `activity_locators` reading: a match count per candidate locator, the distinct
+  activity URNs in element attributes, the deployed chain's own parse, and one bounded card sample
+  to cut the unit fixture from. Point it at an adjacent author's profile URL.
 
 ## A lane run ends in the Celery state its outcome earned (`app/task_outcome.py`, issue #2097)
 

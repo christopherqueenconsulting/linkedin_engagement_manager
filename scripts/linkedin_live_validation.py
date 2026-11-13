@@ -523,6 +523,7 @@ _PROBE_CAPABILITY_SYMBOLS = {
     "feed_sort.selector_evidence": "_feed_sort_evidence_scan",
     "group_feed_composer.urn_evidence": "card_urn_evidence",
     "roster_follow.urn_evidence": "roster_card_urn_evidence",
+    "roster_follow.activity_locators": "recent_activity_locator_counts",
     "composer.share_box_dom": "share_box_dom_evidence",
     "composer.share_box_activation": "share_box_activation_ladder",
     "composer.drift_verdict": "composer_drift_verdict",
@@ -2958,8 +2959,93 @@ def probe_roster_follow(driver, profile_url: str,
                # The live labels the next locator pass would be written from — a bare "not found"
                # is not re-groundable.
                "visible_controls": visible_button_labels(driver),
-               "urn_evidence": roster_card_urn_evidence(driver)}
+               "urn_evidence": roster_card_urn_evidence(driver),
+               "activity_locators": recent_activity_locator_counts(driver)}
     return graded(reading, roster_follow_state(reading), roster_follow_verdict(reading))
+
+
+# #2551: the candidate post-card locators on a `/recent-activity/` page. Declared HERE, not imported
+# from the scrapper, because this script runs against the DEPLOYED image's `cqc_lem`: a reading must
+# be possible before the chain it grounds has shipped. The first two are the scrapper's chain rungs.
+_RECENT_ACTIVITY_CANDIDATES = (
+    ("sdui_expandable_text", "[data-testid='expandable-text-box']"),
+    ("legacy_update_text", ".update-components-text"),
+    ("legacy_data_urn_container", "div[data-urn*='activity']"),
+    ("feed_update_anchor", "a[href*='/feed/update/']"),
+    ("urn_attr_activity", "[data-urn*='urn:li:activity'], [data-id*='urn:li:activity']"),
+    ("listitem", "[role='listitem']"),
+    ("article", "article"),
+)
+# Bounded so a report stays readable; enough of one card to cut a unit-test fixture from.
+_RECENT_ACTIVITY_SAMPLE_CHARS = 6000
+
+# The first SDUI text box's card, climbed the way the scrapper climbs it: up while the ancestor
+# still holds ONE post (Comment buttons when the page has any, else text boxes). Returns that card's
+# outerHTML so the next chain rung has a fixture.
+_RECENT_ACTIVITY_SAMPLE_JS = r"""
+const sel = arguments[0];
+const box = document.querySelector(sel);
+if (!box) return null;
+const isComment = (b) => {
+  const aria = (b.getAttribute('aria-label') || '').trim().toLowerCase();
+  return aria === 'comment' || aria.startsWith('comment on')
+    || (b.textContent || '').trim().toLowerCase() === 'comment';
+};
+const comments = (root) =>
+  Array.from(root.querySelectorAll("button, [role='button']")).filter(isComment).length;
+const byComment = comments(document) > 0;
+let scope = box, el = box.parentElement, d = 0;
+while (el && el !== document.body && d < 15) {
+  if ((byComment ? comments(el) : el.querySelectorAll(sel).length) > 1) break;
+  scope = el; el = el.parentElement; d++;
+}
+return scope.outerHTML;
+"""
+
+
+def recent_activity_locator_counts(driver) -> dict:
+    """#2551: per-locator match counts for post cards on the open `/recent-activity/` page.
+
+    Reads only. Each count is None when the lookup itself failed, never 0 — "could not ask" must not
+    read as "the page has none". Also reports the distinct activity URNs anywhere in element
+    attributes, the deployed scrapper's own parse when it carries `parse_recent_activity`, and one
+    bounded card sample to write the unit fixture from.
+    """
+    counts: dict = {}
+    for name, selector in _RECENT_ACTIVITY_CANDIDATES:
+        try:
+            counts[name] = len(driver.find_elements(By.CSS_SELECTOR, selector))
+        except Exception:
+            counts[name] = None
+    reading: dict = {"locator_counts": counts}
+    try:
+        urns = driver.execute_script(
+            "const re=/urn:li:(?:activity|ugcPost|share):\\d+/gi, s=new Set();"
+            "for(const el of document.querySelectorAll('body *')){"
+            "  for(const a of el.attributes){ for(const m of (a.value||'').matchAll(re)) s.add(m[0].toLowerCase()); }"
+            "}return Array.from(s).length;")
+        reading["distinct_attr_urns"] = urns if isinstance(urns, int) else None
+    except Exception:
+        reading["distinct_attr_urns"] = None
+    try:
+        sample = driver.execute_script(_RECENT_ACTIVITY_SAMPLE_JS, _RECENT_ACTIVITY_CANDIDATES[0][1])
+        reading["sample_card_html"] = sample[:_RECENT_ACTIVITY_SAMPLE_CHARS] if isinstance(sample, str) else None
+    except Exception:
+        reading["sample_card_html"] = None
+    try:
+        from bs4 import BeautifulSoup
+
+        from cqc_lem.utilities.linkedin import scrapper
+        parse = getattr(scrapper, "parse_recent_activity", None)
+        if parse is None:
+            reading["deployed_chain"] = "absent — the deployed image predates #2551"
+        else:
+            posts, rung = parse(BeautifulSoup(driver.page_source, "html.parser"))
+            reading["deployed_chain"] = {"rung": rung, "posts": len(posts),
+                                         "dated": sum(1 for p in posts if p.get("posted"))}
+    except Exception as e:
+        reading["deployed_chain"] = f"error: {type(e).__name__}: {e}"[:200]
+    return reading
 
 
 # Enough cards to tell "this page carries no URN" from "one card did not"; each reading is bounded
