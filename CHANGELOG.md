@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.206.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.205.1...v0.206.0) (2026-11-13)
+
+
+### Features
+
+* **pipeline:** default the Claude lane to claude-sonnet-5-5 ([#2555](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2555)) ([7c98d2a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7c98d2a28cf38233baee58b515f2c3f08fd5fc97))
+* **pipeline:** default the Claude lane to claude-sonnet-5-5, not the host CLI default ([7c98d2a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7c98d2a28cf38233baee58b515f2c3f08fd5fc97))
+
+
+### Bug Fixes
+
+* **errors:** log proxy APIConnectionError at WARNING in _call_llm (closes [#2557](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2557)) ([#2558](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2558)) ([c7581c7](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c7581c79fd86d45f96e8eed6bd649d5c9896f8ef))
+
 ## [0.205.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.205.0...v0.205.1) (2026-11-13)
 
 
