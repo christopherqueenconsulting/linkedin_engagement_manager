@@ -246,7 +246,14 @@ def _call_llm(**kwargs):
             # failed call to count, and the gate already logged the transition once.
             log_debug("LLM call refused by the free-trial daily AI cap", ai_model=model)
             raise
-        log_error(f"LLM call failed after {duration_ms}ms", exc=exc, ai_model=model, duration_ms=duration_ms)
+        if isinstance(exc, openai.APIConnectionError):
+            # The proxy dropped or never answered (deploy restart, host reboot). Transient and
+            # retried by the caller's next cycle, and several callers fail open on it, so a single
+            # blip is a warning; a proxy that stays unreachable repeats and escalates (#2557).
+            log_warning(f"LLM call failed after {duration_ms}ms — proxy connection error", exc=exc,
+                        ai_model=model, duration_ms=duration_ms)
+        else:
+            log_error(f"LLM call failed after {duration_ms}ms", exc=exc, ai_model=model, duration_ms=duration_ms)
         try:
             from cqc_lem.utilities.observability import track_llm_call
             user_id, feature = _attribution()
