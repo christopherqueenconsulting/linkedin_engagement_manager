@@ -24,9 +24,9 @@ subscription is not used at all until the window resets. Below it, the per-mode 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
-from . import spend
+from . import route, spend
 
 LOG = logging.getLogger("lemd.lane")
 
@@ -61,6 +61,8 @@ class LaneChoice:
     reason: str
     tier: str | None = None
     marker: str = ""      # a loud note for the run log when quality was traded away
+    model: str | None = None   # set only when the router ACTS; None leaves the launch line as is
+    arm: str = ""         # the router's decision, set in shadow and active modes, empty when off
 
     @property
     def overrides(self) -> bool:
@@ -69,8 +71,12 @@ class LaneChoice:
 
 
 def decide(mode: str, usage: spend.Usage, *, paused_seconds: float = 0.0,
-           usage_pause_minutes: int = 60, flip_pct: float = WEEKLY_FLIP_PCT) -> LaneChoice:
+           usage_pause_minutes: int = 60, flip_pct: float = WEEKLY_FLIP_PCT,
+           router: route.Context | None = None) -> LaneChoice:
     """Choose a lane for one run.
+
+    A thin caller: the per-mode split below is the existing policy, and `route.decide` is consulted
+    on top of it only when `LEM_ROUTER` is not `off`.
 
     Args:
         mode: The run mode.
@@ -78,11 +84,41 @@ def decide(mode: str, usage: spend.Usage, *, paused_seconds: float = 0.0,
         paused_seconds: How long the Claude lane has been paused, for the bounded wait.
         usage_pause_minutes: The configured pause length; the wait is bounded at 2x this.
         flip_pct: Weekly percentage at which the Claude subscription is taken out of rotation.
+        router: The model router's context, or None for today's routing exactly.
 
     Returns:
         A `LaneChoice`. `lane=None` means "no opinion" — the caller keeps the health-based routing
         it already computed, which is the correct answer when the meter cannot answer.
     """
+    choice = _policy(mode, usage, paused_seconds, usage_pause_minutes, flip_pct)
+    if router is None or router.flag == "off":
+        return choice
+    return _apply_router(choice, router)
+
+
+def _apply_router(choice: LaneChoice, ctx: route.Context) -> LaneChoice:
+    """Log the router's decision, and act on it only where the flag says to.
+
+    `shadow` never acts. `reviews` acts on review modes only. `full` acts on every mode. A Codex
+    decision cannot act until the execution lane exists (phase 3), so it is logged and the existing
+    path runs.
+    """
+    harness, model, reason = route.decide(ctx)
+    LOG.info("router[%s] mode=%s %s", ctx.flag, ctx.inputs.mode, reason)
+    acts = ctx.flag == "full" or (ctx.flag == "reviews" and ctx.inputs.mode in route.REVIEW_MODES)
+    if not acts:
+        return replace(choice, arm=f"shadow {reason}" if ctx.flag == "shadow" else f"not_acting {reason}")
+    if harness == route.CODEX:
+        return replace(choice, arm=f"{reason} codex_pending_phase3")
+    if harness == route.CLAUDE:
+        return LaneChoice(route.CLAUDE, reason, model=model, arm=reason)
+    marker = route.degraded_marker(harness, model, ctx.inputs.mode) if "fell_back" in reason else ""
+    return LaneChoice(route.OLLAMA, reason, tier=model, model=model, marker=marker, arm=reason)
+
+
+def _policy(mode: str, usage: spend.Usage, paused_seconds: float,
+            usage_pause_minutes: int, flip_pct: float) -> LaneChoice:
+    """The per-mode lane policy that predates the router."""
     if mode in CLAUDE_ONLY:
         # Ahead of the probe and the weekly flip on purpose: "no opinion" would hand the run to the
         # health-based routing, and that can pick Ollama. These runs are rare (a few Dependabot
@@ -142,6 +178,11 @@ def emit_env(choice: LaneChoice) -> str:
         lines.append(f"LEM_LANE_OVERRIDE={_q(choice.lane)}")
         if choice.tier:
             lines.append(f"LEM_LANE_TIER={_q(choice.tier)}")
+    if choice.model and choice.lane:
+        lines.append(f"LEM_LANE_MODEL={_q(choice.model)}")
+        lines.append(f"LEM_LANE_HARNESS={_q(choice.lane)}")
+    if choice.arm:
+        lines.append(f"LEM_ROUTE_ARM={_q(choice.arm)}")
     if choice.marker:
         lines.append(f"LEM_LANE_MARKER={_q(choice.marker)}")
     return "\n".join(lines)
