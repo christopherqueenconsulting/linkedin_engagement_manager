@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import time
 import urllib.error
@@ -106,7 +107,7 @@ def _num(value: Any) -> float | None:
         out = float(value)
     except ValueError:
         return None
-    return out if out == out and out not in (float("inf"), float("-inf")) else None
+    return out if math.isfinite(out) else None
 
 
 def _pct_from_fraction(value: Any) -> float | None:
