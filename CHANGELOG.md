@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.205.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.205.0...v0.205.1) (2026-11-13)
+
+
+### Bug Fixes
+
+* **connections:** read /recent-activity/ posts per card through a locator chain (refs [#2551](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2551)) ([#2554](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2554)) ([845c982](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/845c9828b0e5366b9bf26250bd02e0ce1aea6ac5))
+* **connections:** read /recent-activity/ posts per card through an ordered locator chain (refs [#2551](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2551)) ([845c982](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/845c9828b0e5366b9bf26250bd02e0ce1aea6ac5))
+* **feed:** scope the URN-drift warning to home-feed scans (closes [#2422](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2422)) ([#2550](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2550)) ([8943ddb](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8943ddb13198d6437217a1079a7cee2507c2323b))
+
+
+### Documentation
+
+* **connections:** record the post-images-fix candidate re-check (closes [#2495](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2495)) ([#2552](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2552)) ([b9ba472](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b9ba472c2299342be38e1f278c5d3ac9b68d7af8))
+
 ## [0.205.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.204.0...v0.205.0) (2026-11-12)
 
 
