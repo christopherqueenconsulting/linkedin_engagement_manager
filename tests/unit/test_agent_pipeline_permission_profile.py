@@ -723,6 +723,9 @@ def _fixture(tmp_path: Path, stdout: str, rc: int = 0, mode: str = "fix", ship_p
             "OLLAMA_PCT": "20",
             "DEGRADED": "0",
             "CLAUDE_TIMEOUT": "30s",
+            # These tests pin the permission argv only; the default model has its own test file.
+            "CLAUDE_DEFAULT_MODEL": "",
+            "CLAUDE_JUDGMENT_MODEL": "",
             "ARGV_FILE": str(tmp_path / "argv"),
             "ENV_FILE": str(tmp_path / "agent-env"),
             "FAKE_STDOUT": str(stdout_file),

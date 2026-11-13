@@ -134,9 +134,9 @@ def test_backfill_matches_dispatch_lane(
     if expected_lane == "ollama":
         assert model.startswith("lem-agent-tier"), model
     else:
-        # Claude lane with no agent:model:* hint runs the CLI default — recorded by name, so an
-        # empty `model` in the file always means "no lane ran", never "the default model ran".
-        assert model == "default", model
+        # Claude lane with no agent:model:* hint runs CLAUDE_DEFAULT_MODEL — recorded by name, so
+        # an empty `model` in the file always means "no lane ran", never "the default model ran".
+        assert model == "claude-sonnet-5-5", model
 
 
 def test_backfill_carries_claude_model_hint(tmp_path):
@@ -321,7 +321,7 @@ def test_run_lane_records_the_agent_exit_status(tmp_path, claude_rc):
         "CLAUDE_TIMEOUT": "30s",
     }
     out = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
-    assert f"rc={claude_rc} lane=claude model=default" in out.stdout, out.stdout + out.stderr
+    assert f"rc={claude_rc} lane=claude model=claude-sonnet-5-5" in out.stdout, out.stdout + out.stderr
 
 
 def test_run_lane_exports_agent_rc_after_the_run():

@@ -20,8 +20,12 @@ SLUG="${SLUG:-christopherqueenconsulting/linkedin_engagement_manager}"
 # Anthropic lane model → label slug (the claude CLI --model hint we passed).
 _claude_model_slug() {
   case "${1:-}" in
-    sonnet|haiku|opus) echo "$1" ;;
-    *)                 echo "" ;;
+    sonnet|haiku|opus)  echo "$1" ;;
+    # Full model ids (CLAUDE_DEFAULT_MODEL, an explicit --model) map onto the same three labels.
+    claude-sonnet-*)    echo "sonnet" ;;
+    claude-haiku-*)     echo "haiku" ;;
+    claude-opus-*)      echo "opus" ;;
+    *)                  echo "" ;;
   esac
 }
 
