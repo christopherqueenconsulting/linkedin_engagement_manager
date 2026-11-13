@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.207.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.206.0...v0.207.0) (2026-11-13)
+
+
+### Features
+
+* **pipeline:** router phase 1 — quota poller and per-run usage accounting (closes [#2559](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2559)) ([#2563](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2563)) ([e633425](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e63342551a3832454e0aa4ceacdb2822f8fd50a9))
+
+
+### Bug Fixes
+
+* **feed:** release the claim when a card goes stale during comment generation ([f997ba5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f997ba5bb0b3c7392c87d33ccdf679bf30bfae06))
+* **feed:** release the claim when a card goes stale during comment generation (closes [#2565](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2565)) ([#2566](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2566)) ([f997ba5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f997ba5bb0b3c7392c87d33ccdf679bf30bfae06))
+
 ## [0.206.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.205.1...v0.206.0) (2026-11-13)
 
 
