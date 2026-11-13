@@ -5441,6 +5441,77 @@ class TestFirstDegreeReading:
         assert llv._first_degree_reading(MagicMock()) is False
 
 
+_ACTIVITY_PAGE_HTML = (
+    "<main><div role='listitem'><a href='/feed/update/urn:li:activity:1/'>a</a><span>2d •</span>"
+    "<span data-testid='expandable-text-box'>A post long enough to count as a post here.</span>"
+    "</div></main>")
+
+
+@pytest.mark.unit
+class TestRecentActivityLocatorCounts:
+    """#2551: the per-locator post-card reading on a `/recent-activity/` page."""
+
+    def _driver(self, counts: dict) -> MagicMock:
+        driver = MagicMock()
+        driver.find_elements.side_effect = lambda _by, sel: [object()] * counts.get(sel, 0)
+        driver.execute_script.side_effect = [3, "<div>card</div>"]
+        driver.page_source = _ACTIVITY_PAGE_HTML
+        return driver
+
+    def test_reports_a_count_for_every_candidate_locator(self):
+        driver = self._driver({"[data-testid='expandable-text-box']": 4, "article": 0})
+        reading = llv.recent_activity_locator_counts(driver)
+        counts = reading["locator_counts"]
+        assert set(counts) == {name for name, _sel in llv._RECENT_ACTIVITY_CANDIDATES}
+        assert counts["sdui_expandable_text"] == 4
+        assert counts["article"] == 0
+        assert reading["distinct_attr_urns"] == 3
+        assert reading["sample_card_html"] == "<div>card</div>"
+
+    def test_a_failed_lookup_is_none_never_zero(self):
+        driver = self._driver({})
+        driver.find_elements.side_effect = RuntimeError("gone")
+        driver.execute_script.side_effect = RuntimeError("gone")
+        reading = llv.recent_activity_locator_counts(driver)
+        assert set(reading["locator_counts"].values()) == {None}
+        assert reading["distinct_attr_urns"] is None
+        assert reading["sample_card_html"] is None
+
+    def test_reports_the_deployed_chains_own_parse(self):
+        reading = llv.recent_activity_locator_counts(self._driver({}))
+        assert reading["deployed_chain"] == {"rung": "sdui_expandable_text", "posts": 1, "dated": 1}
+
+    def test_a_deployed_image_without_the_chain_says_so(self, monkeypatch):
+        from cqc_lem.utilities.linkedin import scrapper
+        monkeypatch.delattr(scrapper, "parse_recent_activity")
+        reading = llv.recent_activity_locator_counts(self._driver({}))
+        assert reading["deployed_chain"].startswith("absent")
+
+    def test_the_sample_is_bounded(self):
+        driver = self._driver({})
+        driver.execute_script.side_effect = [0, "x" * (llv._RECENT_ACTIVITY_SAMPLE_CHARS + 50)]
+        reading = llv.recent_activity_locator_counts(driver)
+        assert len(reading["sample_card_html"]) == llv._RECENT_ACTIVITY_SAMPLE_CHARS
+
+    def test_probe_roster_follow_carries_it(self, monkeypatch):
+        monkeypatch.setattr("cqc_lem.app.engagement.feed._resolve_follow_control",
+                            lambda d, u: ("following", None))
+        monkeypatch.setattr("cqc_lem.app.engagement.feed._activity_page_owner_name", lambda d: "Ann")
+        monkeypatch.setattr(llv, "visible_button_labels", lambda d: [])
+        monkeypatch.setattr(llv, "roster_card_urn_evidence", lambda d: [])
+        monkeypatch.setattr(llv, "recent_activity_locator_counts", lambda d: {"locator_counts": {}})
+        driver = MagicMock()
+        driver.find_elements.return_value = []
+        reading = llv.probe_roster_follow(driver, "https://www.linkedin.com/in/ann/",
+                                          sleep=lambda _s: None)
+        assert reading["activity_locators"] == {"locator_counts": {}}
+
+    def test_the_capture_is_declared_so_a_stale_pipe_is_detectable(self):
+        assert llv._PROBE_CAPABILITY_SYMBOLS["roster_follow.activity_locators"] == \
+            "recent_activity_locator_counts"
+        assert "roster_follow.activity_locators" in llv.probe_script_reading()["capabilities"]
+
+
 @pytest.mark.unit
 class TestRosterConnectGrade:
     """#2464: the probe wrote the resolver's connect state into `state`, so the sweep never read
