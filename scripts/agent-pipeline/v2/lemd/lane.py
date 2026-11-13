@@ -111,6 +111,10 @@ def _apply_router(choice: LaneChoice, ctx: route.Context) -> LaneChoice:
     if harness == route.CODEX:
         return replace(choice, arm=f"{reason} codex_pending_phase3")
     if harness == route.CLAUDE:
+        if choice.lane == "ollama" and choice.reason.startswith("weekly_flip") and "arm=label_" not in reason:
+            # The meter took the subscription out of rotation. The router's quota cache is a separate
+            # reading and may be unreadable (= 0% used), so it must not put a run back on Claude.
+            return replace(choice, arm=f"{reason} overridden_by_weekly_flip")
         return LaneChoice(route.CLAUDE, reason, model=model, arm=reason)
     marker = route.degraded_marker(harness, model, ctx.inputs.mode) if "fell_back" in reason else ""
     return LaneChoice(route.OLLAMA, reason, tier=model, model=model, marker=marker, arm=reason)

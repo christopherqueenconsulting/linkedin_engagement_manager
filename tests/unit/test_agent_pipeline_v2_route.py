@@ -262,6 +262,14 @@ def test_a_codex_decision_falls_back_to_the_existing_path_until_phase_3():
         assert "codex_pending_phase3" in got.arm and f"codex/{REVIEW}" in got.arm
 
 
+def test_router_never_overrides_the_weekly_flip_back_onto_claude():
+    legacy = lane.decide("start", _usage(95.0))
+    assert legacy.lane == "ollama"
+    got = lane.decide("start", _usage(95.0), router=_ctx("start", flag="full"))
+    assert (got.lane, got.tier, got.model) == (legacy.lane, legacy.tier, None)
+    assert "overridden_by_weekly_flip" in got.arm
+
+
 def test_a_review_that_falls_to_tier3_carries_the_degraded_marker():
     got = lane.decide("review", _usage(10.0), router=_ctx("review", flag="full",
                                                            signal=_sig(claude=60, codex5h=95)))
