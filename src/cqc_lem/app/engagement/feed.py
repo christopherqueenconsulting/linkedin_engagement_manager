@@ -2649,7 +2649,16 @@ def _engage_card(ctx: FeedRunContext, card, key: str, content: str, author: str,
     if not comment_text:
         release_post_claim(user_id, key)  # no comment generated (or none cleared the quality gate)
         return False
-    driver.execute_script("arguments[0].scrollIntoView({block:'center'});", card)
+    try:
+        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", card)
+    except StaleElementReferenceException:
+        # The feed re-rendered the card during generation. Uncaught, this ended the whole run —
+        # roster pass, feed walk and requeue — and held the claim for CLAIM_STALE_MINUTES. The
+        # reaction and comment steps below catch their own errors; this scroll is the one bare call.
+        log_debug("Post card went stale during comment generation — skipping", user_id=user_id,
+                  action_type="comment")
+        release_post_claim(user_id, key)
+        return False
     # Read-time-realistic delay (issue #626): scaled to the post's length and floored well above
     # "instant", so we never comment faster than a human could have read the thing. The old
     # half-reading-time + thinking-time pair could clear a short post in ~3s, which is the loudest

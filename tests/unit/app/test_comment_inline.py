@@ -1110,6 +1110,35 @@ class TestEngageCardReactionLogging:
         debug.assert_not_called()
 
 
+class TestEngageCardStaleAfterGeneration:
+    """A card the feed re-renders during generation skips ONE post, not the whole run.
+
+    The stale error used to escape `_engage_card`, abort `automate_commenting` and hold the claim
+    for `CLAIM_STALE_MINUTES`.
+    """
+
+    def test_stale_scroll_releases_the_claim_and_returns_false(self):
+        from selenium.common import StaleElementReferenceException
+
+        from cqc_lem.app.engagement import feed as ra
+        ctx = _ctx()
+        ctx.driver.execute_script.side_effect = StaleElementReferenceException("detached")
+        with patch(f"{_FEED}.claim_post_for_comment", return_value=True), \
+             patch(f"{_FEED}.select_blueprint", return_value={"format": "expander"}), \
+             patch(f"{_FEED}.record_comment_shape"), \
+             patch(f"{_FEED}.generate_ai_response", return_value="A real comment."), \
+             patch(f"{_FEED}.release_post_claim") as release, \
+             patch(f"{_FEED}.post_comment_inline") as post, \
+             patch(f"{_FEED}.mark_post_commented") as mark, \
+             patch(f"{_FEED}.log_warning") as warn:
+            ok = ra._engage_card(ctx, MagicMock(), "feedurn://x", "a post body", "Jane")
+        assert ok is False
+        release.assert_called_once_with(1, "feedurn://x")
+        post.assert_not_called()
+        mark.assert_not_called()
+        warn.assert_not_called()
+
+
 class TestEngageCardLogsTheCommentByFeed:
     """A landed comment is logged as GROUP_COMMENT on a group feed and COMMENT elsewhere (#2117).
 
