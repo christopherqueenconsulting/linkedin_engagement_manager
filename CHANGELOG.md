@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.207.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.207.0...v0.207.1) (2026-11-14)
+
+
+### Bug Fixes
+
+* **errors:** re-raise a crashed tab from _react_to_comment_inline (closes [#2570](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2570)) ([#2572](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2572)) ([e819328](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e81932883da69a19fe3efd3e0feb09e87f4c37cd))
+
 ## [0.207.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.206.0...v0.207.0) (2026-11-13)
 
 
