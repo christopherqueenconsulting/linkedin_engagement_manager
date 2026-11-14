@@ -17,13 +17,15 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import subprocess
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from lemd import lane, spend  # noqa: E402
+from lemd import lane, route, spend, usage_signal  # noqa: E402
 
 #: How stale the daemon's reading may be before it stops counting. Generous relative to the 15-minute
 #: refresh, because a slightly old percentage is a far better input than no input at all.
@@ -83,9 +85,65 @@ def main(argv: list[str]) -> int:
     choice = lane.decide(
         mode, usage, paused_seconds=paused_seconds,
         usage_pause_minutes=_pause_minutes(),
+        router=_router_context(mode, base, paused_seconds),
     )
     sys.stdout.write(lane.emit_env(choice) + "\n")
     return 0
+
+
+def _int_env(name: str, default: int = 0) -> int:
+    """A non-negative int from the environment; unset, empty or junk is the default."""
+    try:
+        return max(int((os.environ.get(name) or "").strip()), 0)
+    except ValueError:
+        return default
+
+
+def _issue_facts() -> tuple[frozenset[str], int, int]:
+    """(labels, body characters, planned file count) for the issue, or empty when unreadable.
+
+    `LEM_ROUTE_LABELS` / `LEM_ROUTE_BODY_CHARS` / `LEM_ROUTE_FILES` take precedence, which is how a
+    test or a DRY_RUN tick supplies them without a network read. Otherwise one `gh issue view`.
+    """
+    labels_raw = os.environ.get("LEM_ROUTE_LABELS")
+    if labels_raw is not None:
+        return (route.parse_labels(labels_raw), _int_env("LEM_ROUTE_BODY_CHARS"),
+                _int_env("LEM_ROUTE_FILES"))
+    issue = (os.environ.get("ISSUE") or "").strip()
+    if not issue.isdigit():
+        return frozenset(), 0, 0
+    try:
+        out = subprocess.run(["gh", "issue", "view", issue, "--json", "labels,body"],
+                             capture_output=True, text=True, timeout=20, check=False)
+        data = json.loads(out.stdout or "{}")
+        labels = frozenset(str(x.get("name", "")) for x in data.get("labels", []))
+        body = str(data.get("body") or "")
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return frozenset(), 0, 0   # unreadable facts score 0: the code default, never an escalation
+    return labels, len(body), len(set(re.findall(r"`([\w./-]+\.\w+)`", body)))
+
+
+def _router_context(mode: str, base: Path, paused_seconds: float) -> route.Context | None:
+    """The model router's context, or None when `LEM_ROUTER` is `off` (today's routing, untouched)."""
+    flag = route.router_mode()
+    if flag == "off":
+        return None
+    labels, body_chars, files = _issue_facts()
+    env = {k: v for k, v in os.environ.items() if k in route.DEFAULTS}
+    attempt = max(_int_env("LEM_ROUTE_ATTEMPT", 1), 1)
+    inputs = route.Inputs(
+        mode=mode, labels=labels, body_chars=body_chars, planned_files=files,
+        ci_failures=_int_env("LEM_ROUTE_CI_FAILURES", _int_env("ATTEMPTS") if mode == "fix" else 0),
+        conflicts=_int_env("LEM_ROUTE_CONFLICTS"), attempt=attempt,
+        protected_path=os.environ.get("LEM_ROUTE_PROTECTED") == "1",
+    )
+    signal = usage_signal.read(base / "state" / "usage_signal.json")
+    return route.Context(
+        flag=flag, inputs=inputs, signal=signal, env=env,
+        paused=frozenset({route.CLAUDE}) if paused_seconds > 0 else frozenset(),
+        bad_models=route.parse_labels(os.environ.get("LEM_ROUTE_BAD_MODELS", "")),
+        proxy_down=os.environ.get("LEM_ROUTE_PROXY_DOWN") == "1",
+    )
 
 
 if __name__ == "__main__":

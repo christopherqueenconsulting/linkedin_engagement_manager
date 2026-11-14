@@ -140,7 +140,12 @@ export CLAUDE_TIMEOUT="${CLAUDE_TIMEOUT:-45m}"
 # (30 consecutive dispatches routed `reason=fallback` because four rc=127 runs had poisoned the
 # Claude lane's failure counter).
 LEM_LANE_OVERRIDE=""; LEM_LANE_TIER=""; LEM_LANE_MARKER=""; LEM_LANE_REASON="not_consulted"
+LEM_LANE_MODEL=""; LEM_LANE_HARNESS=""; LEM_ROUTE_ARM=""
 if [ -x "$V2_DIR/lane_for.py" ]; then
+  # config.env is sourced as plain shell variables, so the router's knobs (LEM_ROUTER, the complexity
+  # weights, the review models) reach lane_for.py only if exported. Unset ones stay unset: it applies
+  # its own defaults, and an absent LEM_ROUTER is `off`.
+  for _v in ${!LEM_ROUTER*} ${!LEM_REVIEW_MODEL*}; do export "$_v"; done
   # USAGE_PAUSE_MINUTES must be forwarded EXPLICITLY. `common.sh` sources config.env with a plain
   # `.`, so its settings are shell variables and not exported — and this invocation sets only BASE.
   # So the box could say 120 while `lane_for.py` used its own default of 60, and the bounded
@@ -149,7 +154,9 @@ if [ -x "$V2_DIR/lane_for.py" ]; then
           "$V2_DIR/lane_for.py" "$MODE" 2>/dev/null)" || true
 fi
 log "lane policy: mode=$MODE arm=${LEM_LANE_REASON} override=${LEM_LANE_OVERRIDE:-none}"
-export LEM_LANE_OVERRIDE LEM_LANE_TIER LEM_LANE_REASON
+# Only with LEM_ROUTER on: the router's own decision, logged apart so the line above is unchanged.
+[ -n "${LEM_ROUTE_ARM:-}" ] && log "model router: mode=$MODE ${LEM_ROUTE_ARM} model=${LEM_LANE_MODEL:-unchanged}"
+export LEM_LANE_OVERRIDE LEM_LANE_TIER LEM_LANE_REASON LEM_LANE_MODEL LEM_LANE_HARNESS LEM_ROUTE_ARM
 
 # Per-mode file, not the flat $RUNBOOK index: `runbook/<mode>.md` holds only that mode's ~20-60
 # lines (env, numbered steps, STOP condition) instead of the whole ~440-line document every other
