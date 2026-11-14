@@ -115,6 +115,7 @@ class TestReactToCommentInline:
 
     def test_tab_crash_propagates_without_warning(self):
         from selenium.common.exceptions import WebDriverException
+
         from cqc_lem.app.engagement.posting import _react_to_comment_inline
         driver = MagicMock()
         driver.execute_script.side_effect = WebDriverException("tab crashed")
@@ -125,6 +126,7 @@ class TestReactToCommentInline:
 
     def test_other_webdriver_error_still_swallowed(self):
         from selenium.common.exceptions import WebDriverException
+
         from cqc_lem.app.engagement.posting import _react_to_comment_inline
         driver = MagicMock()
         driver.execute_script.side_effect = WebDriverException("stale element")
