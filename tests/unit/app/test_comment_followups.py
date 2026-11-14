@@ -113,6 +113,25 @@ class TestReactToCommentInline:
             assert _react_to_comment_inline(MagicMock(), MagicMock(), comment, user_id=1) is False
         assert lw.called
 
+    def test_tab_crash_propagates_without_warning(self):
+        from selenium.common.exceptions import WebDriverException
+        from cqc_lem.app.engagement.posting import _react_to_comment_inline
+        driver = MagicMock()
+        driver.execute_script.side_effect = WebDriverException("tab crashed")
+        with patch(f"{POST}.log_warning") as lw:
+            with pytest.raises(WebDriverException):
+                _react_to_comment_inline(driver, MagicMock(), MagicMock(), user_id=1)
+        lw.assert_not_called()
+
+    def test_other_webdriver_error_still_swallowed(self):
+        from selenium.common.exceptions import WebDriverException
+        from cqc_lem.app.engagement.posting import _react_to_comment_inline
+        driver = MagicMock()
+        driver.execute_script.side_effect = WebDriverException("stale element")
+        with patch(f"{POST}.log_warning") as lw:
+            assert _react_to_comment_inline(driver, MagicMock(), MagicMock(), user_id=1) is False
+        assert lw.called
+
 
 class TestReplyUnderComment:
     def test_types_into_this_comments_composer_and_submits(self):

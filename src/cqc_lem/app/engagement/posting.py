@@ -1551,6 +1551,10 @@ def _react_to_comment_inline(driver, wait, comment_el, user_id: int = None) -> b
                     action_type="engaged", user_id=user_id)
         return False
     except Exception as e:
+        if is_tab_crashed(e):
+            # A dead renderer fails every later reply too — swallowing it here warned once per
+            # reply, which recurs into a grouped $exception (#2570). Let the sweep end the run.
+            raise
         log_warning("Could not react to comment reply", exc=e, action_type="engaged", user_id=user_id)
         return False
 
