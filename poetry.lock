@@ -5411,14 +5411,14 @@ async = ["httpx"]
 
 [[package]]
 name = "syrupy"
-version = "6.1.1"
+version = "7.0.0"
 description = "Pytest Snapshot Test Utility"
 optional = false
-python-versions = ">=3.10"
+python-versions = ">=3.11"
 groups = ["test"]
 files = [
-    {file = "syrupy-6.1.1-py3-none-any.whl", hash = "sha256:6ac9ac6a42d70ae44156f5f157a9563b9bb8cc96dcf9364327f330463bff889a"},
-    {file = "syrupy-6.1.1.tar.gz", hash = "sha256:7e584a8df4ede6dd3c1c44a77f9edc46186b6767a73dea6f0083044946839a59"},
+    {file = "syrupy-7.0.0-py3-none-any.whl", hash = "sha256:c2f00abec70c444771c999295a166bb0b957da0853a015dff0d0f95930a121f7"},
+    {file = "syrupy-7.0.0.tar.gz", hash = "sha256:2e8733d9b3b42b665143be49f38b7543d77f4243e8fb29545ec410ef467c7b0a"},
 ]
 
 [package.dependencies]
@@ -6044,4 +6044,4 @@ type = ["pytest-mypy (>=1.0.1) ; platform_python_implementation != \"PyPy\""]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12,<4.0"
-content-hash = "28469d4db8ce5feb90961a17f97cb226b2955371624ca9bc2261830c018171d0"
+content-hash = "ee16eea0c16ddab2b62dda8e64a6fbf324772988e26a72572c63488d47c28af6"
