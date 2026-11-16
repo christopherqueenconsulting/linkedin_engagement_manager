@@ -290,6 +290,93 @@ class TestNeedsImagesExemption:
         assert self._BLINK_ARG in args
 
 
+class TestProxyLeanNetwork:
+    """Video block + Chrome background-traffic cut on EVERY proxied session.
+
+    `blink-settings=imagesEnabled=false` stops `<img>` only; feed video and Chrome's own update and
+    telemetry calls still rode the metered proxy. Unlike the image block these apply to the
+    `needs_images` fastboot lanes too — the fastboot app needs image load events, not video.
+    """
+
+    _GEO = {"latitude": 28.5, "longitude": -81.4, "timezone": "America/New_York",
+            "locale": "en-US", "country": "US"}
+    _ARG = "--disable-background-networking"
+
+    def _proxied(self, **kw):
+        return _capture_driver(user_id=1, geo=self._GEO,
+                               proxy=_proxy_url("u", "p", "host.example", 9000), **kw)
+
+    @staticmethod
+    def _blocked_urls(driver):
+        calls = [c for c in driver.execute_cdp_cmd.call_args_list
+                 if c.args[0] == "Network.setBlockedURLs"]
+        return calls[0].args[1]["urls"] if calls else None
+
+    def test_base_options_lean_only_when_requested(self):
+        from cqc_lem.utilities.selenium_util import getBaseOptions
+        assert self._ARG in getBaseOptions(lean_network=True).arguments
+        assert self._ARG not in getBaseOptions().arguments
+
+    def test_lean_args_never_pass_a_second_disable_features(self):
+        from cqc_lem.utilities.selenium_util import _LEAN_NETWORK_ARGS
+        assert not any(a.startswith("--disable-features") for a in _LEAN_NETWORK_ARGS)
+
+    def test_proxied_session_is_lean_and_blocks_video(self):
+        options, driver = self._proxied()
+        assert self._ARG in options.arguments
+        assert "*dms.licdn.com/playlist/*" in self._blocked_urls(driver)
+
+    def test_needs_images_session_still_blocks_video(self):
+        options, driver = self._proxied(needs_images=True)
+        assert "--blink-settings=imagesEnabled=false" not in options.arguments
+        assert self._ARG in options.arguments
+        assert self._blocked_urls(driver)
+
+    def test_unproxied_session_untouched(self):
+        options, driver = _capture_driver(user_id=None)
+        assert self._ARG not in options.arguments
+        assert self._blocked_urls(driver) is None
+
+    def test_env_var_disables_lean_network(self, monkeypatch):
+        monkeypatch.setenv("PROXY_BANDWIDTH_SAVER_ENABLED", "false")
+        options, driver = self._proxied()
+        assert self._ARG not in options.arguments
+        assert self._blocked_urls(driver) is None
+
+    def test_cdp_failure_fails_open_with_warning(self):
+        driver = MagicMock()
+        driver.execute_cdp_cmd.side_effect = RuntimeError("cdp down")
+        from cqc_lem.utilities.selenium_util import _block_proxy_media
+        with patch(f"{_MOD}.log_warning") as warn:
+            _block_proxy_media(driver, 1)
+        warn.assert_called_once()
+
+    def test_egress_log_reports_video_state(self):
+        with patch(f"{_MOD}.log_info") as info:
+            self._proxied()
+        assert "video=blocked" in " ".join(str(c.args[0]) for c in info.call_args_list)
+
+
+def _capture_driver(user_id=None, geo=None, proxy=None, needs_images=False):
+    """Like `_capture_options`, but also return the mocked driver so CDP calls can be read."""
+    captured = {}
+    driver = MagicMock()
+
+    def _remote(command_executor=None, options=None):
+        captured["options"] = options
+        return driver
+
+    with patch(f"{_MOD}._wait_for_selenium_ready"), \
+         patch(f"{_MOD}.DEVICE_FARM_PROJECT_ARN", None), \
+         patch(f"{_MOD}.TEST_GRID_PROJECT_ARN", None), \
+         patch(f"{_MOD}.webdriver.Remote", side_effect=_remote), \
+         patch("cqc_lem.utilities.db.get_user_geo", return_value=geo), \
+         patch("cqc_lem.utilities.db.get_user_proxy", return_value=proxy):
+        from cqc_lem.utilities.selenium_util import get_docker_driver
+        get_docker_driver(headless=False, user_id=user_id, needs_images=needs_images)
+    return captured["options"], driver
+
+
 def _capture_options(user_id=None, geo=None, proxy=None, needs_images=False):
     """Build a driver with all I/O mocked and return the ChromeOptions actually used."""
     captured = {}
