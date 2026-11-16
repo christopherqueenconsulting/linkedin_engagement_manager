@@ -87,7 +87,7 @@ optional = true
 jupyter = "^1.0.0"
 setuptools = ">=67.6.1,<85.0.0"
 grandalf = "^0.8"
-watchdog = ">=5.0.3,<7.0.0"
+watchdog = ">=5.0.3,<8.0.0"
 
 # The AWS CDK toolchain lived here until #973 retired the CDK deploy path (2026-08-11). Docker
 # Compose on the VPS is the only supported deploy, so nothing in the tree imports `aws_cdk` any more.
