@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.207.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.207.1...v0.207.2) (2026-11-16)
+
+
+### Performance Improvements
+
+* **proxy:** block video and Chrome background traffic on proxied sessions ([#2582](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2582)) ([fb99ba6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/fb99ba6cb64b91544d3a50124d88ae166ea1042a))
+
 ## [0.207.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.207.0...v0.207.1) (2026-11-14)
 
 
