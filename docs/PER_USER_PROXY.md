@@ -118,6 +118,27 @@ and PROXY_BANDWIDTH_SAVER_ENABLED` (default on). Direct/unproxied egress (dev, t
 capture session) is never touched — that traffic isn't metered. Disable with
 `PROXY_BANDWIDTH_SAVER_ENABLED=false` only to debug a session visually through the proxy.
 
+**What the proxy carries.** Only Selenium browser sessions — `get_docker_driver` is the one place a
+proxy is applied. LinkedIn REST/OAuth API calls, LiteLLM, PostHog, MySQL and Redis all egress direct.
+A 2026-11 census of prod logs found ~36 sessions/day, every one proxied, and about two thirds with
+images ON: the `needs_images` fastboot lanes (messaging, groups, posting, newsletter) are exempt from
+the image block (#1774).
+
+**The image block alone was not enough.** It stops `<img>` loads only. Every proxied session —
+the `needs_images` lanes included, since fastboot needs image load events, not video — now also:
+
+- blocks video via CDP `Network.setBlockedURLs` (`_PROXY_BLOCKED_MEDIA_URLS`:
+  `dms.licdn.com/playlist/` and any HLS manifest). Not a bare `*.mp4*`, which could catch the
+  upload of our own video post. Fails open with a warning.
+- passes `_LEAN_NETWORK_ARGS`, which turn off Chrome's own background traffic (component and
+  safe-browsing updates, domain-reliability reports, sync, pings) and stop autoplay without a
+  gesture. A page cannot see any of these, so none of them is a fingerprint.
+
+Same flag, same rollback: `PROXY_BANDWIDTH_SAVER_ENABLED=false` turns off all three. The session log
+line reports `images=` and `video=`. Still on the wire: LinkedIn's JS/CSS bundles, which each session
+downloads again because every Grid session starts with an empty cache. A persistent per-user disk
+cache is the next lever if IPRoyal usage stays high.
+
 ## Status / follow-ups
 
 - App side (DB field, resolver, Selenium wiring, MV3 auth extension, tests) — **done,

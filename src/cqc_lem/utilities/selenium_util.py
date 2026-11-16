@@ -380,8 +380,9 @@ def get_docker_driver(headless: bool = True, session_name: str = "ChromeTests", 
     # profile pages are image-heavy and every LEM selector reads text/DOM, never pixels, so
     # blocking images on a PROXIED session is a large bandwidth cut with nothing lost — direct/
     # host egress (unmetered) is never touched by this.
-    bandwidth_saver = bool(effective_proxy) and isTrue(
+    proxy_saver = bool(effective_proxy) and isTrue(
         os.getenv("PROXY_BANDWIDTH_SAVER_ENABLED", "True"))
+    bandwidth_saver = proxy_saver
     if needs_images:
         # Scoped exemption (#1774) — a messaging-surface session must keep images on so
         # LinkedIn's fastboot app actually mounts, no matter what the env/proxy say.
@@ -391,10 +392,14 @@ def get_docker_driver(headless: bool = True, session_name: str = "ChromeTests", 
     # could only be determined by shelling into the container. Host:port only; never the
     # credentials embedded in the proxy URL.
     log_info(f"Selenium session '{session_name}' egress={_proxy_label(effective_proxy)} "
-             f"tz={user_timezone} locale={user_locale} images={'blocked' if bandwidth_saver else 'on'}",
+             f"tz={user_timezone} locale={user_locale} images={'blocked' if bandwidth_saver else 'on'} "
+             f"video={'blocked' if proxy_saver else 'on'}",
              user_id=user_id, action_type="login")
 
-    options = getBaseOptions(block_images=bandwidth_saver)
+    # `proxy_saver`, not `bandwidth_saver`: the video block and the background-traffic cut apply
+    # to EVERY proxied session, the fastboot (`needs_images`) lanes included — #1774 needs `<img>`
+    # load events to mount the app, never video or Chrome's own update/telemetry calls.
+    options = getBaseOptions(block_images=bandwidth_saver, lean_network=proxy_saver)
     options.add_argument("--ignore-ssl-errors=yes")
     options.add_argument("--ignore-certificate-errors")
     options.add_argument(f"--lang={user_locale}")
@@ -422,6 +427,8 @@ def get_docker_driver(headless: bool = True, session_name: str = "ChromeTests", 
         raise
     _record_session_wait(time.time() - _session_started)
     driver.set_window_size(1920, 1080)
+    if proxy_saver:
+        _block_proxy_media(driver, user_id)
 
     # Stealth: scrub the most-checked automation tells before any page script runs.
     # navigator.webdriver=undefined (the #1 signal), a realistic navigator.languages
@@ -468,6 +475,28 @@ def get_docker_driver(headless: bool = True, session_name: str = "ChromeTests", 
                     action_type="login")
 
     return driver
+
+
+# Feed video is the largest single payload a LinkedIn page pulls, and no LEM lane reads a frame of
+# it. `dms.licdn.com/playlist/` is where LinkedIn serves member video (progressive MP4 and HLS
+# alike); `*.m3u8*` catches an HLS manifest served from anywhere else. Deliberately NOT a bare
+# `*.mp4*`: an upload URL could carry the extension, and blocking our own video post's upload would
+# fail the posting lane.
+_PROXY_BLOCKED_MEDIA_URLS = ["*dms.licdn.com/playlist/*", "*.m3u8*"]
+
+
+def _block_proxy_media(driver: WebDriver, user_id: Optional[int]) -> None:
+    """Stop a proxied session fetching video, which a metered proxy bills per GB for nothing.
+
+    Fails open: a session that could not install the block still works, it just costs more. That is
+    a degraded path, so it warns — and a block that never installs recurs, which is the defect.
+    """
+    try:
+        driver.execute_cdp_cmd("Network.enable", {})
+        driver.execute_cdp_cmd("Network.setBlockedURLs", {"urls": _PROXY_BLOCKED_MEDIA_URLS})
+    except Exception as e:
+        log_warning("Could not block video on a proxied session", exc=e, user_id=user_id,
+                    action_type="login")
 
 
 def _build_proxy_auth_extension_b64(username: str, password: str) -> str:
@@ -693,7 +722,21 @@ def add_headless_options(options: Options) -> Options:
     return options
 
 
-def getBaseOptions(base_download_directory: str = None, block_images: bool = False):
+# No `--disable-features=` here: `add_headless_options` already passes one, and Chrome keeps only
+# the last occurrence of a switch, so a second would silently drop its value.
+_LEAN_NETWORK_ARGS = (
+    "--disable-background-networking",
+    "--disable-component-update",
+    "--disable-domain-reliability",
+    "--disable-sync",
+    "--no-pings",
+    "--metrics-recording-only",
+    "--autoplay-policy=user-gesture-required",
+)
+
+
+def getBaseOptions(base_download_directory: str = None, block_images: bool = False,
+                   lean_network: bool = False):
     """The Chrome options every LEM session starts from: download prefs, container-safe flags, stealth.
 
     Downloads land in `<base_download_directory>/downloads` (default: the process CWD) and PDFs are
@@ -704,6 +747,11 @@ def getBaseOptions(base_download_directory: str = None, block_images: bool = Fal
     `bandwidth_saver`) stops Chrome fetching images at all. LEM's selectors read text/DOM, never
     pixels, so nothing is lost; the point is cutting bytes through a metered proxy provider
     (IPRoyal et al., docs/PER_USER_PROXY.md).
+
+    `lean_network=True` (every PROXIED session, fastboot lanes included) turns off Chrome's own
+    background traffic — component and safe-browsing updates, domain-reliability reports, pings —
+    which otherwise rides the metered proxy too, and stops media autoplaying without a gesture.
+    None of it is visible to a page, so it changes nothing LinkedIn can fingerprint.
     """
     options = Options()
     # options.add_argument("--incognito") # May cause issues with tabs
@@ -717,6 +765,9 @@ def getBaseOptions(base_download_directory: str = None, block_images: bool = Fal
 
     if block_images:
         options.add_argument("--blink-settings=imagesEnabled=false")
+    if lean_network:
+        for arg in _LEAN_NETWORK_ARGS:
+            options.add_argument(arg)
 
     options.add_argument('--disable-gpu')
     options.add_argument('--no-sandbox')
