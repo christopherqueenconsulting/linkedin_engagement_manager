@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.207.3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.207.2...v0.207.3) (2026-11-17)
+
+
+### Bug Fixes
+
+* **db:** retry dm_followups writes that lose an InnoDB deadlock (closes [#2586](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2586)) ([#2589](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2589)) ([c615986](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c615986e7bc5513867be275463483ee856165166))
+* **dm:** warn, not error, on proxy tunnel failure in send_dm_now (closes [#2587](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2587)) ([#2588](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2588)) ([d409647](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d4096478e119e6f8cb58a7a8c7320cc36615ff44))
+
 ## [0.207.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.207.1...v0.207.2) (2026-11-16)
 
 
