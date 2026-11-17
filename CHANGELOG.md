@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.208.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.207.3...v0.208.0) (2026-11-17)
+
+
+### Features
+
+* **pipeline:** model router phase 2 — route.py, complexity score, LEM_ROUTER flag (refs [#2560](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2560)) ([#2568](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2568)) ([6c79c9d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6c79c9d25e4a4dfb6f6011c669c787edbe2fbc1c))
+
+
+### Bug Fixes
+
+* **comments:** comment via the post permalink when a feed card has no comment box (refs [#2547](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2547)) ([#2594](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2594)) ([19ff84c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/19ff84cbac41c9d7501cdcf0870a1a332f0c1c2a))
+* **comments:** comment via the post permalink when a feed card has no comment box (refs [#2547](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2547)) ([#2595](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2595)) ([8bf5577](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8bf55776857891c33a8e66f537347805ecb1331b))
+* **comments:** never close the feed tab when the permalink tab failed to open (refs [#2547](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2547)) ([8bf5577](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8bf55776857891c33a8e66f537347805ecb1331b))
+* **pipeline:** post the owner-approval notice once per head; trust EA-filed issues; stop the untrusted-author redispatch loop ([#2592](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2592)) ([e4e14cc](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e4e14cc08e37e16e6c4ef4ff122d66917f5470f8))
+
 ## [0.207.3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.207.2...v0.207.3) (2026-11-17)
 
 
