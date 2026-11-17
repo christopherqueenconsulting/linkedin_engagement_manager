@@ -11,7 +11,12 @@ from selenium.common import InvalidSessionIdException, NoSuchElementException, T
 
 pytestmark = pytest.mark.unit
 
-from cqc_lem.utilities.selenium_util import is_grid_relay_error, is_session_lost, is_tab_crashed
+from cqc_lem.utilities.selenium_util import (
+    is_grid_relay_error,
+    is_proxy_tunnel_failure,
+    is_session_lost,
+    is_tab_crashed,
+)
 
 _GRID_MESSAGE = (
     "Message: Unable to find session with ID: e5d140e95d14b7cef20ad67aec43a5d1. Session was "
@@ -64,6 +69,17 @@ class TestIsTabCrashed:
                                      RuntimeError("boom")])
     def test_other_failures_are_not_crashed_tabs(self, exc):
         assert is_tab_crashed(exc) is False
+
+
+class TestIsProxyTunnelFailure:
+    def test_a_tunnel_failure_matches(self):
+        exc = WebDriverException("Message: unknown error: net::ERR_TUNNEL_CONNECTION_FAILED")
+        assert is_proxy_tunnel_failure(exc) is True
+
+    @pytest.mark.parametrize("exc", [WebDriverException("tab crashed"),
+                                     ValueError("ERR_TUNNEL_CONNECTION_FAILED")])
+    def test_other_failures_do_not_match(self, exc):
+        assert is_proxy_tunnel_failure(exc) is False
 
 
 class TestIsGridRelayError:
