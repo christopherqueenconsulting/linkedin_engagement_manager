@@ -168,6 +168,21 @@ def note_tab_crash(exc: BaseException, *, task_name: str, crash_logged_upstream:
     return True
 
 
+# What Chrome says when the per-user residential proxy refuses or drops the CONNECT tunnel
+# (issue #2587): the proxy answered, so nothing was sent to LinkedIn, and the provider's exit nodes
+# churn. A single occurrence ends the run like any transient and the next scheduled run retries, so
+# it is a WARNING that escalates only if it recurs, not an immediate `$exception`.
+_PROXY_TUNNEL_MARKERS = ("err_tunnel_connection_failed",)
+
+
+def is_proxy_tunnel_failure(exc: BaseException) -> bool:
+    """True when a navigation failed because the session's proxy could not open its tunnel."""
+    if isinstance(exc, WebDriverException):
+        message = (getattr(exc, "msg", None) or str(exc) or "").lower()
+        return any(marker in message for marker in _PROXY_TUNNEL_MARKERS)
+    return False
+
+
 # What the Grid's node-side HTTP relay says when it fails to deliver ONE command (issue #1784) —
 # e.g. `POST .../execute/sync` answering with `java.io.UncheckedIOException: Failed to execute
 # request`. Distinct from `_SESSION_GONE_MARKERS` (the session id itself was rejected) and from

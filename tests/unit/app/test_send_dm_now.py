@@ -163,6 +163,25 @@ class TestTabCrashWarnsInsteadOfFilingAnError:
         assert m["log"].call_args.kwargs["result"] is LogResultType.FAILURE
         m["quit"].assert_called_once()
 
+    def test_a_proxy_tunnel_failure_warns_once_and_is_not_an_error(self):
+        """Issue #2587."""
+        from cqc_lem.app.engagement import outreach as ra
+        exc = WebDriverException("unknown error: net::ERR_TUNNEL_CONNECTION_FAILED")
+        with patch(f"{_OUT}.get_user_password_pair_by_id", return_value=("e", "p")), \
+             patch(f"{_OUT}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
+             patch(f"{_OUT}.login_to_linkedin", side_effect=exc), \
+             patch(f"{_OUT}.insert_new_log") as logged, \
+             patch(f"{_OUT}.record_action"), \
+             patch(f"{_OUT}.quit_gracefully") as quit_driver, \
+             patch(f"{_OUT}.log_error") as errored, \
+             patch(f"{_OUT}.log_warning") as warned:
+            result = ra.send_dm_now(1, "https://www.linkedin.com/in/jane", "Congrats Jane!")
+        assert result is False
+        warned.assert_called_once()
+        errored.assert_not_called()
+        assert logged.call_args.kwargs["result"] is LogResultType.FAILURE
+        quit_driver.assert_called_once()
+
     def test_any_other_fault_is_still_an_error(self):
         result, m = self._send_raising(WebDriverException("no such window"))
         assert result is False

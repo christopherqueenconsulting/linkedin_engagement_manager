@@ -276,6 +276,7 @@ from cqc_lem.utilities.selenium_util import (
     get_driver_wait_pair,
     get_element_wait_retry,
     getText,
+    is_proxy_tunnel_failure,
     is_tab_crashed,
     note_tab_crash,
     quit_gracefully,
@@ -2884,7 +2885,11 @@ def send_dm_now(user_id: int, profile_url: str, message: str, person_name: str =
         # failure at INFO, which never reaches PostHog and so never escalated (issue #1030). A
         # crashed tab — which the message-thread reader now re-raises (issue #2421) — is the
         # expected transient that WARNs once instead.
-        if not note_tab_crash(e, task_name="send_dm_now", user_id=user_id, action_type="dm"):
+        if is_proxy_tunnel_failure(e):
+            # The proxy could not open its tunnel (#2587): transient, nothing reached LinkedIn.
+            log_warning("DM send skipped — proxy tunnel failed", exc=e, user_id=user_id,
+                        action_type="dm")
+        elif not note_tab_crash(e, task_name="send_dm_now", user_id=user_id, action_type="dm"):
             log_error("DM send failed", exc=e, user_id=user_id, action_type="dm")
 
     finally:
