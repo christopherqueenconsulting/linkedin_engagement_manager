@@ -518,14 +518,17 @@ class Daemon:
             )
             return
 
-        if decision.next_state == db.STATE_WAIT_OWNER_REVIEW and row["state"] != db.STATE_WAIT_OWNER_REVIEW:
-            # First observation of this wait, for this item — not every 900s-or-so re-check while
-            # it persists. `row["state"]` is the PREVIOUS pass's persisted state, so this is the
-            # transition edge, the same "state once per head" idea `park.sh` uses for its comment,
+        if decision.next_state == db.STATE_WAIT_OWNER_REVIEW:
+            # Once per (PR, head) — the same "once per head" idea `park.sh` uses for its comment,
             # done here because this wait is not a park (auto-merge must stay armed, so drafting
             # the PR or disabling auto-merge — what `park.sh` does — would undo the very thing
-            # letting a human's approval complete the merge unattended).
-            self._notify_owner_review_needed(kind, number)
+            # letting a human's approval complete the merge unattended). Keyed on the head rather
+            # than on the transition edge: GitHub reports `mergeStateStatus=UNKNOWN` on an
+            # unchanged head every few hours, which walks the item out to `merge_state_unknown`
+            # and back, and the edge re-posted on every lap (#2568: six identical comments).
+            self._notify_owner_review_needed(
+                kind, number, snap.head_sha or row["head_sha"] or "",
+                already_waiting=row["state"] == db.STATE_WAIT_OWNER_REVIEW)
         if decision.reason == "untrusted_author" and row["parked_reason"] != "untrusted_author":
             # Said ONCE, on the edge into the hold — `parked_reason` is persisted, so a restart does
             # not repeat it. No comment is posted: the way out is the owner's (re-file from a trusted
@@ -571,12 +574,42 @@ class Daemon:
             "requested": requested,
         })
 
-    def _notify_owner_review_needed(self, kind: str, number: int) -> None:
-        """Tell the owner once that a PR is done and only waiting on their CODEOWNERS approval.
+    @staticmethod
+    def _owner_notice_key(kind: str, number: int) -> str:
+        """The `kv` key holding the head SHA the owner-approval comment was last posted for."""
+        return f"owner_review_notified:{kind}:{number}"
+
+    def _notify_owner_review_needed(self, kind: str, number: int, head_sha: str = "", *,
+                                    already_waiting: bool = False) -> None:
+        """Tell the owner ONCE PER HEAD that a PR is done and only waiting on their approval.
+
+        Deduplicated in `kv` (durable across daemon restarts, like the held un-park answer) on the
+        head SHA: an unchanged head never posts twice however often the item leaves and re-enters
+        `awaiting_owner_review`, and a new push — which `dismiss_stale_reviews` turns into a fresh
+        ask — posts again.
 
         Best-effort: a failed comment must not take down the observation pass — there is nothing
-        to retry into, and the next TTL wake (`ttl_parked`) tries again anyway on a genuine outage.
+        to retry into. The head is recorded only after a successful post, so the next TTL wake
+        (`ttl_parked`) tries again on a genuine outage.
+
+        Args:
+            kind: `pr` (the only kind that reaches this wait).
+            number: The PR number.
+            head_sha: The head the comment is about; `""` when unknown, which dedups per PR.
+            already_waiting: The item was ALREADY in this wait on the previous pass. With no record
+                yet, that is a PR the transition-edge rule this replaced has already announced, so
+                the head is recorded without posting — the upgrade must not re-post on every PR
+                waiting at deploy time.
         """
+        key = self._owner_notice_key(kind, number)
+        notified = db.kv_get(self.conn, key)
+        if notified == head_sha:
+            LOG.debug("owner-review notice for %s #%s already posted at head %s",
+                      kind, number, head_sha[:12] or "?")
+            return
+        if notified is None and already_waiting:
+            db.kv_set(self.conn, key, head_sha)
+            return
         body = (
             "🔔 **Owner approval needed** — every required check is green and auto-merge is armed, "
             "but this touches a CODEOWNERS-protected path, so it needs your review before it can "
@@ -587,6 +620,11 @@ class Daemon:
             github.post_comment(self.cfg.slug, kind, number, body)
         except github.GitHubUnavailable as exc:
             LOG.warning("owner-review notify failed for %s #%s: %s", kind, number, exc)
+            # A record that matches no head: the next wake retries, and `already_waiting` cannot
+            # mistake an unposted notice for one the old edge rule already made.
+            db.kv_set(self.conn, key, f"failed:{head_sha}")
+            return
+        db.kv_set(self.conn, key, head_sha)
 
     def _emit(self, row, snap: observe.Snapshot, decision: observe.Decision,
               persisted: str | None = None) -> None:

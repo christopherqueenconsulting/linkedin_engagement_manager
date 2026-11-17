@@ -189,8 +189,13 @@ wait state above resolves through pipeline action or CI on a timeline the pipeli
 one resolves only through a human clicking Approve on GitHub, on no timeline the pipeline controls at
 all. Counting it against the WIP gate the same as `awaiting_queue` reproduces the incident it fixes:
 two such PRs held both WIP slots for 7 hours while every `ready` issue behind them went undispatched.
-The daemon posts ONE `gh pr comment` on the transition into this state (`_notify_owner_review_needed`)
-so the wait is not also silent.
+The daemon posts ONE `gh pr comment` per (PR, head SHA) on entering this state
+(`_notify_owner_review_needed`) so the wait is not also silent. The head it posted for is kept in
+`kv` (`owner_review_notified:pr:<n>`), so the dedup survives a daemon restart and the
+`merge_state_unknown` flap — GitHub reports `UNKNOWN` on an unchanged head every few hours, which
+walks the item to row 29 and back, and keying on the transition edge alone re-posted on every lap
+(six identical comments on #2568). A new push is a new head and posts again; a failed post records
+no head, so the next wake retries.
 
 **The reviewer request GitHub never sends (#1642).** A comment is not a review request: with
 `required_approving_review_count: 0`, GitHub's auto-request never fires, so a code-owner-gated PR

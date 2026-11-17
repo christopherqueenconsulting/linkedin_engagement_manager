@@ -562,7 +562,11 @@ def test_owner_review_wait_notifies_once_not_on_every_reobservation(tmp_path, mo
 
 
 def test_owner_review_wait_does_not_notify_when_reached_from_itself(tmp_path, monkeypatch):
-    """The transition check is `row["state"] != STATE_WAIT_OWNER_REVIEW`, not `wait_reason`."""
+    """A PR already waiting with no per-head record was announced by the old edge rule.
+
+    So the upgrade records its head without posting — every PR waiting at deploy time would
+    otherwise get one more identical comment.
+    """
     cfg = dataclasses.replace(load(tmp_path), shadow=False)
     dm = daemon_mod.Daemon(cfg)
     calls = []
@@ -574,6 +578,98 @@ def test_owner_review_wait_does_not_notify_when_reached_from_itself(tmp_path, mo
         monkeypatch.setattr(observe, "snapshot_pr", lambda *a, **k: blocked)
         dm._observe_one(db.get_item(dm.conn, "pr", 1444))
         assert calls == []
+    finally:
+        dm.conn.close()
+
+
+def _owner_wait_daemon(tmp_path, monkeypatch, calls: list, head: dict):
+    """An acting daemon whose PR #2568 reads BLOCKED-armed-green at `head["sha"]`, or UNKNOWN."""
+    cfg = dataclasses.replace(load(tmp_path), shadow=False)
+    dm = daemon_mod.Daemon(cfg)
+    monkeypatch.setattr(github, "post_comment", lambda *a, **k: calls.append(a))
+
+    def snap(*a, **k):
+        return pr(number=2568, merge_state=head.get("merge_state", "BLOCKED"), auto_merge=True,
+                  queue_state="", head_sha=head["sha"])
+
+    monkeypatch.setattr(observe, "snapshot_pr", snap)
+    return dm
+
+
+def _look(dm, number: int = 2568) -> str:
+    dm._observe_one(db.get_item(dm.conn, "pr", number))
+    return db.get_item(dm.conn, "pr", number)["state"]
+
+
+def test_the_merge_state_unknown_flap_does_not_re_notify(tmp_path, monkeypatch):
+    """#2568: UNKNOWN on an unchanged head walked the PR out and back, posting on every lap."""
+    calls: list = []
+    head = {"sha": "aaa"}
+    dm = _owner_wait_daemon(tmp_path, monkeypatch, calls, head)
+    try:
+        db.upsert_item(dm.conn, kind="pr", number=2568, state=db.STATE_WAIT_CI, branch="feature/x")
+        for _ in range(4):
+            head["merge_state"] = "BLOCKED"
+            assert _look(dm) == db.STATE_WAIT_OWNER_REVIEW
+            head["merge_state"] = "UNKNOWN"
+            assert _look(dm) == db.STATE_WAIT_CI
+        assert len(calls) == 1
+    finally:
+        dm.conn.close()
+
+
+def test_a_new_head_notifies_again(tmp_path, monkeypatch):
+    """A push dismisses a prior approval, so the owner is owed a fresh ask."""
+    calls: list = []
+    head = {"sha": "aaa"}
+    dm = _owner_wait_daemon(tmp_path, monkeypatch, calls, head)
+    try:
+        db.upsert_item(dm.conn, kind="pr", number=2568, state=db.STATE_WAIT_CI, branch="feature/x")
+        _look(dm)
+        head["sha"] = "bbb"
+        _look(dm)
+        _look(dm)
+        assert len(calls) == 2
+    finally:
+        dm.conn.close()
+
+
+def test_the_notice_dedup_survives_a_daemon_restart(tmp_path, monkeypatch):
+    """Durable in `kv`: a restarted daemon walking the same flap does not post again."""
+    calls: list = []
+    head = {"sha": "aaa"}
+    dm = _owner_wait_daemon(tmp_path, monkeypatch, calls, head)
+    db.upsert_item(dm.conn, kind="pr", number=2568, state=db.STATE_WAIT_CI, branch="feature/x")
+    _look(dm)
+    head["merge_state"] = "UNKNOWN"
+    _look(dm)
+    dm.conn.close()
+    again = _owner_wait_daemon(tmp_path, monkeypatch, calls, head)
+    try:
+        head["merge_state"] = "BLOCKED"
+        _look(again)
+        assert len(calls) == 1
+    finally:
+        again.conn.close()
+
+
+def test_a_failed_notice_is_retried_on_the_next_wake(tmp_path, monkeypatch):
+    """A failed post records no head — and the retry is not mistaken for an old-rule PR."""
+    calls: list = []
+    head = {"sha": "aaa"}
+    dm = _owner_wait_daemon(tmp_path, monkeypatch, calls, head)
+
+    def down(*a, **k):
+        raise github.GitHubUnavailable("rate limited")
+
+    try:
+        db.upsert_item(dm.conn, kind="pr", number=2568, state=db.STATE_WAIT_CI, branch="feature/x")
+        monkeypatch.setattr(github, "post_comment", down)
+        assert _look(dm) == db.STATE_WAIT_OWNER_REVIEW
+        monkeypatch.setattr(github, "post_comment", lambda *a, **k: calls.append(a))
+        _look(dm)
+        _look(dm)
+        assert len(calls) == 1
     finally:
         dm.conn.close()
 
