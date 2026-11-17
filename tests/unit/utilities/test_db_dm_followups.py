@@ -7,6 +7,41 @@ import pytest
 pytestmark = pytest.mark.unit
 
 
+def _deadlock():
+    import mysql.connector
+    return mysql.connector.errors.DatabaseError(
+        "1213 (40001): Deadlock found when trying to get lock; try restarting transaction",
+        errno=1213)
+
+
+class TestFollowupDeadlockRetry:
+    """Issue #2586: a deadlock victim on a dm_followups write is retried, not filed."""
+
+    def test_deadlock_then_success_retries_and_stays_quiet(self, fake_cursor):
+        conn, cursor = fake_cursor(rowcount=1, execute_error=[_deadlock(), None])
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
+                patch("cqc_lem.platform.db.repositories.outreach.time.sleep"):
+            from cqc_lem.utilities.db import stop_followups_for_profile
+            assert stop_followups_for_profile(1, "https://x/in/jane") == 1
+        assert cursor.execute.call_count == 2
+
+    def test_persistent_deadlock_falls_back_to_failure(self, fake_cursor):
+        conn, cursor = fake_cursor(execute_error=_deadlock())
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
+                patch("cqc_lem.platform.db.repositories.outreach.time.sleep"):
+            from cqc_lem.utilities.db import mark_followup
+            assert mark_followup(5, "stopped") is False
+        assert cursor.execute.call_count == 3
+
+    def test_other_error_is_not_retried(self, fake_cursor):
+        import mysql.connector
+        conn, cursor = fake_cursor(execute_error=mysql.connector.errors.DatabaseError("boom", errno=1064))
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import reset_unreadable_reads
+            assert reset_unreadable_reads(5) is False
+        assert cursor.execute.call_count == 1
+
+
 class TestFollowupQueue:
     def test_enqueue_inserts_pending(self, fake_cursor):
         conn, cursor = fake_cursor()
