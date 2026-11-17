@@ -215,6 +215,27 @@ def test_author_trusted_honours_the_configured_associations(monkeypatch):
     assert github.author_trusted("o/r", 1) is False
 
 
+def test_author_trusted_accepts_a_listed_second_login(monkeypatch):
+    """#2547: an issue the EA's App filed (NONE) is trusted when that App is listed.
+
+    The same rule as `lib/guards.sh:author_trusted` -> `trusted_answer_login`: the REST login keeps
+    its `[bot]` suffix, so only the App matches a `<slug>[bot]` entry, never a human holding the
+    bare slug; and the parsed list has already refused the pipeline App and shared bots.
+    """
+    monkeypatch.delenv("TRUSTED_ASSOCIATIONS", raising=False)
+    monkeypatch.setenv("GH_APP_BOT_LOGIN", "cqc-lem-agent-pipeline[bot]")
+    listed = github.parse_answer_logins("cqc-ea[bot], github-actions[bot]")
+    _issue_api(monkeypatch, "NONE", "cqc-ea[bot]")
+    assert github.author_trusted("o/r", 2547, answer_logins=listed) is True
+    assert github.author_trusted("o/r", 2547) is False, "unlisted, it is refused as before"
+    _issue_api(monkeypatch, "NONE", "CQC-EA[bot]")
+    assert github.author_trusted("o/r", 2547, answer_logins=listed) is True
+    _issue_api(monkeypatch, "NONE", "cqc-ea")
+    assert github.author_trusted("o/r", 2547, answer_logins=listed) is False
+    _issue_api(monkeypatch, "CONTRIBUTOR", "github-actions[bot]")
+    assert github.author_trusted("o/r", 2547, answer_logins=listed) is False
+
+
 def _wire_issue(monkeypatch, comments: list[dict], seen: list) -> None:
     """Fake every `gh` read `snapshot_issue` makes for a bot-filed held issue."""
     def fake_gh_json(args, **k):

@@ -552,18 +552,31 @@ def open_pr_numbers_by_author(slug: str, author: str, *, limit: int = 50,
             if isinstance(r, dict) and isinstance(r.get("number"), int) and r["number"] > 0]
 
 
-def author_trusted(slug: str, number: int, *, timeout: int = 30) -> bool | None:
-    """Would `unpark.sh`'s TRUST gate accept this issue's AUTHOR (#2331)?
+def author_trusted(slug: str, number: int, *, answer_logins: frozenset[str] = frozenset(),
+                   timeout: int = 30) -> bool | None:
+    """Would the actions' TRUST gate (`lib/guards.sh:author_trusted`) accept this issue's AUTHOR?
 
     The read-side mirror of `lib/guards.sh:author_trusted`, asked for the same reason the daemon
-    mirrors `v2_owner_answered`: so `decide()` does not offer the owner a menu whose every answer
-    the action is certain to refuse. Same REST endpoint, same rules — the pipeline's own App login,
-    then `TRUSTED_ASSOCIATIONS` (default `OWNER MEMBER COLLABORATOR`).
+    mirrors `v2_owner_answered`: so `decide()` neither offers the owner a menu whose every answer
+    `unpark.sh` is certain to refuse (#2331) nor dispatches a `start` that `agent_run.sh` is certain
+    to refuse with EX_TRUST. Same REST endpoint, same rules, same order — the pipeline's own App
+    login, then a `LEMD_TRUSTED_ANSWER_LOGINS` login (the EA's `cqc-ea[bot]` App files issues the
+    owner wants worked), then `TRUSTED_ASSOCIATIONS` (default `OWNER MEMBER COLLABORATOR`).
 
-    Three-valued, and only `False` changes anything downstream. `None` covers an unreadable read,
-    an empty association, and a bot author when `GH_APP_BOT_LOGIN` is not in this process's
-    environment — the pipeline's own App would read as untrusted there, and a wrong `False` is the
-    direction that silently drops a menu the owner needed.
+    Args:
+        slug: `owner/repo`.
+        number: The issue number.
+        answer_logins: `parse_answer_logins` output (lower-cased, the pipeline App and shared bots
+            already refused). Compared against the REST `user.login`, which keeps an App's `[bot]`
+            suffix — so a listed `<slug>[bot]` matches only the App, never a human holding the bare
+            slug, exactly as `trusted_answer_login` matches it in the shell.
+        timeout: Seconds for the one REST read.
+
+    Returns:
+        Three-valued, and only `False` changes anything downstream. `None` covers an unreadable
+        read, an empty association, and a bot author when `GH_APP_BOT_LOGIN` is not in this
+        process's environment — the pipeline's own App would read as untrusted there, and a wrong
+        `False` is the direction that silently drops work the owner wanted.
     """
     try:
         data = gh_json(["api", f"repos/{slug}/issues/{number}"], timeout=timeout) or {}
@@ -574,6 +587,8 @@ def author_trusted(slug: str, number: int, *, timeout: int = 30) -> bool | None:
     author = str((data.get("user") or {}).get("login") or "")
     app_login = os.environ.get("GH_APP_BOT_LOGIN", "")
     if app_login and author == app_login:
+        return True
+    if author and author.lower() in answer_logins:
         return True
     if not assoc:
         return None

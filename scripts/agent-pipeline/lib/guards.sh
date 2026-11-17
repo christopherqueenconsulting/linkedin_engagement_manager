@@ -42,8 +42,14 @@ author_trusted() {
   # its author_association is never one of OWNER/MEMBER/COLLABORATOR and every follow-up it filed
   # would sit unworkable forever. Nobody but this pipeline can author as this login.
   if [ -n "${GH_APP_BOT_LOGIN:-}" ] && [ "$author" = "$GH_APP_BOT_LOGIN" ]; then return 0; fi
+  # An issue the owner's second identity filed — the EA's App (`cqc-ea[bot]`) files issues the owner
+  # wants worked, and an App is never OWNER/MEMBER/COLLABORATOR either. `trusted_answer_login` is the
+  # same rule `label_actor_trusted` already applies to that login: REST form, `[bot]` kept, so a
+  # human holding the bare slug never matches, and the pipeline App and shared bots are refused.
+  # `lemd/github.py:author_trusted` is the daemon's twin and must keep agreeing with this function.
+  trusted_answer_login "$author" && return 0
   case " $TRUSTED_ASSOCIATIONS " in *" $assoc "*) return 0 ;; esac
-  log "TRUST: #$n authored by $assoc — not eligible for autonomous work."
+  log "TRUST: #$n authored by ${author:-unknown} ($assoc) — not eligible for autonomous work."
   return 1
 }
 
