@@ -367,7 +367,22 @@ Friday" reads as `hold` and stays parked.
 | 18 | `agent:working`, work exists, open PR **or linkage unreadable** | none | `working_claim_has_work` | 1h |
 | 19 | `agent:working`, work exists, no PR | dispatch `start` | `stranded_branch_no_pr` | — |
 | 20 | `agent:working`, no work | dispatch `start` | `working_claim_stranded` | — |
+| 20a | any `start` above (rows 15, 16, 19, 20) on an issue whose author the TRUST gate refuses (`author_trusted is False`) | none → parked | `untrusted_author` | 6h |
 | 21 | neither label | none → **ignored** | `issue_not_ready` | never |
+
+**Row 20a: never dispatch a `start` the action is certain to refuse.** `agent_run.sh` gates every
+issue `start` on `lib/guards.sh:author_trusted`, and the reconcile re-marks every `agent:ready` issue
+dirty every 10 minutes — so an issue whose labeler was trusted but whose AUTHOR was not was
+re-dispatched and refused `EX_TRUST` for ever (#2547, filed by the EA's App: 353 refusals). No re-run
+changes who wrote an issue, so `decide()` now holds it instead. `Snapshot.author_trusted` is read only
+when a `start` is about to dispatch (or row 9a could fire) — no other issue decision pays the REST
+read — and only a literal `False` takes the row: `None` dispatches as before and the action still
+re-checks. No Decision Comment is posted, for the reason row 9b gives: `unpark.sh` refuses the same
+author, so any answer would be a dead end. The daemon logs ONE warning on the edge into the hold
+(`parked_reason` is persisted, so a restart does not repeat it). The way out is re-filing from a
+trusted login, or listing an App author in `LEMD_TRUSTED_ANSWER_LOGINS` — `author_trusted` (both
+twins) accepts a listed login in its REST `<slug>[bot]` form, the rule `label_actor_trusted` already
+applies to the labeler. The Self-Modification Gate never reads that list.
 
 Rows 14–15 are one question asked two ways. "Did anything leave the box" is right for *must I avoid
 forking this*; it is wrong for *will anyone ever finish it*. A branch with an open PR is in flight; a
@@ -677,7 +692,7 @@ meter by pushing a commit — is real and correct; the wiring is not.
 
 | Code | Means | Daemon does |
 |---|---|---|
-| `EX_TRUST` 70 | provenance refused or unreadable | park, 6h TTL — answered by a human, not a timer. A refused `unpark` records the answer it was spending as routed (one WARNING), so that reply is attempted ONCE (#2331), and is re-observed at once so a NEWER trusted reply routes without waiting the TTL. The answer id is persisted in `kv` with the decision, so a daemon restart before dispatch no longer refuses for want of it; if none is held anyway, nothing is spent and the reply is re-decided at the TTL |
+| `EX_TRUST` 70 | provenance refused or unreadable | park, 6h TTL — answered by a human, not a timer. The reconcile does NOT re-dirty an item parked `trust_refused` (or row 20a's `untrusted_author`) while its TTL is pending and its head and labels are unchanged — it used to, which re-dispatched a refusal every 10 minutes; an event on the item still re-observes it. A refused `unpark` records the answer it was spending as routed (one WARNING), so that reply is attempted ONCE (#2331), and is re-observed at once so a NEWER trusted reply routes without waiting the TTL. The answer id is persisted in `kv` with the decision, so a daemon restart before dispatch no longer refuses for want of it; if none is held anyway, nothing is spent and the reply is re-decided at the TTL |
 | `EX_BUDGET` 71 | this (item, mode) is spent | park `{mode}_exhausted` |
 | `EX_BUSY` 72 | another claimant holds the branch | retry in 120s |
 | `EX_SETUP` 73 | environment not preparable | ⚠️ treated as a plain failure — no backoff |

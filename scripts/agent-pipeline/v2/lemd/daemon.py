@@ -75,6 +75,19 @@ def _keep_specific_park_reason(existing: str | None, incoming: str | None) -> st
     return incoming
 
 
+#: Park reasons a TRUST refusal leaves behind. No re-run changes who wrote an issue or who applied a
+#: label, so the reconcile must not re-observe them on its 10-minute cadence: that is what turned one
+#: EX_TRUST into a re-dispatch every reconcile for ever (#2547: 353 refusals). An EVENT on the item
+#: (the owner re-labelling it) and the `ttl_parked` wake still re-observe it.
+TRUST_HOLD_REASONS = frozenset({"trust_refused", "untrusted_author"})
+
+
+def _trust_hold_standing(row) -> bool:
+    """Is this item parked on a TRUST refusal whose slow re-check has not come due yet?"""
+    return (row["state"] == db.STATE_PARKED and row["parked_reason"] in TRUST_HOLD_REASONS
+            and (row["wake_at"] or 0) > time.time())
+
+
 def _excluded_note(excluded: list[dict[str, Any]]) -> str:
     """The ' (not counted: …)' tail of the WIP-hold log line, empty when nothing is excluded."""
     if not excluded:
@@ -287,10 +300,11 @@ class Daemon:
                     # reports differently from what we hold is a change nobody delivered to us —
                     # which is exactly the fault the staleness detector is trying to find, and
                     # unlike webhook silence it cannot be produced by a quiet repository.
-                    if existing is not None and (
+                    changed = existing is not None and (
                         existing["head_sha"] != obj.get("headRefOid")
                         or existing["labels_json"] != labels_json
-                    ):
+                    )
+                    if changed:
                         drift += 1
                     db.upsert_item(
                         self.conn, kind=kind, number=number,
@@ -298,7 +312,8 @@ class Daemon:
                         branch=obj.get("headRefName"),
                         head_sha=obj.get("headRefOid"),
                         labels_json=labels_json,
-                        dirty=1,
+                        dirty=(existing["dirty"] if existing is not None and not changed
+                               and _trust_hold_standing(existing) else 1),
                     )
                     found += 1
         except github.GitHubUnavailable as exc:
@@ -511,6 +526,14 @@ class Daemon:
             # the PR or disabling auto-merge — what `park.sh` does — would undo the very thing
             # letting a human's approval complete the merge unattended).
             self._notify_owner_review_needed(kind, number)
+        if decision.reason == "untrusted_author" and row["parked_reason"] != "untrusted_author":
+            # Said ONCE, on the edge into the hold — `parked_reason` is persisted, so a restart does
+            # not repeat it. No comment is posted: the way out is the owner's (re-file from a trusted
+            # login, or list the App in LEMD_TRUSTED_ANSWER_LOGINS), and there is nothing an answer
+            # on the thread could unlock.
+            LOG.warning("%s #%s is agent:ready but its author is refused by the TRUST gate — "
+                        "holding, not dispatching (re-file from a trusted login to proceed)",
+                        kind, number)
         db.upsert_item(
             self.conn, kind=kind, number=number, state=decision.next_state,
             wait_reason=decision.wait_reason,

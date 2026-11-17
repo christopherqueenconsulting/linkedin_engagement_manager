@@ -243,6 +243,9 @@ def test_nothing_linked_never_reaches_the_state_read(monkeypatch):
     reads = _Reads([])
     monkeypatch.setattr(github, "gh_json", reads)
     monkeypatch.setattr(github, "branch_exists", lambda *a, **k: False)
+    # A no-work `agent:ready` issue is about to dispatch, so its AUTHOR is read too (the untrusted-
+    # author hold) — a REST read, not a linkage one, and not what this test bounds.
+    monkeypatch.setattr(github, "author_trusted", lambda *a, **k: True)
     snap = observe.snapshot_issue("o/r", 1405)
     assert snap.work_exists is False and snap.linked_pr_state is None
     assert [c[0] for c in reads.calls] == ["issue", "issue"], (
