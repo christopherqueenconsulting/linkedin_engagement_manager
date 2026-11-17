@@ -467,3 +467,24 @@ refusing the request.
 
 The top-level path is already safe: `run_lane.sh` discards the Claude model hint when the lane is
 `ollama`. The subagent path is the only exposure, and it is closed by this rule rather than by code.
+
+## The model router (`v2/lemd/route.py`, #2560)
+
+`LEM_ROUTER=off|shadow|reviews|full` in `config.env`; absent or unrecognised is `off`, which is
+today's routing exactly. `shadow` logs the router's decision (`model router: ... arm=...`) and
+changes no launch assignment; `reviews` acts on `review`/`selfreview` only; `full` acts on every mode.
+
+Rule order: `agent:model:*` / `agent:tier:*` labels, then the two-family review rule (Codex first;
+a Sonnet review on top for `risk:high`/`auth`/`security`/`migration`/`live-linkedin`, a protected
+path, and `depmajor`), then Sonnet as the code default with Opus on a score at or above
+`LEM_ROUTER_OPUS_THRESHOLD` or any retry, then the fallback chain when a provider is paused, over
+budget, `model_not_found` or behind a down proxy. Code: Opus, Sonnet, Ollama tier 2. Reviews: Codex,
+Sonnet, Ollama tier 3 (with the degraded-review marker). An unreadable quota signal (phase 1) gates
+nothing. Until phase 3 lands a Codex decision is logged and the existing path runs.
+
+Knobs (all optional, defaults in `route.DEFAULTS`): `LEM_REVIEW_MODEL` (`codex-auto-review`),
+`LEM_REVIEW_MODEL_ALT` (`gpt-5.6-luna`; `gpt-6-luna` is refused), `LEM_ROUTER_{SONNET,OPUS,HAIKU}_MODEL`,
+`LEM_ROUTER_{CLAUDE,CODEX}_MAX_PCT`, the `LEM_ROUTER_W_*` complexity weights and
+`LEM_ROUTER_OPUS_THRESHOLD`. Per-dispatch facts reach `lane_for.py` as `LEM_ROUTE_*` variables
+(`LABELS`, `BODY_CHARS`, `FILES`, `ATTEMPT`, `CI_FAILURES`, `CONFLICTS`, `PROTECTED`, `BAD_MODELS`,
+`PROXY_DOWN`); one `gh issue view` fills labels, body size and file count when they are unset.

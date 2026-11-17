@@ -1,0 +1,22 @@
+[
+  {"issue": 2559, "rating": "hard",   "body_chars": 4440, "planned_files": 8,  "labels": ["priority:medium"]},
+  {"issue": 2506, "rating": "simple", "body_chars": 1056, "planned_files": 1,  "labels": ["priority:low"]},
+  {"issue": 2495, "rating": "simple", "body_chars": 1815, "planned_files": 1,  "labels": ["priority:medium"]},
+  {"issue": 2493, "rating": "medium", "body_chars": 1210, "planned_files": 17, "labels": []},
+  {"issue": 2464, "rating": "medium", "body_chars": 1042, "planned_files": 3,  "labels": ["priority:high"]},
+  {"issue": 2462, "rating": "hard",   "body_chars": 7904, "planned_files": 4,  "labels": ["priority:high", "risk:live-linkedin"]},
+  {"issue": 2456, "rating": "medium", "body_chars": 1366, "planned_files": 4,  "labels": ["priority:high"]},
+  {"issue": 2453, "rating": "medium", "body_chars": 2177, "planned_files": 7,  "labels": ["priority:medium"]},
+  {"issue": 2448, "rating": "simple", "body_chars": 906,  "planned_files": 4,  "labels": ["priority:low"]},
+  {"issue": 2447, "rating": "simple", "body_chars": 1538, "planned_files": 5,  "labels": ["priority:medium"]},
+  {"issue": 2431, "rating": "medium", "body_chars": 1105, "planned_files": 3,  "labels": []},
+  {"issue": 2379, "rating": "simple", "body_chars": 522,  "planned_files": 3,  "labels": ["priority:low"]},
+  {"issue": 2368, "rating": "hard",   "body_chars": 768,  "planned_files": 13, "labels": ["priority:high", "risk:security"]},
+  {"issue": 2356, "rating": "hard",   "body_chars": 3643, "planned_files": 7,  "labels": []},
+  {"issue": 2353, "rating": "simple", "body_chars": 3591, "planned_files": 4,  "labels": []},
+  {"issue": 2331, "rating": "hard",   "body_chars": 3414, "planned_files": 5,  "labels": ["priority:medium"]},
+  {"issue": 2327, "rating": "medium", "body_chars": 2294, "planned_files": 4,  "labels": ["priority:medium"]},
+  {"issue": 2244, "rating": "simple", "body_chars": 1230, "planned_files": 7,  "labels": ["priority:medium"]},
+  {"issue": 2490, "rating": "simple", "body_chars": 1388, "planned_files": 3,  "labels": []},
+  {"issue": 2426, "rating": "medium", "body_chars": 1622, "planned_files": 5,  "labels": []}
+]

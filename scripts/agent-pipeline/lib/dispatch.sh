@@ -179,7 +179,8 @@ dispatch_lane() {
       AGENT_TIER="${LEM_LANE_TIER:-$(_pick_ollama_tier)}"; AGENT_MODEL="$AGENT_TIER"
       [ "${CLAUDE_AVAIL:-1}" -eq 0 ] && { FALLBACK_FROM="claude"; FALLBACK_TO="ollama"; }
     else
-      AGENT_MODEL="$claude_hint"
+      # The router's model, when LEM_ROUTER acts. Empty with the router off, so the hint stands.
+      AGENT_MODEL="${LEM_LANE_MODEL:-$claude_hint}"
     fi
     export LANE AGENT_MODEL AGENT_TIER ROUTE_REASON FALLBACK_FROM FALLBACK_TO
     _export_lane_context_window "$LANE" "$AGENT_TIER"
