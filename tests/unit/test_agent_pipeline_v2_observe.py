@@ -532,6 +532,15 @@ def test_merge_decision_is_not_recorded_as_queued_and_clears_its_deadline(tmp_pa
         dm.conn.close()
 
 
+@pytest.fixture(autouse=True)
+def _no_earlier_notice(monkeypatch):
+    """The upgrade check reads the PR thread when no notice record exists; keep it off the network.
+
+    Without this stub that read reaches the real repository (it did, and found #2568's real notice).
+    """
+    monkeypatch.setattr(github, "posted_comment_opening", lambda *a, **k: False)
+
+
 def test_owner_review_wait_notifies_once_not_on_every_reobservation(tmp_path, monkeypatch):
     """#1501: the alert must fire on the transition into the wait, not on every wake.
 
@@ -670,6 +679,55 @@ def test_a_failed_notice_is_retried_on_the_next_wake(tmp_path, monkeypatch):
         _look(dm)
         _look(dm)
         assert len(calls) == 1
+    finally:
+        dm.conn.close()
+
+
+def test_a_pr_mid_flap_at_deploy_is_not_announced_again(tmp_path, monkeypatch):
+    """No record, previous pass on the `merge_state_unknown` leg, old-rule notice on the thread.
+
+    `already_waiting` is False there, so only the thread read stops one more identical comment.
+    """
+    calls: list = []
+    head = {"sha": "aaa"}
+    dm = _owner_wait_daemon(tmp_path, monkeypatch, calls, head)
+    asked: list = []
+
+    def earlier(slug, kind, number, opening, **k):
+        asked.append((kind, number, opening, k.get("owner")))
+        return True
+
+    monkeypatch.setattr(github, "posted_comment_opening", earlier)
+    try:
+        db.upsert_item(dm.conn, kind="pr", number=2568, state=db.STATE_WAIT_CI, branch="feature/x",
+                       wait_reason="mergeability_computing")
+        assert _look(dm) == db.STATE_WAIT_OWNER_REVIEW
+        assert calls == []
+        assert asked == [("pr", 2568, daemon_mod.OWNER_REVIEW_NOTICE_OPENING, dm.cfg.assignee)]
+        # The head is now recorded, so the thread is never read again and a push still posts.
+        head["merge_state"] = "UNKNOWN"
+        _look(dm)
+        head["merge_state"] = "BLOCKED"
+        _look(dm)
+        assert len(asked) == 1 and calls == []
+        head["sha"] = "bbb"
+        _look(dm)
+        assert len(calls) == 1
+    finally:
+        dm.conn.close()
+
+
+@pytest.mark.parametrize("earlier", [False, None])
+def test_no_earlier_notice_or_an_unreadable_thread_posts(tmp_path, monkeypatch, earlier):
+    """An unreadable thread fails toward posting: at most the one comment the old rule made."""
+    calls: list = []
+    dm = _owner_wait_daemon(tmp_path, monkeypatch, calls, {"sha": "aaa"})
+    monkeypatch.setattr(github, "posted_comment_opening", lambda *a, **k: earlier)
+    try:
+        db.upsert_item(dm.conn, kind="pr", number=2568, state=db.STATE_WAIT_CI, branch="feature/x")
+        _look(dm)
+        assert len(calls) == 1
+        assert calls[0][3].startswith(daemon_mod.OWNER_REVIEW_NOTICE_OPENING)
     finally:
         dm.conn.close()
 

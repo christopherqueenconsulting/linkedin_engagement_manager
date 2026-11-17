@@ -779,7 +779,9 @@ def _dismissed_prs(number: int) -> frozenset[int]:
 
 def snapshot_issue(slug: str, number: int, *, owner: str | None = None,
                    answer_routed: str | None = None,
-                   answer_logins: frozenset[str] = frozenset()) -> Snapshot:
+                   answer_logins: frozenset[str] = frozenset(),
+                   associations: tuple[str, ...] | None = None,
+                   app_login: str | None = None) -> Snapshot:
     """Build a `Snapshot` for an issue.
 
     The answer read is not PR-only, and that is the half v1 got right and is easy to drop: a
@@ -825,7 +827,8 @@ def snapshot_issue(slug: str, number: int, *, owner: str | None = None,
     # Every other issue decision is reached without this REST read.
     would_start = bool(labels & WORK_SENSITIVE_LABELS) and not (labels & HOLD_LABELS) and (
         work is False or (work is True and has_open_pr is False))
-    trusted = (github.author_trusted(slug, number, answer_logins=answer_logins)
+    trusted = (github.author_trusted(slug, number, answer_logins=answer_logins,
+                                     associations=associations, app_login=app_login)
                if ("needs-human" in labels and thread.menu_posted is False) or would_start
                else None)
     return Snapshot(

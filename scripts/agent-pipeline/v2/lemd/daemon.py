@@ -81,6 +81,10 @@ def _keep_specific_park_reason(existing: str | None, incoming: str | None) -> st
 #: (the owner re-labelling it) and the `ttl_parked` wake still re-observe it.
 TRUST_HOLD_REASONS = frozenset({"trust_refused", "untrusted_author"})
 
+#: How the owner-approval notice opens. The upgrade check finds an earlier notice by it, so the
+#: body must keep opening with exactly this.
+OWNER_REVIEW_NOTICE_OPENING = "🔔 **Owner approval needed**"
+
 
 def _trust_hold_standing(row) -> bool:
     """Is this item parked on a TRUST refusal whose slow re-check has not come due yet?"""
@@ -245,6 +249,10 @@ class Daemon:
         """
         found = 0
         drift = 0
+        # The first pass after a start re-checks every standing TRUST hold once: the ways out of one
+        # that need no event on the item (listing the App in LEMD_TRUSTED_ANSWER_LOGINS, widening
+        # TRUSTED_ASSOCIATIONS) take effect at a restart, and should not then wait out `ttl_parked`.
+        keep_trust_holds = self._last_reconcile != 0.0
         try:
             for label, kind in (
                 ("agent:ready", "issue"),
@@ -313,7 +321,7 @@ class Daemon:
                         head_sha=obj.get("headRefOid"),
                         labels_json=labels_json,
                         dirty=(existing["dirty"] if existing is not None and not changed
-                               and _trust_hold_standing(existing) else 1),
+                               and keep_trust_holds and _trust_hold_standing(existing) else 1),
                     )
                     found += 1
         except github.GitHubUnavailable as exc:
@@ -404,7 +412,9 @@ class Daemon:
         else:
             snap = observe.snapshot_issue(self.cfg.slug, number, owner=self.cfg.assignee,
                                           answer_routed=routed,
-                                          answer_logins=self.cfg.trusted_answer_logins)
+                                          answer_logins=self.cfg.trusted_answer_logins,
+                                          associations=self.cfg.trusted_associations,
+                                          app_login=self.cfg.app_bot_login)
 
         parked_reason = row["parked_reason"]
         snap = dataclasses.replace(
@@ -599,7 +609,8 @@ class Daemon:
             already_waiting: The item was ALREADY in this wait on the previous pass. With no record
                 yet, that is a PR the transition-edge rule this replaced has already announced, so
                 the head is recorded without posting — the upgrade must not re-post on every PR
-                waiting at deploy time.
+                waiting at deploy time. A PR on the flap leg at deploy is caught by a thread read
+                instead, which runs only while no record exists.
         """
         key = self._owner_notice_key(kind, number)
         notified = db.kv_get(self.conn, key)
@@ -607,11 +618,17 @@ class Daemon:
             LOG.debug("owner-review notice for %s #%s already posted at head %s",
                       kind, number, head_sha[:12] or "?")
             return
-        if notified is None and already_waiting:
+        if notified is None and (already_waiting or github.posted_comment_opening(
+                self.cfg.slug, kind, number, OWNER_REVIEW_NOTICE_OPENING,
+                owner=self.cfg.assignee)):
+            # No record, and the old edge rule has already announced it: either the item was
+            # waiting on the previous pass, or it was mid-flap (`merge_state_unknown`) at deploy and
+            # the thread still carries that rule's comment. One read, only while no record exists;
+            # an unreadable thread posts, which costs at most the one comment the old rule would.
             db.kv_set(self.conn, key, head_sha)
             return
         body = (
-            "🔔 **Owner approval needed** — every required check is green and auto-merge is armed, "
+            f"{OWNER_REVIEW_NOTICE_OPENING} — every required check is green and auto-merge is armed, "
             "but this touches a CODEOWNERS-protected path, so it needs your review before it can "
             "merge. See `docs/codeowners-enforcement-limit.md`. No reply needed here — just "
             "Approve it (GitHub UI or `gh pr review --approve`) when you're ready."

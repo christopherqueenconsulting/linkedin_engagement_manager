@@ -223,6 +223,22 @@ class TestSecondLoginAuthoredIssues:
     def test_an_unreadable_association_still_refuses(self, tmp_path):
         assert "NO" in self._author(tmp_path, "cqc-ea[bot]", "", self._EA).stdout
 
+    @pytest.mark.parametrize("raw", ["owner-alt\tcqc-ea[bot]", "owner-alt\ncqc-ea[bot]",
+                                     "owner-alt,\r\n cqc-ea[bot]"])
+    def test_the_list_splits_like_the_python_twin(self, tmp_path, raw):
+        """Tab- and newline-separated lists: the daemon trusts these, so the gate must agree.
+
+        Before, `read` took only the first line and kept a tab inside one entry, so the daemon
+        dispatched and `agent_run.sh` refused with EX_TRUST.
+        """
+        sys.path.insert(0, str(GUARDS_SH.parent.parent / "v2"))
+        from lemd import github as lemd_github
+
+        assert "cqc-ea[bot]" in lemd_github.parse_answer_logins(raw)
+        env = {"LEMD_TRUSTED_ANSWER_LOGINS": raw}
+        assert "YES" in self._author(tmp_path, "cqc-ea[bot]", extra_env=env).stdout
+        assert "YES" in self._author(tmp_path, "owner-alt", extra_env=env).stdout
+
     def test_the_labeler_gate_still_applies(self, tmp_path):
         """A trusted AUTHOR does not make an untrusted LABELER acceptable — both halves stand."""
         body = _answer_login_helpers() + 'label_actor_trusted 7 "agent:ready" && echo YES || echo NO'

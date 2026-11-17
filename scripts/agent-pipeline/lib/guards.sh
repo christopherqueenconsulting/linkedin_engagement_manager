@@ -70,8 +70,8 @@ label_actor_trusted() {
   [ -n "$actor" ] || { log "TRUST: #$n — no readable '$label' labeler; refusing."; return 1; }
   case " $AGENT_LABEL_TRUSTED_ACTORS " in *" $actor "*) return 0 ;; esac
   # The owner's second answering login (LEMD_TRUSTED_ANSWER_LOGINS) may apply `agent:ready` and the
-  # lane labels too. It is read HERE and for Decision-Comment answers only — never by the
-  # Self-Modification Gate (scripts/pipeline_selfmod_gate.py), which takes the owner login alone.
+  # lane labels too. It is read HERE, by `author_trusted` and for Decision-Comment answers — never by
+  # the Self-Modification Gate (scripts/pipeline_selfmod_gate.py), which takes the owner login alone.
   trusted_answer_login "$actor" && return 0
   # CI-ROUTED labels are the one place our own workflows are the legitimate applier. A router runs
   # `actions/github-script` with the default GITHUB_TOKEN, so the timeline actor is
@@ -208,9 +208,10 @@ comment_author_trusted() {
 
 trusted_answer_login() {
   # trusted_answer_login <login> -> 0 when <login> is listed in LEMD_TRUSTED_ANSWER_LOGINS (a comma
-  # list, default empty): the owner's SECOND login. It counts for two things only — answering a
-  # Decision Comment (`answer_author_trusted`) and applying a provenance-gated label
-  # (`label_actor_trusted`). Never for the Self-Modification Gate, never for review evidence.
+  # or whitespace list, default empty): the owner's SECOND login. It counts for three things —
+  # answering a Decision Comment (`answer_author_trusted`), applying a provenance-gated label
+  # (`label_actor_trusted`) and AUTHORING an issue (`author_trusted`) — so a listed login can queue
+  # work by itself. Never for the Self-Modification Gate, never for review evidence.
   #
   # The pipeline App is refused even when someone lists it: an agent posting as the App must never
   # be able to answer its own question. So is every shared bot, and anything that is not a GitHub
@@ -228,7 +229,11 @@ trusted_answer_login() {
       case "$lc" in *"[bot]") return 1 ;; esac ;;
   esac
   comment_login_names_app "$login" && return 1
-  IFS=', ' read -r -a entries <<< "$LEMD_TRUSTED_ANSWER_LOGINS"
+  # Every whitespace becomes a space FIRST: `read` stops at the first newline and IFS=', ' keeps a
+  # tab inside an entry, while the Python twin splits on `[,\s]+`. Unnormalised, a tab- or
+  # newline-separated list was trusted by the daemon and refused here — the dispatch-then-EX_TRUST
+  # the twin exists to prevent.
+  IFS=', ' read -r -a entries <<< "${LEMD_TRUSTED_ANSWER_LOGINS//[[:space:]]/ }"
   for entry in "${entries[@]}"; do
     [[ "$entry" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}(\[bot\])?$ ]] || continue
     [ "$(printf '%s' "$entry" | tr '[:upper:]' '[:lower:]')" = "$lc" ] && return 0
@@ -248,7 +253,7 @@ typed_answer_login() {
   printf '%s' "$login"
   [ -n "$login" ] && [ -n "${LEMD_TRUSTED_ANSWER_LOGINS:-}" ] || return 0
   case "$lc" in *"[bot]") return 0 ;; esac
-  IFS=', ' read -r -a entries <<< "$LEMD_TRUSTED_ANSWER_LOGINS"
+  IFS=', ' read -r -a entries <<< "${LEMD_TRUSTED_ANSWER_LOGINS//[[:space:]]/ }"
   for entry in "${entries[@]}"; do
     [ "$(printf '%s' "$entry" | tr '[:upper:]' '[:lower:]')" = "${lc}[bot]" ] || continue
     cid="${url##*#issuecomment-}"

@@ -103,9 +103,11 @@ def _wire(monkeypatch, *, labels: list[str], branch: bool = False, linked: str =
 def test_the_author_is_read_when_a_start_would_dispatch(monkeypatch):
     calls = _wire(monkeypatch, labels=["agent:ready"])
     listed = frozenset({"cqc-ea[bot]"})
-    snap = observe.snapshot_issue("o/r", 2547, owner=OWNER, answer_logins=listed)
+    snap = observe.snapshot_issue("o/r", 2547, owner=OWNER, answer_logins=listed,
+                                  associations=("OWNER",), app_login="app[bot]")
     assert snap.author_trusted is False
-    assert calls == [{"answer_logins": listed}], "the daemon's list reaches the read"
+    assert calls == [{"answer_logins": listed, "associations": ("OWNER",),
+                      "app_login": "app[bot]"}], "the daemon's trust config reaches the read"
     assert d(snap).reason == "untrusted_author"
 
 
@@ -160,6 +162,27 @@ def test_the_daemon_holds_and_warns_once(tmp_path, monkeypatch, caplog):
     assert db.dispatchable(dmn.conn) == []
 
 
+def test_the_daemon_hands_config_env_trust_knobs_to_the_snapshot(tmp_path, monkeypatch):
+    """config.env's TRUSTED_ASSOCIATIONS / GH_APP_BOT_LOGIN, not the unit's environment, decide."""
+    monkeypatch.delenv("TRUSTED_ASSOCIATIONS", raising=False)
+    monkeypatch.delenv("GH_APP_BOT_LOGIN", raising=False)
+    (tmp_path / "config.env").write_text(
+        f"LEMD_DB={tmp_path}/queue.db\nLEMD_SHADOW=0\n"
+        'TRUSTED_ASSOCIATIONS="OWNER CONTRIBUTOR"\nGH_APP_BOT_LOGIN=pipe[bot]\n')
+    dmn = daemon.Daemon(load(tmp_path))
+    db.upsert_item(dmn.conn, kind="issue", number=2547, state=db.STATE_READY, dirty=1)
+    got: dict = {}
+
+    def fake(slug, number, **kw):
+        got.update(kw)
+        return issue(author_trusted=True)
+
+    monkeypatch.setattr(observe, "snapshot_issue", fake)
+    dmn._observe_one(db.get_item(dmn.conn, "issue", 2547))
+    assert got["associations"] == ("OWNER", "CONTRIBUTOR")
+    assert got["app_login"] == "pipe[bot]"
+
+
 def test_a_now_trusted_author_dispatches_on_the_next_observation(tmp_path, monkeypatch):
     """The hold is not sticky: list the App (or re-file) and the next look starts it."""
     dmn = _daemon(tmp_path)
@@ -183,6 +206,7 @@ def _reconcile_with(dmn: daemon.Daemon, monkeypatch, labels: list[str]) -> None:
 def test_the_reconcile_leaves_a_standing_trust_hold_alone(tmp_path, monkeypatch, reason):
     """The loop's engine: reconcile re-dirtied the refused item every 10 minutes."""
     dmn = _daemon(tmp_path)
+    dmn._last_reconcile = time.time() - 600  # not the first pass after a start
     labels = ["agent:ready"]
     db.upsert_item(dmn.conn, kind="issue", number=2547, state=db.STATE_PARKED,
                    parked_reason=reason, dirty=0, wake_at=int(time.time()) + 21600,
@@ -191,9 +215,26 @@ def test_the_reconcile_leaves_a_standing_trust_hold_alone(tmp_path, monkeypatch,
     assert db.get_item(dmn.conn, "issue", 2547)["dirty"] == 0
 
 
+def test_the_first_reconcile_after_a_restart_re_checks_every_trust_hold(tmp_path, monkeypatch):
+    """Listing the App or widening the associations takes effect at a restart, not 6h later."""
+    dmn = _daemon(tmp_path)
+    labels = ["agent:ready"]
+    db.upsert_item(dmn.conn, kind="issue", number=2547, state=db.STATE_PARKED,
+                   parked_reason="untrusted_author", dirty=0, wake_at=int(time.time()) + 21600,
+                   labels_json=json.dumps(labels))
+    assert dmn._last_reconcile == 0.0
+    _reconcile_with(dmn, monkeypatch, labels)
+    assert db.get_item(dmn.conn, "issue", 2547)["dirty"] == 1
+    # Observed and still refused: the hold stands again, and the NEXT pass leaves it alone.
+    db.upsert_item(dmn.conn, kind="issue", number=2547, state=db.STATE_PARKED, dirty=0)
+    _reconcile_with(dmn, monkeypatch, labels)
+    assert db.get_item(dmn.conn, "issue", 2547)["dirty"] == 0
+
+
 def test_the_reconcile_still_re_observes_a_changed_or_due_hold(tmp_path, monkeypatch):
     """Changed labels are drift, and a due TTL is the safety net — both look again."""
     dmn = _daemon(tmp_path)
+    dmn._last_reconcile = time.time() - 600  # not the first pass after a start
     db.upsert_item(dmn.conn, kind="issue", number=2547, state=db.STATE_PARKED,
                    parked_reason="trust_refused", dirty=0, wake_at=int(time.time()) + 21600,
                    labels_json=json.dumps(["agent:ready"]))
@@ -209,6 +250,7 @@ def test_the_reconcile_still_re_observes_a_changed_or_due_hold(tmp_path, monkeyp
 def test_the_reconcile_still_re_dirties_any_other_park(tmp_path, monkeypatch):
     """Scoped to TRUST holds: an ordinary hold keeps its reconcile backstop."""
     dmn = _daemon(tmp_path)
+    dmn._last_reconcile = time.time() - 600  # not the first pass after a start
     labels = ["agent:ready"]
     db.upsert_item(dmn.conn, kind="issue", number=2547, state=db.STATE_PARKED,
                    parked_reason="needs_human", dirty=0, wake_at=int(time.time()) + 21600,
@@ -220,6 +262,7 @@ def test_the_reconcile_still_re_dirties_any_other_park(tmp_path, monkeypatch):
 def test_an_ex_trust_refusal_is_not_redispatched_by_the_next_reconcile(tmp_path, monkeypatch):
     """End to end: refused once, then a reconcile — nothing is queued until the TTL or an event."""
     dmn = _daemon(tmp_path)
+    dmn._last_reconcile = time.time() - 600  # not the first pass after a start
     labels = ["agent:ready"]
     db.upsert_item(dmn.conn, kind="issue", number=2547, state=db.STATE_RUNNING,
                    labels_json=json.dumps(labels))

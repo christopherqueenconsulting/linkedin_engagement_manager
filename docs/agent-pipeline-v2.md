@@ -195,7 +195,11 @@ The daemon posts ONE `gh pr comment` per (PR, head SHA) on entering this state
 `merge_state_unknown` flap — GitHub reports `UNKNOWN` on an unchanged head every few hours, which
 walks the item to row 29 and back, and keying on the transition edge alone re-posted on every lap
 (six identical comments on #2568). A new push is a new head and posts again; a failed post records
-no head, so the next wake retries.
+no head, so the next wake retries. **Upgrade:** a PR with no record yet was already announced by the
+old edge rule if it was waiting on the previous pass (its head is recorded without posting) or if its
+thread already holds an `🔔 **Owner approval needed**` comment from the App or the owner — the one
+thread read covers a PR that was on the `merge_state_unknown` leg at deploy, and runs only while no
+record exists. An unreadable thread posts: at most the one comment the old rule would have made.
 
 **The reviewer request GitHub never sends (#1642).** A comment is not a review request: with
 `required_approving_review_count: 0`, GitHub's auto-request never fires, so a code-owner-gated PR
@@ -387,7 +391,13 @@ author, so any answer would be a dead end. The daemon logs ONE warning on the ed
 (`parked_reason` is persisted, so a restart does not repeat it). The way out is re-filing from a
 trusted login, or listing an App author in `LEMD_TRUSTED_ANSWER_LOGINS` — `author_trusted` (both
 twins) accepts a listed login in its REST `<slug>[bot]` form, the rule `label_actor_trusted` already
-applies to the labeler. The Self-Modification Gate never reads that list.
+applies to the labeler. The Self-Modification Gate never reads that list. Both twins read the same
+knobs from the same place: the daemon resolves `TRUSTED_ASSOCIATIONS` and `GH_APP_BOT_LOGIN` through
+`config.load` (`config.env`, the environment overriding), as the shell sources them, because the
+systemd unit loads only `secrets.env` and a value the daemon could not see would turn into a wrong
+`False` — a held issue the action accepts. Both check an empty association FIRST (`None`, no hold).
+The first reconcile after a daemon start re-checks every standing trust hold once, so a fix that needs
+a restart (listing the App, widening the associations) does not then wait out `ttl_parked`.
 
 Rows 14–15 are one question asked two ways. "Did anything leave the box" is right for *must I avoid
 forking this*; it is wrong for *will anyone ever finish it*. A branch with an open PR is in flight; a
@@ -1037,8 +1047,11 @@ it goes — never per pass. Logged per pass, a long pause wrote 1.87M identical 
 
 ### A second trusted answer login (`LEMD_TRUSTED_ANSWER_LOGINS`)
 
-`config.env` may set `LEMD_TRUSTED_ANSWER_LOGINS` — a comma list, **empty by default** — naming
-further logins the owner answers from. A listed login counts for exactly two things:
+`config.env` may set `LEMD_TRUSTED_ANSWER_LOGINS` — a comma- or whitespace-separated list, **empty by
+default** — naming further logins the owner answers from. A listed login counts for exactly three
+things, and the third means **a listed login can put work in the queue on its own**, with no owner or
+collaborator involved: it may file an issue AND apply `agent:ready` to it. List only identities the
+owner controls.
 
 * **Decision-Comment answers** — `lemd/answers.py:read_thread` (daemon), `v2_owner_answered`
   (v2 action re-check), `decision_context` (the answer URL handed to MODE=start/revise) and v1's
@@ -1047,13 +1060,20 @@ further logins the owner answers from. A listed login counts for exactly two thi
   Comment, since a boundary can only narrow the answer window.
 * **Provenance-gated label provenance** — `label_actor_trusted` accepts it as the applier of
   `agent:ready` and the lane labels, alongside `AGENT_LABEL_TRUSTED_ACTORS`.
+* **Issue authorship** — `author_trusted` (`lib/guards.sh` and `github.author_trusted` in the
+  daemon) accepts an issue it filed, whatever its `author_association` (#2547: the EA's App files
+  issues the owner wants worked, and an App is never OWNER/MEMBER/COLLABORATOR).
 
 It **never** counts for the Self-Modification Gate (`scripts/pipeline_selfmod_gate.py` takes the
 owner login and nothing else, and its tests pin that a listed login's approval is refused), and it is
 not read for review evidence (`review_state`) or comment directives. **The pipeline App is refused
-explicitly**, in both runners, even when someone lists it — as are every `[bot]` login and anything
-that is not a GitHub login (the daemon logs a WARNING per refused entry). An agent posting as the App
-must never answer its own question.
+explicitly**, in both runners, even when someone lists it — as are the shared bots
+(`github-actions`, `dependabot`, `copilot`, `codecov`, `renovate`, … — they act for whoever triggers
+them) and anything that is not a GitHub login (the daemon logs a WARNING per refused entry). An agent
+posting as the App must never answer its own question. A dedicated App (the EA's) is listed in its
+REST form `<slug>[bot]` — e.g. `cqc-ea[bot]` — and **never by its bare slug**: the bare slug is a
+user login anyone can register, and listing it would trust that stranger's answers, labels AND
+issues.
 
 ### Rolling back comment authority
 

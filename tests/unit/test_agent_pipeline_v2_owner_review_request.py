@@ -497,6 +497,7 @@ def test_owner_review_required_asks_even_when_the_path_match_missed(tmp_path, mo
     asked = []
     monkeypatch.setattr(github, "request_reviewer", lambda *a, **k: asked.append(a))
     monkeypatch.setattr(github, "post_comment", lambda *a, **k: None)
+    monkeypatch.setattr(github, "posted_comment_opening", lambda *a, **k: False)
     try:
         db.upsert_item(dm.conn, kind="pr", number=1616, state=db.STATE_WAIT_CI, branch="feature/x")
         snap = _pr(merge_state="BLOCKED", auto_merge=True, queue_state="",
