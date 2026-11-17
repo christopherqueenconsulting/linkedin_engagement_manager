@@ -128,6 +128,14 @@ class TestPermalinkFallbackComment:
         ctx.driver.close.assert_called_once()
 
 
+def test_failed_new_tab_never_closes_the_feed_tab():
+    ctx = _ctx()
+    ctx.driver.switch_to.new_window.side_effect = RuntimeError("no tab")
+    with patch(f"{_FEED}.log_warning"):
+        assert ra._permalink_fallback_comment(ctx, _URN_KEY, "hi", "body", "Jane", False) is False
+    ctx.driver.close.assert_not_called()
+
+
 def test_post_comment_inline_reports_no_composer_only_when_nothing_was_typed():
     outcome: dict = {}
     with patch(f"{_FEED}.outbound_refusal_reason", return_value=None), \

@@ -2602,9 +2602,11 @@ def _permalink_fallback_comment(ctx: FeedRunContext, key: str, comment_text: str
     driver, wait, user_id = ctx.driver, ctx.wait, ctx.user_id
     permalink = f"https://www.linkedin.com/feed/update/{m.group(0)}/"
     origin = None
+    opened = False
     try:
         origin = driver.current_window_handle
         driver.switch_to.new_window("tab")
+        opened = True
         driver.get(permalink)
         wait_for_ajax(driver)
         time.sleep(random.uniform(2, 4))
@@ -2625,7 +2627,8 @@ def _permalink_fallback_comment(ctx: FeedRunContext, key: str, comment_text: str
                     action_type="comment")
         return False
     finally:
-        if origin is not None:
+        # Only close a tab WE opened: if new_window failed, close() would shut the feed tab itself.
+        if opened:
             try:
                 driver.close()
                 driver.switch_to.window(origin)
