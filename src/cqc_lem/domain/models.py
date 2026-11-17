@@ -89,6 +89,9 @@ class FeedRunContext:
     # spending an LLM call (issue #1084). It is a property of the RUN, not of a card — the roster
     # pass never adopts it, because a roster target's activity page is not a group feed.
     is_group_feed: bool = False
+    # Keys of comments that landed through the post permalink because the feed card had no comment
+    # box (issue #2547). A run accumulator, like `seen`.
+    permalink_comment_keys: set = field(default_factory=set)
 
     def out_of_time(self, now: float) -> bool:
         """Has this run's deadline passed? An unset deadline means the run is budget-bounded only.

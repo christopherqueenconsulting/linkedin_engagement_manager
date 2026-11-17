@@ -489,7 +489,7 @@ EVENTS = {spec.event: spec for spec in (
         count("off_topic_skipped"), flag("fallback_used"),
         # Group-feed lane only (issue #1084): posts whose composer was not reachable before the LLM
         # generation was spent. Counted on `feed_scan` so the cost saving is measurable.
-        count("skipped_no_composer"),
+        count("skipped_no_composer"), count("permalink_fallback_commented"),
         # Cards whose text was one of our own recent comments (issue #2130) — the re-read that
         # used to earn one post a second comment. Never commented on.
         count("own_comment_skipped"),

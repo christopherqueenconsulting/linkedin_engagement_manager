@@ -984,7 +984,7 @@ def _post_composer_for_card(driver: WebDriver, card: WebElement,
 
 
 def post_comment_inline(driver, wait, card, comment_text: str, user_id: int = None,
-                        composer: WebElement | None = None) -> bool:
+                        composer: WebElement | None = None, outcome: dict | None = None) -> bool:
     """Open the card's inline comment composer, type the comment, and submit via the button.
 
     The SDUI composer has no <form>. Returns True only if the comment actually lands (composer
@@ -999,6 +999,10 @@ def post_comment_inline(driver, wait, card, comment_text: str, user_id: int = No
     `composer` is the ALREADY-resolved textbox for this post. When provided (e.g. the group-feed
     probe in `_engage_card` opened it before spending an LLM call), the open/find steps are skipped
     so the composer is not clicked shut while the comment is being generated.
+
+    `outcome`, when given, gets `no_composer=True` ONLY when the card offered no comment box at all
+    (nothing was typed), so a caller can tell that apart from a comment that was typed and not
+    verified — the first is safe to retry through the permalink, the second may have landed.
     """
     step = "prepare text"
     try:
@@ -1024,6 +1028,8 @@ def post_comment_inline(driver, wait, card, comment_text: str, user_id: int = No
             if click_first(driver, wait, _COMMENT_ACTION_LOCATORS,
                            "Open comment composer", parent_element=card, required=False,
                            warn_on_miss=False, user_id=user_id) is None:
+                if outcome is not None:
+                    outcome["no_composer"] = True
                 return False
             time.sleep(random.uniform(1.5, 3))
             step = "find composer"
@@ -1036,6 +1042,8 @@ def post_comment_inline(driver, wait, card, comment_text: str, user_id: int = No
             # page-wide fallback — no composer for this post means skip the post.
             composer = _post_composer_for_card(driver, card, user_id=user_id)
             if composer is None:
+                if outcome is not None:
+                    outcome["no_composer"] = True
                 return False
         step = "focus composer"
         _focus_composer(driver, composer)
@@ -2576,6 +2584,56 @@ def get_feed_funnel(user_id: int) -> "dict | None":
         return None
 
 
+def _permalink_fallback_comment(ctx: FeedRunContext, key: str, comment_text: str, content: str,
+                                author: str, already_reacted: bool) -> bool:
+    """Place `comment_text` through the post's permalink when its feed card has no comment box (#2547).
+
+    Runs in a SEPARATE tab so the feed walk keeps its scroll position and cards; the tab is always
+    closed and the original one restored. The caller still holds the claim for `key`, so this path
+    cannot double-comment. Needs the activity URN in the key — a hash-keyed post has no permalink
+    and stays a skip. `_permalink_post_card` picks the card by that URN, so a recommendation
+    stacked under the post is never commented on.
+    """
+    m = _URN_RE.search(key or "")
+    if not m:
+        log_debug("No activity URN for this card — no permalink to comment through",
+                  user_id=ctx.user_id, action_type="comment")
+        return False
+    driver, wait, user_id = ctx.driver, ctx.wait, ctx.user_id
+    permalink = f"https://www.linkedin.com/feed/update/{m.group(0)}/"
+    origin = None
+    try:
+        origin = driver.current_window_handle
+        driver.switch_to.new_window("tab")
+        driver.get(permalink)
+        wait_for_ajax(driver)
+        time.sleep(random.uniform(2, 4))
+        card = _permalink_post_card(driver, permalink, user_id=user_id)
+        if card is None:
+            return False
+        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", card)
+        if (INLINE_REACTIONS_ENABLED and not already_reacted
+                and not _author_is_me(author, ctx.my_profile)):
+            if react_to_post_inline(driver, wait, card, post_content=content,
+                                    comment_text=comment_text, user_id=user_id):
+                mark_post_reacted(user_id, key)
+        return post_comment_inline(driver, wait, card, comment_text, user_id=user_id)
+    except Exception as e:
+        if is_session_lost(e) or is_tab_crashed(e):
+            raise
+        log_warning("Permalink fallback comment failed", exc=e, user_id=user_id,
+                    action_type="comment")
+        return False
+    finally:
+        if origin is not None:
+            try:
+                driver.close()
+                driver.switch_to.window(origin)
+            except Exception as close_error:
+                log_debug(f"Could not restore the feed tab after the permalink fallback: "
+                          f"{close_error}", user_id=user_id, action_type="comment")
+
+
 def _engage_card(ctx: FeedRunContext, card, key: str, content: str, author: str,
                  is_group_feed: bool = False) -> bool:
     """Claim, generate, react, and comment on ONE post card.
@@ -2671,12 +2729,14 @@ def _engage_card(ctx: FeedRunContext, card, key: str, content: str, author: str,
     # Gated OFF by default since #816. DEBUG, not a warning: a deliberate stand-down is working
     # behaviour, and warning it every card is exactly the "expected no-op" that escalates into a
     # filed defect. The commenting path below is untouched.
+    reacted = False
     if not INLINE_REACTIONS_ENABLED:
         log_debug("Inline reactions disabled (INLINE_REACTIONS_ENABLED=False, issue #816)",
                   user_id=user_id, action_type="comment")
     elif not _author_is_me(author, my_profile):
         outcome = react_to_post_inline(driver, wait, card, post_content=content,
                                        comment_text=comment_text, user_id=user_id)
+        reacted = bool(outcome)
         if outcome is None:
             # Already reacted is a no-op, not a failure. Reporting it as one made a benign skip
             # indistinguishable from a broken selector, and now that repeated warnings escalate it
@@ -2692,10 +2752,17 @@ def _engage_card(ctx: FeedRunContext, card, key: str, content: str, author: str,
             # Warning again from out here filed a SECOND PostHog defect for one condition (#878).
             log_debug("No reaction landed on post — continuing to the comment", user_id=user_id,
                       action_type="comment")
+    inline_outcome: dict = {}
     if not post_comment_inline(driver, wait, card, comment_text, user_id=user_id,
-                               composer=resolved_composer):
-        release_post_claim(user_id, key)  # posting failed — let a later run retry
-        return False
+                               composer=resolved_composer, outcome=inline_outcome):
+        # No comment box on the card (nothing typed) but a URN: comment through the permalink
+        # instead of skipping (#2547). Group feeds already probed their composer and keep skipping.
+        if (inline_outcome.get("no_composer") and not is_group_feed
+                and _permalink_fallback_comment(ctx, key, comment_text, content, author, reacted)):
+            ctx.permalink_comment_keys.add(key)
+        else:
+            release_post_claim(user_id, key)  # posting failed — let a later run retry
+            return False
     mark_post_commented(user_id, key)
     _start_author_cooldown(user_id, author)
     insert_new_log(user_id=user_id,
@@ -3385,6 +3452,9 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
         # Group-feed lane only (issue #1084): posts whose composer could not be reached BEFORE the
         # LLM generation was spent. This makes the cost saving measurable on `feed_scan`.
         "skipped_no_composer": skipped_no_composer,
+        # Comments that landed through the post's permalink because the feed card had no comment
+        # box (issue #2547) — compare against feed_commented to see how often the fallback carries.
+        "permalink_fallback_commented": len(ctx.permalink_comment_keys),
         # Cards whose text was one of our own recent comments (issue #2130) — never commented on.
         "own_comment_skipped": own_comment_skipped,
         # Which filter removed each post (issue #2102), home walk and roster pass kept apart.
@@ -3415,6 +3485,7 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
              f"commented {posted} (roster {roster_stats['posted']} / feed {feed_commented}), "
              f"off-topic skipped {off_topic_total}, "
              f"skipped-no-composer {skipped_no_composer}, "
+             f"permalink-fallback comments {len(ctx.permalink_comment_keys)}, "
              f"roster comment-blocked {roster_stats.get('comment_blocked', 0)}, "
              f"roster followed {roster_stats.get('followed', 0)}, fallback={fallback_used}, "
              f"sort {feed_sort}, key sources {examined_key_sources}, "
