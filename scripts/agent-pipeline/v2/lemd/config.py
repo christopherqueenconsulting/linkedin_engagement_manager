@@ -115,8 +115,16 @@ class Config:
     #: agent posting under the App identity must never be able to answer its own Decision Comment.
     assignee: str
     #: `LEMD_TRUSTED_ANSWER_LOGINS`: further logins (lower-cased) whose reply may answer a Decision
-    #: Comment. Answers only — never the Self-Modification Gate. The App is refused at parse time.
+    #: Comment and whose issue `author_trusted` accepts (the shell also lets one label) — so a listed
+    #: login can queue work by itself. Never the Self-Modification Gate. The App is refused at parse.
     trusted_answer_logins: frozenset[str]
+    #: `TRUSTED_ASSOCIATIONS` and `GH_APP_BOT_LOGIN`, read here (config.env, environment wins) and
+    #: handed to `github.author_trusted`, because the shell's TRUST gate reads them from config.env
+    #: and the systemd unit loads only secrets.env: read from `os.environ` alone, a value the owner
+    #: set in config.env would reach the action and not the daemon, and row 20a would hold an issue
+    #: the action accepts.
+    trusted_associations: tuple[str, ...]
+    app_bot_login: str
     db_path: Path
     #: Concurrency. `agent_slots` bounds `claude -p` children; `gh_slots` bounds cheap gh-only
     #: mutations so a merge-enable never queues behind a 20-minute implementation run.
@@ -212,6 +220,9 @@ def load(base: str | Path | None = None) -> Config:
         trusted_answer_logins=github.parse_answer_logins(
             str(os.environ.get("LEMD_TRUSTED_ANSWER_LOGINS",
                                env.get("LEMD_TRUSTED_ANSWER_LOGINS", "")))),
+        trusted_associations=tuple(
+            _str(env, "TRUSTED_ASSOCIATIONS", "OWNER MEMBER COLLABORATOR").split()),
+        app_bot_login=_str(env, "GH_APP_BOT_LOGIN", ""),
         db_path=Path(_str(env, "LEMD_DB", str(b / "v2" / "state" / "queue.db"))),
         # LEMD_MAX_AGENTS, not MAX_AGENTS: v1's knob is 5 on this box, and reading it here made the
         # documented "cap v2 at 3 until the CPU envelope is measured" a fallback that never applied.

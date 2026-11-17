@@ -48,7 +48,8 @@ def held_issue(**kw) -> observe.Snapshot:
 
 def _observe(dmn: daemon.Daemon, monkeypatch, snap_kw: dict) -> None:
     """One observation of #2268, routed through the real `_observe_one`."""
-    def fake_snapshot(slug, number, *, owner=None, answer_routed=None, answer_logins=frozenset()):
+    def fake_snapshot(slug, number, *, owner=None, answer_routed=None, answer_logins=frozenset(),
+                      associations=None, app_login=None):
         return held_issue(answer_routed=answer_routed, **snap_kw)
 
     monkeypatch.setattr(observe, "snapshot_issue", fake_snapshot)
@@ -213,6 +214,81 @@ def test_author_trusted_honours_the_configured_associations(monkeypatch):
     monkeypatch.setenv("GH_APP_BOT_LOGIN", "app[bot]")
     _issue_api(monkeypatch, "COLLABORATOR", "someone")
     assert github.author_trusted("o/r", 1) is False
+
+
+def test_author_trusted_accepts_a_listed_second_login(monkeypatch):
+    """#2547: an issue the EA's App filed (NONE) is trusted when that App is listed.
+
+    The same rule as `lib/guards.sh:author_trusted` -> `trusted_answer_login`: the REST login keeps
+    its `[bot]` suffix, so only the App matches a `<slug>[bot]` entry, never a human holding the
+    bare slug; and the parsed list has already refused the pipeline App and shared bots.
+    """
+    monkeypatch.delenv("TRUSTED_ASSOCIATIONS", raising=False)
+    monkeypatch.setenv("GH_APP_BOT_LOGIN", "cqc-lem-agent-pipeline[bot]")
+    listed = github.parse_answer_logins("cqc-ea[bot], github-actions[bot]")
+    _issue_api(monkeypatch, "NONE", "cqc-ea[bot]")
+    assert github.author_trusted("o/r", 2547, answer_logins=listed) is True
+    assert github.author_trusted("o/r", 2547) is False, "unlisted, it is refused as before"
+    _issue_api(monkeypatch, "NONE", "CQC-EA[bot]")
+    assert github.author_trusted("o/r", 2547, answer_logins=listed) is True
+    _issue_api(monkeypatch, "NONE", "cqc-ea")
+    assert github.author_trusted("o/r", 2547, answer_logins=listed) is False
+    _issue_api(monkeypatch, "CONTRIBUTOR", "github-actions[bot]")
+    assert github.author_trusted("o/r", 2547, answer_logins=listed) is False
+
+
+def test_an_unreadable_association_reads_none_before_any_login_rule(monkeypatch):
+    """The shell refuses an empty association FIRST; a login match must not dispatch past it."""
+    monkeypatch.setenv("GH_APP_BOT_LOGIN", "cqc-lem-agent-pipeline[bot]")
+    listed = github.parse_answer_logins("cqc-ea[bot]")
+    _issue_api(monkeypatch, "", "cqc-ea[bot]")
+    assert github.author_trusted("o/r", 2547, answer_logins=listed) is None
+    _issue_api(monkeypatch, "", "cqc-lem-agent-pipeline[bot]")
+    assert github.author_trusted("o/r", 2547) is None
+
+
+def test_passed_associations_and_app_login_win_over_the_environment(monkeypatch):
+    """The daemon hands in config.env's values; this process's environment may not carry them."""
+    monkeypatch.delenv("TRUSTED_ASSOCIATIONS", raising=False)
+    monkeypatch.delenv("GH_APP_BOT_LOGIN", raising=False)
+    _issue_api(monkeypatch, "CONTRIBUTOR", "someone")
+    assert github.author_trusted("o/r", 1) is False
+    assert github.author_trusted(
+        "o/r", 1, associations=("OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR")) is True
+    _issue_api(monkeypatch, "NONE", "app[bot]")
+    assert github.author_trusted("o/r", 1) is None, "a bot while the App login is unknown"
+    assert github.author_trusted("o/r", 1, app_login="app[bot]") is True
+    assert github.author_trusted("o/r", 1, app_login="other[bot]") is False
+
+
+def test_config_env_trust_knobs_reach_the_daemon_snapshot(tmp_path, monkeypatch):
+    """`TRUSTED_ASSOCIATIONS` set only in config.env still trusts the author (no row-20a hold)."""
+    monkeypatch.delenv("TRUSTED_ASSOCIATIONS", raising=False)
+    monkeypatch.delenv("GH_APP_BOT_LOGIN", raising=False)
+    (tmp_path / "config.env").write_text(
+        'TRUSTED_ASSOCIATIONS="OWNER MEMBER COLLABORATOR CONTRIBUTOR"\n'
+        "GH_APP_BOT_LOGIN=pipe[bot]\n")
+    cfg = load(tmp_path)
+    assert cfg.trusted_associations == ("OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR")
+    assert cfg.app_bot_login == "pipe[bot]"
+    monkeypatch.setenv("TRUSTED_ASSOCIATIONS", "OWNER")
+    assert load(tmp_path).trusted_associations == ("OWNER",), "the environment overrides"
+    monkeypatch.delenv("TRUSTED_ASSOCIATIONS")
+
+    def fake_gh_json(args, **k):
+        if args[0] == "api":
+            return {"author_association": "CONTRIBUTOR", "user": {"login": "someone"}}
+        return {"number": 7, "state": "OPEN", "labels": [{"name": "agent:ready"}]}
+
+    monkeypatch.setattr(github, "gh_json", fake_gh_json)
+    monkeypatch.setattr(github, "linked_pr_state", lambda *a, **k: "")
+    monkeypatch.setattr(github, "branch_exists", lambda *a, **k: False)
+    monkeypatch.setattr(observe, "_thread_for", lambda *a, **k: SimpleNamespace(
+        answer=None, menu_posted=None))
+    snap = observe.snapshot_issue("o/r", 7, associations=cfg.trusted_associations,
+                                  app_login=cfg.app_bot_login)
+    assert snap.author_trusted is True
+    assert observe.decide(snap, **TTLS).reason != "untrusted_author"
 
 
 def _wire_issue(monkeypatch, comments: list[dict], seen: list) -> None:

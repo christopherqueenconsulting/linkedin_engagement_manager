@@ -75,6 +75,23 @@ def _keep_specific_park_reason(existing: str | None, incoming: str | None) -> st
     return incoming
 
 
+#: Park reasons a TRUST refusal leaves behind. No re-run changes who wrote an issue or who applied a
+#: label, so the reconcile must not re-observe them on its 10-minute cadence: that is what turned one
+#: EX_TRUST into a re-dispatch every reconcile for ever (#2547: 353 refusals). An EVENT on the item
+#: (the owner re-labelling it) and the `ttl_parked` wake still re-observe it.
+TRUST_HOLD_REASONS = frozenset({"trust_refused", "untrusted_author"})
+
+#: How the owner-approval notice opens. The upgrade check finds an earlier notice by it, so the
+#: body must keep opening with exactly this.
+OWNER_REVIEW_NOTICE_OPENING = "🔔 **Owner approval needed**"
+
+
+def _trust_hold_standing(row) -> bool:
+    """Is this item parked on a TRUST refusal whose slow re-check has not come due yet?"""
+    return (row["state"] == db.STATE_PARKED and row["parked_reason"] in TRUST_HOLD_REASONS
+            and (row["wake_at"] or 0) > time.time())
+
+
 def _excluded_note(excluded: list[dict[str, Any]]) -> str:
     """The ' (not counted: …)' tail of the WIP-hold log line, empty when nothing is excluded."""
     if not excluded:
@@ -232,6 +249,10 @@ class Daemon:
         """
         found = 0
         drift = 0
+        # The first pass after a start re-checks every standing TRUST hold once: the ways out of one
+        # that need no event on the item (listing the App in LEMD_TRUSTED_ANSWER_LOGINS, widening
+        # TRUSTED_ASSOCIATIONS) take effect at a restart, and should not then wait out `ttl_parked`.
+        keep_trust_holds = self._last_reconcile != 0.0
         try:
             for label, kind in (
                 ("agent:ready", "issue"),
@@ -287,10 +308,11 @@ class Daemon:
                     # reports differently from what we hold is a change nobody delivered to us —
                     # which is exactly the fault the staleness detector is trying to find, and
                     # unlike webhook silence it cannot be produced by a quiet repository.
-                    if existing is not None and (
+                    changed = existing is not None and (
                         existing["head_sha"] != obj.get("headRefOid")
                         or existing["labels_json"] != labels_json
-                    ):
+                    )
+                    if changed:
                         drift += 1
                     db.upsert_item(
                         self.conn, kind=kind, number=number,
@@ -298,7 +320,8 @@ class Daemon:
                         branch=obj.get("headRefName"),
                         head_sha=obj.get("headRefOid"),
                         labels_json=labels_json,
-                        dirty=1,
+                        dirty=(existing["dirty"] if existing is not None and not changed
+                               and keep_trust_holds and _trust_hold_standing(existing) else 1),
                     )
                     found += 1
         except github.GitHubUnavailable as exc:
@@ -389,7 +412,9 @@ class Daemon:
         else:
             snap = observe.snapshot_issue(self.cfg.slug, number, owner=self.cfg.assignee,
                                           answer_routed=routed,
-                                          answer_logins=self.cfg.trusted_answer_logins)
+                                          answer_logins=self.cfg.trusted_answer_logins,
+                                          associations=self.cfg.trusted_associations,
+                                          app_login=self.cfg.app_bot_login)
 
         parked_reason = row["parked_reason"]
         snap = dataclasses.replace(
@@ -503,14 +528,25 @@ class Daemon:
             )
             return
 
-        if decision.next_state == db.STATE_WAIT_OWNER_REVIEW and row["state"] != db.STATE_WAIT_OWNER_REVIEW:
-            # First observation of this wait, for this item — not every 900s-or-so re-check while
-            # it persists. `row["state"]` is the PREVIOUS pass's persisted state, so this is the
-            # transition edge, the same "state once per head" idea `park.sh` uses for its comment,
+        if decision.next_state == db.STATE_WAIT_OWNER_REVIEW:
+            # Once per (PR, head) — the same "once per head" idea `park.sh` uses for its comment,
             # done here because this wait is not a park (auto-merge must stay armed, so drafting
             # the PR or disabling auto-merge — what `park.sh` does — would undo the very thing
-            # letting a human's approval complete the merge unattended).
-            self._notify_owner_review_needed(kind, number)
+            # letting a human's approval complete the merge unattended). Keyed on the head rather
+            # than on the transition edge: GitHub reports `mergeStateStatus=UNKNOWN` on an
+            # unchanged head every few hours, which walks the item out to `merge_state_unknown`
+            # and back, and the edge re-posted on every lap (#2568: six identical comments).
+            self._notify_owner_review_needed(
+                kind, number, snap.head_sha or row["head_sha"] or "",
+                already_waiting=row["state"] == db.STATE_WAIT_OWNER_REVIEW)
+        if decision.reason == "untrusted_author" and row["parked_reason"] != "untrusted_author":
+            # Said ONCE, on the edge into the hold — `parked_reason` is persisted, so a restart does
+            # not repeat it. No comment is posted: the way out is the owner's (re-file from a trusted
+            # login, or list the App in LEMD_TRUSTED_ANSWER_LOGINS), and there is nothing an answer
+            # on the thread could unlock.
+            LOG.warning("%s #%s is agent:ready but its author is refused by the TRUST gate — "
+                        "holding, not dispatching (re-file from a trusted login to proceed)",
+                        kind, number)
         db.upsert_item(
             self.conn, kind=kind, number=number, state=decision.next_state,
             wait_reason=decision.wait_reason,
@@ -548,14 +584,51 @@ class Daemon:
             "requested": requested,
         })
 
-    def _notify_owner_review_needed(self, kind: str, number: int) -> None:
-        """Tell the owner once that a PR is done and only waiting on their CODEOWNERS approval.
+    @staticmethod
+    def _owner_notice_key(kind: str, number: int) -> str:
+        """The `kv` key holding the head SHA the owner-approval comment was last posted for."""
+        return f"owner_review_notified:{kind}:{number}"
+
+    def _notify_owner_review_needed(self, kind: str, number: int, head_sha: str = "", *,
+                                    already_waiting: bool = False) -> None:
+        """Tell the owner ONCE PER HEAD that a PR is done and only waiting on their approval.
+
+        Deduplicated in `kv` (durable across daemon restarts, like the held un-park answer) on the
+        head SHA: an unchanged head never posts twice however often the item leaves and re-enters
+        `awaiting_owner_review`, and a new push — which `dismiss_stale_reviews` turns into a fresh
+        ask — posts again.
 
         Best-effort: a failed comment must not take down the observation pass — there is nothing
-        to retry into, and the next TTL wake (`ttl_parked`) tries again anyway on a genuine outage.
+        to retry into. The head is recorded only after a successful post, so the next TTL wake
+        (`ttl_parked`) tries again on a genuine outage.
+
+        Args:
+            kind: `pr` (the only kind that reaches this wait).
+            number: The PR number.
+            head_sha: The head the comment is about; `""` when unknown, which dedups per PR.
+            already_waiting: The item was ALREADY in this wait on the previous pass. With no record
+                yet, that is a PR the transition-edge rule this replaced has already announced, so
+                the head is recorded without posting — the upgrade must not re-post on every PR
+                waiting at deploy time. A PR on the flap leg at deploy is caught by a thread read
+                instead, which runs only while no record exists.
         """
+        key = self._owner_notice_key(kind, number)
+        notified = db.kv_get(self.conn, key)
+        if notified == head_sha:
+            LOG.debug("owner-review notice for %s #%s already posted at head %s",
+                      kind, number, head_sha[:12] or "?")
+            return
+        if notified is None and (already_waiting or github.posted_comment_opening(
+                self.cfg.slug, kind, number, OWNER_REVIEW_NOTICE_OPENING,
+                owner=self.cfg.assignee)):
+            # No record, and the old edge rule has already announced it: either the item was
+            # waiting on the previous pass, or it was mid-flap (`merge_state_unknown`) at deploy and
+            # the thread still carries that rule's comment. One read, only while no record exists;
+            # an unreadable thread posts, which costs at most the one comment the old rule would.
+            db.kv_set(self.conn, key, head_sha)
+            return
         body = (
-            "🔔 **Owner approval needed** — every required check is green and auto-merge is armed, "
+            f"{OWNER_REVIEW_NOTICE_OPENING} — every required check is green and auto-merge is armed, "
             "but this touches a CODEOWNERS-protected path, so it needs your review before it can "
             "merge. See `docs/codeowners-enforcement-limit.md`. No reply needed here — just "
             "Approve it (GitHub UI or `gh pr review --approve`) when you're ready."
@@ -564,6 +637,11 @@ class Daemon:
             github.post_comment(self.cfg.slug, kind, number, body)
         except github.GitHubUnavailable as exc:
             LOG.warning("owner-review notify failed for %s #%s: %s", kind, number, exc)
+            # A record that matches no head: the next wake retries, and `already_waiting` cannot
+            # mistake an unposted notice for one the old edge rule already made.
+            db.kv_set(self.conn, key, f"failed:{head_sha}")
+            return
+        db.kv_set(self.conn, key, head_sha)
 
     def _emit(self, row, snap: observe.Snapshot, decision: observe.Decision,
               persisted: str | None = None) -> None:

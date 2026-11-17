@@ -143,8 +143,9 @@ class Snapshot:
     #: was never asked anything, so `answer` stays None for ever and the hold is permanent.
     menu_posted: bool | None = None
     #: For a held ISSUE with no menu on it: would `unpark.sh`'s TRUST gate accept its author
-    #: (#2331)? Read only when row 9a could fire, so it costs nothing anywhere else. Three-valued,
-    #: and only a literal `False` suppresses the menu — `None` (unread, unreadable) asks as before.
+    #: (#2331)? Read only when row 9a could fire or an issue `start` is about to dispatch (which
+    #: `agent_run.sh` gates on the same author), so it costs nothing anywhere else. Three-valued, and
+    #: only a literal `False` changes anything — `None` (unread, unreadable) asks/dispatches as before.
     author_trusted: bool | None = None
     #: How many times this item has already been parked for its CURRENT reason — the lap counter
     #: behind the give-up rule. 0 for anything that has never parked.
@@ -350,6 +351,33 @@ def _queue_withheld_lane(snap: Snapshot) -> str | None:
     return None
 
 
+def _unless_author_untrusted(snap: Snapshot, decision: Decision, ttl_parked: int) -> Decision:
+    """Hold an issue `start` the actions' TRUST gate is certain to refuse.
+
+    `agent_run.sh` checks `author_trusted` on every issue `start` and exits EX_TRUST, and the
+    reconcile re-marks every `agent:ready` issue dirty, so an untrusted author was re-dispatched
+    every reconcile for ever — #2547, filed by the EA's App, refused 353 times. The label's
+    PROVENANCE still passed; only the author did not, and no re-run changes who wrote an issue.
+
+    A literal `False` only: `None` (unread, unreadable) dispatches exactly as before, and the action
+    still re-checks. Not ACT_PARK: `park.sh`'s menu would be a dead end, because `unpark.sh` refuses
+    the same author (row 9b). The way out is re-filing from a trusted login, or listing an App
+    author in `LEMD_TRUSTED_ANSWER_LOGINS`, which the slow re-check picks up.
+
+    Args:
+        snap: The issue snapshot.
+        decision: What the issue ladder decided.
+        ttl_parked: The slow safety re-check.
+
+    Returns:
+        `decision` unchanged unless it dispatches a `start` for an untrusted author.
+    """
+    if decision.action != ACT_DISPATCH or snap.author_trusted is not False:
+        return decision
+    return Decision(ACT_NONE, db.STATE_PARKED, "untrusted_author", park_reason="untrusted_author",
+                    wake_in=ttl_parked, details={"held": decision.reason})
+
+
 def decide(snap: Snapshot, *, ttl_ci: int, ttl_review: int, ttl_queue: int,
            ttl_parked: int, max_park_laps: int = 0) -> Decision:
     """Pure state-machine step. No I/O, no clock — every input is in `snap`.
@@ -471,8 +499,11 @@ def decide(snap: Snapshot, *, ttl_ci: int, ttl_review: int, ttl_queue: int,
                 return Decision(ACT_NONE, db.STATE_WAIT_CI, "start_work_state_unreadable",
                                 wait_reason="unreadable", wake_in=600)
             if snap.work_exists:
-                return _work_in_flight_or_stranded(snap, ttl_review)
-            return Decision(ACT_DISPATCH, db.STATE_CLAIMED, "issue_ready", mode="start")
+                return _unless_author_untrusted(
+                    snap, _work_in_flight_or_stranded(snap, ttl_review), ttl_parked)
+            return _unless_author_untrusted(
+                snap, Decision(ACT_DISPATCH, db.STATE_CLAIMED, "issue_ready", mode="start"),
+                ttl_parked)
         if "agent:working" in snap.labels:
             # A claim with nothing behind it. v1 marked the ISSUE `agent:working` for the duration
             # of a run and removed it at the end, so a run that died mid-flight — or a cutover that
@@ -489,9 +520,14 @@ def decide(snap: Snapshot, *, ttl_ci: int, ttl_review: int, ttl_queue: int,
             if snap.work_exists:
                 # The branch or PR exists, so the claim is honest — but "exists" is two states, and
                 # only one of them is in flight. See `_work_in_flight_or_stranded`.
-                return _work_in_flight_or_stranded(snap, ttl_review,
-                                                   reason="working_claim_has_work")
-            return Decision(ACT_DISPATCH, db.STATE_CLAIMED, "working_claim_stranded", mode="start")
+                return _unless_author_untrusted(
+                    snap, _work_in_flight_or_stranded(snap, ttl_review,
+                                                      reason="working_claim_has_work"),
+                    ttl_parked)
+            return _unless_author_untrusted(
+                snap, Decision(ACT_DISPATCH, db.STATE_CLAIMED, "working_claim_stranded",
+                               mode="start"),
+                ttl_parked)
         # Also IGNORED: an issue carrying neither `agent:ready` nor `agent:working` was never
         # handed to the pipeline. Silence is correct; pretending it is parked is not.
         return Decision(ACT_NONE, db.STATE_IGNORED, "issue_not_ready", park_reason="not_ready")
@@ -743,7 +779,9 @@ def _dismissed_prs(number: int) -> frozenset[int]:
 
 def snapshot_issue(slug: str, number: int, *, owner: str | None = None,
                    answer_routed: str | None = None,
-                   answer_logins: frozenset[str] = frozenset()) -> Snapshot:
+                   answer_logins: frozenset[str] = frozenset(),
+                   associations: tuple[str, ...] | None = None,
+                   app_login: str | None = None) -> Snapshot:
     """Build a `Snapshot` for an issue.
 
     The answer read is not PR-only, and that is the half v1 got right and is easy to drop: a
@@ -760,9 +798,6 @@ def snapshot_issue(slug: str, number: int, *, owner: str | None = None,
         return Snapshot(kind="issue", number=number, readable=False)
     labels = frozenset(github.label_names(facts))
     thread = _thread_for(slug, "issue", number, labels, owner, answer_logins)
-    # Only when row 9a could fire — the one decision this fact changes.
-    trusted = (github.author_trusted(slug, number)
-               if "needs-human" in labels and thread.menu_posted is False else None)
     work = None
     has_open_pr = None
     linked_state = None
@@ -787,6 +822,15 @@ def snapshot_issue(slug: str, number: int, *, owner: str | None = None,
         if work:
             # Only asked when work exists, because it is only then that the answer changes anything.
             has_open_pr = _open_pr_for_issue(slug, number, linked_state=linked_state)
+    # Only when it can change the decision: row 9a is about to post a menu, or the issue ladder is
+    # about to dispatch a `start` (no work, or a branch with no PR) that the TRUST gate would refuse.
+    # Every other issue decision is reached without this REST read.
+    would_start = bool(labels & WORK_SENSITIVE_LABELS) and not (labels & HOLD_LABELS) and (
+        work is False or (work is True and has_open_pr is False))
+    trusted = (github.author_trusted(slug, number, answer_logins=answer_logins,
+                                     associations=associations, app_login=app_login)
+               if ("needs-human" in labels and thread.menu_posted is False) or would_start
+               else None)
     return Snapshot(
         kind="issue",
         number=number,

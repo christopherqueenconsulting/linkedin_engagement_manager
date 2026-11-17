@@ -532,6 +532,15 @@ def test_merge_decision_is_not_recorded_as_queued_and_clears_its_deadline(tmp_pa
         dm.conn.close()
 
 
+@pytest.fixture(autouse=True)
+def _no_earlier_notice(monkeypatch):
+    """The upgrade check reads the PR thread when no notice record exists; keep it off the network.
+
+    Without this stub that read reaches the real repository (it did, and found #2568's real notice).
+    """
+    monkeypatch.setattr(github, "posted_comment_opening", lambda *a, **k: False)
+
+
 def test_owner_review_wait_notifies_once_not_on_every_reobservation(tmp_path, monkeypatch):
     """#1501: the alert must fire on the transition into the wait, not on every wake.
 
@@ -562,7 +571,11 @@ def test_owner_review_wait_notifies_once_not_on_every_reobservation(tmp_path, mo
 
 
 def test_owner_review_wait_does_not_notify_when_reached_from_itself(tmp_path, monkeypatch):
-    """The transition check is `row["state"] != STATE_WAIT_OWNER_REVIEW`, not `wait_reason`."""
+    """A PR already waiting with no per-head record was announced by the old edge rule.
+
+    So the upgrade records its head without posting — every PR waiting at deploy time would
+    otherwise get one more identical comment.
+    """
     cfg = dataclasses.replace(load(tmp_path), shadow=False)
     dm = daemon_mod.Daemon(cfg)
     calls = []
@@ -574,6 +587,147 @@ def test_owner_review_wait_does_not_notify_when_reached_from_itself(tmp_path, mo
         monkeypatch.setattr(observe, "snapshot_pr", lambda *a, **k: blocked)
         dm._observe_one(db.get_item(dm.conn, "pr", 1444))
         assert calls == []
+    finally:
+        dm.conn.close()
+
+
+def _owner_wait_daemon(tmp_path, monkeypatch, calls: list, head: dict):
+    """An acting daemon whose PR #2568 reads BLOCKED-armed-green at `head["sha"]`, or UNKNOWN."""
+    cfg = dataclasses.replace(load(tmp_path), shadow=False)
+    dm = daemon_mod.Daemon(cfg)
+    monkeypatch.setattr(github, "post_comment", lambda *a, **k: calls.append(a))
+
+    def snap(*a, **k):
+        return pr(number=2568, merge_state=head.get("merge_state", "BLOCKED"), auto_merge=True,
+                  queue_state="", head_sha=head["sha"])
+
+    monkeypatch.setattr(observe, "snapshot_pr", snap)
+    return dm
+
+
+def _look(dm, number: int = 2568) -> str:
+    dm._observe_one(db.get_item(dm.conn, "pr", number))
+    return db.get_item(dm.conn, "pr", number)["state"]
+
+
+def test_the_merge_state_unknown_flap_does_not_re_notify(tmp_path, monkeypatch):
+    """#2568: UNKNOWN on an unchanged head walked the PR out and back, posting on every lap."""
+    calls: list = []
+    head = {"sha": "aaa"}
+    dm = _owner_wait_daemon(tmp_path, monkeypatch, calls, head)
+    try:
+        db.upsert_item(dm.conn, kind="pr", number=2568, state=db.STATE_WAIT_CI, branch="feature/x")
+        for _ in range(4):
+            head["merge_state"] = "BLOCKED"
+            assert _look(dm) == db.STATE_WAIT_OWNER_REVIEW
+            head["merge_state"] = "UNKNOWN"
+            assert _look(dm) == db.STATE_WAIT_CI
+        assert len(calls) == 1
+    finally:
+        dm.conn.close()
+
+
+def test_a_new_head_notifies_again(tmp_path, monkeypatch):
+    """A push dismisses a prior approval, so the owner is owed a fresh ask."""
+    calls: list = []
+    head = {"sha": "aaa"}
+    dm = _owner_wait_daemon(tmp_path, monkeypatch, calls, head)
+    try:
+        db.upsert_item(dm.conn, kind="pr", number=2568, state=db.STATE_WAIT_CI, branch="feature/x")
+        _look(dm)
+        head["sha"] = "bbb"
+        _look(dm)
+        _look(dm)
+        assert len(calls) == 2
+    finally:
+        dm.conn.close()
+
+
+def test_the_notice_dedup_survives_a_daemon_restart(tmp_path, monkeypatch):
+    """Durable in `kv`: a restarted daemon walking the same flap does not post again."""
+    calls: list = []
+    head = {"sha": "aaa"}
+    dm = _owner_wait_daemon(tmp_path, monkeypatch, calls, head)
+    db.upsert_item(dm.conn, kind="pr", number=2568, state=db.STATE_WAIT_CI, branch="feature/x")
+    _look(dm)
+    head["merge_state"] = "UNKNOWN"
+    _look(dm)
+    dm.conn.close()
+    again = _owner_wait_daemon(tmp_path, monkeypatch, calls, head)
+    try:
+        head["merge_state"] = "BLOCKED"
+        _look(again)
+        assert len(calls) == 1
+    finally:
+        again.conn.close()
+
+
+def test_a_failed_notice_is_retried_on_the_next_wake(tmp_path, monkeypatch):
+    """A failed post records no head — and the retry is not mistaken for an old-rule PR."""
+    calls: list = []
+    head = {"sha": "aaa"}
+    dm = _owner_wait_daemon(tmp_path, monkeypatch, calls, head)
+
+    def down(*a, **k):
+        raise github.GitHubUnavailable("rate limited")
+
+    try:
+        db.upsert_item(dm.conn, kind="pr", number=2568, state=db.STATE_WAIT_CI, branch="feature/x")
+        monkeypatch.setattr(github, "post_comment", down)
+        assert _look(dm) == db.STATE_WAIT_OWNER_REVIEW
+        monkeypatch.setattr(github, "post_comment", lambda *a, **k: calls.append(a))
+        _look(dm)
+        _look(dm)
+        assert len(calls) == 1
+    finally:
+        dm.conn.close()
+
+
+def test_a_pr_mid_flap_at_deploy_is_not_announced_again(tmp_path, monkeypatch):
+    """No record, previous pass on the `merge_state_unknown` leg, old-rule notice on the thread.
+
+    `already_waiting` is False there, so only the thread read stops one more identical comment.
+    """
+    calls: list = []
+    head = {"sha": "aaa"}
+    dm = _owner_wait_daemon(tmp_path, monkeypatch, calls, head)
+    asked: list = []
+
+    def earlier(slug, kind, number, opening, **k):
+        asked.append((kind, number, opening, k.get("owner")))
+        return True
+
+    monkeypatch.setattr(github, "posted_comment_opening", earlier)
+    try:
+        db.upsert_item(dm.conn, kind="pr", number=2568, state=db.STATE_WAIT_CI, branch="feature/x",
+                       wait_reason="mergeability_computing")
+        assert _look(dm) == db.STATE_WAIT_OWNER_REVIEW
+        assert calls == []
+        assert asked == [("pr", 2568, daemon_mod.OWNER_REVIEW_NOTICE_OPENING, dm.cfg.assignee)]
+        # The head is now recorded, so the thread is never read again and a push still posts.
+        head["merge_state"] = "UNKNOWN"
+        _look(dm)
+        head["merge_state"] = "BLOCKED"
+        _look(dm)
+        assert len(asked) == 1 and calls == []
+        head["sha"] = "bbb"
+        _look(dm)
+        assert len(calls) == 1
+    finally:
+        dm.conn.close()
+
+
+@pytest.mark.parametrize("earlier", [False, None])
+def test_no_earlier_notice_or_an_unreadable_thread_posts(tmp_path, monkeypatch, earlier):
+    """An unreadable thread fails toward posting: at most the one comment the old rule made."""
+    calls: list = []
+    dm = _owner_wait_daemon(tmp_path, monkeypatch, calls, {"sha": "aaa"})
+    monkeypatch.setattr(github, "posted_comment_opening", lambda *a, **k: earlier)
+    try:
+        db.upsert_item(dm.conn, kind="pr", number=2568, state=db.STATE_WAIT_CI, branch="feature/x")
+        _look(dm)
+        assert len(calls) == 1
+        assert calls[0][3].startswith(daemon_mod.OWNER_REVIEW_NOTICE_OPENING)
     finally:
         dm.conn.close()
 

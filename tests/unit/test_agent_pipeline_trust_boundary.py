@@ -184,6 +184,68 @@ class TestCiRoutedAndSecondLoginLabels:
         assert "NO" in self._label(tmp_path, "agent:ready", "cqc-lem-agent-pipeline", env)
 
 
+# `gh api repos/../issues/N` -> "<association>\t<login>", the shape `author_trusted` parses.
+_GH_ISSUE_AUTHOR = '''
+    printf '%s\\t%s\\n' "${ASSOC:-}" "${AUTHOR:-somebody}"
+'''
+
+
+class TestSecondLoginAuthoredIssues:
+    """An issue the EA's App filed is workable: `author_trusted` accepts a listed second login.
+
+    #2547 was filed by `cqc-ea[bot]` (association NONE) and labelled `agent:ready` by a trusted
+    labeler, then refused `TRUST: #2547 authored by NONE` 353 times. The labeler check is untouched;
+    only the AUTHOR half now reads `LEMD_TRUSTED_ANSWER_LOGINS`, through `trusted_answer_login`.
+    """
+
+    _EA = {"LEMD_TRUSTED_ANSWER_LOGINS": "cqc-ea[bot]"}
+
+    def _author(self, tmp_path, author, assoc="NONE", extra_env=None):
+        env = {"ASSOC": assoc, "AUTHOR": author, **(extra_env or {})}
+        body = _answer_login_helpers() + "author_trusted 7 && echo YES || echo NO"
+        return _run(tmp_path, body, _GH_ISSUE_AUTHOR, env)
+
+    def test_a_listed_app_author_is_trusted(self, tmp_path):
+        assert "YES" in self._author(tmp_path, "cqc-ea[bot]", extra_env=self._EA).stdout
+
+    def test_unlisted_it_is_refused_as_before(self, tmp_path):
+        r = self._author(tmp_path, "cqc-ea[bot]")
+        assert "NO" in r.stdout
+        assert "cqc-ea[bot]" in r.stderr, "the refusal names the author, not just NONE"
+
+    def test_a_human_holding_the_bare_slug_is_not_the_app(self, tmp_path):
+        assert "NO" in self._author(tmp_path, "cqc-ea", extra_env=self._EA).stdout
+
+    def test_a_shared_bot_is_refused_even_when_listed(self, tmp_path):
+        env = {"LEMD_TRUSTED_ANSWER_LOGINS": "github-actions[bot]"}
+        assert "NO" in self._author(tmp_path, "github-actions[bot]", "CONTRIBUTOR", env).stdout
+
+    def test_an_unreadable_association_still_refuses(self, tmp_path):
+        assert "NO" in self._author(tmp_path, "cqc-ea[bot]", "", self._EA).stdout
+
+    @pytest.mark.parametrize("raw", ["owner-alt\tcqc-ea[bot]", "owner-alt\ncqc-ea[bot]",
+                                     "owner-alt,\r\n cqc-ea[bot]"])
+    def test_the_list_splits_like_the_python_twin(self, tmp_path, raw):
+        """Tab- and newline-separated lists: the daemon trusts these, so the gate must agree.
+
+        Before, `read` took only the first line and kept a tab inside one entry, so the daemon
+        dispatched and `agent_run.sh` refused with EX_TRUST.
+        """
+        sys.path.insert(0, str(GUARDS_SH.parent.parent / "v2"))
+        from lemd import github as lemd_github
+
+        assert "cqc-ea[bot]" in lemd_github.parse_answer_logins(raw)
+        env = {"LEMD_TRUSTED_ANSWER_LOGINS": raw}
+        assert "YES" in self._author(tmp_path, "cqc-ea[bot]", extra_env=env).stdout
+        assert "YES" in self._author(tmp_path, "owner-alt", extra_env=env).stdout
+
+    def test_the_labeler_gate_still_applies(self, tmp_path):
+        """A trusted AUTHOR does not make an untrusted LABELER acceptable — both halves stand."""
+        body = _answer_login_helpers() + 'label_actor_trusted 7 "agent:ready" && echo YES || echo NO'
+        r = _run(tmp_path, body, _GH_TIMELINE, {"ACTOR": "drive-by-contributor", **self._EA})
+        assert "NO" in r.stdout
+
+
 def _comment_helpers() -> str:
     """lib/guards.sh's comment-authority helpers, verbatim."""
     out = ""
