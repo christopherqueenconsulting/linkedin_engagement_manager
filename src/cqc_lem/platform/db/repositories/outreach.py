@@ -5,6 +5,7 @@ secret-sealing rules described there apply here unchanged; `cqc_lem.utilities.db
 re-exports every name below, so existing importers and patch targets keep resolving.
 """
 
+import time
 from datetime import (
     date,
     datetime,
@@ -14,6 +15,7 @@ from datetime import (
 from typing import Any, Optional
 
 import mysql.connector
+from mysql.connector import errorcode
 
 from cqc_lem.platform.db import connection as _connection
 from cqc_lem.platform.db.connection import (
@@ -1653,6 +1655,31 @@ def release_catchup_send_attempt(user_id: int, profile_url: str, event_type: "Ca
     except mysql.connector.Error as err:
         log_error("Could not release catch-up send claim", exc=err, user_id=user_id)
         return False
+#: Attempts for a single-statement write that lost an InnoDB deadlock (errno 1213). MySQL rolls the
+#: victim back whole, so re-running the one statement is always safe.
+_DEADLOCK_ATTEMPTS = 3
+
+
+def _execute_write(sql: str, params: tuple) -> int:
+    """Run ONE committed write, retrying a deadlock victim; returns the rowcount.
+
+    The `dm_followups` writers race other lanes on the same user's rows, and InnoDB resolves that
+    by killing one statement with 1213 — a retryable outcome that surfaced as a grouped
+    `$exception` (#2586). Any other error, or a deadlock surviving `_DEADLOCK_ATTEMPTS`,
+    propagates to the caller's own `except mysql.connector.Error`.
+    """
+    for attempt in range(1, _DEADLOCK_ATTEMPTS + 1):
+        try:
+            with db_cursor(commit=True) as cursor:
+                cursor.execute(sql, params)
+                return cursor.rowcount
+        except mysql.connector.Error as err:
+            if getattr(err, "errno", None) != errorcode.ER_LOCK_DEADLOCK or attempt == _DEADLOCK_ATTEMPTS:
+                raise
+            time.sleep(0.05 * attempt)
+    return 0  # unreachable: the loop returns or raises
+
+
 def has_appreciation_touch(user_id: int, profile_url: str, event_type: str) -> bool:
     """Whether this person was already thanked for this event. Read-only — the CLAIM is what makes
     the decision (see claim_appreciation_touch); this exists so a scraper can skip parsing work and
@@ -1710,9 +1737,8 @@ def mark_followup(followup_id: int, status: str) -> bool:
     True whenever the UPDATE ran, matched or not.
     """
     try:
-        with db_cursor(commit=True) as cursor:
-            cursor.execute("UPDATE dm_followups SET status=%s WHERE id=%s", (str(status), followup_id))
-            return cursor.rowcount >= 0
+        return _execute_write("UPDATE dm_followups SET status=%s WHERE id=%s",
+                              (str(status), followup_id)) >= 0
     except mysql.connector.Error as err:
         log_error(f"Could not mark followup {followup_id}", exc=err)
         return False
@@ -1737,17 +1763,14 @@ def record_unreadable_read(followup_id: int, due_at: Optional[datetime] = None) 
     a lost race could do is delay one backoff step by one beat.
     """
     try:
-        with db_cursor(commit=True) as cursor:
-            if due_at is not None:
-                cursor.execute(
-                    "UPDATE dm_followups SET unreadable_reads = unreadable_reads + 1, due_at = %s "
-                    "WHERE id = %s AND status = %s",
-                    (to_naive_utc(due_at), followup_id, str(FollowupStatus.PENDING)))
-            else:
-                cursor.execute(
-                    "UPDATE dm_followups SET unreadable_reads = unreadable_reads + 1 "
-                    "WHERE id = %s AND status = %s", (followup_id, str(FollowupStatus.PENDING)))
-            return cursor.rowcount > 0
+        if due_at is not None:
+            return _execute_write(
+                "UPDATE dm_followups SET unreadable_reads = unreadable_reads + 1, due_at = %s "
+                "WHERE id = %s AND status = %s",
+                (to_naive_utc(due_at), followup_id, str(FollowupStatus.PENDING))) > 0
+        return _execute_write(
+            "UPDATE dm_followups SET unreadable_reads = unreadable_reads + 1 "
+            "WHERE id = %s AND status = %s", (followup_id, str(FollowupStatus.PENDING))) > 0
     except mysql.connector.Error as err:
         log_error(f"Could not record unreadable read for followup {followup_id}", exc=err)
         return False
@@ -1763,9 +1786,8 @@ def reset_unreadable_reads(followup_id: int) -> bool:
     reset, which is not a failure.
     """
     try:
-        with db_cursor(commit=True) as cursor:
-            cursor.execute("UPDATE dm_followups SET unreadable_reads = 0 WHERE id = %s", (followup_id,))
-            return cursor.rowcount >= 0
+        return _execute_write("UPDATE dm_followups SET unreadable_reads = 0 WHERE id = %s",
+                              (followup_id,)) >= 0
     except mysql.connector.Error as err:
         log_error(f"Could not reset unreadable reads for followup {followup_id}", exc=err)
         return False
@@ -1776,21 +1798,17 @@ def defer_followup(followup_id: int, due_at: datetime) -> bool:
     `get_due_followups` use. True only when a pending row actually moved.
     """
     try:
-        with db_cursor(commit=True) as cursor:
-            cursor.execute("UPDATE dm_followups SET due_at = %s WHERE id = %s AND status = %s",
-                           (to_naive_utc(due_at), followup_id, str(FollowupStatus.PENDING)))
-            return cursor.rowcount > 0
+        return _execute_write("UPDATE dm_followups SET due_at = %s WHERE id = %s AND status = %s",
+                              (to_naive_utc(due_at), followup_id, str(FollowupStatus.PENDING))) > 0
     except mysql.connector.Error as err:
         log_error(f"Could not defer followup {followup_id}", exc=err)
         return False
 def stop_followups_for_profile(user_id: int, profile_url: str) -> int:
     """Stop all pending follow-ups to a profile (e.g. once they've replied). Returns count."""
     try:
-        with db_cursor(commit=True) as cursor:
-            cursor.execute("UPDATE dm_followups SET status='stopped' "
-                           "WHERE user_id=%s AND profile_url=%s AND status='pending'",
-                           (user_id, profile_url))
-            return cursor.rowcount
+        return _execute_write("UPDATE dm_followups SET status='stopped' "
+                              "WHERE user_id=%s AND profile_url=%s AND status='pending'",
+                              (user_id, profile_url))
     except mysql.connector.Error as err:
         log_error("Could not stop followups", exc=err, user_id=user_id)
         return 0
