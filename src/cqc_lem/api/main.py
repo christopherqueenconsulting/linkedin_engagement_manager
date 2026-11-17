@@ -3418,7 +3418,7 @@ def member_analytics_callback(code: Optional[str] = None, state: Optional[str] =
                   status_code=status_code)
         return _member_analytics_account_redirect({"li_analytics_error": "profile_lookup_failed"})
 
-    # TODO(#2513): replace vanity-name bridge with a verified OIDC/subject identity bridge.
+    # TODO(#2584): replace vanity-name bridge with a verified OIDC/subject identity bridge.
     # LinkedIn's member IDs are app-specific, so /me.id cannot bridge these apps. The public
     # vanity name is the only comparable field available without adding OIDC to the CMA app. This
     # catches accidental account mismatches, but is not cryptographic identity proof: handles can
