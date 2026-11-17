@@ -66,8 +66,12 @@ DEFAULTS: dict[str, str] = {
     "LEM_ROUTER_CLAUDE_MAX_PCT": "50",
     "LEM_ROUTER_CODEX_MAX_PCT": "90",
     # Complexity weights.
-    "LEM_ROUTER_W_BODY": "1.0",         # per 1000 characters of issue body
-    "LEM_ROUTER_W_FILES": "0.5",        # per planned file
+    # Re-fit against the owner's 20 ratings (#2569): 18/20. Ratings were measured after the fact from
+    # PR size, so agreement is partly circular. 2431 and 2353 stay misses: their features overlap a
+    # neighbouring class exactly.
+    "LEM_ROUTER_W_BODY": "2.3",         # per 1000 characters of issue body
+    "LEM_ROUTER_W_FILES": "0.25",       # per planned file
+    "LEM_ROUTER_W_PRIORITY_MEDIUM": "-1.0",
     "LEM_ROUTER_W_CI": "2.0",           # per CI failure
     "LEM_ROUTER_W_CONFLICT": "1.5",     # per rebase conflict
     "LEM_ROUTER_W_ATTEMPT": "8.0",      # per prior attempt: a retry alone reaches the threshold
@@ -143,6 +147,8 @@ def score(inputs: Inputs, env: Mapping[str, str]) -> float:
     total += _num(env, "LEM_ROUTER_W_ATTEMPT") * max(inputs.attempt - 1, 0)
     if "priority:high" in inputs.labels or "priority:critical" in inputs.labels:
         total += _num(env, "LEM_ROUTER_W_PRIORITY_HIGH")
+    if "priority:medium" in inputs.labels:
+        total += _num(env, "LEM_ROUTER_W_PRIORITY_MEDIUM")
     if "priority:low" in inputs.labels:
         total += _num(env, "LEM_ROUTER_W_PRIORITY_LOW")
     total += _num(env, "LEM_ROUTER_W_RISK") * sum(1 for lab in inputs.labels if lab.startswith("risk:"))
