@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.208.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.208.0...v0.208.1) (2026-11-18)
+
+
+### Bug Fixes
+
+* **errors:** warn on proxy tunnel failure in comment follow-up sweep (closes [#2597](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2597)) ([#2598](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2598)) ([6de2739](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6de273914488b46fcd0ef951b1cfd299f20ca733))
+* **errors:** warn, not error, when the proxy tunnel fails in the comment follow-up sweep (closes [#2597](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2597)) ([6de2739](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6de273914488b46fcd0ef951b1cfd299f20ca733))
+
 ## [0.208.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.207.3...v0.208.0) (2026-11-17)
 
 
