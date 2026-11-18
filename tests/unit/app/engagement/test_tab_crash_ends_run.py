@@ -109,6 +109,16 @@ class TestSweepCommentFollowups:
         logs["warning"].assert_not_called()
         logs["debug"].assert_not_called()
 
+    def test_a_proxy_tunnel_failure_at_login_warns_not_errors(self):
+        """#2597: the proxy refused the CONNECT tunnel — transient, one warning, no $exception."""
+        tunnel = WebDriverException("unknown error: net::ERR_TUNNEL_CONNECTION_FAILED")
+        with ExitStack() as es:
+            self._run(es, session={"side_effect": tunnel})
+        self.lane_error.assert_not_called()
+        self.lane_warning.assert_called_once()
+        assert "proxy tunnel failed" in self.lane_warning.call_args.args[0]
+        self.release.assert_called_once()
+
     def test_a_login_crash_is_debug_because_the_session_layer_warned(self):
         with ExitStack() as es:
             logs = _logs(es)

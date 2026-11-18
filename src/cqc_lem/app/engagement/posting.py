@@ -231,6 +231,7 @@ from cqc_lem.utilities.profile_skills_window import record_profile_skills_change
 from cqc_lem.utilities.selenium_util import (
     click_first,
     find_first,
+    is_proxy_tunnel_failure,
     is_tab_crashed,
     note_tab_crash,
     quit_gracefully,
@@ -1721,8 +1722,12 @@ def _run_comment_followups_sweep(user_id: int) -> str:
     except Exception as e:
         # A tab that crashed on the first login navigation was already warned about by
         # `get_current_profile`; this wrapper only notes it (#2393).
-        if not note_tab_crash(e, task_name="sweep_comment_followups", crash_logged_upstream=True,
-                              user_id=user_id):
+        if is_proxy_tunnel_failure(e):
+            # The proxy could not open its tunnel (#2597): transient, nothing reached LinkedIn.
+            log_warning("Follow-up sweep skipped — proxy tunnel failed", exc=e, user_id=user_id,
+                        task_name="sweep_comment_followups")
+        elif not note_tab_crash(e, task_name="sweep_comment_followups", crash_logged_upstream=True,
+                                user_id=user_id):
             log_error("Error starting follow-up sweep", exc=e, user_id=user_id,
                       task_name="sweep_comment_followups")
         release_run_lock(lock_name, lock_token)
@@ -1755,6 +1760,11 @@ def _run_comment_followups_sweep(user_id: int) -> str:
         return (f"Follow-ups: reacted {reacted}, replied {replied}, leads {leads}, "
                 f"filtered {filtered} across {len(posts)} post(s)")
     except Exception as e:
+        if is_proxy_tunnel_failure(e):
+            log_warning("Follow-up sweep ended — proxy tunnel failed", exc=e, user_id=user_id,
+                        task_name="sweep_comment_followups")
+            return (f"Follow-ups stopped — proxy tunnel failed: reacted {reacted}, replied {replied}, "
+                    f"leads {leads} before the failure")
         if not note_tab_crash(e, task_name="sweep_comment_followups", user_id=user_id):
             raise  # unchanged: any other fault still fails the task and is filed by the Celery hook
         return (f"Follow-ups stopped — browser tab crashed: reacted {reacted}, replied {replied}, "
