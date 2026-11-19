@@ -5393,14 +5393,14 @@ full = ["httpx (>=0.27.0,<0.29.0)", "httpx2 (>=2.0.0)", "itsdangerous", "jinja2"
 
 [[package]]
 name = "stripe"
-version = "16.1.0"
+version = "17.0.0"
 description = "Python bindings for the Stripe API"
 optional = false
 python-versions = ">=3.9"
 groups = ["main"]
 files = [
-    {file = "stripe-16.1.0-py3-none-any.whl", hash = "sha256:3798e07a0603c8923710414cd1942ae847ed43cebbf34c3258417c189711ea70"},
-    {file = "stripe-16.1.0.tar.gz", hash = "sha256:21e72b6779b8cff337ca8d2b8d30138f2d68f6a8d739701076f06a418ad75b8c"},
+    {file = "stripe-17.0.0-py3-none-any.whl", hash = "sha256:955bd99082dadcaf41b0d2d5075c0da8e6e848df1dccbbfcf7c856d9ac003420"},
+    {file = "stripe-17.0.0.tar.gz", hash = "sha256:5e1bdde6eac0311f6c3dea60457e3e49091789785db9c90d28d75a0398835589"},
 ]
 
 [package.dependencies]
@@ -6059,4 +6059,4 @@ type = ["pytest-mypy (>=1.0.1) ; platform_python_implementation != \"PyPy\""]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12,<4.0"
-content-hash = "1c0db3831ac765dcf91cc322213044ae0358c083361ba3c03047a96a8d43bb72"
+content-hash = "3ed2ab10ce6ca2e2afa0aa1a9694456f2493ad6bc9823a0822c3aca77cb94b13"
