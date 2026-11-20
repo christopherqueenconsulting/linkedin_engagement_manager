@@ -3146,8 +3146,16 @@ def _send_lead_response(signal_id: int) -> str:
         log_error("Error starting lead response", exc=e, user_id=user_id, task_name="send_lead_response")
         return f"Failed to start lead response: {e}"
     try:
-        sent = _reply_to_person_on_post(driver, wait, signal["context_url"],
-                                        signal.get("person_profile_url") or "", message, user_id=user_id)
+        try:
+            sent = _reply_to_person_on_post(driver, wait, signal["context_url"],
+                                            signal.get("person_profile_url") or "", message,
+                                            user_id=user_id)
+        except Exception as e:
+            # `_reply_under_comment_inline` re-raises a crashed tab (#2600). Treat it as a reply
+            # that did not land: the same bounded retry, not a failed task filed as a $exception.
+            if not note_tab_crash(e, task_name="send_lead_response", user_id=user_id):
+                raise
+            return _lead_reply_not_delivered(signal_id, signal, user_id)
         insert_new_log(user_id=user_id, post_id=signal.get("post_id"), action_type=LogActionType.REPLY,
                        result=LogResultType.SUCCESS if sent else LogResultType.FAILURE,
                        post_url=signal["context_url"], message=message)
