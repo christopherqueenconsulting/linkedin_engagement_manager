@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.208.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.208.1...v0.208.2) (2026-11-20)
+
+
+### Bug Fixes
+
+* **errors:** re-raise a crashed tab from _reply_under_comment_inline (closes [#2600](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2600)) ([#2603](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2603)) ([69842c9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/69842c9a84ae81ca9ce1d5ab9f5b8ee70c35ecab))
+* **errors:** warn on Chrome tab crash in profile viewer engagement (closes [#2601](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2601)) ([#2602](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2602)) ([99878a0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/99878a0eb6cef8601e585519817ef14b6e2dd10f))
+
 ## [0.208.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.208.0...v0.208.1) (2026-11-18)
 
 
