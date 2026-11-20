@@ -326,6 +326,34 @@ class TestEngageWithProfileViewerLoginError:
 
         mock_log.assert_called_once()
 
+    @pytest.mark.parametrize("message, expect_error", [
+        ("Message: tab crashed\n  (Session info: chrome=157.0.8103.38)", False),
+        ("Message: element not interactable", True),
+    ])
+    def test_tab_crash_is_a_warning_not_an_exception(self, message, expect_error):
+        """A Chrome 'tab crashed' mid-engagement warns (issue #2601); other driver faults still error."""
+        from selenium.common.exceptions import WebDriverException
+
+        driver = MagicMock()
+        driver.current_url = "https://linkedin.com/in/test"
+        driver.get.side_effect = WebDriverException(message)
+        with patch(f"{_OUT}.has_engaged_url_with_x_days", return_value=False), \
+             patch(_PATCH_GET_PROFILE,
+                   return_value=(driver, MagicMock(), "u@e.com", MagicMock())), \
+             patch(f"{_OUT}.insert_new_log"), \
+             patch(f"{_OUT}.quit_gracefully"), \
+             patch(_PATCH_LOG_ERROR) as mock_error, \
+             patch(f"{_OUT}.log_warning") as mock_warning, \
+             pytest.raises(LaneTaskFailed, match="Error while engaging"):
+            from cqc_lem.app.engagement.outreach import engage_with_profile_viewer
+
+            engage_with_profile_viewer.run(
+                user_id=1, viewer_url="https://linkedin.com/in/other", viewer_name="Test User"
+            )
+
+        assert mock_error.called is expect_error
+        assert mock_warning.called is (not expect_error)
+
     def test_skips_login_when_already_engaged_today(self):
         """If already engaged today, get_current_profile is never called."""
         with patch(f"{_OUT}.has_engaged_url_with_x_days", return_value=True), \
