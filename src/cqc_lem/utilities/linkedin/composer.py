@@ -38,6 +38,7 @@ from selenium.webdriver.remote.webelement import WebElement
 from cqc_lem.utilities.linkedin.helper import clean_person_name, connection_degree
 from cqc_lem.utilities.linkedin_formatter import strip_non_bmp
 from cqc_lem.utilities.logger import log_debug, log_warning
+from cqc_lem.utilities.selenium_util import is_tab_crashed
 
 # The SDUI comment/reply composer has NO <form> ancestor, so walk up from the textbox and click
 # the enabled submit button whose text is Comment/Post/Reply — excluding the aria-label
@@ -499,6 +500,10 @@ def _reply_under_comment_inline(driver, wait, comment_el, reply_text: str, user_
             return False  # expected no-op (the box never opened) — `_reply_composer_for_comment` logs it DEBUG
         return _type_and_submit_reply(driver, composer, reply_text, user_id=user_id)
     except Exception as e:
+        if is_tab_crashed(e):
+            # A dead renderer fails every later reply too; swallowing it warned once per reply and
+            # recurred into a grouped $exception (#2600, same shape as #2570). The sweep ends the run.
+            raise
         log_warning("Reply-under-comment failed", exc=e, action_type="reply", user_id=user_id)
         return False
 

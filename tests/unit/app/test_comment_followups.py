@@ -170,6 +170,28 @@ class TestReplyUnderComment:
             assert _reply_under_comment_inline(driver, MagicMock(), comment, "hi", user_id=1) is False
         lw.assert_not_called()
 
+    def test_tab_crash_propagates_without_warning(self):
+        # #2600: swallowing a dead renderer warned once per reply and recurred into a $exception.
+        from selenium.common.exceptions import WebDriverException
+
+        from cqc_lem.utilities.linkedin.composer import _reply_under_comment_inline
+        driver = MagicMock()
+        driver.execute_script.side_effect = WebDriverException("tab crashed")
+        with patch(f"{COMPOSER}.log_warning") as lw:
+            with pytest.raises(WebDriverException):
+                _reply_under_comment_inline(driver, MagicMock(), MagicMock(), "hi", user_id=1)
+        lw.assert_not_called()
+
+    def test_other_webdriver_error_still_warns_and_returns_false(self):
+        from selenium.common.exceptions import WebDriverException
+
+        from cqc_lem.utilities.linkedin.composer import _reply_under_comment_inline
+        driver = MagicMock()
+        driver.execute_script.side_effect = WebDriverException("stale element")
+        with patch(f"{COMPOSER}.log_warning") as lw:
+            assert _reply_under_comment_inline(driver, MagicMock(), MagicMock(), "hi", user_id=1) is False
+        assert lw.called
+
 
 class TestCommentContainerHelpers:
     def test_header_author_passthrough(self):
