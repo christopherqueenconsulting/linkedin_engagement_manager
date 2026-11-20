@@ -2711,6 +2711,19 @@ def engage_with_profile_viewer(self, user_id: int, viewer_url, viewer_name):
                 result = f"Failed to get profile data for {viewer_name}"
                 failed = True
 
+        except WebDriverException as e:
+            if "tab crashed" not in str(e).lower():
+                log_error("Error while engaging with profile viewer", exc=e, user_id=user_id,
+                          action_type="profile_engagement")
+            else:
+                # A renderer crash is Chrome dying under the session, not a LinkedIn or code
+                # fault: the run still ends FAILED and the viewer is retried on a later walk.
+                log_warning("Chrome tab crashed while engaging with a profile viewer",
+                            exc=e, user_id=user_id, action_type="profile_engagement",
+                            task_name="engage_with_profile_viewer")
+            result = f"Error while engaging with profile viewer: {e}"
+            failed = True
+            failure_cause = e
         except Exception as e:
             log_error("Error while engaging with profile viewer", exc=e, user_id=user_id, action_type="profile_engagement")
             result = f"Error while engaging with profile viewer: {e}"
