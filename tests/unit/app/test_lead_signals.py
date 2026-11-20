@@ -263,6 +263,31 @@ class TestSendLeadResponse:
         quit_.assert_called_once()
         assert "sent" in result
 
+    def test_tab_crash_retries_instead_of_failing_the_task(self):
+        from selenium.common.exceptions import WebDriverException
+        with patch(f"{_OUT}.get_lead_signal", return_value=self._signal(channel="reply")), \
+             patch(f"{_OUT}.get_current_profile",
+                   return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_OUT}._reply_to_person_on_post",
+                   side_effect=WebDriverException("tab crashed")), \
+             patch(f"{_OUT}._lead_reply_not_delivered", return_value="retry") as nd, \
+             patch(f"{_OUT}.insert_new_log") as log, \
+             patch(f"{_OUT}.quit_gracefully") as quit_:
+            result = _fn("_send_lead_response")(3)
+        nd.assert_called_once()
+        log.assert_not_called()
+        quit_.assert_called_once()
+        assert result == "retry"
+
+    def test_other_reply_exception_still_propagates(self):
+        with patch(f"{_OUT}.get_lead_signal", return_value=self._signal(channel="reply")), \
+             patch(f"{_OUT}.get_current_profile",
+                   return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_OUT}._reply_to_person_on_post", side_effect=RuntimeError("boom")), \
+             patch(f"{_OUT}.quit_gracefully"):
+            with pytest.raises(RuntimeError):
+                _fn("_send_lead_response")(3)
+
     def test_unapproved_signal_is_never_sent(self):
         with patch(f"{_OUT}.get_lead_signal", return_value=self._signal(status="new")), \
              patch(f"{_OUT}.send_dm_now") as send, \
