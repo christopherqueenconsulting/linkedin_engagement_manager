@@ -658,7 +658,16 @@ def auto_scrape_post_stats(self, user_id: int) -> str:
                            "Skipped browser fallback — rate limited" if api_captured else
                            "Skipped — rate limited")
     except Exception as e:
-        log_error("Error getting profile for post stats", exc=e, user_id=user_id, task_name="auto_scrape_post_stats")
+        if is_proxy_tunnel_failure(e):
+            # The proxy could not open its tunnel (#2605): transient, nothing reached LinkedIn,
+            # and the next beat retries — a warning that escalates only on recurrence.
+            log_warning("Post stats scrape skipped — proxy tunnel failed", exc=e, user_id=user_id,
+                        task_name="auto_scrape_post_stats")
+            return lane_result(landed_or_no_op(api_captured),
+                               "Skipped browser fallback — proxy tunnel failed" if api_captured else
+                               "Skipped — proxy tunnel failed")
+        log_error("Error getting profile for post stats", exc=e, user_id=user_id,
+                  task_name="auto_scrape_post_stats")
         if api_captured:
             return lane_result(landed_or_no_op(api_captured),
                                f"Community API updated {api_captured} post(s); browser fallback failed")
@@ -695,6 +704,14 @@ def auto_scrape_post_stats(self, user_id: int) -> str:
                     driver, user_id, pid, url, post_types, shipped_variants,
                     api_access_token=post_api_token, api_state=api_state)
             except Exception as e:
+                if is_proxy_tunnel_failure(e):
+                    log_warning(f"Post stats scrape ended after {scraped} of {len(post_ids)} post(s) — "
+                                f"proxy tunnel failed", exc=e, user_id=user_id,
+                                task_name="auto_scrape_post_stats")
+                    total_captured = scraped + api_captured
+                    return lane_result(landed_or_no_op(total_captured),
+                                       f"{_post_stats_capture_summary(total_captured, api_captured)} before "
+                                       f"the proxy tunnel failed")
                 if not is_tab_crashed(e):
                     raise
                 if recoveries >= _POST_STATS_MAX_TAB_RECOVERIES:
