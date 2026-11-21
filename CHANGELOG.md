@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.208.3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.208.2...v0.208.3) (2026-11-21)
+
+
+### Bug Fixes
+
+* **errors:** warn on proxy tunnel failure in post-stats scrape (closes [#2605](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2605)) ([#2606](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2606)) ([c51e0e6](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c51e0e6dd4d9155aa7b75c51b1cf014b2f66e32b))
+
 ## [0.208.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.208.1...v0.208.2) (2026-11-20)
 
 
