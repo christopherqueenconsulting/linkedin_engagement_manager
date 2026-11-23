@@ -273,6 +273,29 @@ class TestProcessOutreachFunnel:
         assert fire.call_count == 2
         assert out == "a; b"
 
+    def test_connects_queued_this_run_count_against_the_invite_cap(self):
+        """invite_to_connect is async, so sent-today stays 0 while a batch dispatches (#2623)."""
+        from cqc_lem.app.engagement.outreach import process_outreach_funnel
+        fired = "target 1: connect fired -> dm pending approval"
+        with patch(f"{_OUT}.get_approved_outreach_targets",
+                   return_value=[_target(id=1), _target(id=2), _target(id=3)]), \
+             patch(f"{_OUT}._fire_funnel_stage", side_effect=[fired, fired, "x"]) as fire:
+            process_outreach_funnel.run(user_id=1)
+        assert [c.kwargs["invites_queued"] for c in fire.call_args_list] == [0, 1, 2]
+
+    def test_a_connect_stage_defers_once_queued_invites_reach_the_cap(self):
+        from cqc_lem.app.engagement.outreach import _fire_funnel_stage
+        c = TestFireFunnelStage()._common()
+        with c["prefs"], c["cc"], c["cd"], c["refine"], c["dm"], c["enq"], c["upd"], c["ust"], \
+             patch(f"{_OUT}.is_invites_held", return_value=False), \
+             patch(f"{_OUT}.count_invites_sent_today", return_value=0), \
+             patch("cqc_lem.utilities.brand_account.BRAND_USER_ID", ""), \
+             patch(f"{_OUT}.invite_to_connect") as inv:
+            out = _fire_funnel_stage(1, _target(stage="connect", draft_text="d", approved_by="user:1"),
+                                invites_queued=10)
+        inv.apply_async.assert_not_called()
+        assert "deferred" in out
+
     def test_marks_failed_on_error(self):
         from cqc_lem.app.engagement.outreach import process_outreach_funnel
         from cqc_lem.utilities.db import OutreachStatus

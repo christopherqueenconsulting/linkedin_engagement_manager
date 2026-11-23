@@ -3438,10 +3438,13 @@ def _draft_funnel_stage(user_id: int, stage: str, target: dict) -> str:
     return ""
 
 
-def _fire_funnel_stage(user_id: int, target: dict) -> str:
+def _fire_funnel_stage(user_id: int, target: dict, invites_queued: int = 0) -> str:
     """Fire one APPROVED funnel stage by enqueuing the existing primitive, then advance the target to
     the next stage as 'pending' (needs a fresh approval). Daily caps DEFER a stage (leave it approved
     for the next run) rather than auto-firing it.
+
+    `invites_queued` is how many connect stages this same run already dispatched:
+    `invite_to_connect` is async, so none of them are in today's sent count yet.
     """
     target_id = target["id"]
     stage = str(target.get("stage"))
@@ -3489,7 +3492,8 @@ def _fire_funnel_stage(user_id: int, target: dict) -> str:
         # batch must not burst invites past `max_invites_per_day`. Left APPROVED for the next run.
         if is_invites_held(user_id):
             return f"target {target_id}: connect deferred (invites held)"
-        if count_invites_sent_today(user_id) >= int(prefs.get("max_invites_per_day") or 0):
+        if count_invites_sent_today(user_id) + invites_queued >= int(
+                prefs.get("max_invites_per_day") or 0):
             return f"target {target_id}: connect deferred (daily invite cap)"
         invite_to_connect.apply_async(kwargs={"user_id": user_id, "profile_url": profile_url,
                                               "message": draft,
@@ -3530,9 +3534,13 @@ def process_outreach_funnel(self, user_id: int, max_per_run: int = 25):
     if not targets:
         return f"No approved outreach targets for user {user_id}"
     results = []
+    invites_queued = 0
     for target in targets[:max_per_run]:
         try:
-            results.append(_fire_funnel_stage(user_id, target))
+            result = _fire_funnel_stage(user_id, target, invites_queued=invites_queued)
+            if f": {OutreachStage.CONNECT} fired" in result:
+                invites_queued += 1
+            results.append(result)
         except Exception as e:
             log_error("Outreach funnel stage failed", exc=e, user_id=user_id,
                       action_type="outreach_funnel")
