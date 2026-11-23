@@ -738,6 +738,85 @@ class TestEmptyComposePageIsNotAThread:
         assert result.addressed and result.recipient == "Jane Doe"
 
 
+class TestExpectHistory:
+    """#2622: a caller that knows the thread has messages never accepts a bare composer."""
+
+    OVERLAY_EMPTY = {"events": 0, "composer": True, "surface": mt.SURFACE_OVERLAY}
+
+    @pytest.fixture(autouse=True)
+    def _short_poll(self, monkeypatch):
+        monkeypatch.setattr(mt, "EXPECTED_HISTORY_RENDER_TIMEOUT_SECONDS", 0.0)
+
+    def _driver_with_empty_text_node_and_history_on_compose_url(self):
+        d = FakeDriver(page_source=PAGE_MODEL)
+        el = FakeElement(text="Message", on_click=_opens(d, events=0, overlay=True))
+        d.dom[(By.XPATH, mt._TEXT_NODE_LOCATORS[0][1])] = [el]
+        real_get = d.get
+
+        def _get(url):
+            real_get(url)
+            if "compose" in url:
+                d.thread = {"events": 3, "composer": True, "overlay": False}
+        d.get = _get
+        return d
+
+    def test_is_open_thread_rejects_an_empty_overlay_only_when_history_is_expected(self):
+        assert mt.is_open_thread(self.OVERLAY_EMPTY)
+        assert not mt.is_open_thread(self.OVERLAY_EMPTY, expect_history=True)
+        assert mt.is_open_thread({"events": 2, "composer": True, "surface": mt.SURFACE_PAGE},
+                                 expect_history=True)
+
+    def test_verified_reading_threads_the_flag(self):
+        assert mt._verified_reading(self.OVERLAY_EMPTY) == self.OVERLAY_EMPTY
+        assert mt._verified_reading(self.OVERLAY_EMPTY, expect_history=True) is None
+
+    def test_default_walk_stops_on_the_empty_overlay(self):
+        d = self._driver_with_empty_text_node_and_history_on_compose_url()
+        result = mt.open_message_thread(d, MagicMock(), PROFILE, timeout=0)
+        assert result.route == mt.ROUTE_TEXT_NODE and result.events == 0
+
+    def test_expect_history_walks_past_the_empty_overlay_to_direct_url(self):
+        d = self._driver_with_empty_text_node_and_history_on_compose_url()
+        result = mt.open_message_thread(d, MagicMock(), PROFILE, timeout=0, expect_history=True)
+        assert result.route == mt.ROUTE_DIRECT_URL and result.events == 3
+        assert mt.ROUTE_TEXT_NODE in result.composer_only_routes
+
+    def test_every_route_composer_only_warns_exactly_once(self):
+        d = FakeDriver(page_source=PAGE_MODEL)
+        d.dom[(By.XPATH, mt._TEXT_NODE_LOCATORS[0][1])] = [
+            FakeElement(text="Message", on_click=_opens(d, events=0, overlay=True))]
+        real_get = d.get
+
+        def _get(url):
+            real_get(url)
+            if "compose" in url:
+                d.thread = {"events": 0, "composer": True, "overlay": True}
+        d.get = _get
+        with patch.object(mt, "log_warning") as warn:
+            result = mt.open_message_thread(d, MagicMock(), PROFILE, timeout=0,
+                                            expect_history=True)
+        assert not result.opened and result.composer_only_routes
+        warn.assert_called_once()
+
+    def test_nothing_rendered_is_not_composer_only_and_does_not_warn(self):
+        d = FakeDriver()
+        with patch.object(mt, "log_warning") as warn:
+            result = mt.open_message_thread(d, MagicMock(), PROFILE, timeout=0,
+                                            expect_history=True)
+        assert not result.opened and not result.composer_only_routes
+        warn.assert_not_called()
+
+    def test_grading_waits_the_longer_budget_under_expect_history(self, monkeypatch):
+        monkeypatch.setattr(mt, "EXPECTED_HISTORY_RENDER_TIMEOUT_SECONDS", 15.0)
+        seen = []
+        monkeypatch.setattr(mt, "_wait_thread_open",
+                            lambda driver, timeout: seen.append(timeout) or self.OVERLAY_EMPTY)
+        d = FakeDriver()
+        mt._grade_after_action(d, mt._window_ledger(d), 8.0, expect_history=True)
+        mt._grade_after_action(d, mt._window_ledger(d), 8.0)
+        assert seen == [15.0, 8.0]
+
+
 class TestReaders:
     def test_last_sender_and_body_are_trimmed(self):
         d = FakeDriver()

@@ -1724,8 +1724,8 @@ def get_due_followups(now: Optional[datetime]) -> list:
     try:
         with db_cursor(dictionary=True) as cursor:
             cursor.execute(
-                "SELECT id, user_id, profile_url, first_name, event_type, next_step, unreadable_reads "
-                "FROM dm_followups WHERE status=%s AND due_at <= %s ORDER BY due_at",
+                "SELECT id, user_id, profile_url, first_name, event_type, next_step, unreadable_reads, "
+                "thread_unreadable_reads FROM dm_followups WHERE status=%s AND due_at <= %s ORDER BY due_at",
                 (str(FollowupStatus.PENDING), to_naive_utc(now)))
             return cursor.fetchall() or []
     except mysql.connector.Error as err:
@@ -1742,7 +1742,8 @@ def mark_followup(followup_id: int, status: str) -> bool:
     except mysql.connector.Error as err:
         log_error(f"Could not mark followup {followup_id}", exc=err)
         return False
-def record_unreadable_read(followup_id: int, due_at: Optional[datetime] = None) -> bool:
+def record_unreadable_read(followup_id: int, due_at: Optional[datetime] = None,
+                           thread_specific: bool = False) -> bool:
     """Count one UNKNOWN reply-detection read against this row (#1815).
 
     When `due_at` is given, also pushes the row's next read out to it (normalized through
@@ -1762,15 +1763,18 @@ def record_unreadable_read(followup_id: int, due_at: Optional[datetime] = None) 
     `+ 1` is what keeps the stored count right even if that ever stopped being true, and the worst
     a lost race could do is delay one backoff step by one beat.
     """
+    # `thread_specific` also bumps the narrower per-thread counter the terminal stop reads (#2622).
+    bump = "unreadable_reads = unreadable_reads + 1"
+    if thread_specific:
+        bump += ", thread_unreadable_reads = thread_unreadable_reads + 1"
     try:
         if due_at is not None:
             return _execute_write(
-                "UPDATE dm_followups SET unreadable_reads = unreadable_reads + 1, due_at = %s "
-                "WHERE id = %s AND status = %s",
+                f"UPDATE dm_followups SET {bump}, due_at = %s WHERE id = %s AND status = %s",
                 (to_naive_utc(due_at), followup_id, str(FollowupStatus.PENDING))) > 0
         return _execute_write(
-            "UPDATE dm_followups SET unreadable_reads = unreadable_reads + 1 "
-            "WHERE id = %s AND status = %s", (followup_id, str(FollowupStatus.PENDING))) > 0
+            f"UPDATE dm_followups SET {bump} WHERE id = %s AND status = %s",
+            (followup_id, str(FollowupStatus.PENDING))) > 0
     except mysql.connector.Error as err:
         log_error(f"Could not record unreadable read for followup {followup_id}", exc=err)
         return False
@@ -1786,10 +1790,23 @@ def reset_unreadable_reads(followup_id: int) -> bool:
     reset, which is not a failure.
     """
     try:
-        return _execute_write("UPDATE dm_followups SET unreadable_reads = 0 WHERE id = %s",
-                              (followup_id,)) >= 0
+        return _execute_write("UPDATE dm_followups SET unreadable_reads = 0, "
+                              "thread_unreadable_reads = 0 WHERE id = %s", (followup_id,)) >= 0
     except mysql.connector.Error as err:
         log_error(f"Could not reset unreadable reads for followup {followup_id}", exc=err)
+        return False
+def stop_followup_unreadable(followup_id: int, reason: str = "unreadable_thread") -> bool:
+    """End a still-pending follow-up whose thread never became readable (#2622).
+
+    One-way: the row leaves `pending` and is never re-read. It sends nothing — the reader never
+    sends. True only when a pending row was actually stopped.
+    """
+    try:
+        return _execute_write(
+            "UPDATE dm_followups SET status = %s, stop_reason = %s WHERE id = %s AND status = %s",
+            (str(FollowupStatus.STOPPED), reason, followup_id, str(FollowupStatus.PENDING))) > 0
+    except mysql.connector.Error as err:
+        log_error(f"Could not stop unreadable followup {followup_id}", exc=err)
         return False
 def defer_followup(followup_id: int, due_at: datetime) -> bool:
     """Push a still-pending follow-up's `due_at` out without touching anything else (issue #2115).

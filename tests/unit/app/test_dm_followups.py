@@ -490,6 +490,124 @@ class TestProcessUserFollowups:
         assert "skipped 1" in result
 
 
+class TestUnreadableThreadTerminalStop:
+    """#2622: a thread that stays unreadable ends in `stopped`, one-way, and sends nothing."""
+
+    def _run(self, due, states, diag_for=None):
+        """Run one pass.
+
+        `states` is one ThreadState per row; `diag_for` the ids whose walk was composer-only.
+        """
+        from cqc_lem.app.engagement.outreach import process_user_followups
+        diag_for = set(diag_for or ())
+        queue = iter(zip(due, states))
+
+        def _check(*_a, diagnostics=None, **_k):
+            row, state = next(queue)
+            if row["id"] in diag_for and diagnostics is not None:
+                diagnostics["thread_unreadable"] = True
+            return state
+
+        with patch(f"{_OUT}.get_due_followups", return_value=due), \
+             patch(f"{_OUT}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_OUT}.quit_gracefully"), patch(f"{_OUT}.time.sleep"), patch(f"{_OUT}.insert_new_log"), \
+             patch(f"{_OUT}.resolve_self_name", return_value="Christopher Queen"), \
+             patch(f"{_OUT}.check_dm_replied", side_effect=_check), \
+             patch(f"{_OUT}.record_unreadable_read", return_value=True) as rec, \
+             patch(f"{_OUT}.stop_followup_unreadable", return_value=True) as stop, \
+             patch(f"{_OUT}.log_warning") as warn, \
+             patch(f"{_OUT}.send_private_dm") as dm, \
+             patch(f"{_OUT}.mark_followup"), patch(f"{_OUT}.enqueue_next_followup"), \
+             patch(f"{_OUT}.build_dm_from_template", return_value="msg"), \
+             patch(f"{_OUT}.seconds_since_last_dm_touch", return_value=None), \
+             patch(f"{_OUT}.outbound_refusal_reason", return_value=None), \
+             patch(f"{_OUT}.reset_unreadable_reads"):
+            process_user_followups.run(user_id=1)
+        return rec, stop, warn, dm
+
+    def _at_terminal(self, **kw):
+        from cqc_lem.app.engagement import outreach as ra
+        return _due(thread_unreadable_reads=ra._unreadable_read_terminal() - 1, **kw)
+
+    def test_row_at_the_terminal_count_is_stopped_with_one_warning_and_nothing_sent(self):
+        due = [self._at_terminal(id=1), _due(id=2)]
+        rec, stop, warn, dm = self._run(due, [ThreadState.UNKNOWN, ThreadState.NOT_REPLIED], {1})
+        rec.assert_called_once_with(1, due_at=rec.call_args.kwargs["due_at"], thread_specific=True)
+        stop.assert_called_once_with(1)
+        assert sum("stopped after repeated unreadable" in c.args[0] for c in warn.call_args_list) == 1
+        assert dm.apply_async.call_count == 1  # row 2's own follow-up — row 1 sent nothing
+
+    def test_a_run_where_every_read_was_unknown_stops_nothing(self):
+        rec, stop, _warn, _dm = self._run([self._at_terminal(id=1)], [ThreadState.UNKNOWN], {1})
+        stop.assert_not_called()
+
+    def test_a_non_thread_specific_unknown_never_counts_toward_the_stop(self):
+        due = [self._at_terminal(id=1), _due(id=2)]
+        rec, stop, _warn, _dm = self._run(due, [ThreadState.UNKNOWN, ThreadState.NOT_REPLIED])
+        assert "thread_specific" not in rec.call_args.kwargs
+        stop.assert_not_called()
+
+    def test_below_the_terminal_count_does_not_stop(self):
+        due = [_due(id=1, thread_unreadable_reads=2), _due(id=2)]
+        _rec, stop, _warn, _dm = self._run(due, [ThreadState.UNKNOWN, ThreadState.NOT_REPLIED], {1})
+        stop.assert_not_called()
+
+    def test_terminal_env_is_parsed_defensively(self, monkeypatch):
+        from cqc_lem.app.engagement.outreach import _unreadable_read_terminal
+        monkeypatch.setenv("UNREADABLE_READ_TERMINAL", "junk")
+        assert _unreadable_read_terminal() == 10
+        monkeypatch.setenv("UNREADABLE_READ_TERMINAL", "4")
+        assert _unreadable_read_terminal() == 4
+
+
+class TestCheckDmRepliedExpectsHistory:
+    def _opened(self, **kw):
+        from cqc_lem.utilities.linkedin.message_thread import ThreadOpen
+        return ThreadOpen(**kw)
+
+    def test_ladder_is_called_with_expect_history_by_default(self, monkeypatch):
+        from cqc_lem.app.engagement.outreach import check_dm_replied
+        monkeypatch.delenv("DM_THREAD_EXPECT_HISTORY", raising=False)
+        with patch(f"{_OUT}.open_message_thread", return_value=self._opened()) as ladder:
+            check_dm_replied(MagicMock(), MagicMock(), "https://x/in/b", my_name="Me")
+        assert ladder.call_args.kwargs["expect_history"] is True
+
+    def test_rollback_flag_restores_the_old_ladder(self, monkeypatch):
+        from cqc_lem.app.engagement.outreach import check_dm_replied
+        monkeypatch.setenv("DM_THREAD_EXPECT_HISTORY", "false")
+        with patch(f"{_OUT}.open_message_thread", return_value=self._opened()) as ladder:
+            check_dm_replied(MagicMock(), MagicMock(), "https://x/in/b", my_name="Me")
+        assert ladder.call_args.kwargs["expect_history"] is False
+
+    def test_composer_only_walk_marks_the_thread_unreadable(self):
+        from cqc_lem.app.engagement.outreach import check_dm_replied
+        diag: dict = {}
+        with patch(f"{_OUT}.open_message_thread",
+                   return_value=self._opened(composer_only_routes=["overflow"])):
+            assert check_dm_replied(MagicMock(), MagicMock(), "https://x/in/b", my_name="Me",
+                                    diagnostics=diag) is ThreadState.UNKNOWN
+        assert diag == {"thread_unreadable": True}
+
+    def test_a_walk_that_rendered_nothing_is_not_thread_specific(self):
+        from cqc_lem.app.engagement.outreach import check_dm_replied
+        diag: dict = {}
+        with patch(f"{_OUT}.open_message_thread", return_value=self._opened()):
+            check_dm_replied(MagicMock(), MagicMock(), "https://x/in/b", my_name="Me",
+                             diagnostics=diag)
+        assert diag == {}
+
+    def test_a_missing_self_name_is_not_thread_specific(self):
+        from cqc_lem.app.engagement.outreach import check_dm_replied
+        diag: dict = {}
+        with patch(f"{_OUT}.open_message_thread",
+                   return_value=self._opened(opened=True, route="anchor", events=3)), \
+             patch(f"{_OUT}.read_last_sender", return_value="Jane"), \
+             patch(f"{_OUT}.log_warning"):
+            check_dm_replied(MagicMock(), MagicMock(), "https://x/in/b", my_name="",
+                             diagnostics=diag)
+        assert diag == {}
+
+
 class TestCheckDmReplied:
     """The reply verdict itself. The ladder that opens the thread is covered in
     tests/unit/utilities/linkedin/test_message_thread.py — here it is stubbed.
