@@ -10,7 +10,6 @@ pytestmark = pytest.mark.integration
 
 _API = "cqc_lem.api.main"
 _USER = "cqc_lem.api.routers.user"
-_USER = "cqc_lem.api.routers.user"
 
 
 class TestAnalyticsConnectionSettings:
