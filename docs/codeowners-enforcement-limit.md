@@ -49,12 +49,17 @@ every `pull_request` workflow does. That file is protected by the pipeline crede
 **Self-heal on approval (#2596, #2645).** The gate runs on `pull_request` AND `pull_request_review`.
 Before the owner approves, the `pull_request` run fails. The approval's review run passes, but the
 earlier failed check run (same name, same head SHA, another workflow run) used to keep blocking
-branch protection until someone re-ran it by hand. Now a review run that PASSES re-runs the failed
-jobs of this workflow's own `pull_request`-event runs for the same head SHA
-(`rerun-failed-jobs`), and the re-run re-reads the approvals and passes. It never re-runs on a
-failing verdict, for another SHA, or for another workflow, and a re-run error is a `::warning::`
-that leaves the passing gate green. The job holds `actions: write` for this (job-scoped, beside the
-two reads); the head SHA is an API filter value and is never checked out. Concurrency is keyed on
+branch protection until someone re-ran it by hand. Now, once the gate PASSES on a review run, a
+second job, `heal`, re-runs the failed jobs of this workflow's own `pull_request`-event runs for the
+same head SHA (`rerun-failed-jobs`, never a full re-run), and the re-run re-reads the approvals and
+passes. It first waits, at most about two minutes (12 x 10s), while a `pull_request` run for that
+SHA is still queued or running, so a run that read the reviews before the approval cannot fail
+after the list was taken. It never re-runs on a failing verdict, for another SHA, for another
+workflow, or its own run. Every error is a `::warning::` and the job is `continue-on-error`, so it
+never fails the run. Least privilege: the gate job stays read-only (`contents`/`pull-requests`
+read); `heal` holds `actions: write` and nothing else, and checks nothing out. The head SHA is an API
+filter value only. The required context is still the gate job's name, `Pipeline Self-Modification
+Gate`; `heal` reports under its own name, which is not required. Concurrency is keyed on
 the event name too, so a review run and a `pull_request` run (or its re-run) never cancel each
 other; superseded runs of the same event still are.
 

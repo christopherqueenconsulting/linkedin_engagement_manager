@@ -12,7 +12,13 @@ or a PR could sit gated after the owner approves it, with nothing left to re-run
 
 from __future__ import annotations
 
+import json
+import os
 import re
+import shutil
+import stat
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -87,8 +93,10 @@ class TestTriggerSet:
         assert "dismissed" in types
 
     def test_no_write_permissions_are_granted(self):
-        # This gate only reads PR facts and exits non-zero; it must never be handed a permission
-        # that would let it merge, comment, or push on the pipeline's behalf.
+        # The WORKFLOW-LEVEL default: every job that does not restate permissions gets only reads,
+        # so nothing can merge, comment, or push on the pipeline's behalf. The judge restates the
+        # same reads (TestTheJudgeIsReadOnly); the one job-scoped write, `actions: write` on the
+        # heal job, is pinned in TestItSelfHealsOnApproval.test_heal_holds_actions_write_only.
         permissions = _load().get("permissions") or {}
         assert permissions, "an unset permissions block inherits the default token's full grants"
         for scope, level in permissions.items():
@@ -176,10 +184,15 @@ class TestItIsSafeAsARequiredCheckInTheMergeQueue:
         assert "merge_group" in _triggers(_load())
 
     def test_the_merge_group_run_reports_the_same_job_name(self):
+        # Branch protection requires the context `Pipeline Self-Modification Gate`, which is the
+        # gate JOB's name (docs/codeowners-enforcement-limit.md, Owner steps). The heal job is
+        # the only other job, and its name must never collide with that context.
         jobs = _load()["jobs"]
-        assert list(jobs) == ["gate"]
+        assert list(jobs) == ["gate", "heal"]
         assert jobs["gate"]["name"] == "Pipeline Self-Modification Gate"
+        assert jobs["heal"]["name"] != jobs["gate"]["name"]
         assert "if" not in jobs["gate"], "a skipped job-level `if` must not decide the context"
+        assert "needs" not in jobs["gate"], "the required context must not wait on another job"
 
     def test_the_merge_group_run_decides_nothing(self):
         for step in _steps(_load()):
@@ -194,10 +207,26 @@ class TestItIsSafeAsARequiredCheckInTheMergeQueue:
         assert "merge_group" in str(concurrency["cancel-in-progress"])
 
 
+def _every_step(workflow: dict[str, Any]) -> list[dict[str, Any]]:
+    return [s for job in workflow["jobs"].values() for s in job.get("steps") or []]
+
+
 def _self_heal_step(workflow: dict[str, Any]) -> dict[str, Any]:
-    heals = [s for s in _steps(workflow) if "rerun-failed-jobs" in str(s.get("run", ""))]
+    heals = [s for s in _every_step(workflow) if "rerun-failed-jobs" in str(s.get("run", ""))]
     assert len(heals) == 1, "exactly one step may re-run gate runs"
+    assert heals[0] in workflow["jobs"]["heal"]["steps"], "the re-run lives in the heal job"
     return heals[0]
+
+
+class TestTheJudgeIsReadOnly:
+    def test_the_gate_job_restates_only_the_two_reads(self):
+        assert _load()["jobs"]["gate"]["permissions"] == {
+            "contents": "read", "pull-requests": "read"}
+
+    def test_the_gate_job_never_touches_actions_runs(self):
+        for step in _steps(_load()):
+            assert "actions/runs" not in str(step.get("run", "")), step.get("name")
+            assert "rerun" not in str(step.get("run", "")), step.get("name")
 
 
 class TestItSelfHealsOnApproval:
@@ -212,34 +241,50 @@ class TestItSelfHealsOnApproval:
         # Superseded runs of the SAME event are still cancelled.
         assert str(concurrency["cancel-in-progress"]) == "${{ github.event_name != 'merge_group' }}"
 
-    def test_actions_write_is_job_scoped_and_minimal(self):
+    def test_heal_holds_actions_write_only(self):
+        # Every call it makes is Actions API (read this run, list runs, POST rerun-failed-jobs),
+        # which `actions: write` covers; contents and pull-requests are not needed.
         workflow = _load()
         assert "actions" not in (workflow.get("permissions") or {})
-        job_perms = workflow["jobs"]["gate"]["permissions"]
-        assert job_perms == {"contents": "read", "pull-requests": "read", "actions": "write"}
+        assert workflow["jobs"]["heal"]["permissions"] == {"actions": "write"}
+
+    def test_heal_checks_nothing_out(self):
+        for step in _load()["jobs"]["heal"]["steps"]:
+            assert "uses" not in step, f"the heal job runs no action: {step}"
+            assert "checkout" not in str(step.get("run", ""))
+            assert "git " not in str(step.get("run", ""))
 
     def test_no_other_step_touches_actions_runs(self):
         workflow = _load()
         heal = _self_heal_step(workflow)
-        for step in _steps(workflow):
+        for step in _every_step(workflow):
             if step is heal:
                 continue
             assert "actions/runs" not in str(step.get("run", "")), step.get("name")
             assert "gh run rerun" not in str(step.get("run", "")), step.get("name")
 
-    def test_it_runs_only_on_a_passing_review_event(self):
-        cond = str(_self_heal_step(_load()).get("if", ""))
+    def test_it_runs_only_after_a_passing_gate_on_a_review_event(self):
+        heal = _load()["jobs"]["heal"]
+        assert heal["needs"] == "gate"
+        cond = str(heal.get("if", ""))
         assert "github.event_name == 'pull_request_review'" in cond
-        assert "success()" in cond
+        assert "needs.gate.result == 'success'" in cond
         assert "always()" not in cond and "failure()" not in cond
+        assert "if" not in _self_heal_step(_load()), "the job condition is the one gate"
 
-    def test_it_is_the_last_step_so_it_follows_the_verdict(self):
-        steps = _steps(_load())
-        assert steps[-1] == _self_heal_step(_load())
-        decide = next(i for i, s in enumerate(steps)
-                      if "scripts/pipeline_selfmod_gate.py" in str(s.get("run", ""))
-                      and "--approvers" in str(s.get("run", "")))
-        assert decide < len(steps) - 1
+    def test_heal_is_bounded_and_fail_soft_as_a_job(self):
+        heal = _load()["jobs"]["heal"]
+        assert heal.get("continue-on-error") is True
+        assert 0 < int(heal["timeout-minutes"]) <= 10
+
+    def test_it_polls_in_flight_runs_for_about_two_minutes_at_most(self):
+        heal = _self_heal_step(_load())
+        tries = int(heal["env"]["HEAL_POLL_TRIES"])
+        interval = int(heal["env"]["HEAL_POLL_INTERVAL"])
+        assert 0 < tries * interval <= 150
+        run = str(heal["run"])
+        assert run.index('.status != "completed"') < run.index("status=failure"), (
+            "the poll must finish before failures are listed")
 
     def test_it_filters_to_this_sha_this_workflow_pull_request_failures(self):
         run = str(_self_heal_step(_load())["run"])
@@ -262,6 +307,15 @@ class TestItSelfHealsOnApproval:
         assert "rerun-failed-jobs" in run
         assert re.search(r"/rerun[\"'\s]", run) is None, "a full re-run would redo passing jobs"
 
+    def test_no_full_rerun_anywhere_in_heal(self):
+        # A full re-run redoes passing jobs; only the REST rerun-failed-jobs endpoint may appear.
+        for step in _load()["jobs"]["heal"]["steps"]:
+            text = str(step.get("run", ""))
+            assert re.search(r"/rerun(?!-failed-jobs)", text) is None, text
+            for line in text.splitlines():
+                if re.search(r"gh\s+run\s+rerun", line):
+                    assert "--failed" in line, line
+
     def test_it_is_fail_soft(self):
         heal = _self_heal_step(_load())
         assert heal.get("continue-on-error") is True
@@ -277,3 +331,143 @@ class TestItActsOnAPullRequestNotAPush:
         # before merge" -- it has nothing to decide on a direct push to main.
         triggers = _triggers(_load())
         assert "push" not in triggers
+
+
+# --- The heal step's bash, executed against a fake `gh` -------------------------------------------
+
+_REPO = "acme/lem"
+_SHA = "a" * 40
+_SELF = 500
+_WF = 42
+
+#: A fake `gh api`. It IGNORES every server-side query filter, so the script's own jq re-check is
+#: what the assertions below exercise. Every call is appended to calls.log.
+_FAKE_GH = r"""
+import json, os, sys
+state = os.environ["FAKE_GH_STATE"]
+args = sys.argv[1:]
+with open(os.path.join(state, "calls.log"), "a") as f:
+    f.write(json.dumps(args) + "\n")
+assert args[0] == "api", args
+rest = args[1:]
+if rest[:2] == ["-X", "POST"]:
+    sys.exit(1 if os.environ.get("FAKE_GH_POST_FAILS") == "1" else 0)
+path = rest[0]
+fixture = json.load(open(os.path.join(state, "fixture.json")))
+if path.endswith("/actions/runs/" + os.environ["SELF_RUN_ID"]):
+    if fixture.get("self_fails"):
+        sys.exit(1)
+    print(json.dumps({"id": int(os.environ["SELF_RUN_ID"]), "workflow_id": fixture["wf"]}))
+elif "status=failure" in path:
+    print(json.dumps({"workflow_runs": fixture["runs"]}))
+else:
+    counter = os.path.join(state, "polls")
+    n = int(open(counter).read()) if os.path.exists(counter) else 0
+    open(counter, "w").write(str(n + 1))
+    busy = n < fixture["busy_polls"]
+    runs = [dict(r, status="in_progress" if busy else "completed") for r in fixture["runs"]]
+    # Another SHA's run that never finishes: the poll must not wait on it.
+    runs.append({"id": 900, "head_sha": "b" * 40, "event": "pull_request",
+                 "workflow_id": fixture["wf"], "status": "in_progress", "conclusion": None})
+    print(json.dumps({"workflow_runs": runs}))
+"""
+
+
+def _run(sha: str, event: str, conclusion: str, wf: int, run_id: int) -> dict[str, Any]:
+    return {"id": run_id, "head_sha": sha, "event": event, "workflow_id": wf,
+            "status": "completed", "conclusion": conclusion}
+
+
+_FIXTURE_RUNS = [
+    _run(_SHA, "pull_request", "failure", _WF, 101),         # the stale failure: re-run it
+    _run("c" * 40, "pull_request", "failure", _WF, 102),     # another SHA
+    _run(_SHA, "pull_request_review", "failure", _WF, 103),  # another event
+    _run(_SHA, "pull_request", "failure", 99, 104),          # another workflow
+    _run(_SHA, "pull_request", "success", _WF, 105),         # not a failure
+    _run(_SHA, "pull_request", "failure", _WF, _SELF),       # this run itself
+]
+
+
+def _exec_heal(tmp_path: Path, *, busy_polls: int = 0, tries: int = 12,
+               post_fails: bool = False, self_fails: bool = False,
+               ) -> tuple[subprocess.CompletedProcess[str], list[list[str]], int]:
+    """Run the heal step's `run:` block under bash with a fake `gh` first on PATH.
+
+    Returns:
+        The finished process, every recorded `gh` argv, and how many poll calls were made.
+    """
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "fixture.json").write_text(json.dumps(
+        {"wf": _WF, "runs": _FIXTURE_RUNS, "busy_polls": busy_polls, "self_fails": self_fails}))
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    gh = bindir / "gh"
+    gh.write_text(f"#!{sys.executable}\n{_FAKE_GH}")
+    gh.chmod(gh.stat().st_mode | stat.S_IXUSR)
+    script = tmp_path / "heal.sh"
+    script.write_text(str(_self_heal_step(_load())["run"]))
+    env = {
+        "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
+        "FAKE_GH_STATE": str(state),
+        "FAKE_GH_POST_FAILS": "1" if post_fails else "0",
+        "REPO": _REPO,
+        "HEAD_SHA": _SHA,
+        "SELF_RUN_ID": str(_SELF),
+        "HEAL_POLL_TRIES": str(tries),
+        "HEAL_POLL_INTERVAL": "0",
+    }
+    proc = subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True,
+                          timeout=60, check=False)
+    log = state / "calls.log"
+    calls = [json.loads(ln) for ln in log.read_text().splitlines()] if log.exists() else []
+    polls_file = state / "polls"
+    polls = int(polls_file.read_text()) if polls_file.exists() else 0
+    return proc, calls, polls
+
+
+def _posts(calls: list[list[str]]) -> list[str]:
+    return [c[3] for c in calls if c[1:3] == ["-X", "POST"]]
+
+
+@pytest.mark.skipif(shutil.which("jq") is None or shutil.which("bash") is None,
+                    reason="the heal step is bash + jq")
+class TestTheHealScriptAgainstAFakeGh:
+    def test_only_the_same_sha_pull_request_failure_of_this_workflow_is_rerun(self, tmp_path):
+        proc, calls, _ = _exec_heal(tmp_path)
+        assert proc.returncode == 0, proc.stderr
+        assert _posts(calls) == [f"repos/{_REPO}/actions/runs/101/rerun-failed-jobs"]
+
+    def test_a_failing_post_still_exits_zero_with_a_warning(self, tmp_path):
+        proc, calls, _ = _exec_heal(tmp_path, post_fails=True)
+        assert proc.returncode == 0, proc.stderr
+        assert _posts(calls), "the POST must have been attempted for the warning to mean anything"
+        assert "::warning title=Gate self-heal::re-run of gate run 101 failed" in proc.stdout
+
+    def test_the_poll_exits_once_runs_complete_then_lists(self, tmp_path):
+        proc, calls, polls = _exec_heal(tmp_path, busy_polls=2)
+        assert proc.returncode == 0, proc.stderr
+        # Two busy answers, then the one that shows everything complete; the other SHA's
+        # never-finishing run is not waited on.
+        assert polls == 3
+        assert "Waiting for" in proc.stdout
+        assert "still running" not in proc.stdout
+        listing = next(i for i, c in enumerate(calls) if "status=failure" in c[1])
+        last_poll = max(i for i, c in enumerate(calls)
+                        if "/runs?" in c[1] and "status=failure" not in c[1])
+        assert last_poll < listing
+        assert _posts(calls) == [f"repos/{_REPO}/actions/runs/101/rerun-failed-jobs"]
+
+    def test_the_poll_is_bounded_and_then_proceeds_with_a_warning(self, tmp_path):
+        proc, calls, polls = _exec_heal(tmp_path, busy_polls=1000, tries=3)
+        assert proc.returncode == 0, proc.stderr
+        assert polls == 3
+        assert "::warning title=Gate self-heal::a pull_request gate run" in proc.stdout
+        assert _posts(calls) == [f"repos/{_REPO}/actions/runs/101/rerun-failed-jobs"]
+
+    def test_an_unreadable_workflow_id_warns_and_posts_nothing(self, tmp_path):
+        proc, calls, polls = _exec_heal(tmp_path, self_fails=True)
+        assert proc.returncode == 0, proc.stderr
+        assert "::warning title=Gate self-heal::could not read this run's workflow id" in proc.stdout
+        assert polls == 0
+        assert _posts(calls) == []
