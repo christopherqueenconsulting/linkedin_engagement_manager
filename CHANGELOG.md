@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.209.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.208.4...v0.209.0) (2026-11-23)
+
+
+### Features
+
+* **engagement:** comment candidate pool, Phase 1 of [#2635](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2635) ([#2646](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2646)) ([9109658](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/91096586c3e7f12472644668203bce250bb938cf))
+* **landing:** link home to Christopher Queen Consulting ([#2612](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2612)) ([d6195fd](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d6195fd495828b7a86d7a9f6226b971148ccf39f))
+* **outreach:** a human Approve releases the brand acquisition hold, Phase 1 (refs [#2623](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2623)) ([#2644](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2644)) ([c64c52f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c64c52f4d5ae5451db16e6f577cd824868edffb1))
+* **pipeline:** model router phase 3 — Codex harness review lane (refs [#2561](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2561)) ([#2641](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2641)) ([b5c5e0f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b5c5e0f5f67ecfe21b20ef3a815a7f4175e75794))
+* **probe:** deep URN evidence for hash-keyed home cards + feed-only key sources (Refs [#2593](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2593)) ([5024d9b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5024d9babeba668309d60601ccbe2d2dd1386a2e))
+* **probe:** deep URN evidence for hash-keyed home cards, Phase A (Refs [#2593](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2593)) ([#2638](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2638)) ([5024d9b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/5024d9babeba668309d60601ccbe2d2dd1386a2e))
+* **proxy:** authenticate Chrome egress through a per-user forwarder (refs [#2620](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2620)) ([#2640](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2640)) ([87ca7d9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/87ca7d90a275379654372bd9d7d125a692877976))
+* **targeting:** versioned ICP rubric behind per-user flag, Phase 1 (refs [#2630](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2630)) ([#2649](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2649)) ([f575694](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f5756941672a5faf7a58cf8cd4fccdf2f0d102ba))
+
+
+### Bug Fixes
+
+* **analytics:** pin first-connected CMA member ID, record OIDC bridge infeasible (closes [#2584](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2584)) ([#2636](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2636)) ([6352c64](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6352c6417c464ad2ae304fd64b6d086981485b01))
+* **ci:** self-heal the selfmod gate's stale failure on owner approval ([#2652](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2652)) ([29d47cd](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/29d47cd6e44710d0fe757ec73ace48d278dfb6e3))
+* **followups:** history-expecting ladder + terminal stop for unreadable threads (closes [#2622](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2622)) ([#2645](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2645)) ([d5f64ad](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d5f64adf05406c2038b88d9fc2297f2242df9ce6))
+* **pipeline:** an owner's GitHub approval answers a parked PR's Decision Comment ([#2651](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2651)) ([942df4c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/942df4cd17c7ea8fe2d3242c42ba45596fc6fbcc))
+* **pipeline:** re-fit router weights to agree on 18/20 owner ratings (closes [#2569](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2569)) ([#2596](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2596)) ([f55af15](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/f55af155f20cd6e368eeff085a55f456f58e3450))
+* **pipeline:** targeted local tests, push per sub-step, and allow the OpenAPI regen commands ([#2650](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2650)) ([2155c72](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2155c72d61648094d86e6eac804bebd0a87b5425))
+* **security:** harden sandbox send gates, residuals from [#2526](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2526) (closes [#2527](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2527)) ([#2639](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2639)) ([310fb1a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/310fb1a1bda49e8a9fcb9bc3c00e39e26aa17162))
+
+
+### Documentation
+
+* **sdui:** record home-feed composer readings (closes [#2576](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2576)) ([#2642](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2642)) ([bf28bd9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/bf28bd934326ee39c887001b6354c1e74be82cc0))
+* **sdui:** record home-feed composer readings and fix stale gap (closes [#2576](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2576)) ([bf28bd9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/bf28bd934326ee39c887001b6354c1e74be82cc0))
+
 ## [0.208.4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.208.3...v0.208.4) (2026-11-23)
 
 
