@@ -1,0 +1,54 @@
+# Codex exec-policy rules for the review lane (#2561). Starlark `prefix_rule` calls; the file is
+# also parsed as plain Python by v2/lemd/codex_lane.py so every denial has a unit test.
+#
+# Model: the lane runs `codex exec --sandbox danger-full-access --ask-for-approval untrusted`.
+# danger-full-access removes the OS sandbox (bubblewrap cannot create user namespaces on this host),
+# so THESE RULES are the sandbox. A command is resolved in this order:
+#   1. any matching `forbidden` rule denies it;
+#   2. else any matching `allow` rule runs it without asking;
+#   3. else it needs approval, and a headless `codex exec` has nobody to ask, so it is refused.
+# Step 3 is the default-deny that mirrors claude-headless.json's dontAsk: a tool class that is not
+# listed below does not run. The forbidden rules repeat what step 3 already refuses, on purpose: a
+# later edit that widens the allow list must still not reopen these.
+#
+# GUARD RAILS, NOT A BOUNDARY (same stance as claude-headless.json): a prefix rule matches the
+# command words the agent writes. Code an allowed command runs can do anything this uid can.
+# Root custody of this file and lib/ is the boundary. Writes outside the scratch area (the run's
+# worktree) and calls to a host other than the proxy and GitHub are denied by the absence of any
+# allow rule for a writer or a network client, and by the explicit forbidden rules below.
+# `lib/gh_safe.sh` is the ONLY GitHub writer and the only thing that talks to GitHub.
+
+# --- allow: read-only inspection ------------------------------------------------------------
+prefix_rule(pattern=["git", ["status", "diff", "log", "show", "rev-parse", "ls-files", "merge-base"]], decision="allow")
+prefix_rule(pattern=["git", "branch", "--show-current"], decision="allow")
+prefix_rule(pattern=["gh", ["pr", "issue"], ["view", "diff", "checks", "list"]], decision="allow")
+prefix_rule(pattern=["gh", "run", ["view", "list"]], decision="allow")
+prefix_rule(pattern=[["ls", "cat", "head", "tail", "wc", "grep", "pwd"]], decision="allow")
+prefix_rule(pattern=["poetry", "run", ["pytest", "ruff"]], decision="allow")
+prefix_rule(pattern=["ruff", "check"], decision="allow")
+# --- allow: the pipeline's own helpers (the only GitHub writers) ----------------------------
+prefix_rule(pattern=["/home/lem/agent-pipeline/lib/gh_safe.sh"], decision="allow")
+prefix_rule(pattern=["/home/lem/agent-pipeline/lib/review_threads.sh"], decision="allow")
+
+# --- forbidden: privilege and host control --------------------------------------------------
+prefix_rule(pattern=[["sudo", "su", "doas"]], decision="forbidden", justification="no privilege change")
+prefix_rule(pattern=[["docker", "docker-compose", "systemctl"]], decision="forbidden", justification="no host control")
+prefix_rule(pattern=[["bash", "sh", "zsh", "dash", "eval", "source", ".", "exec", "xargs", "nohup", "timeout"]], decision="forbidden", justification="a shell or wrapper hides the real command from prefix matching, and covers `bash deploy.sh`")
+# --- forbidden: network clients (only the proxy and GitHub-through-gh_safe are reachable) ----
+prefix_rule(pattern=[["curl", "wget", "nc", "ncat", "netcat", "ssh", "scp", "sftp", "rsync", "ftp", "telnet", "socat"]], decision="forbidden", justification="no network except the proxy and GitHub via lib/gh_safe.sh")
+prefix_rule(pattern=["gh", "api"], decision="forbidden", justification="gh api is denied; use lib/review_threads.sh")
+prefix_rule(pattern=["gh", ["auth", "secret", "workflow"]], decision="forbidden", justification="no credential or workflow control")
+# --- forbidden: every raw gh write (writes go through lib/gh_safe.sh) ------------------------
+prefix_rule(pattern=["gh", "pr", ["merge", "create", "edit", "comment", "ready", "close", "reopen"]], decision="forbidden", justification="GitHub writes only via lib/gh_safe.sh")
+prefix_rule(pattern=["gh", "issue", ["comment", "close", "edit", "create"]], decision="forbidden", justification="GitHub writes only via lib/gh_safe.sh")
+# --- forbidden: git writes (a reviewer never commits, pushes or retargets the repo) ---------
+prefix_rule(pattern=["git", ["push", "commit", "remote", "config", "reset", "checkout", "switch", "rebase", "merge", "clean", "restore", "stash", "rm", "mv", "add", "apply", "am", "cherry-pick", "tag", "fetch"]], decision="forbidden", justification="a reviewer does not write to git")
+prefix_rule(pattern=["git", "-C"], decision="forbidden", justification="no other repository, including /opt/lem")
+# --- forbidden: filesystem writers (the scratch area is the worktree; nothing needs these) ---
+prefix_rule(pattern=[["rm", "mv", "cp", "dd", "tee", "truncate", "shred", "chmod", "chown", "ln", "install", "touch", "mkdir", "rmdir"]], decision="forbidden", justification="no file writes from a review")
+prefix_rule(pattern=[["sed", "perl", "python", "python3", "node", "npm", "npx", "pip", "pip3", "make", "tar", "unzip"]], decision="forbidden", justification="interpreters and archivers can write anywhere")
+# --- forbidden: environment and credential reads --------------------------------------------
+prefix_rule(pattern=[["env", "printenv", "export", "set"]], decision="forbidden", justification="no environment dump")
+prefix_rule(pattern=[["cat", "head", "tail", "grep", "rg", "ls"], ["/home/lem/agent-pipeline/secrets.env", "/home/lem/agent-pipeline/config.env", "/home/lem/agent-pipeline/state/gh-app-token", "/opt/lem/.env", ".env", "/etc/lem", "~/.ssh", "~/.config/gh", "~/.codex", "/proc/self/environ"]], decision="forbidden", justification="credential paths and the process environment (cat /proc/self/environ is printenv by another name)")
+prefix_rule(pattern=["rg"], decision="forbidden", justification="rg --pre COMMAND executes an arbitrary program; grep covers the search")
+prefix_rule(pattern=["codex"], decision="forbidden", justification="no nested agent")

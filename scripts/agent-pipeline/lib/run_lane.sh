@@ -55,7 +55,7 @@ import json,os
 base={"lem_component":"agent-pipeline","environment":os.environ.get("ENVIRONMENT","production"),
  "repo":os.environ.get("REPO","christopherqueenconsulting/linkedin_engagement_manager"),
  "execution_id":os.environ.get("EXECUTION_ID",""),"worker_id":os.environ.get("WORKER_ID",""),
- "lane":os.environ.get("LANE",""),"provider":("ollama-cloud" if os.environ.get("LANE")=="ollama" else "claude-subscription"),
+ "lane":os.environ.get("LANE",""),"provider":{"ollama":"ollama-cloud","codex":"codex-chatgpt"}.get(os.environ.get("LANE",""),"claude-subscription"),
  "model":os.environ.get("AGENT_MODEL",""),"model_tier":os.environ.get("AGENT_TIER",""),
  "route_reason":os.environ.get("ROUTE_REASON",""),"issue_number":os.environ.get("ISSUE",""),
  "pr_number":os.environ.get("PR",""),"issue_priority":os.environ.get("ISSUE_PRIORITY",""),
@@ -262,6 +262,131 @@ if result is not None:
 PY
 }
 
+# ── Codex harness (#2561): the router's review lane ─────────────────────────────────────────────
+# `codex exec` through CLIProxyAPI, review modes only. The sandbox is the exec-policy rules file
+# (config/codex-review.rules) under `--sandbox danger-full-access`, because bubblewrap cannot create
+# user namespaces on this host. Every failure that says "Codex is unavailable" (429, model_not_found,
+# a timeout, a dead proxy, a bad key) pauses ONLY the Codex provider and falls to Sonnet on the
+# Claude harness, then to Ollama tier 3. A missing binary is not one of them: it is an environment
+# that is not ready, refused loudly with EX_SETUP and recorded as nothing.
+CODEX_REFUSED=73
+CODEX_PAUSED_FILE="${CODEX_PAUSED_FILE:-$BASE/CODEX_PAUSED_UNTIL}"
+V2_DIR="${V2_DIR:-$BASE/v2}"
+
+_codex_cli() { python3 "$V2_DIR/codex_lane_cli.py" "$@"; }
+
+# _model_family_ok <claude|codex> <model> -> 0 when the pairing is allowed. Case-insensitive.
+_model_family_ok() {
+  local m="${2,,}"
+  if [ "$1" = "codex" ]; then
+    [ -n "$m" ] || return 1                       # never default a model onto Codex
+    case "$m" in claude*|sonnet*|opus*|haiku*) return 1 ;; esac
+    return 0
+  fi
+  case "$m" in gpt*|codex*|o[0-9]*) return 1 ;; esac
+  return 0
+}
+
+# _lane_base_url <lane> -> the endpoint the launch line names for that lane.
+_lane_base_url() {
+  case "$1" in
+    ollama) echo "$OLLAMA_LITELLM_URL" ;;
+    codex)  echo "${CODEX_BASE_URL:-${CLIPROXY_BASE_URL:-}}" ;;
+    *)      echo "${CLIPROXY_BASE_URL:-anthropic-default}" ;;
+  esac
+}
+
+# _codex_fallback <wt> <prompt> <hint> <class> -> pauses Codex and re-runs on the next provider.
+_codex_fallback() {
+  local wt="$1" prompt="$2" hint="$3" cls="$4" rc
+  local pause_min="${CODEX_PAUSE_MINUTES:-${USAGE_PAUSE_MINUTES:-60}}"
+  echo "$(( $(date +%s) + pause_min * 60 ))" > "$CODEX_PAUSED_FILE"
+  log "codex run failed (${cls}) — pausing the Codex provider for ${pause_min}m; the Claude and Ollama lanes are untouched. Falling back to Claude Sonnet."
+  local sonnet="${LEM_ROUTER_SONNET_MODEL:-claude-sonnet-5-5}" claude_until=0
+  claude_until="$(cat "${CLAUDE_PAUSED_FILE:-/nonexistent}" 2>/dev/null || echo 0)"
+  if [ "${claude_until:-0}" -gt "$(date +%s)" ] 2>/dev/null; then
+    log "codex fallback: the Claude lane is paused — going straight to Ollama tier 3."
+    LEM_LANE_OVERRIDE=ollama LEM_LANE_TIER=lem-agent-tier3 LEM_LANE_MODEL="" LEM_LANE_REASON="codex_fallback_${cls}" \
+      LEM_LANE_MARKER="REVIEW QUALITY DEGRADED: Codex (${cls}) and Claude were unavailable; this review ran on Ollama tier 3." \
+      run_lane "$wt" "$prompt" "$hint"
+    return $?
+  fi
+  LEM_LANE_OVERRIDE=claude LEM_LANE_MODEL="$sonnet" LEM_LANE_REASON="codex_fallback_${cls}" \
+    run_lane "$wt" "$prompt" "$hint"
+  rc=$?
+  if [ $rc -ne 0 ] && [ $rc -ne 124 ]; then
+    log "codex fallback: Claude Sonnet failed (rc=$rc) — falling to Ollama tier 3."
+    LEM_LANE_OVERRIDE=ollama LEM_LANE_TIER=lem-agent-tier3 LEM_LANE_MODEL="" LEM_LANE_REASON="codex_fallback_${cls}_then_claude" \
+      LEM_LANE_MARKER="REVIEW QUALITY DEGRADED: Codex (${cls}) and Claude Sonnet failed; this review ran on Ollama tier 3." \
+      run_lane "$wt" "$prompt" "$hint"
+    rc=$?
+  fi
+  return $rc
+}
+
+# _run_codex_lane <wt> <prompt> <hint>  (LANE=codex, AGENT_MODEL set by dispatch_lane)
+_run_codex_lane() {
+  local wt="$1" prompt="$2" hint="$3" bin rules home out rc t0 ms cls tok_in=0 tok_out=0
+  case "${MODE:-}" in review|selfreview) ;; *)
+    log "run_lane: REFUSING the Codex harness for MODE=${MODE:-?} — it runs review modes only."
+    return "$CODEX_REFUSED" ;;
+  esac
+  if ! bin="$(CODEX_BIN="${CODEX_BIN:-}" _codex_cli binary 2>/dev/null)"; then
+    log "run_lane: REFUSING to dispatch to Codex — no executable codex at '${CODEX_BIN:-/home/lem/.npm-global/bin/codex}' (set CODEX_BIN to an absolute path; a unit's PATH does not include ~/.npm-global/bin). NOT a lane failure: no lane gauge was touched and no pause was set. MODE=${MODE:-?}"
+    return "$CODEX_REFUSED"
+  fi
+  rules="$BASE/config/codex-review.rules"
+  if [ ! -f "$rules" ]; then
+    log "run_lane: REFUSING to dispatch to Codex — the exec-policy rules '${rules}' are missing; danger-full-access without them would be unrestricted. NOT a lane failure."
+    return "$CODEX_REFUSED"
+  fi
+  if [ -z "$(_lane_base_url codex)" ] || [ -z "${CLIPROXY_AUTH_TOKEN:-}" ]; then
+    log "run_lane: REFUSING to dispatch to Codex — CLIPROXY_BASE_URL / CLIPROXY_AUTH_TOKEN are not set. NOT a lane failure."
+    return "$CODEX_REFUSED"
+  fi
+  home="${CODEX_HOME_DIR:-$BASE/codex-home}"
+  mkdir -p "$home/rules" && cp "$rules" "$home/rules/default.rules" || {
+    log "run_lane: REFUSING to dispatch to Codex — cannot install the rules under '$home'. NOT a lane failure."
+    return "$CODEX_REFUSED"; }
+
+  _emit "issue_assigned"; _emit "ai_call_started"
+  log "using lane=codex model=${AGENT_MODEL} base_url=$(_lane_base_url codex) (reason=${ROUTE_REASON:-})"
+  out="$(mktemp "${LOGDIR:-/tmp}/run.XXXXXX")"; t0="$(date +%s)"
+  local provider="model_providers.cliproxy={name=\"cliproxy\",base_url=\"$(_lane_base_url codex)\",env_key=\"CLIPROXY_AUTH_TOKEN\",wire_api=\"responses\"}"
+  ( cd "$wt" && \
+    CODEX_HOME="$home" GIT_EDITOR=true PATH="$(dirname "$bin"):/usr/local/bin:/usr/bin:/bin:$PATH" \
+    timeout "${CODEX_TIMEOUT:-${CLAUDE_TIMEOUT:-45m}}" "$bin" exec --json --skip-git-repo-check \
+      --sandbox danger-full-access -c 'approval_policy="untrusted"' \
+      -c model_provider=cliproxy -c "$provider" -m "$AGENT_MODEL" -C "$wt" "$prompt" ) >"$out" 2>&1
+  rc=$?
+  ms=$(( ($(date +%s) - t0) * 1000 ))
+  eval "$(_codex_cli usage "$out" 2>/dev/null)" 2>/dev/null
+  tok_in="${tokens_in:-0}"; tok_out="${tokens_out:-0}"
+  cat "$out" >> "${LOG:-/dev/null}"
+  TICK_AGENT_RC="$rc"; export TICK_AGENT_RC
+  case "$rc" in 126|127)
+    log "codex run could not execute (rc=$rc). NOT recording a lane failure."
+    rm -f "$out"; return "$CODEX_REFUSED" ;;
+  esac
+  cls="$(_codex_cli classify "$rc" "$out" 2>/dev/null)"
+  _EMIT_EXTRA="{\"success\":$([ $rc -eq 0 ] && echo true || echo false),\"latency_ms\":$ms,\"tokens_in\":$tok_in,\"tokens_out\":$tok_out,\"total_tokens\":$(( tok_in + tok_out )),\"estimated_cost\":0,\"error_type\":\"${cls}\",\"fallback_from\":\"\",\"fallback_to\":\"\"}" \
+    _emit "$([ $rc -eq 0 ] && echo ai_call_completed || echo ai_call_failed)"
+  if [ -n "${LEMD_RUN_META:-}" ]; then
+    printf 'lane=%s\nmodel=%s\nroute_reason=%s\ntokens_in=%s\ntokens_out=%s\n' \
+      codex "$AGENT_MODEL" "${ROUTE_REASON:-}" "$tok_in" "$tok_out" >"$LEMD_RUN_META" 2>/dev/null || true
+  fi
+  rm -f "$out"
+  if [ $rc -eq 0 ]; then _emit "issue_completed"; return 0; fi
+  case "$cls" in
+    rate_limit|model_not_found|timeout|proxy_down|bad_key)
+      _EMIT_EXTRA="{\"fallback_from\":\"codex\",\"error_type\":\"${cls}\"}" _emit "fallback_triggered"
+      _codex_fallback "$wt" "$prompt" "$hint" "$cls"; return $? ;;
+  esac
+  _EMIT_EXTRA="{\"error_type\":\"nonzero_exit\",\"error_message\":\"codex rc=$rc\"}" _emit "issue_failed"
+  log "codex exited rc=$rc (${cls:-other}) — not a provider-availability failure; will retry next tick."
+  return $rc
+}
+
 run_lane() {  # $1=worktree  $2=prompt  $3=claude_model_hint
   local wt="$1" prompt="$2" hint="${3:-}" out rc t0 ms
   local perm_args=() perm_profile=""
@@ -306,8 +431,27 @@ never run in the shared checkout. MODE=${MODE:-?} BRANCH=${BRANCH:-?} ISSUE=${IS
   export TICK_LANE TICK_MODEL TICK_ROUTE_REASON
 
   if [ "${DRY_RUN:-0}" = "1" ]; then
-    log "DRY_RUN: would run lane=$LANE model=${AGENT_MODEL:-default} tier=${AGENT_TIER:-} in $wt"
+    local harness="claude-cli"
+    [ "$LANE" = "codex" ] && harness="codex-exec"
+    log "DRY_RUN: would run lane=$LANE harness=$harness model=${AGENT_MODEL:-default}" \
+      "base_url=$(_lane_base_url "$LANE") tier=${AGENT_TIER:-} in $wt"
     return 0
+  fi
+
+  # One family per harness: a GPT model never goes through the Claude CLI and a Claude model never
+  # through Codex. Checked on the model the dispatcher settled on, before anything launches.
+  # Kept in shell (mirrors lemd.codex_lane.family_ok) so it needs no helper file on disk.
+  if [ "$LANE" = "claude" ] || [ "$LANE" = "codex" ]; then
+    if ! _model_family_ok "$LANE" "${AGENT_MODEL:-}"; then
+      log "run_lane: REFUSING to dispatch — model '${AGENT_MODEL:-}' may not run on the $LANE harness" \
+        "(GPT models run only on Codex, Claude models only on Claude)."
+      return 1
+    fi
+  fi
+
+  if [ "$LANE" = "codex" ]; then
+    _run_codex_lane "$wt" "$prompt" "$hint"
+    return $?
   fi
 
   _emit "issue_assigned"
