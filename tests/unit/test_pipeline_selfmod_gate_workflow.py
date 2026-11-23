@@ -144,9 +144,14 @@ class TestItJudgesWithTheBaseBranchCode:
         assert checkouts[0]["with"]["persist-credentials"] is False
 
     def test_the_pr_head_is_never_checked_out(self):
+        # The ONE permitted reference to the head is its SHA, handed to the self-heal step as an
+        # API filter value. Anything else naming the head (a ref, a checkout, a run line) fails.
         text = _WORKFLOW_PATH.read_text(encoding="utf-8")
-        assert "pull_request.head" not in text
         assert "refs/pull/" not in text
+        assert text.count("pull_request.head") == 1
+        heal = _self_heal_step(_load())
+        assert heal["env"]["HEAD_SHA"] == "${{ github.event.pull_request.head.sha }}"
+        assert "pull_request.head" not in str(heal["run"])
 
     def test_the_pr_files_and_diff_arrive_as_data(self):
         run_text = _all_run_steps(_load())
@@ -187,6 +192,83 @@ class TestItIsSafeAsARequiredCheckInTheMergeQueue:
         concurrency = _load()["concurrency"]
         assert "github.ref" in concurrency["group"]
         assert "merge_group" in str(concurrency["cancel-in-progress"])
+
+
+def _self_heal_step(workflow: dict[str, Any]) -> dict[str, Any]:
+    heals = [s for s in _steps(workflow) if "rerun-failed-jobs" in str(s.get("run", ""))]
+    assert len(heals) == 1, "exactly one step may re-run gate runs"
+    return heals[0]
+
+
+class TestItSelfHealsOnApproval:
+    """A passing review run re-runs the stale failed pull_request-event run (#2596, #2645)."""
+
+    def test_concurrency_is_split_by_event(self):
+        # Without the event name, a review-triggered run and a pull_request-triggered run (or its
+        # self-heal re-run) share one group and cancel each other (#2645 attempt 2).
+        concurrency = _load()["concurrency"]
+        assert "github.event_name" in concurrency["group"]
+        assert "github.event.pull_request.number" in concurrency["group"]
+        # Superseded runs of the SAME event are still cancelled.
+        assert str(concurrency["cancel-in-progress"]) == "${{ github.event_name != 'merge_group' }}"
+
+    def test_actions_write_is_job_scoped_and_minimal(self):
+        workflow = _load()
+        assert "actions" not in (workflow.get("permissions") or {})
+        job_perms = workflow["jobs"]["gate"]["permissions"]
+        assert job_perms == {"contents": "read", "pull-requests": "read", "actions": "write"}
+
+    def test_no_other_step_touches_actions_runs(self):
+        workflow = _load()
+        heal = _self_heal_step(workflow)
+        for step in _steps(workflow):
+            if step is heal:
+                continue
+            assert "actions/runs" not in str(step.get("run", "")), step.get("name")
+            assert "gh run rerun" not in str(step.get("run", "")), step.get("name")
+
+    def test_it_runs_only_on_a_passing_review_event(self):
+        cond = str(_self_heal_step(_load()).get("if", ""))
+        assert "github.event_name == 'pull_request_review'" in cond
+        assert "success()" in cond
+        assert "always()" not in cond and "failure()" not in cond
+
+    def test_it_is_the_last_step_so_it_follows_the_verdict(self):
+        steps = _steps(_load())
+        assert steps[-1] == _self_heal_step(_load())
+        decide = next(i for i, s in enumerate(steps)
+                      if "scripts/pipeline_selfmod_gate.py" in str(s.get("run", ""))
+                      and "--approvers" in str(s.get("run", "")))
+        assert decide < len(steps) - 1
+
+    def test_it_filters_to_this_sha_this_workflow_pull_request_failures(self):
+        run = str(_self_heal_step(_load())["run"])
+        # Server-side filter...
+        assert "event=pull_request" in run
+        assert "head_sha=$HEAD_SHA" in run
+        assert "status=failure" in run
+        assert "actions/workflows/$workflow_id/runs" in run
+        # ...re-checked client-side, so an ignored query filter cannot widen the set.
+        assert '.head_sha == $sha' in run
+        assert '.event == "pull_request"' in run
+        assert '.conclusion == "failure"' in run
+        assert '.workflow_id == $wf' in run
+        # The workflow id is THIS run's, never a hard-coded or other workflow.
+        assert "actions/runs/$SELF_RUN_ID" in run
+        assert _self_heal_step(_load())["env"]["SELF_RUN_ID"] == "${{ github.run_id }}"
+
+    def test_it_reruns_failed_jobs_only(self):
+        run = str(_self_heal_step(_load())["run"])
+        assert "rerun-failed-jobs" in run
+        assert re.search(r"/rerun[\"'\s]", run) is None, "a full re-run would redo passing jobs"
+
+    def test_it_is_fail_soft(self):
+        heal = _self_heal_step(_load())
+        assert heal.get("continue-on-error") is True
+        run = str(heal["run"])
+        assert "set -e" not in run, "errexit would turn a re-run error into a failed gate"
+        assert "::warning" in run
+        assert run.rstrip().endswith("exit 0")
 
 
 class TestItActsOnAPullRequestNotAPush:

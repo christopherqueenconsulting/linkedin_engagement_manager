@@ -46,6 +46,18 @@ script, or shrink CODEOWNERS, to approve itself. The workflow YAML itself still 
 every `pull_request` workflow does. That file is protected by the pipeline credential having no
 `workflows` permission (`docs/contribution-security.md`).
 
+**Self-heal on approval (#2596, #2645).** The gate runs on `pull_request` AND `pull_request_review`.
+Before the owner approves, the `pull_request` run fails. The approval's review run passes, but the
+earlier failed check run (same name, same head SHA, another workflow run) used to keep blocking
+branch protection until someone re-ran it by hand. Now a review run that PASSES re-runs the failed
+jobs of this workflow's own `pull_request`-event runs for the same head SHA
+(`rerun-failed-jobs`), and the re-run re-reads the approvals and passes. It never re-runs on a
+failing verdict, for another SHA, or for another workflow, and a re-run error is a `::warning::`
+that leaves the passing gate green. The job holds `actions: write` for this (job-scoped, beside the
+two reads); the head SHA is an API filter value and is never checked out. Concurrency is keyed on
+the event name too, so a review run and a `pull_request` run (or its re-run) never cancel each
+other; superseded runs of the same event still are.
+
 **Merge queue.** `main` merges through a queue, and a required check that never reports on
 `merge_group` blocks the queue. The gate's `merge_group` run reports the same job name and passes.
 The verdict was decided on the PR before it could be enqueued, and no approval can change inside the
