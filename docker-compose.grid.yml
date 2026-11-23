@@ -21,7 +21,9 @@
 # same commit — tests/unit/app/test_selenium_capacity.py fails the build if they drift.
 services:
   selenium-hub:
-    image: selenium/hub:latest
+    # Pinned (#2620): `:latest` let Chrome change under a running stack. Grid 4.53.0 / Chrome 158,
+    # the digest that was live on 2026-11-23. Bump hub and node together, on purpose.
+    image: selenium/hub:4.53.0-20261120@sha256:b9514a54e2432be098f8f0381631334a0f5a0f32cf8b88fe6a0bdd9a37764da7
     container_name: selenium-hub
     hostname: selenium-hub
     ports:
@@ -78,7 +80,7 @@ services:
       start_period: 30s
 
   selenium-node-chrome:
-    image: selenium/node-chrome:latest
+    image: selenium/node-chrome:4.53.0-20261120@sha256:af1f98f1be2f49c966fc95a6f07d9cb6f0fa5953d4d66e049738ff26f12a6dd7  # same pin as selenium-hub
     # No container_name: this service is replicated, and Compose refuses to scale a named service.
     # Nodes are addressed by the hub over the event bus, never by us, so they need no stable name.
     # No chrome-profile volume either — a named volume shared by N replicas is one profile
@@ -142,7 +144,7 @@ services:
   # here. That is what lets an autonomous agent run the read-only live probe without ever taking a
   # slot the Celery lanes are sized for.
   selenium-node-debug:
-    image: selenium/node-chrome:latest
+    image: selenium/node-chrome:4.53.0-20261120@sha256:af1f98f1be2f49c966fc95a6f07d9cb6f0fa5953d4d66e049738ff26f12a6dd7  # same pin as selenium-hub
     container_name: selenium-node-debug
     hostname: selenium-node-debug
     # TWO sessions, sized for the two consumers that genuinely overlap (#1301): a probe run — the
