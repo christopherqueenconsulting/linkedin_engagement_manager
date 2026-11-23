@@ -306,6 +306,7 @@ second one — same action, same head-keyed comment, same counted lap.
 | 5 | hold label on a PR with auto-merge **armed** | disarm | `human_hold_armed` | — |
 | 6 | hold label + actionable answer, **and this reason has parked `LEMD_MAX_PARK_LAPS` times** | abandon | `park_laps_exhausted` | — |
 | 7 | hold label + actionable answer | unpark | `owner_answered` | — |
+| 7a | …as 7, but the answer is an owner's GitHub **APPROVED review** of the PR's current head, submitted after the latest Decision Comment, with **no actionable trusted reply** after that menu (PRs only) | unpark | `owner_approved` | — |
 | 8 | hold label + `hold`/`question` answer | none → parked | `human_hold:{verdict}` | 6h |
 | 9 | hold label + an answer already spent | none → parked | `human_hold:answer_already_routed` | 6h |
 | 9a | `needs-human`, no answer, and the thread is READABLE with **no Decision Comment on it** (`menu_posted is False`) | **park** | `human_hold_unasked` | — |
@@ -332,6 +333,29 @@ nothing says it exists.
 `HOLD_LABELS = {needs-human, agent:blocked}`. A held item carrying no `agent:*` label is still
 admitted (row 4 makes an exception) — otherwise an item parked with only `needs-human` would be
 unanswerable, and the owner's reply to their own issue would be read, classified, and discarded.
+
+**Row 7a: one owner touch is enough.** A parked PR used to need the owner to reply `ok` under the
+Decision Comment AND approve on GitHub. An APPROVED review now IS the answer `ok` (every ✅-recommended
+option), read by `answers.approval` from REST `pulls/{n}/reviews` — typed authors — on every held PR
+whose thread carries a menu, and routed through the same `unpark.sh`. It counts only when ALL hold:
+the approver's NEWEST review is `APPROVED` (a later `COMMENTED`/`CHANGES_REQUESTED`, or a dismissal,
+takes it back); its author is a `User` who is the owner or a `LEMD_TRUSTED_ANSWER_LOGINS` login —
+never a Bot, never the App, and narrower than a comment answer: a write collaborator's approval is
+not the owner's sign-off; its `commit_id` is the PR's CURRENT head (an approval of an older head is
+stale); it was submitted after the latest Decision Comment; **no actionable trusted reply**
+(`verdict_for` = `answer`/`directive`) sits anywhere after that menu — an explicit reply always wins
+over a sign-off, in either order: before the approval `parse` routes it (row 7) and the approval is
+ignored as an answer, after it the reply is the newer act; and no reply at or after the approval
+comes from a trusted author ("hold off" typed after approving still holds) or from one whose
+permission lookup, or whose timestamp, is unreadable — a reply that cannot be attributed or placed
+blocks the approval rather than being skipped. A hold phrase in the review body reads as row 8. An
+unreadable review read is no approval (the comment answer is still read). Its answer id is
+`review:<id>`, spent once in `last_comment_id` like a comment's; `v2_owner_answered` hands that
+namespace to `v2_owner_approved`, which re-reads the head, the reviews and the thread at execution
+time (`v2_owner_approval`) and refuses on anything unreadable. The **runner names the approval to
+MODE=revise**: `agent_run.sh` re-runs `v2_owner_approval` and `decision_prompt_args` passes
+`ANSWER_PR=review:<id> ANSWER_KIND_PR=approval` — the agent never infers an approval from the
+reviews list. Issues never read reviews — approvals exist only on PRs.
 
 **Row 9a is the hold that arrived already placed (#1736).** Every menu in v2 is written by `park.sh`,
 which runs only on `ACT_PARK` — so an item that was ALREADY `needs-human` on its first observation
@@ -721,7 +745,8 @@ runs closed `-9` with a ~675s mean read exactly like a timeout problem, and were
 **How work ends.** A park is the pipeline saying "I stopped". The ONE way out is a TRUSTED reply to
 the Decision Comment — the owner, or a collaborator with `admin`/`maintain`/`write`
 (`docs/contribution-security.md` §1, "Comment authority") — classified by `lemd/answers.py`:
-`answer`/`directive` un-park, `hold`/`question` stay parked. Anyone else's reply is not an answer
+`answer`/`directive` un-park, `hold`/`question` stay parked. On a PR the owner's APPROVED review of
+the current head is the same answer `ok` (row 7a). Anyone else's reply is not an answer
 (no new decision row: it reads as row 10's "no answer"). A Decision Comment opens the answer
 window only when its author may ask (the App, the owner, a trusted author), so an outsider quoting
 the phrase cannot push a trusted answer out of it.

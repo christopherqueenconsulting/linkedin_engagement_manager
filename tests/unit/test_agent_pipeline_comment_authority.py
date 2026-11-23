@@ -492,7 +492,46 @@ class TestDecisionContext:
     def test_the_prompt_args_carry_both_threads(self, tmp_path):
         r = _run(tmp_path, DECISION_CTX + 'decision_prompt_args "" ""', [])
         assert r.stdout.strip().splitlines()[-1] == \
-            "MENU_PR=none ANSWER_PR=none MENU_ISSUE=none ANSWER_ISSUE=none"
+            "MENU_PR=none ANSWER_PR=none ANSWER_KIND_PR=none MENU_ISSUE=none ANSWER_ISSUE=none"
+
+    def _args(self, tmp_path, comments, approval: str) -> dict[str, str]:
+        r = _run(tmp_path, DECISION_CTX + f'decision_prompt_args 7 "" "{approval}"', comments)
+        last = [ln for ln in r.stdout.splitlines() if not ln.startswith("LOG:")][-1]
+        return dict(kv.split("=", 1) for kv in last.split())
+
+    def test_a_comment_answer_is_named_with_its_kind(self, tmp_path):
+        menu, answer = c(DECISION, APP), c("1B", OWNER)
+        got = self._args(tmp_path, [menu, answer], "")
+        assert (got["MENU_PR"], got["ANSWER_PR"], got["ANSWER_KIND_PR"]) == \
+            (menu["html_url"], answer["html_url"], "comment")
+
+    def test_the_runner_names_the_routed_approval(self, tmp_path):
+        """The approval is NAMED to the agent as `review:<id>`, kind `approval` — never inferred."""
+        menu = c(DECISION, APP)
+        got = self._args(tmp_path, [menu], "4242")
+        assert (got["MENU_PR"], got["ANSWER_PR"], got["ANSWER_KIND_PR"]) == \
+            (menu["html_url"], "review:4242", "approval")
+
+    def test_an_approval_with_no_menu_names_nothing(self, tmp_path):
+        got = self._args(tmp_path, [c("1B", OWNER)], "4242")
+        assert (got["MENU_PR"], got["ANSWER_PR"], got["ANSWER_KIND_PR"]) == ("none", "none", "none")
+
+    @pytest.mark.parametrize("bad", ["review:4242", "4242 ANSWER_PR=x", "abc", "-1"])
+    def test_a_malformed_approval_id_is_never_passed_through(self, tmp_path, bad):
+        menu, answer = c(DECISION, APP), c("1B", OWNER)
+        got = self._args(tmp_path, [menu, answer], bad)
+        assert (got["ANSWER_PR"], got["ANSWER_KIND_PR"]) == (answer["html_url"], "comment")
+
+    def test_the_revise_prompt_names_the_verified_approval(self):
+        """agent_run.sh asks `v2_owner_approval` and hands its id, not the agent's inference."""
+        agent_run = (_PIPELINE / "v2" / "actions" / "agent_run.sh").read_text(encoding="utf-8")
+        i = agent_run.index("  revise)    v2_owner_approval")
+        block = agent_run[i:agent_run.index(";;", i)]
+        assert 'v2_owner_approval "$PR"' in block
+        assert 'decision_prompt_args "$PR" "$ISSUE" "$V2_APPROVAL"' in block
+        revise = (_PIPELINE / "runbook" / "revise.md").read_text(encoding="utf-8")
+        assert "ANSWER_KIND_PR" in revise and "review:<id>" in revise
+        assert "newest review in" not in revise, "the agent must not infer an approval itself"
 
 
 # ------------------------------------------------------------------ daemon and action agree

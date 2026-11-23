@@ -178,7 +178,10 @@ case "$MODE" in
   # fails the build if these two halves disagree again.
   selfreview) PROMPT="Read $RUNBOOK_DIR/selfreview.md and follow it. PR=$PR ISSUE=$ISSUE BRANCH=$BRANCH MARKER='${CLAUDE_REVIEW_MARKER:-🔎 Claude adversarial review}'." ;;
   rebase)    PROMPT="Read $RUNBOOK_DIR/rebase.md and follow it. PR=$PR ISSUE=$ISSUE BRANCH=$BRANCH." ;;
-  revise)    PROMPT="Read $RUNBOOK_DIR/revise.md and follow it. PR=$PR BRANCH=$BRANCH OWNER=$ASSIGNEE. $(decision_prompt_args "$PR" "$ISSUE")" ;;
+  # An owner approval that answers the PR's menu (row 7a) is NAMED here as `review:<id>` with
+  # ANSWER_KIND_PR=approval — re-verified over typed REST by `v2_owner_approval` — so the agent never
+  # infers one from the reviews list. Refused or unreadable: no approval is named.
+  revise)    v2_owner_approval "$PR" >/dev/null 2>&1 || V2_APPROVAL=""; PROMPT="Read $RUNBOOK_DIR/revise.md and follow it. PR=$PR BRANCH=$BRANCH OWNER=$ASSIGNEE. $(decision_prompt_args "$PR" "$ISSUE" "$V2_APPROVAL")" ;;
   depfix)    PROMPT="Read $RUNBOOK_DIR/depfix.md and follow it. PR=$PR BRANCH=$BRANCH." ;;
   depmajor)  PROMPT="Read $RUNBOOK_DIR/depmajor.md and follow it. PR=$PR BRANCH=$BRANCH." ;;
   docfix)    PROMPT="Read $RUNBOOK_DIR/docfix.md and follow it. PR=$PR BRANCH=$BRANCH." ;;
