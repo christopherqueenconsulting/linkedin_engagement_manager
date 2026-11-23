@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.208.4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.208.3...v0.208.4) (2026-11-23)
+
+
+### Bug Fixes
+
+* **newsletter:** defer a rate-limited login in subscriber tracking as a no-op ([ea53762](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ea537622c22d0314bde68302afaac8cbcb425236))
+* **newsletter:** defer a rate-limited login in subscriber tracking as a no-op (closes [#2617](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2617)) ([#2618](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2618)) ([ea53762](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ea537622c22d0314bde68302afaac8cbcb425236))
+
 ## [0.208.3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.208.2...v0.208.3) (2026-11-21)
 
 
