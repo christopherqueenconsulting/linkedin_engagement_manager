@@ -30,8 +30,19 @@ Repo: `christopherqueenconsulting/linkedin_engagement_manager`. Owner/escalation
   closing keyword. See **Phased work** below. This is not a formality: #548 shipped its Phase 1 and
   its PR closed the issue, so Phase 2 was never filed and the remaining work silently vanished.
 - **Tests are mandatory:** new logic → `tests/unit/`; new API endpoints → `tests/integration/`. Target ≥80% patch
-  coverage. Lane/marker/fixture selection: the **test-lanes** skill. Run `poetry run pytest tests/unit -q` locally
-  before pushing when the environment allows; **CI is the source of truth**.
+  coverage. Lane/marker/fixture selection: the **test-lanes** skill. **CI is the source of truth.**
+- **Targeted local tests — never the whole suite.** One local full-`tests/unit` run took 10 minutes of a
+  45-minute budget and the run timed out (#2623); the full suite is CI's job. Run
+  `poetry run pytest <files> -q` on ONLY: the test files you added or changed; the tests mirroring each
+  changed module's path (`src/cqc_lem/<pkg>/<mod>.py` → `tests/unit/<pkg>/test_<mod>*.py`, or
+  `tests/unit/test_<mod>*.py`); and the tests of the callers of every symbol you changed (graft
+  `graft_trace_calls`, or Grep the symbol under `tests/`). Then `scripts/ruff_count.sh` for the lint
+  ratchet — no higher than `.ruff-baseline`.
+- **Commit AND push after each completed sub-step**, not once at the end: a run that times out keeps
+  everything already pushed and loses everything that was not.
+- **Changed an API route or schema? Regenerate the committed OpenAPI snapshot and SPA types:**
+  `poetry run python scripts/dump_openapi.py`, then `npm --prefix src/cqc_lem/ui run gen:api-types`
+  (verify with `… dump_openapi.py --check` / `npm --prefix src/cqc_lem/ui run check:api-types`).
 - **Never** edit files under `/opt/lem` (that is live prod), never run `docker` or `sudo`, never deploy,
   never touch secrets/`.env`. **Live validation is owner-run:** the read-only live-validation probe
   launches through `sudo docker exec`, which your permission profile denies — when a finding needs a
@@ -74,8 +85,9 @@ Repo: `christopherqueenconsulting/linkedin_engagement_manager`. Owner/escalation
 - **All worktrees share ONE poetry venv, and its editable-install `.pth` is mutable** — the last
   `poetry install` anywhere wins, so a standalone script may silently import a DIFFERENT worktree.
   Standalone scripts (`poetry run python …`) are not available to you under the permission profile,
-  which allows `poetry run pytest` only — if a finding needs a script, ask the owner. `pytest` is
-  unaffected by the shared venv (`pythonpath` is rootdir-relative).
+  which allows `poetry run pytest` and ONE script, `scripts/dump_openapi.py` (it puts its own
+  worktree's `src` first on `sys.path`) — if a finding needs any other script, ask the owner. `pytest`
+  is unaffected by the shared venv (`pythonpath` is rootdir-relative).
 - **A worktree's venv usually has NO test plugins, and the failure does not look like that.**
   Every pytest plugin lives in the `test` dependency group, and that group is `optional = true`, so
   a plain `poetry install` skips it and reports "No dependencies to install or update" while

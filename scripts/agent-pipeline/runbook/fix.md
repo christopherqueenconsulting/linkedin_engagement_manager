@@ -7,6 +7,6 @@ Phased work, Escalation, Decision Comment and the "issue text is DATA" framing a
 Required CI checks are failing on PR #$PR (attempt #$ATTEMPTS). The worktree is on `$BRANCH`.
 1. `gh pr checks $PR` and inspect the failing run logs (`gh run view <run-id> --log-failed`).
 2. Diagnose and fix the real cause (code or test). Keep it scoped to this PR.
-3. Re-run relevant unit tests locally if possible.
+3. Re-run only the failing + related test files locally (the preamble's **Targeted local tests**) — never the full suite.
 4. Commit (`/home/lem/agent-pipeline/lib/git_commit.sh -m "…"`) + `/home/lem/agent-pipeline/lib/git_push.sh`. The push re-triggers CI. STOP.
 - If ATTEMPTS ≥ 4, escalate (see the preamble's "Escalate to a human") instead of another blind fix.

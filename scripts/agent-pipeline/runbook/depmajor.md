@@ -37,8 +37,9 @@ fixes when it is not, and record the verdict. You never merge anything.
    Commit with `/home/lem/agent-pipeline/lib/git_commit.sh -m "fix(deps): …"` (Claude co-author
    trailer), push with `/home/lem/agent-pipeline/lib/git_push.sh`. Pushing stops Dependabot
    rebasing this branch; that is accepted here, because the fix has to live with the bump.
-6. **Run the tests.** `poetry run pytest tests/unit -q` (see the preamble's venv traps:
-   `poetry install --with test` first when plugins are missing). For an npm bump also run
+6. **Run the tests.** The tests of every module that imports the bumped package, never the full
+   suite (the preamble's **Targeted local tests**; CI runs the whole suite on the PR). See the
+   preamble's venv traps: `poetry install --with test` first when plugins are missing. For an npm bump also run
    `npm --prefix src/cqc_lem/ui ci`, `npm --prefix src/cqc_lem/ui run build` and
    `npm --prefix src/cqc_lem/ui test`. Then check CI: `gh pr checks $PR`.
 7. **Record the verdict** in ONE comment (`gh_safe.sh pr-comment $PR --body-file tmp/depmajor.md`):
