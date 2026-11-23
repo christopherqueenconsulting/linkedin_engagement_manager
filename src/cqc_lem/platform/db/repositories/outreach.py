@@ -1528,11 +1528,11 @@ def update_lead(lead_id: int, notes: str = None, manual_stage: "LeadStage" = Non
     except mysql.connector.Error as err:
         log_error(f"Could not update lead {lead_id}", exc=err)
         return False
-def get_lead_stage_map(user_id: int) -> dict:
+def get_lead_stage_map(user_id: int) -> Optional[dict]:
     """Map each of the user's `person_key`s to its computed stage.
 
-    Snapshotted before a re-score so the rebuild can tell which stages actually moved. {} on a read
-    error, which makes every lead read as new.
+    Snapshotted before a re-score so the rebuild can tell which stages actually moved. None on a read
+    error (never {}, which would make every lead read as new and flood the history).
     """
     try:
         with db_cursor() as cursor:
@@ -1540,7 +1540,7 @@ def get_lead_stage_map(user_id: int) -> dict:
             return {r[0]: r[1] for r in (cursor.fetchall() or [])}
     except mysql.connector.Error as err:
         log_error("Could not read lead stages", exc=err, user_id=user_id)
-        return {}
+        return None
 def record_derived_stage_changes(user_id: int, before: dict) -> int:
     """Write a `derived` stage event for each lead whose computed stage moved.
 

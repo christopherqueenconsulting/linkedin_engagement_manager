@@ -65,6 +65,16 @@ class TestRebuildWritesDerivedHistory:
         assert order == ["snapshot", "reset", ("record", {"in:a": "warm"})]
 
 
+    def test_unreadable_snapshot_records_no_history(self):
+        from cqc_lem.app import run_scheduler
+        with patch("cqc_lem.utilities.db.get_lead_stage_map", return_value=None), \
+             patch("cqc_lem.utilities.db.reset_lead_scores"), \
+             patch("cqc_lem.utilities.db.get_lead_activity", return_value=[]), \
+             patch("cqc_lem.utilities.db.record_derived_stage_changes") as rec:
+            assert run_scheduler._rebuild_leads_for_user(3) == 0
+        rec.assert_not_called()
+
+
 class TestOrganicEngagementSummary:
     def test_26_of_30_own_comments_leaves_4(self):
         from cqc_lem.utilities.post_stats import organic_engagement_summary

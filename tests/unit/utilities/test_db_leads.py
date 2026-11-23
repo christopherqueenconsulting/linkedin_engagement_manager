@@ -331,7 +331,7 @@ class TestDerivedStageHistory:
                 get_lead_stage_map,
                 record_derived_stage_changes,
             )
-            assert get_lead_stage_map(1) == {}
+            assert get_lead_stage_map(1) is None
             assert record_derived_stage_changes(1, {}) == 0
             assert get_lead_funnel_counts(1) is None
 

@@ -1922,7 +1922,8 @@ def _rebuild_leads_for_user(user_id: int, days: int = LEAD_ACTIVITY_WINDOW_DAYS)
     reset_lead_scores(user_id)
     rows = get_lead_activity(user_id, days=days)
     if not rows:
-        record_derived_stage_changes(user_id, stages_before)
+        if stages_before is not None:
+            record_derived_stage_changes(user_id, stages_before)
         return 0
     prefs = get_engagement_preferences(user_id) or {}
     urls = sorted({r.get("person_profile_url") for r in rows if r.get("person_profile_url")})
@@ -1939,7 +1940,8 @@ def _rebuild_leads_for_user(user_id: int, days: int = LEAD_ACTIVITY_WINDOW_DAYS)
                        next_action=lead.next_action, first_signal_at=lead.first_signal_at,
                        last_signal_at=lead.last_signal_at):
             saved += 1
-    record_derived_stage_changes(user_id, stages_before)
+    if stages_before is not None:
+        record_derived_stage_changes(user_id, stages_before)
     log_info(f"Rebuilt {saved} lead(s) for user {user_id}", user_id=user_id,
              task_name="rebuild_leads_for_user")
     return saved
