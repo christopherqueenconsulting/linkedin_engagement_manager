@@ -23,24 +23,27 @@ Refusals (exit code 2, nothing written):
   therefore also refuses while the account has rows that could still send (pending, approved,
   scheduled or sending items in the DM, connection-request, catch-up, lead-response, outreach-funnel
   and post queues) unless `--cancel-queued` is passed, which cancels them in the SAME transaction as
-  the change. A queue count that cannot be read counts as "there are some".
+  the change. A queue count that cannot be read counts as "there are some". The queue is counted
+  again inside the write's transaction, under lock, so a row queued after the first count refuses.
+- **A kind that changed since it was read** refuses: the write is a compare-and-set on it.
 
-Every change writes an `account_kind_changed` row to `auth_audit_log` (best effort, reported on
-stderr if it could not be written) and is logged. `--dry-run` prints what would happen and writes
-nothing. It makes no LinkedIn call and opens no browser.
+Every change writes an `account_kind_changed` row to `auth_audit_log` in the SAME transaction as the
+change — if the audit row cannot be written, nothing changes (exit 3) — and is logged. `--dry-run`
+prints what would happen and writes nothing. It makes no LinkedIn call and opens no browser.
 """
 
 import argparse
 import sys
 from typing import Optional, Sequence
 
-from cqc_lem.platform.db.enums import AuthAuditEvent
 from cqc_lem.utilities.db import (
+    ACCOUNT_KIND_WRITE_OK,
+    ACCOUNT_KIND_WRITE_QUEUED,
+    ACCOUNT_KIND_WRITE_STALE,
     count_queued_sends,
     get_linkedin_credential_flags,
     get_user_id,
     is_user_admin,
-    record_auth_event,
     set_user_account_kind,
 )
 from cqc_lem.utilities.engagement_mode import (
@@ -130,19 +133,32 @@ def run(email: str, kind: str, allow_credentials: bool = False,
         _out(f"dry run: would set account {user_id} from {current} to {kind}"
              + (f" and cancel queued sends ({queued})" if cancel_queued and leaving else ""))
         return EXIT_OK
-    # Cancelled even when the count could not be read: the cancel does not need the count.
-    if not set_user_account_kind(user_id, kind, cancel_queued=bool(cancel_queued and leaving)):
-        _err("failed: the write did not change exactly one row")
+    # ONE transaction: compare-and-set on `current`, the queue re-checked under lock when leaving
+    # sandbox without --cancel-queued (the count above is advisory: rows can be queued after it), the
+    # cancel, and the audit row. Cancelled even when the count could not be read.
+    result = set_user_account_kind(
+        user_id, kind, expected_kind=current, cancel_queued=bool(cancel_queued and leaving),
+        require_empty_queue=bool(leaving and not cancel_queued),
+        audit_details={"allow_credentials": bool(allow_credentials),
+                       "allow_reset_to_standard": bool(allow_reset_to_standard),
+                       "allow_leave_sandbox": bool(allow_leave_sandbox),
+                       "cancelled_queued": queued if cancel_queued and leaving else None})
+    if result == ACCOUNT_KIND_WRITE_STALE:
+        return _refuse(f"account {user_id} is no longer {current} (changed concurrently); nothing "
+                       "was changed. Re-run to decide against the new kind")
+    if result == ACCOUNT_KIND_WRITE_QUEUED:
+        return _refuse(f"account {user_id} gained a queued send since it was counted; nothing was "
+                       "changed. Cancel it first, or pass --cancel-queued")
+    if result != ACCOUNT_KIND_WRITE_OK:
+        _err("failed: the change and its audit row were rolled back")
         return EXIT_FAILED
     log_info(f"account_kind changed {current} -> {kind}", user_id=user_id, action_type="account_kind")
-    if not record_auth_event(AuthAuditEvent.ACCOUNT_KIND_CHANGED, user_id=user_id,
-                             details={"from": current, "to": kind,
-                                      "allow_credentials": bool(allow_credentials),
-                                      "allow_reset_to_standard": bool(allow_reset_to_standard),
-                                      "allow_leave_sandbox": bool(allow_leave_sandbox),
-                                      "cancelled_queued": queued if cancel_queued and leaving else None}):
-        _err("warning: the audit row could not be written; record this change by hand")
     _out(f"ok: account {user_id} {current} -> {kind}")
+    if kind == ACCOUNT_KIND_SANDBOX:
+        # Accepted residual (#2527): a task already past its gate when the flag flipped may finish
+        # that one send. Every API publish helper re-reads the kind in `guard_send`, so nothing
+        # starts after this line.
+        _out("note: a send already in flight may still complete; nothing new will start")
     return EXIT_OK
 
 

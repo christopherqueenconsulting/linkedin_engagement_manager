@@ -520,7 +520,23 @@ therefore refuses to move an account off `sandbox` unless two things are said ou
 1. `--allow-leave-sandbox`: any move away from `sandbox` (to `internal` as well as to `standard`;
    `standard` additionally needs `--allow-reset-to-standard`).
 2. The queue is empty, or `--cancel-queued` is passed, which cancels it **in the same transaction** as the
-   change. A queue that cannot be counted counts as "there are some".
+   change. A queue that cannot be counted counts as "there are some". The first count is only for the
+   message: the write counts again **inside its own transaction, with a locking read after the kind
+   row is locked**, so a row queued between the two refuses the change instead of going live (#2527).
+
+**One transaction, every change (#2527).** The write is a **compare-and-set** on the kind the tool
+read: if another run changed it in between, the tool refuses (exit 2) and changes nothing. The
+`account_kind_changed` audit row is inserted in the same transaction, so there is never a change without
+its audit row; if that insert fails, the whole change rolls back (explicit `ROLLBACK`) and the tool
+exits 3.
+
+**Flipping TO sandbox: a send already in flight may finish.** The kind is read when a task runs, so a
+task that already passed its gate before the flip (one DM mid-type, one publish mid-upload) can still
+complete that one send. Accepted: the window is one task long, flipping to sandbox is the safe direction,
+and every API publish helper re-reads the kind in `guard_send`, so nothing new starts. The tool prints a
+note saying so. Tasks queued with an ETA (`post_to_linkedin`, `send_scheduled_dm`,
+`send_catchup_touch`) carry only ids and re-read the row status and the kind when they run;
+`TestEtaQueuedSendsReReadAtRunTime` pins it.
 
 From `/opt/lem`, as `deploy` (host access, the container name and the SQL prompt: § Operator rollback,
 step 0, reused by link):

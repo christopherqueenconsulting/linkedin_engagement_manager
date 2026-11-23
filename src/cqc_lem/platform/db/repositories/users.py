@@ -22,11 +22,13 @@ from mysql.connector.abstracts import MySQLCursorAbstract
 from cqc_lem.platform.db import connection as _connection
 from cqc_lem.platform.db.connection import db_cursor
 from cqc_lem.platform.db.enums import (
+    AuthAuditEvent,
     CatchupEventType,
     EngagementMode,
     OnboardingStep,
     PostStatus,
 )
+from cqc_lem.platform.db.repositories.auth import insert_auth_event_row
 from cqc_lem.platform.db.shared import (
     DEFAULT_CONTENT_BUFFER_DAYS,
     DEFAULT_CONTENT_BUFFER_MAX_POSTS,
@@ -1766,37 +1768,88 @@ def count_queued_sends(user_id: int) -> Optional[dict]:
     return counts
 
 
-def set_user_account_kind(user_id: int, account_kind: str, *, cancel_queued: bool = False) -> bool:
-    """Write `users.account_kind`. True only when exactly one row changed hands.
+#: What `set_user_account_kind` answers. Only `ok` committed anything.
+ACCOUNT_KIND_WRITE_OK = "ok"
+#: The stored kind was no longer the one the caller read (compare-and-set lost): nothing written.
+ACCOUNT_KIND_WRITE_STALE = "stale"
+#: `require_empty_queue` found a row that could still send: nothing written.
+ACCOUNT_KIND_WRITE_QUEUED = "queued"
+#: A database fault: nothing written.
+ACCOUNT_KIND_WRITE_FAILED = "failed"
 
-    With `cancel_queued=True` every row in `QUEUED_SEND_QUEUES` that has not gone out yet is cancelled
-    in the SAME transaction, so the account can never be seen in its new kind with the old queue (or
-    the reverse). Nothing is cancelled when the kind row itself did not change.
 
-    Called ONLY by `python -m cqc_lem.utilities.account_kind_admin`, run by the owner on the host. No
-    API route may call it: a machine session must never be able to flag an account
-    (`test_account_kind_is_owner_only.py` walks the route table and the api package for it). The
-    value is validated here too, so a typo can never write something the readers would treat as a
-    third kind.
+class _AccountKindWriteAborted(Exception):
+    """Internal: unwinds `set_user_account_kind`'s transaction with a non-`ok` answer."""
+
+    def __init__(self, result: str) -> None:
+        super().__init__(result)
+        self.result = result
+
+
+def _rollback(cursor: MySQLCursorAbstract) -> None:
+    """Roll the open transaction back explicitly, not by relying on the pool's session reset."""
+    try:
+        cursor.execute("ROLLBACK")
+    except Exception:  # noqa: BLE001 - the connection may already be gone; the reset still applies
+        pass
+
+
+def set_user_account_kind(user_id: int, account_kind: str, *, expected_kind: str,
+                          cancel_queued: bool = False, require_empty_queue: bool = False,
+                          audit_details: Optional[dict] = None) -> str:
+    """Write `users.account_kind` as ONE transaction, and say what happened (`ACCOUNT_KIND_WRITE_*`).
+
+    - **Compare-and-set**: the row changes only while it still holds `expected_kind` (the kind the
+      caller read and decided on). A concurrent change answers `stale` and writes nothing.
+    - `require_empty_queue=True` re-counts `QUEUED_SEND_QUEUES` INSIDE the transaction with a locking
+      read, after the kind row is locked, so a row queued between the caller's count and this write
+      answers `queued` instead of going live.
+    - `cancel_queued=True` cancels every row in `QUEUED_SEND_QUEUES` that has not gone out yet.
+    - The `account_kind_changed` audit row is written in the SAME transaction: no change without its
+      audit row, and no audit row without the change.
+
+    Any non-`ok` answer rolls back explicitly. Called ONLY by `python -m
+    cqc_lem.utilities.account_kind_admin`, run by the owner on the host. No API route may call it: a
+    machine session must never be able to flag an account (`test_account_kind_is_owner_only.py` walks
+    the route table and the api package for it). Both kinds are validated here too, so a typo can
+    never write something the readers would treat as a third kind.
     """
-    if account_kind not in (ACCOUNT_KIND_STANDARD, ACCOUNT_KIND_INTERNAL, ACCOUNT_KIND_SANDBOX):
+    kinds = (ACCOUNT_KIND_STANDARD, ACCOUNT_KIND_INTERNAL, ACCOUNT_KIND_SANDBOX)
+    if account_kind not in kinds:
         raise ValueError(f"unknown account_kind {account_kind!r}")
+    if expected_kind not in kinds:
+        raise ValueError(f"unknown expected_kind {expected_kind!r}")
     try:
         with db_cursor(commit=True) as cursor:
-            cursor.execute("UPDATE users SET account_kind = %s WHERE id = %s", (account_kind, user_id))
-            if cursor.rowcount != 1:
-                return False
-            if cancel_queued:
+            try:
+                cursor.execute("UPDATE users SET account_kind = %s WHERE id = %s AND account_kind = %s",
+                               (account_kind, user_id, expected_kind))
+                if cursor.rowcount != 1:
+                    raise _AccountKindWriteAborted(ACCOUNT_KIND_WRITE_STALE)
                 for table, statuses, cancelled, reason in QUEUED_SEND_QUEUES:
                     marks = ", ".join(["%s"] * len(statuses))
-                    extra = ", rejection_reason = %s" if reason else ""
-                    cursor.execute(
-                        f"UPDATE {table} SET status = %s{extra} WHERE user_id = %s AND status IN ({marks})",
-                        (cancelled, *((reason,) if reason else ()), user_id, *statuses))
-            return True
+                    if require_empty_queue:
+                        cursor.execute(f"SELECT COUNT(*) FROM {table} WHERE user_id = %s"
+                                       f" AND status IN ({marks}) FOR UPDATE", (user_id, *statuses))
+                        if int(cursor.fetchone()[0]):
+                            raise _AccountKindWriteAborted(ACCOUNT_KIND_WRITE_QUEUED)
+                    if cancel_queued:
+                        extra = ", rejection_reason = %s" if reason else ""
+                        cursor.execute(
+                            f"UPDATE {table} SET status = %s{extra} WHERE user_id = %s AND status IN ({marks})",
+                            (cancelled, *((reason,) if reason else ()), user_id, *statuses))
+                insert_auth_event_row(cursor, AuthAuditEvent.ACCOUNT_KIND_CHANGED, user_id=user_id,
+                                      details={"from": expected_kind, "to": account_kind,
+                                               **(audit_details or {})})
+            except BaseException:
+                _rollback(cursor)
+                raise
+        return ACCOUNT_KIND_WRITE_OK
+    except _AccountKindWriteAborted as aborted:
+        return aborted.result
     except mysql.connector.Error as err:
         log_error("Could not set account kind", exc=err, user_id=user_id)
-        return False
+        return ACCOUNT_KIND_WRITE_FAILED
 
 
 def get_user_geo(user_id: int) -> Optional[dict]:

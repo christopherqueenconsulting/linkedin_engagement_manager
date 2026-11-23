@@ -16,6 +16,7 @@ from typing import Optional
 
 import mysql.connector
 from mysql.connector import errorcode
+from mysql.connector.abstracts import MySQLCursorAbstract
 
 from cqc_lem.platform.db import connection as _connection
 from cqc_lem.platform.db.connection import db_cursor
@@ -287,6 +288,23 @@ def revoke_other_sessions(user_id: int, keep_token: Optional[str] = None) -> int
     except mysql.connector.Error as err:
         log_error("Could not revoke sessions", exc=err, user_id=user_id)
         return 0
+def insert_auth_event_row(cursor: MySQLCursorAbstract, event: AuthAuditEvent,
+                          user_id: Optional[int] = None, email: Optional[str] = None,
+                          ip: Optional[str] = None, user_agent: Optional[str] = None,
+                          session_id: Optional[int] = None, success: bool = True,
+                          details: Optional[dict] = None) -> None:
+    """Insert one `auth_audit_log` row on the caller's cursor, inside the caller's transaction.
+
+    For a change whose audit row must commit or roll back WITH it (`set_user_account_kind`). Raises
+    whatever the driver raises; `record_auth_event` is the best-effort, own-transaction form.
+    """
+    cursor.execute(
+        "INSERT INTO auth_audit_log (user_id, email, event, ip_hash, user_agent, session_id, "
+        "success, details) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+        (user_id, email, str(event), hash_client_ip(ip),
+         user_agent[:512] if user_agent else None, session_id, 1 if success else 0,
+         json.dumps(details) if details else None),
+    )
 def record_auth_event(event: AuthAuditEvent, user_id: Optional[int] = None,
                       email: Optional[str] = None, ip: Optional[str] = None,
                       user_agent: Optional[str] = None, session_id: Optional[int] = None,
@@ -296,13 +314,9 @@ def record_auth_event(event: AuthAuditEvent, user_id: Optional[int] = None,
     """
     try:
         with db_cursor(commit=True) as cursor:
-            cursor.execute(
-                "INSERT INTO auth_audit_log (user_id, email, event, ip_hash, user_agent, session_id, "
-                "success, details) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-                (user_id, email, str(event), hash_client_ip(ip),
-                 user_agent[:512] if user_agent else None, session_id, 1 if success else 0,
-                 json.dumps(details) if details else None),
-            )
+            insert_auth_event_row(cursor, event, user_id=user_id, email=email, ip=ip,
+                                  user_agent=user_agent, session_id=session_id, success=success,
+                                  details=details)
             return True
     except mysql.connector.Error as err:
         log_warning(f"Could not write auth audit row for {event}", user_id=user_id)

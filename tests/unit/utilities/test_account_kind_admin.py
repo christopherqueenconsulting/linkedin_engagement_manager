@@ -3,10 +3,13 @@
 The module is the ONLY writer of `users.account_kind`. Its refusals are the safety rules: no admin
 account may be flagged, no sandbox account that holds real LinkedIn credentials, and no silent move
 back to `standard`. Every collaborator is replaced, so no database is touched.
+
+The writer (`set_user_account_kind`) is ONE transaction (#2527): a compare-and-set on the kind the
+tool read, the queue re-counted under lock when leaving sandbox, the cancel, and the audit row.
 """
 
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -19,8 +22,8 @@ _NOTHING_QUEUED = {"scheduled_dms": 0, "connection_requests": 0, "catchup_touche
 
 
 def _run(email: str = "QA@Example.com", kind: str = "sandbox", *, current: Any = "standard",
-         admin: bool = False, creds: Any = _NO_CREDS, user_id: Any = 9, wrote: bool = True,
-         audit: bool = True, queued: Any = _NOTHING_QUEUED, **flags: bool) -> tuple[int, dict[str, Any]]:
+         admin: bool = False, creds: Any = _NO_CREDS, user_id: Any = 9, wrote: str = "ok",
+         queued: Any = _NOTHING_QUEUED, **flags: bool) -> tuple[int, dict[str, Any]]:
     from cqc_lem.utilities import account_kind_admin as admin_mod
 
     with patch(f"{_M}.get_user_id", return_value=user_id) as lookup, \
@@ -29,10 +32,19 @@ def _run(email: str = "QA@Example.com", kind: str = "sandbox", *, current: Any =
          patch(f"{_M}.get_linkedin_credential_flags", return_value=creds), \
          patch(f"{_M}.set_user_account_kind", return_value=wrote) as write, \
          patch(f"{_M}.count_queued_sends", return_value=queued) as count, \
-         patch(f"{_M}.record_auth_event", return_value=audit) as record, \
          patch(f"{_M}.log_info"):
         code = admin_mod.run(email, kind, **flags)
-    return code, {"lookup": lookup, "write": write, "record": record, "count": count}
+    return code, {"lookup": lookup, "write": write, "count": count}
+
+
+def _assert_wrote(write: MagicMock, kind: str, *, expected: str, cancel: bool = False,
+                  require_empty: bool = False) -> None:
+    write.assert_called_once()
+    assert write.call_args.args == (9, kind)
+    kwargs = write.call_args.kwargs
+    assert kwargs["expected_kind"] == expected
+    assert kwargs["cancel_queued"] is cancel
+    assert kwargs["require_empty_queue"] is require_empty
 
 
 class TestRefusals:
@@ -56,7 +68,6 @@ class TestRefusals:
         code, calls = _run(kind=kind, admin=True)
         assert code == 2
         calls["write"].assert_not_called()
-        calls["record"].assert_not_called()
 
     @pytest.mark.parametrize("held", ["password", "access_token", "li_at"])
     def test_a_sandbox_with_real_credentials_is_refused(self, held: str) -> None:
@@ -72,7 +83,7 @@ class TestRefusals:
     def test_allow_credentials_overrides_only_that_rule(self) -> None:
         code, calls = _run(creds={**_NO_CREDS, "li_at": True}, allow_credentials=True)
         assert code == 0
-        calls["write"].assert_called_once_with(9, "sandbox", cancel_queued=False)
+        _assert_wrote(calls["write"], "sandbox", expected="standard")
         code, calls = _run(admin=True, creds={**_NO_CREDS, "li_at": True}, allow_credentials=True)
         assert code == 2, "--allow-credentials must not open the admin refusal"
 
@@ -82,12 +93,12 @@ class TestRefusals:
         calls["write"].assert_not_called()
         code, calls = _run(kind="standard", current="internal", allow_reset_to_standard=True)
         assert code == 0
-        calls["write"].assert_called_once_with(9, "standard", cancel_queued=False)
+        _assert_wrote(calls["write"], "standard", expected="internal")
 
     def test_credentials_are_irrelevant_to_an_internal_flag(self) -> None:
         code, calls = _run(kind="internal", creds={"password": True, "access_token": True, "li_at": True})
         assert code == 0
-        calls["write"].assert_called_once_with(9, "internal", cancel_queued=False)
+        _assert_wrote(calls["write"], "internal", expected="standard")
 
 
 class TestLeavingSandbox:
@@ -111,7 +122,7 @@ class TestLeavingSandbox:
         code, calls = _run(kind="standard", current="sandbox", allow_leave_sandbox=True,
                            allow_reset_to_standard=True)
         assert code == 0
-        calls["write"].assert_called_once_with(9, "standard", cancel_queued=False)
+        _assert_wrote(calls["write"], "standard", expected="sandbox", require_empty=True)
 
     @pytest.mark.parametrize("table", ["scheduled_dms", "connection_requests", "catchup_touches",
                                        "lead_signals", "outreach_funnel_targets", "posts"])
@@ -120,7 +131,6 @@ class TestLeavingSandbox:
                            queued={**_NOTHING_QUEUED, table: 1})
         assert code == 2
         calls["write"].assert_not_called()
-        calls["record"].assert_not_called()
 
     def test_an_approved_scheduled_dm_blocks_the_change(self, capsys: Any) -> None:
         code, calls = _run(kind="internal", current="sandbox", allow_leave_sandbox=True,
@@ -137,8 +147,8 @@ class TestLeavingSandbox:
         code, calls = _run(kind="internal", current="sandbox", allow_leave_sandbox=True,
                            cancel_queued=True, queued={**_NOTHING_QUEUED, "scheduled_dms": 3})
         assert code == 0
-        calls["write"].assert_called_once_with(9, "internal", cancel_queued=True)
-        details = calls["record"].call_args.kwargs["details"]
+        _assert_wrote(calls["write"], "internal", expected="sandbox", cancel=True)
+        details = calls["write"].call_args.kwargs["audit_details"]
         assert details["cancelled_queued"]["scheduled_dms"] == 3
         assert details["allow_leave_sandbox"] is True
 
@@ -146,22 +156,30 @@ class TestLeavingSandbox:
         code, calls = _run(kind="internal", current="sandbox", allow_leave_sandbox=True,
                            cancel_queued=True, queued=None)
         assert code == 0
-        calls["write"].assert_called_once_with(9, "internal", cancel_queued=True)
+        _assert_wrote(calls["write"], "internal", expected="sandbox", cancel=True)
 
-    def test_an_empty_queue_needs_no_cancel_flag(self) -> None:
+    def test_an_empty_queue_is_rechecked_inside_the_write(self) -> None:
+        """Count-then-flip race: the advisory count is re-taken under lock in the write's transaction."""
         code, calls = _run(kind="internal", current="sandbox", allow_leave_sandbox=True)
         assert code == 0
-        calls["write"].assert_called_once_with(9, "internal", cancel_queued=False)
+        _assert_wrote(calls["write"], "internal", expected="sandbox", require_empty=True)
+
+    def test_a_row_queued_after_the_count_refuses_and_changes_nothing(self, capsys: Any) -> None:
+        code, _calls = _run(kind="internal", current="sandbox", allow_leave_sandbox=True,
+                            wrote="queued")
+        assert code == 2
+        assert "gained a queued send" in capsys.readouterr().err
 
     def test_the_queue_is_only_counted_when_leaving_sandbox(self) -> None:
         for current, kind in (("standard", "sandbox"), ("standard", "internal"), ("internal", "sandbox")):
             _code, calls = _run(kind=kind, current=current)
             calls["count"].assert_not_called()
+            assert calls["write"].call_args.kwargs["require_empty_queue"] is False
 
     def test_cancel_queued_does_nothing_when_not_leaving_sandbox(self) -> None:
         code, calls = _run(kind="sandbox", current="standard", cancel_queued=True)
         assert code == 0
-        calls["write"].assert_called_once_with(9, "sandbox", cancel_queued=False)
+        _assert_wrote(calls["write"], "sandbox", expected="standard")
 
     def test_dry_run_reports_the_cancellation_and_writes_nothing(self, capsys: Any) -> None:
         code, calls = _run(kind="internal", current="sandbox", allow_leave_sandbox=True,
@@ -173,50 +191,47 @@ class TestLeavingSandbox:
     def test_standard_to_sandbox_still_works_and_still_refuses_credentials(self) -> None:
         code, calls = _run(kind="sandbox", current="standard")
         assert code == 0
-        calls["write"].assert_called_once_with(9, "sandbox", cancel_queued=False)
+        _assert_wrote(calls["write"], "sandbox", expected="standard")
         code, calls = _run(kind="sandbox", current="standard", creds={**_NO_CREDS, "password": True})
         assert code == 2
         calls["write"].assert_not_called()
 
 
 class TestAChangeThatIsAllowed:
-    def test_a_clean_standard_account_becomes_sandbox_and_is_audited(self) -> None:
-        from cqc_lem.utilities.db import AuthAuditEvent
-
+    def test_a_clean_standard_account_becomes_sandbox_with_its_audit_details(self) -> None:
         code, calls = _run()
         assert code == 0
         calls["lookup"].assert_called_once_with("qa@example.com")  # the address is lower-cased
-        calls["write"].assert_called_once_with(9, "sandbox", cancel_queued=False)
-        calls["record"].assert_called_once()
-        event = calls["record"].call_args.args[0]
-        assert event == AuthAuditEvent.ACCOUNT_KIND_CHANGED == "account_kind_changed"
-        assert calls["record"].call_args.kwargs["user_id"] == 9
-        assert calls["record"].call_args.kwargs["details"]["from"] == "standard"
-        assert calls["record"].call_args.kwargs["details"]["to"] == "sandbox"
+        _assert_wrote(calls["write"], "sandbox", expected="standard")
+        details = calls["write"].call_args.kwargs["audit_details"]
+        assert details["allow_credentials"] is False and details["cancelled_queued"] is None
+
+    def test_flipping_to_sandbox_says_an_in_flight_send_may_finish(self, capsys: Any) -> None:
+        code, _calls = _run()
+        assert code == 0
+        assert "in flight" in capsys.readouterr().out
 
     def test_a_no_op_change_writes_nothing(self) -> None:
         code, calls = _run(current="sandbox")
         assert code == 0
         calls["write"].assert_not_called()
-        calls["record"].assert_not_called()
 
     def test_dry_run_writes_nothing(self, capsys: Any) -> None:
         code, calls = _run(dry_run=True)
         assert code == 0
         calls["write"].assert_not_called()
-        calls["record"].assert_not_called()
         assert "dry run" in capsys.readouterr().out
 
-    def test_a_failed_write_is_exit_3_and_unaudited(self) -> None:
-        code, calls = _run(wrote=False)
+    def test_a_failed_write_is_exit_3(self, capsys: Any) -> None:
+        code, _calls = _run(wrote="failed")
         assert code == 3
-        calls["record"].assert_not_called()
+        assert "rolled back" in capsys.readouterr().err
 
-    def test_a_failed_audit_write_warns_but_the_change_stands(self, capsys: Any) -> None:
-        code, calls = _run(audit=False)
-        assert code == 0
-        calls["write"].assert_called_once()
-        assert "audit row could not be written" in capsys.readouterr().err
+    def test_a_kind_changed_concurrently_refuses(self, capsys: Any) -> None:
+        """Compare-and-set lost: the tool decided against a kind that is no longer stored."""
+        code, _calls = _run(wrote="stale")
+        assert code == 2
+        assert "changed concurrently" in capsys.readouterr().err
 
 
 class TestCommandLine:
@@ -245,25 +260,70 @@ class TestCommandLine:
             admin_mod.main(["--email", "a@b.co", "--kind", "root"])
 
 
+def _statements(cur: MagicMock) -> list[tuple]:
+    return [c.args for c in cur.execute.call_args_list]
+
+
 class TestTheRepositoryWriter:
-    def test_it_validates_the_value_before_touching_the_database(self) -> None:
+    def test_it_validates_both_values_before_touching_the_database(self) -> None:
         from cqc_lem.utilities.db import set_user_account_kind
 
         with patch("cqc_lem.platform.db.connection.get_db_connection") as conn:
             for bad in ("Sandbox", "", "admin", None):
                 with pytest.raises(ValueError):
-                    set_user_account_kind(1, bad)  # type: ignore[arg-type]
+                    set_user_account_kind(1, bad, expected_kind="standard")  # type: ignore[arg-type]
+                with pytest.raises(ValueError):
+                    set_user_account_kind(1, "sandbox", expected_kind=bad)  # type: ignore[arg-type]
         conn.assert_not_called()
 
-    def test_it_reports_true_only_when_exactly_one_row_changed(self, fake_cursor: Any) -> None:
+    def test_the_kind_write_is_a_compare_and_set(self, fake_cursor: Any) -> None:
         from cqc_lem.utilities.db import set_user_account_kind
 
-        for rowcount, expected in ((1, True), (0, False), (2, False)):
-            conn, cur = fake_cursor(rowcount=rowcount)
-            with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-                assert set_user_account_kind(5, "sandbox") is expected
-            sql, params = cur.execute.call_args.args
-            assert "account_kind" in sql and params == ("sandbox", 5)
+        conn, cur = fake_cursor(rowcount=1)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            assert set_user_account_kind(5, "sandbox", expected_kind="standard") == "ok"
+        sql, params = _statements(cur)[0]
+        assert "WHERE id = %s AND account_kind = %s" in sql
+        assert params == ("sandbox", 5, "standard")
+        conn.commit.assert_called_once()
+
+    @pytest.mark.parametrize("rowcount", [0, 2])
+    def test_a_lost_compare_and_set_is_stale_rolled_back_and_uncommitted(
+            self, fake_cursor: Any, rowcount: int) -> None:
+        from cqc_lem.utilities.db import set_user_account_kind
+
+        conn, cur = fake_cursor(rowcount=rowcount)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            assert set_user_account_kind(5, "sandbox", expected_kind="standard") == "stale"
+        statements = _statements(cur)
+        assert statements[-1] == ("ROLLBACK",)
+        assert not any("auth_audit_log" in s[0] for s in statements)
+        conn.commit.assert_not_called()
+
+    def test_the_audit_row_is_written_in_the_same_transaction(self, fake_cursor: Any) -> None:
+        from cqc_lem.utilities.db import set_user_account_kind
+
+        conn, cur = fake_cursor(rowcount=1)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            assert set_user_account_kind(5, "sandbox", expected_kind="standard",
+                                         audit_details={"allow_credentials": True}) == "ok"
+        sql, params = _statements(cur)[-1]
+        assert "INSERT INTO auth_audit_log" in sql
+        assert params[0] == 5 and params[2] == "account_kind_changed"
+        assert '"from": "standard"' in params[7] and '"to": "sandbox"' in params[7]
+        assert '"allow_credentials": true' in params[7]
+        conn.commit.assert_called_once()
+
+    def test_a_failed_audit_insert_rolls_the_change_back(self, fake_cursor: Any) -> None:
+        import mysql.connector
+
+        from cqc_lem.utilities.db import set_user_account_kind
+
+        conn, cur = fake_cursor(rowcount=1, execute_error=[None, mysql.connector.Error("audit"), None])
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            assert set_user_account_kind(5, "sandbox", expected_kind="standard") == "failed"
+        assert _statements(cur)[-1] == ("ROLLBACK",)
+        conn.commit.assert_not_called()
 
     def test_credential_flags_are_presence_only(self, fake_cursor: Any) -> None:
         from cqc_lem.utilities.db import get_linkedin_credential_flags
@@ -331,10 +391,10 @@ class TestTheQueuedSendQueues:
 
         conn, cur = fake_cursor(rowcount=1)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            assert set_user_account_kind(9, "internal", cancel_queued=True) is True
-        statements = [c.args for c in cur.execute.call_args_list]
+            assert set_user_account_kind(9, "internal", expected_kind="sandbox", cancel_queued=True) == "ok"
+        statements = _statements(cur)
         assert "UPDATE users SET account_kind" in statements[0][0]
-        assert len(statements) == 1 + len(QUEUED_SEND_QUEUES)
+        assert len(statements) == 1 + len(QUEUED_SEND_QUEUES) + 1  # + the audit row
         for (sql, params), (table, live, cancelled, reason) in zip(statements[1:], QUEUED_SEND_QUEUES):
             assert f"UPDATE {table} SET status = %s" in sql
             assert params[0] == cancelled
@@ -347,13 +407,42 @@ class TestTheQueuedSendQueues:
 
         conn, cur = fake_cursor(rowcount=0)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            assert set_user_account_kind(9, "internal", cancel_queued=True) is False
-        assert cur.execute.call_count == 1
+            assert set_user_account_kind(9, "internal", expected_kind="sandbox",
+                                         cancel_queued=True) == "stale"
+        assert [s for s in _statements(cur) if s != ("ROLLBACK",)] == _statements(cur)[:1]
 
-    def test_without_the_flag_no_queue_is_touched(self, fake_cursor: Any) -> None:
+    def test_without_the_flags_no_queue_is_touched(self, fake_cursor: Any) -> None:
+        from cqc_lem.platform.db.repositories.users import QUEUED_SEND_QUEUES
         from cqc_lem.utilities.db import set_user_account_kind
 
         conn, cur = fake_cursor(rowcount=1)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
-            assert set_user_account_kind(9, "sandbox") is True
-        assert cur.execute.call_count == 1
+            assert set_user_account_kind(9, "sandbox", expected_kind="standard") == "ok"
+        tables = [q[0] for q in QUEUED_SEND_QUEUES]
+        assert not any(f" {t} " in s[0] for s in _statements(cur) for t in tables)
+
+    def test_require_empty_queue_recounts_under_lock_in_the_transaction(self, fake_cursor: Any) -> None:
+        from cqc_lem.platform.db.repositories.users import QUEUED_SEND_QUEUES
+        from cqc_lem.utilities.db import set_user_account_kind
+
+        conn, cur = fake_cursor(rowcount=1, fetch_one=(0,))
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            assert set_user_account_kind(9, "internal", expected_kind="sandbox",
+                                         require_empty_queue=True) == "ok"
+        counts = [s for s in _statements(cur) if s[0].startswith("SELECT COUNT(*)")]
+        assert len(counts) == len(QUEUED_SEND_QUEUES)
+        assert all(s[0].endswith("FOR UPDATE") for s in counts)
+        assert "UPDATE users SET account_kind" in _statements(cur)[0][0], "lock the kind row first"
+        conn.commit.assert_called_once()
+
+    def test_a_row_queued_after_the_count_rolls_the_change_back(self, fake_cursor: Any) -> None:
+        from cqc_lem.utilities.db import set_user_account_kind
+
+        conn, cur = fake_cursor(rowcount=1, fetch_one=(1,))
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            assert set_user_account_kind(9, "internal", expected_kind="sandbox",
+                                         require_empty_queue=True) == "queued"
+        statements = _statements(cur)
+        assert statements[-1] == ("ROLLBACK",)
+        assert not any("auth_audit_log" in s[0] for s in statements)
+        conn.commit.assert_not_called()
