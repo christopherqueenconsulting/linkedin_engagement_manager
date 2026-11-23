@@ -1262,6 +1262,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/leads/funnel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Lead Funnel Endpoint
+         * @description Conversation to meeting to won, counted per month from the stage history (#2633).
+         *
+         *     A failed read is 503, never an empty funnel.
+         */
+        get: operations["lead_funnel_endpoint_api_leads_funnel_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/leads/refresh": {
         parameters: {
             query?: never;
@@ -5096,6 +5118,8 @@ export interface components {
         LeadUpdate: {
             /** Action */
             action?: string | null;
+            /** Deal Value */
+            deal_value?: number | null;
             /** Lead Id */
             lead_id: number;
             /** Notes */
@@ -8731,6 +8755,38 @@ export interface operations {
                 include_dismissed?: boolean;
                 page?: number;
                 page_size?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    lead_funnel_endpoint_api_leads_funnel_get: {
+        parameters: {
+            query: {
+                session_token: string;
+                months?: number;
             };
             header?: never;
             path?: never;

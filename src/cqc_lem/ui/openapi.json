@@ -3552,6 +3552,19 @@
             ],
             "title": "Action"
           },
+          "deal_value": {
+            "anyOf": [
+              {
+                "maximum": 9999999999.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deal Value"
+          },
           "lead_id": {
             "title": "Lead Id",
             "type": "integer"
@@ -10067,6 +10080,58 @@
           }
         },
         "summary": "List Leads Endpoint"
+      }
+    },
+    "/api/leads/funnel": {
+      "get": {
+        "description": "Conversation to meeting to won, counted per month from the stage history (#2633).\n\nA failed read is 503, never an empty funnel.",
+        "operationId": "lead_funnel_endpoint_api_leads_funnel_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "session_token",
+            "required": true,
+            "schema": {
+              "title": "Session Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "months",
+            "required": false,
+            "schema": {
+              "default": 12,
+              "maximum": 36,
+              "minimum": 1,
+              "title": "Months",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Lead Funnel Endpoint"
       }
     },
     "/api/leads/refresh": {
