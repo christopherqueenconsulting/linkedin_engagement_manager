@@ -117,7 +117,7 @@ def egress_failed_result(result: Any) -> str:
     The lane already deferred the work its own way (no attempt charged, the 429 breaker untouched)
     and the login gate already counted the failure toward the once-per-streak escalation (#2346).
     This only stops the run READING as a success: before, "Skipped — rate limited" ended in
-    SUCCESS, so a 13-hour outage on 2026-11-23 showed nothing but successful tasks. A route that
+    SUCCESS, so a 10-hour outage on 2026-11-23 showed nothing but successful tasks. A route that
     does not work is a fault under the outcome contract above, not a designed stop.
 
     Args:

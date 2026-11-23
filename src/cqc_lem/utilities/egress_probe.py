@@ -169,7 +169,7 @@ def chrome_path_target(proxy_url: str, user_id: Optional[int]) -> str:
     the forwarder adds them, exactly as it does for Chrome. With it off, it is the upstream with the
     credentials stripped, because Chrome sends none either (it cannot load the auth extension), so
     only an IP allowlist lets it through. The old probe sent credentials up front, which is why
-    `/health/deep` read `ok` through a 13-hour outage on 2026-11-23.
+    `/health/deep` read `ok` through a 10-hour outage on 2026-11-23.
     """
     from cqc_lem.utilities import proxy_forwarder
     if user_id is not None and proxy_forwarder.is_enabled() and \

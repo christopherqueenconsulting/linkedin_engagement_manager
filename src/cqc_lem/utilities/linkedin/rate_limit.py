@@ -774,7 +774,7 @@ def egress_streak_state(user_id: int) -> "dict | None":
 
 # --- egress failure inside the current task (#2620) -------------------------------
 # A lane that catches `LinkedInEgressUnreachable` returns "Skipped — rate limited" and Celery records
-# SUCCESS. On 2026-11-23 that hid a 13-hour outage: every run said succeeded. The lane's own
+# SUCCESS. On 2026-11-23 that hid a 10-hour outage: every run said succeeded. The lane's own
 # handling stays exactly as it is (deferral, no attempt charged, no 429 breaker). What changes is
 # the task boundary: `DailyCapAwareTask` opens a scope per task, the login gate marks it when the
 # browser never reached linkedin.com, and a task that ends with the mark still set is reported as

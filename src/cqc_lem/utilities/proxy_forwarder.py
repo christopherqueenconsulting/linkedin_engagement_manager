@@ -5,7 +5,7 @@ to be answered by an in-memory auth extension (`selenium_util._build_proxy_auth_
 Current Chrome ignores ``--load-extension`` and the encoded-extension path with it, so the extension
 never loaded and every session quietly relied on the provider's IP allowlist. On 2026-11-23 the
 provider moved the proxy to a new IP, the allowlist moved with it, and every browser session got a
-407 for about 13 hours. This process removes the extension from the path entirely.
+407 for about 10 hours. This process removes the extension from the path entirely.
 
 How it works. One listener per user, on ``PROXY_FORWARDER_BASE_PORT + user_id``, inside the compose
 network only (the service publishes no port). Chrome for user N is started with
@@ -551,7 +551,7 @@ def main(argv: Optional[list] = None) -> int:
     try:
         asyncio.run(forwarder.serve_forever())
     except KeyboardInterrupt:
-        pass
+        pass  # Ctrl-C in a foreground run is a normal stop, not an error.
     return 0
 
 

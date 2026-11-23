@@ -1,6 +1,6 @@
 """A run whose browser never reached linkedin.com ends in Celery FAILURE, not SUCCESS (#2620).
 
-On 2026-11-23 every browser lane deferred on `LinkedInEgressUnreachable` for about 13 hours and
+On 2026-11-23 every browser lane deferred on `LinkedInEgressUnreachable` for about 10 hours and
 Celery recorded each run as succeeded ("Skipped — rate limited"). These tests drive real tasks
 through `Task.apply()`, so what is asserted is the STATE Celery records, and they pin what must NOT
 change: the lane's own deferral text and the once-per-streak escalation.
