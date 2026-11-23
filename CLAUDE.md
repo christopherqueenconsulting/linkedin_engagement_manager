@@ -76,6 +76,7 @@ compose/local/database/migrations/  Flyway migrations
   moved symbol where it now LIVES, because a sibling calls it directly, never the re-export
   (`tests/unit/platform/db/test_connection_seam.py` fails the build on that hazard set).
 - **Secrets:** Never hardcode. Use `.env` with `load_dotenv()`. See `.env.example` for required variables.
+- **UI:** follow the design standard in `brand/lem/DESIGN.md`; browser-check 3 widths, light+dark.
 - **Comments & docstrings:** Only add a comment when the WHY is non-obvious — that is what a
   docstring is for. Ruff enforces **Google-convention docstrings** in the **Docstring & Lint Gate**,
   as a **ratchet**: it fails a PR that raises the count in `.ruff-baseline`. Read that count with
