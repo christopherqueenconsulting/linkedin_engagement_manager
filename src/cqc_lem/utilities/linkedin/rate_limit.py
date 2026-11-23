@@ -13,7 +13,9 @@ import json
 import os
 import sys
 import time
+from contextvars import ContextVar, Token
 from datetime import datetime, timezone
+from typing import Optional
 
 from cqc_lem.utilities.logger import log_info, log_warning
 
@@ -768,6 +770,49 @@ def egress_streak_state(user_id: int) -> "dict | None":
         return _decode_streak(client.hgetall(_EGRESS_STREAK_KEY.format(user_id=int(user_id))))
     except Exception:
         return None
+
+
+# --- egress failure inside the current task (#2620) -------------------------------
+# A lane that catches `LinkedInEgressUnreachable` returns "Skipped — rate limited" and Celery records
+# SUCCESS. On 2026-11-23 that hid a 10-hour outage: every run said succeeded. The lane's own
+# handling stays exactly as it is (deferral, no attempt charged, no 429 breaker). What changes is
+# the task boundary: `DailyCapAwareTask` opens a scope per task, the login gate marks it when the
+# browser never reached linkedin.com, and a task that ends with the mark still set is reported as
+# FAILED (see `app/task_outcome.py`). A later successful login in the same task clears the mark.
+# Outside a task (no scope) marking is a no-op.
+
+_EGRESS_TASK_SCOPE: ContextVar[Optional[dict]] = ContextVar("lem_egress_task_scope", default=None)
+
+
+def begin_egress_task_scope() -> Optional[Token]:
+    """Open a per-task egress scope; None when one is already open (a task called inside a task).
+
+    Returns:
+        The token to pass to `end_egress_task_scope`, or None for a nested call, which then shares
+        the outer task's scope so the outermost task is the one that reports.
+    """
+    if _EGRESS_TASK_SCOPE.get() is not None:
+        return None
+    return _EGRESS_TASK_SCOPE.set({"unreachable": False})
+
+
+def end_egress_task_scope(token: Optional[Token]) -> None:
+    """Close the scope `begin_egress_task_scope` opened (no-op for a nested call's None)."""
+    if token is not None:
+        _EGRESS_TASK_SCOPE.reset(token)
+
+
+def mark_egress_unreachable_in_task(unreachable: bool = True) -> None:
+    """Record (or, after a login that worked, clear) that this task's browser never reached LinkedIn."""
+    scope = _EGRESS_TASK_SCOPE.get()
+    if scope is not None:
+        scope["unreachable"] = bool(unreachable)
+
+
+def egress_unreachable_in_task() -> bool:
+    """Whether the current task's last login attempt failed on the egress route."""
+    scope = _EGRESS_TASK_SCOPE.get()
+    return bool(scope and scope.get("unreachable"))
 
 
 # --- single-flight task locks -------------------------------------------------

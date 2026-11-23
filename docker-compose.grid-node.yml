@@ -27,7 +27,8 @@
 # default, so adding this box is a deliberate change to the lane concurrencies too —
 # see docs/SELENIUM_GRID.md.
 x-grid-node: &grid-node
-  image: selenium/node-chrome:latest
+  # Pinned (#2620) to the SAME version as the primary box's hub (docker-compose.grid.yml).
+  image: selenium/node-chrome:4.53.0-20261120@sha256:af1f98f1be2f49c966fc95a6f07d9cb6f0fa5953d4d66e049738ff26f12a6dd7
   # Host networking, deliberately: the node must advertise an address the HUB can dial, and a
   # bridge-network container's IP is private to this box.
   network_mode: host

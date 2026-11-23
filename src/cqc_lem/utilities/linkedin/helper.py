@@ -56,6 +56,7 @@ from cqc_lem.utilities.linkedin.rate_limit import (
     clear_rate_limit,
     is_automation_paused,
     is_measurement_paused,
+    mark_egress_unreachable_in_task,
     mark_rate_limited,
     rate_limit_cooldown_remaining,
     record_egress_failure,
@@ -507,7 +508,11 @@ def _note_egress_failure(user_id: Optional[int]) -> None:
     NEW error-tracking issue, and so a new alert if that alert is on, instead of grouping into an
     earlier outage's issue that may still be open. The exception text is host-free on purpose — it becomes
     an issue title. A successful login clears the streak (`_clear_egress_streak`).
+
+    It also marks the running task (#2620), so a lane that defers on this failure ends in Celery
+    FAILURE instead of SUCCESS — whether or not a user id resolved.
     """
+    mark_egress_unreachable_in_task()
     if not user_id:
         return
     state = record_egress_failure(user_id)
@@ -536,6 +541,7 @@ def _note_egress_failure(user_id: Optional[int]) -> None:
 
 def _clear_egress_streak(user_id: Optional[int]) -> None:
     """A login that reached LinkedIn ends the egress streak; say so if that streak had escalated."""
+    mark_egress_unreachable_in_task(False)
     try:
         state = clear_egress_failures(user_id)
     except Exception:
