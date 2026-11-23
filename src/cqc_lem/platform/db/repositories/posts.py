@@ -2627,16 +2627,22 @@ def get_weekly_engager_icp_scores(user_id: int, start: datetime, end: datetime) 
 
     One entry per engager; None for an engager with no `leads` row (no fit reading). The list is
     None on a database fault. `post_engagers` is last-write-wins, so this is "engaged most recently
-    in the window", never an event history.
+    in the window", never an event history. Matched on `lead_scoring.person_key` (profile slug,
+    else normalized name), the key `leads` is unique on — never the raw URL, which differs by
+    slash/query string and misses name-keyed leads.
     """
+    from cqc_lem.utilities.lead_scoring import person_key
     try:
         with db_cursor(dictionary=True) as cursor:
             cursor.execute(
-                "SELECT l.icp_score FROM post_engagers e LEFT JOIN leads l "
-                "  ON l.user_id=e.user_id AND l.person_profile_url=e.engager_profile_url "
-                "WHERE e.user_id=%s AND e.last_engaged_at >= %s AND e.last_engaged_at < %s",
+                "SELECT engager_name, engager_profile_url FROM post_engagers "
+                "WHERE user_id=%s AND last_engaged_at >= %s AND last_engaged_at < %s",
                 (user_id, to_naive_utc(start), to_naive_utc(end)))
-            return [r.get("icp_score") for r in (cursor.fetchall() or [])]
+            engagers = cursor.fetchall() or []
+            cursor.execute("SELECT person_key, icp_score FROM leads WHERE user_id=%s", (user_id,))
+            by_key = {r["person_key"]: r.get("icp_score") for r in (cursor.fetchall() or [])}
+        return [by_key.get(person_key(e.get("engager_name"), e.get("engager_profile_url")))
+                for e in engagers]
     except mysql.connector.Error as err:
         log_error("Could not read weekly engager ICP scores", exc=err, user_id=user_id)
         return None
