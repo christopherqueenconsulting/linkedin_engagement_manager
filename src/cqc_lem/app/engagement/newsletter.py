@@ -483,6 +483,12 @@ def track_newsletter_subscribers(self, user_id: int):
         return "No newsletter URL yet"
     try:
         driver, wait, user_email, my_profile = get_current_profile(user_id=user_id, session_name="Newsletter")
+    except LinkedInRateLimited as e:
+        # `get_current_profile` already warned, and a persistent egress outage files its own
+        # `LinkedInEgressDown` — an ERROR here would only file a duplicate issue. The next run retries.
+        log_debug(f"Newsletter subscriber tracking skipped — LinkedIn rate-limited: {e}",
+                  user_id=user_id, task_name="track_newsletter_subscribers")
+        return lane_result(TaskOutcome.NO_OP, f"Skipped newsletter tracking — rate limited: {e}")
     except Exception as e:
         log_error("Error getting profile for newsletter tracking", exc=e, user_id=user_id,
                   task_name="track_newsletter_subscribers")
