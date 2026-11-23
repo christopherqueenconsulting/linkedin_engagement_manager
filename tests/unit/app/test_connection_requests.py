@@ -158,11 +158,11 @@ class TestBrandAcquisitionHold:
     other user's — sends as before.
     """
 
-    def _send(self, user_id, source, brand_user_id=""):
+    def _send(self, user_id, source, brand_user_id="", approved_by=None):
         from cqc_lem.app.engagement import invites as ra
         req = {"id": 3, "user_id": user_id, "recipient_profile_url": "https://x/in/jane",
                "message": "hi jane", "status": "approved", "recipient_email": None,
-               "source": source}
+               "source": source, "approved_by": approved_by}
         with patch("cqc_lem.utilities.brand_account.BRAND_USER_ID", brand_user_id), \
              patch("cqc_lem.utilities.db.get_connection_request", return_value=req), \
              patch("cqc_lem.utilities.db.count_invites_sent_today", return_value=0), \
@@ -183,6 +183,35 @@ class TestBrandAcquisitionHold:
         upd.assert_called_once_with(3, ConnectionRequestStatus.PENDING,
                                     failure_reason=ACQUISITION_HOLD_REASON)
         assert "held" in out
+
+    @pytest.mark.parametrize("source", ["own_post", "adjacent_post", "outreach_funnel"])
+    def test_a_human_approval_releases_the_hold(self, source):
+        """#2623: the owner's explicit Approve is the send decision."""
+        out, send, _upd = self._send(1, source, approved_by="user:1")
+        send.assert_called_once()
+        assert "sent" in out
+
+    @pytest.mark.parametrize("approved_by", [None, "system:auto_queue"])
+    def test_a_non_human_approval_stays_held(self, approved_by):
+        _out, send, _upd = self._send(1, "adjacent_post", approved_by=approved_by)
+        send.assert_not_called()
+
+    def test_a_human_approval_still_honours_the_daily_cap(self):
+        from cqc_lem.app.engagement import invites as ra
+        req = {"id": 3, "user_id": 1, "recipient_profile_url": "https://x/in/jane", "message": "m",
+               "status": "approved", "recipient_email": None, "source": "adjacent_post",
+               "approved_by": "user:1"}
+        with patch("cqc_lem.utilities.brand_account.BRAND_USER_ID", ""), \
+             patch("cqc_lem.utilities.db.get_connection_request", return_value=req), \
+             patch("cqc_lem.utilities.db.count_invites_sent_today", return_value=10), \
+             patch(f"{_INV}.get_engagement_preferences", return_value={"max_invites_per_day": 10}), \
+             patch(f"{_INV}.invite_to_connect_now") as send, \
+             patch("cqc_lem.utilities.db.update_connection_request_status") as upd:
+            out = ra.send_connection_request(3)
+        send.assert_not_called()
+        from cqc_lem.utilities.db import ConnectionRequestStatus
+        upd.assert_called_once_with(3, ConnectionRequestStatus.APPROVED)
+        assert "deferred" in out
 
     @pytest.mark.parametrize("source", [None, "", "roster", "profile_viewer"])
     def test_the_brand_accounts_ordinary_requests_still_send(self, source):

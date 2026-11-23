@@ -958,10 +958,13 @@ _OBSERVER_ROW_FIELDS: Dict[str, frozenset] = {
     "connection_requests": frozenset({
         "id", "user_id", "recipient_profile_url", "recipient_name", "message", "source", "icp_score",
         "reasons", "failure_reason", "status", "attempts", "created_at", "updated_at",
+        # Who approved the row (`user:<id>`, #2623): the same identity `user_id` already shows.
+        "approved_by",
         # A boolean saying whether an address exists — never the address.
         "has_recipient_email"}),
     "outreach_targets": frozenset({"id", "user_id", "target_profile_url", "target_name", "stage", "status",
-                                   "context_url", "draft_text", "notes", "created_at", "updated_at"}),
+                                   "context_url", "draft_text", "notes", "approved_by",
+                                   "created_at", "updated_at"}),
     "catchup_touches": frozenset({"id", "user_id", "profile_url", "person_name", "event_type",
                                   "event_detail", "event_period", "score", "message", "status",
                                   "created_at", "updated_at"}),
@@ -3657,7 +3660,10 @@ def update_connection_request_endpoint(request: ConnectionRequestUpdate) -> Resp
     if not update_connection_request(request.request_id,
                                      recipient_profile_url=request.recipient_profile_url,
                                      recipient_name=request.recipient_name, message=request.message,
-                                     status=status, recipient_email=request.recipient_email):
+                                     status=status, recipient_email=request.recipient_email,
+                                     approved_by=(user_approver(user_id)
+                                                  if status == ConnectionRequestStatus.APPROVED
+                                                  else None)):
         raise HTTPException(status_code=500, detail="Could not update connection request")
     return ResponseModel(status_code=200, detail="Connection request updated")
 

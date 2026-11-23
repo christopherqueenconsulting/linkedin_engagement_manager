@@ -18,6 +18,7 @@ interface OutreachTarget {
   status: string
   context_url: string | null
   draft_text: string | null
+  notes?: string | null
   updated_at: string | null
 }
 
@@ -190,6 +191,9 @@ export default function OutreachFunnel() {
                 </div>
               </div>
               <p className="text-xs text-fg-muted">{STAGE_HELP[t.stage] ?? ''}</p>
+              {t.status === 'pending' && t.notes && (
+                <p className="text-xs text-warning">Held: {t.notes}</p>
+              )}
 
               {!terminal && (
                 <>

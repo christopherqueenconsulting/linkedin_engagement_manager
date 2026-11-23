@@ -1919,7 +1919,8 @@ def send_connection_request(self, request_id: int):
     # Real dispatches this row has already spent. The three defers below add nothing to it — they
     # never reach LinkedIn — which is what makes `attempts == 0` mean "not attempted" on the event.
     attempts_before = int(req.get("attempts") or 0)
-    if acquisition_outbound_held(user_id, req.get("source")):
+    if acquisition_outbound_held(user_id, req.get("source"),
+                                 approved_by=req.get("approved_by")):
         # Owner ruling (#2376): a prospect sourced for the brand's own marketing is the owner's to
         # send. Back to 'pending' (the draft stays visible, nothing was attempted), not 'approved',
         # so the dispatcher does not re-pick it every scan.

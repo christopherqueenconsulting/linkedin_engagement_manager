@@ -310,9 +310,17 @@ self-marketing off. What the brand does:
 > on the **Connections** tab press **Cancel** (`PUT /api/connection_request` with `action=cancel`, or
 > `DELETE /api/connection_request`; both set `canceled`); on the **Outreach** tab press **Cancel**
 > (`PUT /api/outreach/target` with `action=cancel`, or `DELETE /api/outreach/target`; cancels the whole funnel
-> for that person). There is no "mark sent" action. **Approve** on a brand acquisition draft does not send it:
-> the next dispatch or funnel run returns it to `pending`. The Connections tab shows `failure_reason` only on
-> `failed` rows, so the hold reason on a returned row is visible through the API, not on screen.
+> for that person). There is no "mark sent" action.
+>
+> **Amended 2026-11-23 (issue #2623, owner option A): an explicit human Approve releases the send.** The
+> approve and retry paths record `approved_by = 'user:<id>'` (`connection_requests`, `outreach_funnel_targets`;
+> the `posts.approved_by` convention) and `acquisition_outbound_held(..., approved_by=...)` returns False for it.
+> A mode-driven approval, NULL, or any `system:*` value is still held, and an `agent`-scoped session still cannot
+> approve. A released row stays paced: `send_connection_request` and the funnel connect stage both defer
+> (leaving the row `approved`) at `max_invites_per_day` or while invites are held. Only approval writers set
+> `approved_by`; a defer never rewrites it, and a funnel stage advance clears it, since the next stage is a
+> new approval. The funnel scan files a brand connect/DM draft `pending`. `ACQUISITION_HOLD_HARD=1` restores the
+> unconditional hold. Both review tabs now show the hold reason on a `pending` row.
 >
 > **What held drafts block until the owner closes them.** Held connection drafts stay open (`pending`), and the
 > smart-targeting scan subtracts open rows from the brand's `max_invites_per_day`. So once the held drafts

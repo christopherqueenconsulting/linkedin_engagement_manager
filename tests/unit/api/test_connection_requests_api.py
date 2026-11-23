@@ -297,6 +297,15 @@ class TestUpdateAndCancel:
         assert resp.status_code == 200
         from cqc_lem.utilities.db import ConnectionRequestStatus
         assert upd.call_args.kwargs["status"] == ConnectionRequestStatus.APPROVED
+        assert upd.call_args.kwargs["approved_by"] == f"user:{_U}"
+
+    def test_a_field_only_save_records_no_approver(self, api_client):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.get_connection_request_user_id", return_value=_U), \
+             patch("cqc_lem.api.main.update_connection_request", return_value=True) as upd:
+            api_client.put("/api/connection_request",
+                           json={"session_token": _S, "request_id": 3, "message": "hi"})
+        assert upd.call_args.kwargs["approved_by"] is None
 
     def test_update_404_when_not_owner(self, api_client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
@@ -336,6 +345,8 @@ class TestUpdateAndCancel:
         assert resp.status_code == 200
         from cqc_lem.utilities.db import ConnectionRequestStatus
         assert upd.call_args.kwargs["status"] == ConnectionRequestStatus.APPROVED
+        # A retry is a human approval (#2623).
+        assert upd.call_args.kwargs["approved_by"] == f"user:{_U}"
 
     def test_retry_rejected_when_not_failed(self, api_client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \

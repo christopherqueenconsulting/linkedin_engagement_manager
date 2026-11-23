@@ -218,6 +218,9 @@ export default function ConnectionRequests({ userTimezone }: { userTimezone: str
                 {req.reasons && <span className="text-xs text-fg-muted truncate">· {req.reasons}</span>}
               </div>
             )}
+            {req.status === 'pending' && req.failure_reason && (
+              <p className="text-xs text-warning mb-1">Held: {req.failure_reason}</p>
+            )}
             {req.status === 'failed' && (
               <p className="text-xs text-danger mb-1">
                 {req.failure_reason ? `Why it failed: ${req.failure_reason}. ` : ''}

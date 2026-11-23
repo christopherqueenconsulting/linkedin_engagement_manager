@@ -9,6 +9,7 @@ user is, and WHAT its caps and focus topics should be for the current `LAUNCH_PH
 self-marketing can never quietly run hotter than the owner signed off on.
 """
 
+import os
 from typing import Any, Optional
 
 from cqc_lem.utilities.env_constants import BRAND_USER_ID, LAUNCH_PHASE
@@ -129,22 +130,32 @@ ACQUISITION_CONNECT_SOURCES = frozenset({"own_post", "adjacent_post", "outreach_
 ACQUISITION_HOLD_REASON = "held: brand acquisition outbound is sent by the owner (issue #2376)"
 
 
+def _hold_is_hard() -> bool:
+    """`ACQUISITION_HOLD_HARD` restores the unconditional #2376 hold (the rollback switch)."""
+    return os.getenv("ACQUISITION_HOLD_HARD", "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def acquisition_outbound_held(user_id: Any, source: Optional[str] = None,
-                              funnel: bool = False) -> bool:
+                              funnel: bool = False, approved_by: Optional[str] = None) -> bool:
     """Whether an outbound action is brand acquisition outreach the ruling holds at 0.
 
     Args:
         user_id: The account the action would go out from.
         source: The `connection_requests.source` of a connect request, when there is one.
         funnel: True for a connect or DM stage of the comment-first outreach funnel.
+        approved_by: The row's `approved_by`. A human Approve (`user:<id>`) is the owner's send
+            decision and releases the hold (#2623); `system:*`, NULL and anything else do not.
 
     Returns:
-        True only for the brand account AND an acquisition-sourced action; False for every other
-        user and for the brand's ordinary engagement.
+        True only for the brand account AND an acquisition-sourced action without a human
+        approval; False for every other user and for the brand's ordinary engagement. With
+        `ACQUISITION_HOLD_HARD` set, a human approval no longer releases it.
     """
     if not is_brand_user(user_id):
         return False
-    return bool(funnel) or (source or "").strip().lower() in ACQUISITION_CONNECT_SOURCES
+    if not (bool(funnel) or (source or "").strip().lower() in ACQUISITION_CONNECT_SOURCES):
+        return False
+    return not (str(approved_by or "").startswith("user:") and not _hold_is_hard())
 
 
 def held_connect_sources(user_id: Any) -> frozenset:
