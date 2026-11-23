@@ -239,6 +239,12 @@ app.conf.update(
             # rendered before this pass reads its status (issue #1432).
             'schedule': crontab(hour='10', minute='30')
         },
+        'notify-stale-approvals': {
+            'task': 'cqc_lem.app.run_scheduler.auto_notify_stale_approvals',
+            # Daily 13:00 UTC: one digest per user when any approval has waited over
+            # REVIEW_STALE_HOURS (issue #2625).
+            'schedule': crontab(hour='13', minute='0')
+        },
         'publish-scheduled-newsletters': {
             'task': 'cqc_lem.app.run_scheduler.auto_publish_scheduled_editions',
             'schedule': crontab(minute='5')  # Hourly: publish any edition whose scheduled slot has arrived

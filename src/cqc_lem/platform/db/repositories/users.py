@@ -3130,3 +3130,19 @@ def has_engagement_preferences(user_id: int) -> bool:
     WRITE on the answer must use the three-valued function instead (issue #952).
     """
     return engagement_preferences_are_configured(user_id) is True
+def get_review_digest_enabled(user_id: int) -> bool:
+    """Whether the daily stale-approval email may be sent to this account (#2625).
+
+    NULL (never chosen) is ON; only an explicit 0 opts out. An unreadable row reads as ON too — the
+    email is a reminder about work waiting on the author, so a database blip must not silence it.
+    """
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute("SELECT review_digest_enabled FROM engagement_preferences "
+                           "WHERE user_id = %s", (user_id,))
+            row = cursor.fetchone()
+            return not (row and row["review_digest_enabled"] is not None
+                        and not row["review_digest_enabled"])
+    except mysql.connector.Error as err:
+        log_error("Could not read review_digest_enabled", exc=err, user_id=user_id)
+        return True

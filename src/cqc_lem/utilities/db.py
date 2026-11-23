@@ -212,7 +212,10 @@ from cqc_lem.platform.db.repositories.curated_sources import (
     update_curated_source_og_image,
     update_curated_source_status,
 )
-from cqc_lem.platform.db.repositories.dashboard import get_planned_tasks
+from cqc_lem.platform.db.repositories.dashboard import (
+    get_planned_tasks,
+    get_user_ids_with_pending_review,
+)
 from cqc_lem.platform.db.repositories.demo import (
     DEMO_EMAIL_DOMAINS,
     NotADemoAccount,
@@ -531,6 +534,7 @@ from cqc_lem.platform.db.repositories.posts import (
     get_engager_candidates,
     get_follower_stats,
     get_future_post_slots,
+    get_held_pending_posts,
     get_impact_hourly_counts,
     get_impact_llm_cost_by_day,
     get_impact_post_rows,
@@ -736,6 +740,7 @@ from cqc_lem.platform.db.repositories.users import (
     get_or_create_reply_inbound_token,
     get_profile_facts,
     get_profile_synthesis,
+    get_review_digest_enabled,
     get_survey_candidate_user_ids,
     get_user_access_token,
     get_user_account_kind,
@@ -1265,6 +1270,9 @@ __all__ = [
     "get_pin_lockout",
     "get_planned_posts_within_buffer",
     "get_planned_tasks",
+    "get_held_pending_posts",
+    "get_review_digest_enabled",
+    "get_user_ids_with_pending_review",
     "get_post_age_minutes",
     "get_post_archetype",
     "get_post_authenticity_score",

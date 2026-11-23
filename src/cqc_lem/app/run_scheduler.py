@@ -1513,6 +1513,38 @@ def auto_notify_pending_covers():
 
 
 @shared_task.task
+def auto_notify_stale_approvals():
+    """Daily digest to authors whose approvals have waited past REVIEW_STALE_HOURS (issue #2625).
+
+    Never emails at zero stale items, honours the `review_digest_enabled` opt-out (NULL = on), and
+    is deduped to one email per user per day inside `notify_stale_approvals`.
+    """
+    from cqc_lem.utilities.db import get_review_digest_enabled, get_user_ids_with_pending_review
+    from cqc_lem.utilities.notifications import notify_stale_approvals
+    from cqc_lem.utilities.review_queue import REVIEW_STALE_HOURS, get_review_queue, summarize
+    candidates = get_user_ids_with_pending_review()
+    notified = 0
+    for uid in candidates:
+        try:
+            if not get_review_digest_enabled(uid):
+                continue
+            summary = summarize(get_review_queue(uid))
+            if summary["stale_48h"] and notify_stale_approvals(uid, summary, REVIEW_STALE_HOURS):
+                notified += 1
+        except Exception as e:
+            log_warning("Could not build the stale-approvals digest", exc=e, user_id=uid,
+                        task_name="auto_notify_stale_approvals")
+    # An empty sweep is the normal state, so it stays DEBUG.
+    if notified:
+        log_info(f"Sent {notified} stale-approvals digest(s)",
+                 task_name="auto_notify_stale_approvals")
+    else:
+        log_debug(f"No stale approvals to report ({len(candidates)} candidate(s))",
+                  task_name="auto_notify_stale_approvals")
+    return f"Sent {notified} stale-approvals digest(s)"
+
+
+@shared_task.task
 def regenerate_newsletter_edition(edition_id: int, guidance: str = None):
     """Regenerate ONE queued newsletter edition in place. Generation is a slow lem-complex call, so
     it runs as a task (not inline in the API request). Honors free-text `guidance` when provided

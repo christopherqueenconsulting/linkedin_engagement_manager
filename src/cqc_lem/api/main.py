@@ -4239,6 +4239,7 @@ from cqc_lem.api.routers import (  # noqa: E402
     billing as _billing_router,
     curated as _curated_router,
     outreach as _outreach_router,
+    review as _review_router,
     user as _user_router,
 )
 
@@ -4249,6 +4250,7 @@ app.include_router(_avatar_router.router)
 app.include_router(_billing_router.router)
 app.include_router(_curated_router.router)
 app.include_router(_outreach_router.router)
+app.include_router(_review_router.router)
 app.include_router(_user_router.router)
 
 
