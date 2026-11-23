@@ -180,6 +180,32 @@ class TestTrackNewsletterSubscribers:
         rec.assert_called_once_with(1, subscriber_count=None, invites_sent=0)
         assert "unknown" in result
 
+    def test_egress_unreachable_is_a_no_op_not_an_error(self):
+        """A deferred login (here: egress down) already warned upstream — no second error issue."""
+        from cqc_lem.app.engagement.newsletter import track_newsletter_subscribers
+        from cqc_lem.utilities.linkedin.rate_limit import LinkedInEgressUnreachable
+        settings = {"enabled": True, "newsletter_url": "https://x/nl"}
+        with patch(f"{_NL}.get_newsletter_settings", return_value=settings), \
+             patch(f"{_NL}.get_current_profile", side_effect=LinkedInEgressUnreachable("egress down")), \
+             patch(f"{_NL}.log_error") as log_error, \
+             patch(f"{_NL}._read_newsletter_subscriber_count") as read, \
+             patch(f"{_NL}.record_newsletter_subscriber_stat") as rec:
+            result = track_newsletter_subscribers.run(user_id=1)
+        log_error.assert_not_called()
+        read.assert_not_called()
+        rec.assert_not_called()
+        assert "rate limited" in result
+
+    def test_other_profile_failure_still_logs_an_error(self):
+        from cqc_lem.app.engagement.newsletter import track_newsletter_subscribers
+        settings = {"enabled": True, "newsletter_url": "https://x/nl"}
+        with patch(f"{_NL}.get_newsletter_settings", return_value=settings), \
+             patch(f"{_NL}.get_current_profile", side_effect=RuntimeError("boom")), \
+             patch(f"{_NL}.log_error") as log_error:
+            result = track_newsletter_subscribers.run(user_id=1)
+        log_error.assert_called_once()
+        assert "Failed to start newsletter tracking" in result
+
 
 class TestAutoTrackFanout:
     def test_dispatches_per_enabled_user(self):
