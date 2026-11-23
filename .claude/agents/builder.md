@@ -74,8 +74,11 @@ switched the branch under the others inside a minute. The isolation exists becau
 
 ## Verify before you push
 
-Read CLAUDE.md for the invariants that apply to what you touched. At minimum:
-`poetry run pytest tests/unit -q` green, and `scripts/ruff_count.sh` no higher than `.ruff-baseline`.
+Read CLAUDE.md for the invariants that apply to what you touched. At minimum: the TARGETED tests
+green — `poetry run pytest <files> -q` on the test files you added or changed, the tests mirroring
+each changed module, and the tests of the callers of every symbol you changed — and
+`scripts/ruff_count.sh` no higher than `.ruff-baseline`. Never run the whole `tests/unit` directory
+locally (one run took 10 minutes of a 45-minute budget, #2623); CI runs the full lane on the PR.
 Use that script and nothing else: `ruff ... | wc -l` counts ruff's two trailing summary lines and
 reads 2 high, which is enough slack to let a real regression through.
 

@@ -1177,6 +1177,16 @@ What the profile allows each mode, and the calls that are narrower than they loo
   execution; the exact allow list is the control, and the `--ex*` / `-x*` / `-i*` / `--interactive*`
   denies are belt-and-braces against a broader allow merged from another settings source.
   `run_lane.sh` sets `GIT_EDITOR=true` on the launch so `--continue` never waits on an editor.
+- **Standalone python / npm** — exact forms only, for the committed OpenAPI snapshot (#2648):
+  `poetry run python scripts/dump_openapi.py` (± `--check`) and
+  `npm --prefix src/cqc_lem/ui run gen:api-types` / `… run check:api-types` (openapi-typescript is
+  pinned inside the npm script). `poetry run python -c`, any other `npm run`, `npx` and `node` stay
+  denied; `test_the_openapi_regen_allows_are_exact` pins it.
+- **Migration version** — exact forms only: `date -u +%Y%m%d%H%M%S` (the version is the CURRENT
+  UTC second, never a rounded one — round versions collided 3x on 2026-11-23) and
+  `git ls-tree --name-only origin/main compose/local/database/migrations/` (the collision check).
+  `date -s` and any other `ls-tree` stay denied; `gh pr list` is not allowed, so a clash with an open
+  PR is caught by the **Migration Versions** check in the merge queue.
 
 **The design rule, learned over four review rounds:** a deny pattern sees the command TEXT, and git
 and gh both accept abbreviated long options (`--fil=` is `--file=`, `--pathspec-fr` is

@@ -19,7 +19,7 @@ Rebase it cleanly onto current `main`:
    rename the migration THIS PR adds (never one already on `main`) to a fresh timestamp:
    `git mv compose/local/database/migrations/<old>.sql compose/local/database/migrations/<new>.sql`
    (the profile allows `git mv` only with BOTH paths under that directory, and never with `..`).
-4. Run `poetry run pytest tests/unit -q` on the touched areas if feasible.
+4. Run only the test files for the areas the conflicts touched (the preamble's **Targeted local tests**) — never the full suite.
 5. `/home/lem/agent-pipeline/lib/git_push.sh --force-with-lease` (re-triggers CI + a fresh Copilot
    review). STOP. A raw push is denied in every form; the helper pushes only this branch, and the
    lease is what stops you overwriting a push you never fetched.

@@ -293,6 +293,16 @@ def test_matcher_follows_the_documented_examples():
         "npm --prefix src/cqc_lem/ui ci",
         "npm --prefix src/cqc_lem/ui run build",
         "npm --prefix src/cqc_lem/ui test",
+        # the preamble's OpenAPI snapshot regen (#2648)
+        "poetry run python scripts/dump_openapi.py",
+        "poetry run python scripts/dump_openapi.py --check",
+        "npm --prefix src/cqc_lem/ui run gen:api-types",
+        "npm --prefix src/cqc_lem/ui run check:api-types",
+        # the preamble's lint ratchet
+        "scripts/ruff_count.sh",
+        # the preamble's migration-version rule
+        "date -u +%Y%m%d%H%M%S",
+        "git ls-tree --name-only origin/main compose/local/database/migrations/",
     ],
 )
 def test_every_documented_runbook_command_is_allowed(command):
@@ -510,7 +520,8 @@ _DENIED_IN_RUNBOOKS = [
     r"\| xargs",
     r"env -u GH_TOKEN",
     r"`[A-Z][A-Z0-9_]*=[^`\s]+ [a-z]",             # an env-assignment prefix: `PYTHONPATH=src poetry …`
-    r"poetry run python\b",                       # standalone scripts (pytest is `poetry run pytest`)
+    # standalone scripts (pytest is `poetry run pytest`); the OpenAPI dump is the one allowed script
+    r"poetry run python\b(?! scripts/dump_openapi\.py(?: --check)?`)",
     r"\bmove any built\b|`mv ",                   # relocating files: no `mv` in the profile
     r"--add-label agent:ready|\+ `agent:ready`|`agent:ready` \+",  # agents never ADD agent:ready
     r"--body \"[^\"]*$",                          # a --body whose text runs onto the next line
@@ -563,6 +574,98 @@ def test_preamble_tells_agents_about_the_profile_and_the_env_prefix():
     assert "Live validation is owner-run" in text
     assert "--dangerously-skip-permissions" not in text
 
+
+#: A flag token, then optionally its separate value (`--tb short`, `-n 8`, `-m "not slow"`). A value
+#: never contains `/` or `.` (it may hold one `:`, as in `-p no:cacheprovider`), so a test file or node
+#: id is never mistaken for one.
+_FLAG = r"""\s+-[^\s`]+(?:\s+(?:'[^']*'|"[^"]*"|[^\s`/.:'"-][^\s`/.:]*(?::[^\s`/.:]+)?))?"""
+
+#: A whole-directory local run of `tests/unit`: flags only — before or after the directory — and NO
+#: file or node argument, up to the end of the code span, line or clause, or a pipe or redirect.
+_FULL_SUITE = re.compile(
+    rf"pytest(?:{_FLAG})*\s+tests/unit/?(?:{_FLAG})*\s*(?:`|$|[.,;)|&>]|2>)", re.M
+)
+
+#: Every text that tells an agent how to run tests locally; each must say targeted files only.
+_LOCAL_TEST_GUIDANCE = (
+    *sorted(RUNBOOK_DIR.glob("*.md")),
+    REPO / ".claude" / "skills" / "test-lanes" / "SKILL.md",
+    REPO / ".claude" / "agents" / "builder.md",
+)
+
+
+def test_no_runbook_tells_an_agent_to_run_the_full_suite():
+    """One local full-suite run took 10 of a 45-minute budget and timed the run out (#2623)."""
+    offenders = [p.name for p in _LOCAL_TEST_GUIDANCE
+                 if _FULL_SUITE.search(p.read_text(encoding="utf-8"))]
+    assert not offenders
+
+
+@pytest.mark.parametrize("text", [
+    # the sentences the targeted-tests rule replaced
+    "Run `poetry run pytest tests/unit -q` locally",
+    "5. Run: `poetry run pytest tests/unit -v --tb=short` (fast lane)",
+    "`poetry run pytest tests/unit -q` green, and `scripts/ruff_count.sh`",
+    # any flag set, either side of the directory, with or without a trailing slash
+    "`poetry run pytest tests/unit -q -x`",
+    "`poetry run pytest tests/unit/ -v --tb=short`",
+    "`poetry run pytest -q tests/unit`",
+    "`poetry run pytest -x tests/unit --tb short -n 8`",
+    "`poetry run pytest tests/unit -m \"not slow\" -q`",
+    "`poetry run pytest tests/unit --cov=src/cqc_lem --cov-report=xml`",
+    "then run pytest tests/unit -q.",
+    "run\npoetry run pytest tests/unit -v\nnext",
+    "`poetry run pytest tests/unit -p no:cacheprovider -q`",
+    "`poetry run pytest tests/unit -q 2>&1 | tail -5`",
+    "`poetry run pytest tests/unit -q | tail -5`",
+    "`poetry run pytest tests/unit -q > out.txt`",
+])
+def test_full_suite_guard_catches_a_whole_directory_run(text):
+    """Guard the guard: a flags-only run of the whole directory is caught, whatever the flags."""
+    assert _FULL_SUITE.search(text), text
+
+
+@pytest.mark.parametrize("text", [
+    "`poetry run pytest tests/unit/test_x.py -q`",
+    "`poetry run pytest tests/unit/test_x.py::test_a -q -x`",
+    "`poetry run pytest -q tests/unit/app/engagement/`",
+    "`poetry run pytest <files> -q`",
+    "`poetry run pytest tests/unit -q tests/unit/test_x.py`",
+    "`poetry run pytest tests/unit/test_a.py tests/unit/test_b.py -v --tb=short`",
+    "`poetry run pytest tests/integration -q`",
+])
+def test_full_suite_guard_passes_a_targeted_run(text):
+    """Guard the guard: a run naming a file, node or sub-directory is targeted, not the suite."""
+    assert not _FULL_SUITE.search(text), text
+
+
+def test_preamble_scopes_local_tests_pushes_per_step_and_regenerates_openapi():
+    text = " ".join((RUNBOOK_DIR / "_preamble.md").read_text(encoding="utf-8").split())
+    assert "Targeted local tests — never the whole suite." in text
+    assert "`graft_trace_calls`" in text and "`scripts/ruff_count.sh`" in text
+    assert "Commit AND push after each completed sub-step" in text
+    for command in ("poetry run python scripts/dump_openapi.py",
+                    "npm --prefix src/cqc_lem/ui run gen:api-types"):
+        assert f"`{command}`" in text, command
+        assert _decide(command) == "allow", command
+    for mode in ("start.md", "revise.md", "rebase.md", "fix.md", "docfix.md", "depmajor.md",
+                 "selfreview.md"):
+        assert "**Targeted local tests**" in (RUNBOOK_DIR / mode).read_text(encoding="utf-8"), mode
+
+
+
+def test_preamble_makes_a_migration_version_the_real_current_second():
+    """Three builders picked round versions (`V20261123120000`) on one day and collided."""
+    text = " ".join((RUNBOOK_DIR / "_preamble.md").read_text(encoding="utf-8").split())
+    assert "CURRENT UTC time to the second" in text
+    assert "never a rounded or invented one" in text
+    for command in ("date -u +%Y%m%d%H%M%S",
+                    "git ls-tree --name-only origin/main compose/local/database/migrations/"):
+        assert f"`{command}`" in text, command
+        assert _decide(command) == "allow", command
+    # only the exact forms: `date` can set the clock, ls-tree is pinned to the migrations dir
+    assert _decide("date -s 2026-01-01") == "deny"
+    assert _decide("git ls-tree -r origin/main") == "deny"
 
 # ---------------------------------------------------------------- review_threads.sh
 
@@ -1612,10 +1715,56 @@ def test_mcp_graft_is_allowed_right_after_playwright():
     "npm ci",
     "npm --prefix src/cqc_lem/ui install evil",
     "npm --prefix /tmp run build",
-    "npm --prefix src/cqc_lem/ui run gen:api-types",
     "npx vitest run",
+    # gen:/check:api-types are allowed only as exact scripts in the UI package (#2648)
+    "npm run gen:api-types",
+    "npm --prefix src/cqc_lem/ui run dev",
+    "npm --prefix src/cqc_lem/ui run lint",
+    "npm --prefix src/cqc_lem/ui run gen:api-types -- -o /tmp/x.ts",
+    "npm --prefix src/cqc_lem/ui run gen:api-types && npm --prefix src/cqc_lem/ui run dev",
+    "npm --prefix /tmp run gen:api-types",
+    "npm --prefix src/cqc_lem/ui exec openapi-typescript",
+    "npx openapi-typescript@7.13.0 openapi.json -o src/api/schema.ts",
+    "npx --yes openapi-typescript@7.13.0 src/cqc_lem/ui/openapi.json",
+    "npx cowsay hi",
+    "node scripts/stamp-api-types.mjs",
+    "node -e 'process.exit(0)'",
 ])
 def test_npm_is_allowed_only_in_the_exact_ui_forms(command):
+    assert _decide(command) == "deny", command
+
+
+def test_the_openapi_regen_allows_are_exact():
+    """The regen grant is four exact rules — no wildcard, so no argument can ride along (#2648)."""
+    allow = _bash_rules("allow")
+    regen = sorted(r for r in allow if "dump_openapi" in r or "api-types" in r)
+    assert regen == sorted([
+        "poetry run python scripts/dump_openapi.py",
+        "poetry run python scripts/dump_openapi.py --check",
+        "npm --prefix src/cqc_lem/ui run gen:api-types",
+        "npm --prefix src/cqc_lem/ui run check:api-types",
+    ])
+    python = [r for r in allow if r.startswith(("poetry run python", "python"))]
+    assert all("*" not in r for r in python if "check_claude_md_size" not in r), python
+    assert not [r for r in allow if r.startswith(("npx", "node"))]
+
+
+@pytest.mark.parametrize("command", [
+    "poetry run python -c 'import os'",
+    "poetry run python",
+    "poetry run python scripts/benchmark_models.py",
+    "poetry run python scripts/dump_openapi.py --write /tmp/x",
+    "poetry run python scripts/dump_openapi.py --check --verbose",
+    "poetry run python scripts/dump_openapi.py; poetry run python -c 'x'",
+    "poetry run python ../other/scripts/dump_openapi.py",
+    "poetry run python /tmp/scripts/dump_openapi.py",
+    "python scripts/dump_openapi.py",
+    "python3 scripts/dump_openapi.py",
+    "python3 -c 'import os'",
+    "PYTHONPATH=src poetry run python scripts/dump_openapi.py",
+    "poetry run python -m pip install evil",
+])
+def test_standalone_python_is_allowed_only_for_the_openapi_dump(command):
     assert _decide(command) == "deny", command
 
 

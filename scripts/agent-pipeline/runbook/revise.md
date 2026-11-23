@@ -49,7 +49,7 @@ feedback — this is distinct from Copilot's threads (that's MODE=review). Workt
      Anything you deliberately did NOT do must be named in your reply — silence reads as "done".
 2. Implement each requested change, scoped to this PR, following `CLAUDE.md` (including its fixed-shape rule — see the preamble: EDIT a row, never ADD one). If a request is ambiguous or you
    think it's wrong, implement your best interpretation AND leave a reply explaining — never silently skip it.
-3. Add/adjust tests; run `poetry run pytest tests/unit -q` on the touched areas if feasible.
+3. Add/adjust tests; run only the touched + related test files and `scripts/ruff_count.sh` (the preamble's **Targeted local tests**).
 4. Commit (`/home/lem/agent-pipeline/lib/git_commit.sh -m "…"`, Claude co-author trailer) + `/home/lem/agent-pipeline/lib/git_push.sh`.
 5. Reply summarizing what you changed: Write it (starting `Addressed your review: …`) to
    `tmp/revise-reply.md`, then `/home/lem/agent-pipeline/lib/gh_safe.sh pr-comment $PR --body-file tmp/revise-reply.md`.
