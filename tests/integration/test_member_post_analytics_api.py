@@ -10,6 +10,7 @@ pytestmark = pytest.mark.integration
 
 _API = "cqc_lem.api.main"
 _USER = "cqc_lem.api.routers.user"
+_USER = "cqc_lem.api.routers.user"
 
 
 class TestAnalyticsConnectionSettings:
@@ -132,6 +133,9 @@ class TestAnalyticsOAuth:
              patch(f"{_API}.RestliClient", return_value=restli), \
              patch(f"{_API}.get_linkedin_profile_url_by_user_id", return_value=profile_url), \
              patch(f"{_API}.get_member_analytics_token_info", return_value=existing), \
+             patch(f"{_USER}.member_post_analytics_connection_available_for_user", return_value=True), \
+             patch(f"{_USER}.get_linkedin_profile_url_by_user_id", return_value=profile_url), \
+             patch(f"{_USER}.get_member_analytics_token_info", return_value=existing), \
              patch(f"{_API}.upsert_member_analytics_token", return_value=True) as save_token:
             response = api_client.get("/auth/linkedin/analytics/callback", params={
                 "code": "oauth-code", "state": "state-salt:member_analytics:session-token"},
