@@ -750,6 +750,10 @@ class EngagementPreferencesRequest(BaseModel):
     # means "leave what is stored"; `{}` clears it. Bounded and tidied by the validator, never a
     # 422 for an odd value — a share of 7 is clamped to 1, not a failed settings save.
     audience_mix: Optional[Dict[str, Any]] = None
+    # ICP rubric (issue #2630, `utilities/icp_rubric.py`). Both None (omitted) mean "leave what is
+    # stored"; the flag is OFF until a user turns it on, and `{}` clears the definition.
+    icp_builder_enabled: Optional[bool] = None
+    icp_definition: Optional[Dict[str, Any]] = None
 
     @field_validator("audience_mix")
     @classmethod
@@ -2268,6 +2272,10 @@ def update_engagement_preferences_endpoint(request: EngagementPreferencesRequest
     # Same rule for the audience mix: omitted or null keeps it; `{}` clears it (stored NULL).
     if prefs.get("audience_mix") is None:
         prefs.pop("audience_mix", None)
+    # Same rule for the ICP rubric flag and definition (issue #2630).
+    for icp_key in ("icp_builder_enabled", "icp_definition"):
+        if prefs.get(icp_key) is None:
+            prefs.pop(icp_key, None)
     if not update_engagement_preferences(user_id, prefs):
         raise HTTPException(status_code=500, detail="Could not update engagement preferences")
     detail = "Engagement preferences updated"
