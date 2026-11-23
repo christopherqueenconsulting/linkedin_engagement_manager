@@ -20,14 +20,16 @@ class TestInsertWithProvenance:
         sql, params = cur.execute.call_args[0]
         assert "source, icp_score, reasons" in sql
         # recipient_email (issue #1836) rides along last, after the provenance columns.
-        assert params[-4:] == ("own_post", 72, "engaged with your content", None)
+        # ICP rubric provenance (issue #2630) rides after the email, all NULL when unscored.
+        assert params[-8:-4] == ("own_post", 72, "engaged with your content", None)
+        assert params[-4:] == (None, None, None, None)
 
     def test_blank_reasons_stored_as_null(self, fake_cursor):
         conn, cur = fake_cursor(lastrowid=7)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
             from cqc_lem.utilities.db import insert_connection_request
             insert_connection_request(1, "https://x/in/jane", reasons="")
-        assert cur.execute.call_args[0][1][-2] is None
+        assert cur.execute.call_args[0][1][-6] is None
 
     def test_select_columns_include_provenance(self):
         from cqc_lem.utilities.db import _CONN_REQ_COLS

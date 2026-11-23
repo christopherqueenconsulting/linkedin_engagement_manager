@@ -1431,6 +1431,29 @@
             "title": "Hold Repaired Posts For Review",
             "type": "boolean"
           },
+          "icp_builder_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Icp Builder Enabled"
+          },
+          "icp_definition": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Icp Definition"
+          },
           "include_authors": {
             "items": {
               "type": "string"
@@ -1681,6 +1704,8 @@
           "max_catchup_touches_per_contact_days",
           "brand_kit",
           "audience_mix",
+          "icp_builder_enabled",
+          "icp_definition",
           "has_saved_preferences",
           "reply_inbound_address",
           "gmail_forward_confirmation",
@@ -1871,6 +1896,29 @@
             "default": true,
             "title": "Hold Repaired Posts For Review",
             "type": "boolean"
+          },
+          "icp_builder_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Icp Builder Enabled"
+          },
+          "icp_definition": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Icp Definition"
           },
           "include_authors": {
             "default": [],

@@ -4190,6 +4190,12 @@ export interface components {
             has_saved_preferences: boolean;
             /** Hold Repaired Posts For Review */
             hold_repaired_posts_for_review: boolean;
+            /** Icp Builder Enabled */
+            icp_builder_enabled: boolean | null;
+            /** Icp Definition */
+            icp_definition: {
+                [key: string]: unknown;
+            } | null;
             /** Include Authors */
             include_authors: string[];
             /** Include Keywords */
@@ -4360,6 +4366,12 @@ export interface components {
              * @default true
              */
             hold_repaired_posts_for_review: boolean;
+            /** Icp Builder Enabled */
+            icp_builder_enabled?: boolean | null;
+            /** Icp Definition */
+            icp_definition?: {
+                [key: string]: unknown;
+            } | null;
             /**
              * Include Authors
              * @default []
