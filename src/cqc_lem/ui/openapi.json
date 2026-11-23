@@ -14598,6 +14598,46 @@
         "summary": "Totp Enroll Confirm"
       }
     },
+    "/api/user/weekly-report": {
+      "get": {
+        "description": "The weekly 5-minute report for the caller (issue #2632).\n\nRead-only; 404 while `weekly-report-enabled` is off for this user.",
+        "operationId": "weekly_report_endpoint_api_user_weekly_report_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "session_token",
+            "required": true,
+            "schema": {
+              "title": "Session Token",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Weekly Report Endpoint"
+      }
+    },
     "/api/user_id/": {
       "get": {
         "description": "The CALLER's own user id. It was an email\u2192id oracle for any bearer holder (issue #914) \u2014\nwhich is how an attacker turned a known address into the id the automation routes wanted.",

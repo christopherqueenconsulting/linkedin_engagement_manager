@@ -3415,6 +3415,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/user/weekly-report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Weekly Report Endpoint
+         * @description The weekly 5-minute report for the caller (issue #2632).
+         *
+         *     Read-only; 404 while `weekly-report-enabled` is off for this user.
+         */
+        get: operations["weekly_report_endpoint_api_user_weekly_report_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/user_id/": {
         parameters: {
             query?: never;
@@ -12652,6 +12674,37 @@ export interface operations {
                 "application/json": components["schemas"]["TotpConfirmRequest"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    weekly_report_endpoint_api_user_weekly_report_get: {
+        parameters: {
+            query: {
+                session_token: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {
