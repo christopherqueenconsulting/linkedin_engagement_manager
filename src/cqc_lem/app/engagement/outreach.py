@@ -256,6 +256,7 @@ from cqc_lem.utilities.linkedin.message_thread import (
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.linkedin.rate_limit import (
     LinkedInRateLimited,
+    is_invites_held,
 )
 from cqc_lem.utilities.linkedin.session import ProfileUnavailableError, get_current_profile
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text
@@ -3456,7 +3457,7 @@ def _fire_funnel_stage(user_id: int, target: dict) -> str:
         return f"target {target_id}: skipped {stage} (no draft)"
 
     if stage in (OutreachStage.CONNECT, OutreachStage.DM) and \
-            acquisition_outbound_held(user_id, funnel=True):
+            acquisition_outbound_held(user_id, funnel=True, approved_by=target.get("approved_by")):
         # Owner ruling (#2376): the brand's funnel connect/DM is the owner's to send. The draft goes
         # back to 'pending' — still on screen, never fired — so the beat does not re-pick it. The
         # reason goes in `notes`, a column nothing else writes, so held targets can be counted.
@@ -3483,6 +3484,13 @@ def _fire_funnel_stage(user_id: int, target: dict) -> str:
                                             "comment_text": draft})
         next_stage = OutreachStage.CONNECT
     elif stage == OutreachStage.CONNECT:
+        # The same wall and daily cap `send_connection_request` enforces: a human-approved brand
+        # target is released from the #2376 hold, not from the invite budget, so re-approving a
+        # batch must not burst invites past `max_invites_per_day`. Left APPROVED for the next run.
+        if is_invites_held(user_id):
+            return f"target {target_id}: connect deferred (invites held)"
+        if count_invites_sent_today(user_id) >= int(prefs.get("max_invites_per_day") or 0):
+            return f"target {target_id}: connect deferred (daily invite cap)"
         invite_to_connect.apply_async(kwargs={"user_id": user_id, "profile_url": profile_url,
                                               "message": draft,
                                               "source": CONNECTION_REQUEST_SOURCE_OUTREACH_FUNNEL})
@@ -3502,7 +3510,7 @@ def _fire_funnel_stage(user_id: int, target: dict) -> str:
 
     next_draft = _draft_funnel_stage(user_id, next_stage, target)
     update_outreach_target(target_id, stage=next_stage, status=OutreachStatus.PENDING,
-                           draft_text=next_draft)
+                           draft_text=next_draft, notes="")
     return f"target {target_id}: {stage} fired -> {next_stage} pending approval"
 
 
@@ -3803,6 +3811,10 @@ def scan_outreach_funnel_targets(self, user_id: int, max_new: int = None):
     # tracks aimed at one person is exactly the over-automation this stays gated against.
     requested = get_requested_person_keys(user_id)
     status = _target_status_for_mode("auto_queue", prefs)
+    # Same filing rule as scan_connection_candidates (#2376): a brand connect/DM draft is the
+    # owner's to approve, so it is filed PENDING instead of APPROVED just to bounce off the hold
+    # (#2623). The comment stage is not held, so it keeps the mode's status.
+    brand_held = acquisition_outbound_held(user_id, funnel=True)
     seen: set = set()
     filed = 0
     for prospect in prospects:
@@ -3824,7 +3836,10 @@ def scan_outreach_funnel_targets(self, user_id: int, max_new: int = None):
                  else _draft_funnel_stage(user_id, stage, {"target_name": prospect.get("name")}))
         target_id = insert_outreach_target(user_id, url, target_name=prospect.get("name") or None,
                                            context_url=prospect.get("context_url"),
-                                           draft_text=(draft or None), stage=stage, status=status)
+                                           draft_text=(draft or None), stage=stage,
+                                           status=(ConnectionRequestStatus.PENDING
+                                                   if brand_held and stage != OutreachStage.COMMENT
+                                                   else status))
         if not target_id:
             continue
         filed += 1

@@ -33,6 +33,7 @@ from cqc_lem.utilities.db import (
     insert_outreach_target,
     update_outreach_target,
     update_outreach_target_status,
+    user_approver,
 )
 
 # The FULL prefix, declared here rather than passed to include_router: `route.path` is what every
@@ -154,7 +155,9 @@ def update_outreach_target_endpoint(request: UpdateOutreachTargetRequest) -> Res
         raise HTTPException(status_code=422, detail="Nothing to update — provide at least one field or an action")
     if not update_outreach_target(request.target_id, target_name=request.target_name,
                                   context_url=request.context_url, draft_text=request.draft_text,
-                                  status=status):
+                                  status=status,
+                                  approved_by=(user_approver(user_id)
+                                               if status == OutreachStatus.APPROVED else None)):
         raise HTTPException(status_code=500, detail="Could not update outreach target")
     return ResponseModel(status_code=200, detail="Outreach target updated")
 

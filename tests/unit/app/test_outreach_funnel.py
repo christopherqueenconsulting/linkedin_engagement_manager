@@ -24,7 +24,15 @@ def _target(**kw):
 
 
 def _prefs():
-    return {"max_comments_per_day": 50, "max_dms_per_day": 25}
+    return {"max_comments_per_day": 50, "max_dms_per_day": 25, "max_invites_per_day": 10}
+
+
+@pytest.fixture(autouse=True)
+def _open_invite_gates():
+    """The connect stage now honours the invite wall and daily cap (#2623); default them open."""
+    with patch(f"{_OUT}.is_invites_held", return_value=False), \
+         patch(f"{_OUT}.count_invites_sent_today", return_value=0):
+        yield
 
 
 class TestFireFunnelStage:
@@ -169,6 +177,49 @@ class TestBrandAcquisitionHold:
         out, m = self._run(2, stage)
         m[task].apply_async.assert_called_once()
         assert "held" not in out
+
+    def _run_approved(self, approved_by, stage="connect", invites_held=False, sent_today=0):
+        from cqc_lem.app.engagement.outreach import _fire_funnel_stage
+        c = TestFireFunnelStage()._common()
+        with c["prefs"], c["cc"], c["cd"], c["refine"], c["dm"], c["enq"], \
+             c["upd"] as upd, c["ust"], \
+             patch(f"{_OUT}.is_invites_held", return_value=invites_held), \
+             patch(f"{_OUT}.count_invites_sent_today", return_value=sent_today), \
+             patch("cqc_lem.utilities.brand_account.BRAND_USER_ID", ""), \
+             patch(f"{_OUT}.invite_to_connect") as inv, patch(f"{_OUT}.send_private_dm") as spd:
+            out = _fire_funnel_stage(1, _target(stage=stage, draft_text="draft",
+                                                approved_by=approved_by))
+        return out, inv, spd, upd
+
+    @pytest.mark.parametrize("stage,task", [("connect", "inv"), ("dm", "spd")])
+    def test_a_human_approval_releases_the_brand_stage(self, stage, task):
+        out, inv, spd, _ = self._run_approved("user:1", stage)
+        {"inv": inv, "spd": spd}[task].apply_async.assert_called_once()
+        assert "held" not in out
+
+    @pytest.mark.parametrize("approved_by", [None, "system:auto_queue"])
+    def test_a_non_human_approval_stays_held(self, approved_by):
+        out, inv, _, _ = self._run_approved(approved_by)
+        inv.apply_async.assert_not_called()
+        assert "held" in out
+
+    def test_hard_hold_overrides_a_human_approval(self, monkeypatch):
+        monkeypatch.setenv("ACQUISITION_HOLD_HARD", "1")
+        out, inv, _, _ = self._run_approved("user:1")
+        inv.apply_async.assert_not_called()
+        assert "held" in out
+
+    def test_a_released_connect_defers_at_the_daily_invite_cap(self):
+        out, inv, _, upd = self._run_approved("user:1", sent_today=10)
+        inv.apply_async.assert_not_called()
+        upd.assert_not_called()  # stays APPROVED for the next run
+        assert "deferred" in out
+
+    def test_a_released_connect_defers_while_invites_are_held(self):
+        out, inv, _, upd = self._run_approved("user:1", invites_held=True)
+        inv.apply_async.assert_not_called()
+        upd.assert_not_called()
+        assert "deferred" in out
 
     def test_the_brand_comment_stage_is_not_held(self):
         """Comments are the owner's ordinary engagement and keep their caps."""

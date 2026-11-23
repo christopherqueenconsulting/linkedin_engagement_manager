@@ -3657,7 +3657,10 @@ def update_connection_request_endpoint(request: ConnectionRequestUpdate) -> Resp
     if not update_connection_request(request.request_id,
                                      recipient_profile_url=request.recipient_profile_url,
                                      recipient_name=request.recipient_name, message=request.message,
-                                     status=status, recipient_email=request.recipient_email):
+                                     status=status, recipient_email=request.recipient_email,
+                                     approved_by=(user_approver(user_id)
+                                                  if status == ConnectionRequestStatus.APPROVED
+                                                  else None)):
         raise HTTPException(status_code=500, detail="Could not update connection request")
     return ResponseModel(status_code=200, detail="Connection request updated")
 

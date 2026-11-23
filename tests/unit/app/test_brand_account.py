@@ -177,6 +177,25 @@ class TestAcquisitionOutboundHold:
         with _Patched(_enabled()):
             assert acquisition_outbound_held(1, funnel=True) is True
 
+    def test_a_human_approval_releases_the_hold(self):
+        """#2623: an explicit human Approve is the owner's send decision."""
+        from cqc_lem.utilities.brand_account import acquisition_outbound_held
+        with _Patched(_enabled()):
+            assert acquisition_outbound_held(1, "adjacent_post", approved_by="user:1") is False
+            assert acquisition_outbound_held(1, funnel=True, approved_by="user:1") is False
+
+    @pytest.mark.parametrize("approved_by", [None, "", "system:auto_queue", "auto", "operator:1"])
+    def test_a_non_human_approval_does_not_release_it(self, approved_by):
+        from cqc_lem.utilities.brand_account import acquisition_outbound_held
+        with _Patched(_enabled()):
+            assert acquisition_outbound_held(1, "own_post", approved_by=approved_by) is True
+
+    def test_hold_hard_restores_the_unconditional_hold(self, monkeypatch):
+        from cqc_lem.utilities.brand_account import acquisition_outbound_held
+        monkeypatch.setenv("ACQUISITION_HOLD_HARD", "1")
+        with _Patched(_enabled()):
+            assert acquisition_outbound_held(1, "own_post", approved_by="user:1") is True
+
     @pytest.mark.parametrize("source", [None, "", "roster", "profile_viewer", "manual"])
     def test_brand_ordinary_outbound_is_not_held(self, source):
         from cqc_lem.utilities.brand_account import acquisition_outbound_held

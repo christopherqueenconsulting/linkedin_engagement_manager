@@ -113,6 +113,15 @@ class TestUpdateAndCancel:
         assert resp.status_code == 200
         from cqc_lem.utilities.db import OutreachStatus
         assert upd.call_args.kwargs["status"] == OutreachStatus.APPROVED
+        assert upd.call_args.kwargs["approved_by"] == f"user:{_U}"
+
+    def test_save_draft_only_records_no_approver(self, api_client):
+        with patch(f"{_M}.get_session_user_id", return_value=_U), \
+             patch(f"{_R}.get_outreach_target_user_id", return_value=_U), \
+             patch(f"{_R}.update_outreach_target", return_value=True) as upd:
+            api_client.put("/api/outreach/target",
+                           json={"session_token": _S, "target_id": 3, "draft_text": "hi"})
+        assert upd.call_args.kwargs["approved_by"] is None
 
     def test_save_draft_only(self, api_client):
         with patch(f"{_M}.get_session_user_id", return_value=_U), \

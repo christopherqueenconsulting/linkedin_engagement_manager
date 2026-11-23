@@ -477,7 +477,7 @@ def update_scheduled_dm(dm_id: int, recipient_profile_url: str = None, recipient
 # person, how well they fit) so the operator approving a request can see why it exists.
 _CONN_REQ_COLS = ("id", "user_id", "recipient_profile_url", "recipient_name", "message", "source",
                   "icp_score", "reasons", "failure_reason", "status", "attempts", "created_at",
-                  "updated_at", "recipient_email IS NOT NULL AS has_recipient_email")
+                  "updated_at", "approved_by", "recipient_email IS NOT NULL AS has_recipient_email")
 _CONN_REQ_DISPATCH_COLS = (*_CONN_REQ_COLS[:-1], "recipient_email")
 # A row lands here (issue #1836) when the Connect dialog opened but demanded the recipient's email
 # and the app cleared it once nothing more can be done with it — see EMAIL_VERIFICATION_REQUIRED_MESSAGE
@@ -670,8 +670,13 @@ def record_connection_request_attempt(request_id: int, failure_reason: str,
 def update_connection_request(request_id: int, recipient_profile_url: str = None,
                               recipient_name: str = None, message: str = None,
                               status: "ConnectionRequestStatus" = None,
-                              recipient_email: Optional[str] = None) -> bool:
+                              recipient_email: Optional[str] = None,
+                              approved_by: Optional[str] = None) -> bool:
     """Patch only the fields that were supplied; False when none were.
+
+    `approved_by` (issue #2623) is written ONLY by the human approve/retry paths, with
+    `approved_at`. Status-only writers (`update_connection_request_status`) never touch it, so a
+    defer from 'sending' back to 'approved' keeps whoever approved the row.
 
     Reports `rowcount > 0`, unlike the scheduled-DM updater — so False here also means "no such row", or
     that every supplied value was already what the row held. A status change also clears `failure_reason`
@@ -695,6 +700,9 @@ def update_connection_request(request_id: int, recipient_profile_url: str = None
         fields.append("failure_reason = NULL")
         if recipient_email is None and _is_terminal_connection_request_status(status):
             fields.append("recipient_email = NULL")
+    if approved_by is not None:
+        fields += ["approved_by = %s", "approved_at = UTC_TIMESTAMP()"]
+        params.append(str(approved_by)[:64])
     if not fields:
         return False
     params.append(request_id)
@@ -750,7 +758,7 @@ def get_requested_person_keys(user_id: int) -> set:
         return set()
 # --- Comment-first outreach funnel (issue #399) — approval-gated comment->connect->DM ---
 _OUTREACH_COLS = ("id", "user_id", "target_profile_url", "target_name", "stage", "status",
-                  "context_url", "draft_text", "notes", "created_at", "updated_at")
+                  "context_url", "draft_text", "notes", "approved_by", "created_at", "updated_at")
 def insert_outreach_target(user_id: int, target_profile_url: str, target_name: str = None,
                            context_url: str = None, draft_text: str = None,
                            stage: "OutreachStage" = OutreachStage.COMMENT,
@@ -880,8 +888,12 @@ def update_outreach_target_status(target_id: int, status: "OutreachStatus") -> b
         return False
 def update_outreach_target(target_id: int, target_profile_url: str = None, target_name: str = None,
                            context_url: str = None, draft_text: str = None, notes: str = None,
-                           stage: "OutreachStage" = None, status: "OutreachStatus" = None) -> bool:
+                           stage: "OutreachStage" = None, status: "OutreachStatus" = None,
+                           approved_by: Optional[str] = None) -> bool:
     """Patch only the fields that were supplied; False when none were.
+
+    `approved_by` (issue #2623) is written only by the human approve path. A STAGE change clears it
+    and `approved_at`: the next stage is a new approval. A status-only write leaves it alone.
 
     Stage and status are stringified from their enums; omitted arguments are left alone rather than
     nulled. True means the UPDATE ran, not that a row matched.
@@ -896,6 +908,11 @@ def update_outreach_target(target_id: int, target_profile_url: str = None, targe
         if val is not None:
             fields.append(f"{col} = %s")
             params.append(str(val))
+    if approved_by is not None:
+        fields += ["approved_by = %s", "approved_at = UTC_TIMESTAMP()"]
+        params.append(str(approved_by)[:64])
+    elif stage is not None:
+        fields += ["approved_by = NULL", "approved_at = NULL"]
     if not fields:
         return False
     params.append(target_id)
