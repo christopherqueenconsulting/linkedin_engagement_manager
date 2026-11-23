@@ -5328,7 +5328,7 @@ class TestCardUrnEvidence:
                             lambda card, a, c, driver=None: ("feedpost://abc", "hash"))
         driver = MagicMock()
         driver.execute_script.return_value = {"hits": [], "post_hrefs": []}
-        reading = llv.card_urn_evidence(driver, MagicMock())
+        reading = llv.card_urn_evidence(driver, MagicMock(), sleep=lambda *_: None)
         assert reading["key_source"] == "hash" and reading["key"] is None
 
     def test_failures_are_reported_not_raised(self, monkeypatch):
@@ -5341,7 +5341,72 @@ class TestCardUrnEvidence:
         assert reading["key_source"] == "<RuntimeError>"
         assert reading["error"].startswith("RuntimeError")
 
-    def test_the_capture_is_declared_so_a_stale_pipe_is_detectable(self):
+    def test_a_hash_card_gets_the_deep_read_and_a_url_keyed_one_does_not(self, monkeypatch):
+        monkeypatch.setattr("cqc_lem.app.engagement.feed._feed_post_identity",
+                            lambda card, a, c, driver=None: ("feedpost://abc", "hash"))
+        driver = MagicMock()
+        sibling = {"rel": "sibling", "tag": "span", "attr": "data-sdui-anchor-id",
+                   "urn": "urn:li:activity:7508799179968671745-0"}
+        driver.execute_script.side_effect = [
+            {"hits": [], "post_hrefs": []},
+            {"scope_hits": [], "scope_nodes": 9, "identity_attrs": [], "card_text_head": "promoted"},
+            None,
+            {"scope_hits": [sibling], "scope_nodes": 9},
+        ]
+        reading = llv.card_urn_evidence(driver, MagicMock(), sleep=lambda *_: None)
+        assert reading["deep"]["hydrated_hits"] == [sibling]
+        assert reading["deep"]["card_kind"] == "promoted"
+        assert reading["deep"]["scope_nodes"] == 9
+
+        monkeypatch.setattr("cqc_lem.app.engagement.feed._feed_post_identity",
+                            lambda card, a, c, driver=None: ("feedurn://x", "card"))
+        driver.execute_script.side_effect = None
+        driver.execute_script.return_value = {"hits": [], "post_hrefs": []}
+        assert "deep" not in llv.card_urn_evidence(driver, MagicMock(), sleep=lambda *_: None)
+
+    def test_deep_read_decodes_identity_attrs_and_reports_failures(self):
+        urn = "urn:li:activity:7508799179968671745"
+        import base64
+        encoded = base64.b64encode(urn.encode()).decode()
+        driver = MagicMock()
+        driver.execute_script.side_effect = [
+            {"scope_hits": [], "identity_attrs": [{"attr": "componentkey", "value": encoded},
+                                                  "junk"], "card_text_head": ""},
+            None,
+            {"scope_hits": []},
+        ]
+        out = llv.card_deep_evidence(driver, MagicMock(), sleep=lambda *_: None)
+        assert out["identity_attrs"][0]["decoded_urns"] == [urn]
+        assert out["card_kind"] is None and out["hydrated_hits"] == []
+        driver.execute_script.side_effect = RuntimeError("stale")
+        assert llv.card_deep_evidence(driver, MagicMock(), sleep=lambda *_: None)["error"] \
+            .startswith("RuntimeError")
+
+    @pytest.mark.parametrize("value", [
+        "urn:li:activity:123456", "urn%3Ali%3Aactivity%3A123456",
+        "dXJuOmxpOmFjdGl2aXR5OjEyMzQ1Ng==",
+    ])
+    def test_decode_embedded_urns_reads_plain_percent_and_base64(self, value):
+        assert [u.lower() for u in llv.decode_embedded_urns(value)] == ["urn:li:activity:123456"]
+
+    def test_decode_embedded_urns_ignores_noise(self):
+        assert llv.decode_embedded_urns("hello world") == []
+        assert llv.decode_embedded_urns("") == []
+
+    @pytest.mark.parametrize("text,kind", [
+        ("Promoted by Acme", "promoted"), ("Suggested for you", "suggested"),
+        ("Jane reposted this", "reshare"), ("plain post", None), ("", None)])
+    def test_classify_card_kind(self, text, kind):
+        assert llv.classify_card_kind(text) == kind
+
+    def test_home_feed_probe_samples_eight_cards(self, monkeypatch):
+        seen = {}
+        monkeypatch.setattr(llv, "_walk_feed_composers",
+                            lambda d, feed, url, max_cards=3, sleep=None: seen.update(n=max_cards))
+        llv.probe_home_feed_composer(MagicMock())
+        assert seen["n"] == 8
+
+    def test_the_capability_symbol_is_declared(self):
         assert llv._PROBE_CAPABILITY_SYMBOLS["group_feed_composer.urn_evidence"] == \
             "card_urn_evidence"
         assert "group_feed_composer.urn_evidence" in llv.probe_script_reading()["capabilities"]

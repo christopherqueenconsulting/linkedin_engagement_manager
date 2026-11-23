@@ -609,6 +609,15 @@ class TestPerFilterDropCounts:
                       reactions=10, matches=False)
         assert r["funnel"]["feed_drops"] == {"include_miss": 1}
 
+    def test_feed_key_sources_excludes_roster_cards(self):
+        # #2593: the merged `key sources` tally folds in roster cards; the feed-only one must not.
+        roster = {"posted": 0, "targets_visited": 1, "examined": 4, "off_topic_skipped": 0,
+                  "key_sources": {"permalink": 4}, "commented_key_sources": {}}
+        r = _run_feed(self._boxes(1), prefs=self._PREFS, reactions=10, roster_stats=roster)
+        line = r["scan"][0]
+        assert "feed key sources {'hash': 1}" in line
+        assert "key sources {'hash': 1, 'permalink': 4}" in line
+
     def test_a_commented_post_drops_nothing(self):
         r = _run_feed(self._boxes(1), prefs=self._PREFS, reactions=10)
         assert r["posted"] == 1

@@ -82,6 +82,7 @@ from urllib.parse import parse_qs, urlparse
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 
+from cqc_lem.utilities.linkedin.cards import _COMMENT_ACTION_JS
 from cqc_lem.utilities.logger import log_debug
 
 SIGNALS = ("reactions", "comments", "reposts", "impressions", "saves")
@@ -6352,11 +6353,148 @@ return {hits: out, post_hrefs: hrefs};
 """
 
 
-def card_urn_evidence(driver, card) -> dict:
+# #2593: a hash-keyed home card may still carry its URN where `_CARD_URN_EVIDENCE_JS` never looks —
+# in a SIBLING subtree under an ancestor (the scope below, bounded exactly like production's
+# `_URN_SCAN_JS`: it stops before the first ancestor spanning more than one comment action), in an
+# attribute that hydrates late, or encoded inside an identity-shaped non-URN attribute. Read-only:
+# attributes and text only, nothing is clicked or opened.
+_CARD_DEEP_EVIDENCE_JS = _COMMENT_ACTION_JS + r"""
+const card = arguments[0];
+const cap = arguments[1] || 40;
+const RE = /urn(?::|%3A)li(?::|%3A)[A-Za-z_]+(?::|%3A)[^\s"'&,)<>]{1,80}/ig;
+const count = (root) => {
+  let n = 0;
+  for (const b of root.querySelectorAll("button, [role='button']")) { if (isCommentAction(b)) n++; }
+  return n;
+};
+let scope = card, p = card.parentElement, depth = 0;
+while (p && depth < 12) {
+  if (count(p) > 1) break;
+  scope = p; p = p.parentElement; depth++;
+}
+const scope_hits = [];
+const seen = new Set();
+const nodes = [scope].concat(Array.from(scope.querySelectorAll('*')));
+for (const el of nodes) {
+  if (scope_hits.length >= cap) break;
+  if (!el.attributes) continue;
+  for (const a of el.attributes) {
+    RE.lastIndex = 0;
+    const m = RE.exec(a.value || '');
+    if (!m) continue;
+    const rel = el === card ? 'card' : card.contains(el) ? 'card_descendant'
+      : el.contains(card) ? 'ancestor' : 'sibling';
+    const k = rel + '|' + a.name + '|' + m[0];
+    if (seen.has(k)) continue;
+    seen.add(k);
+    scope_hits.push({rel: rel, tag: el.tagName.toLowerCase(), attr: a.name, urn: m[0].slice(0, 120)});
+    if (scope_hits.length >= cap) break;
+  }
+}
+const ident = [];
+const IDENT = /^(componentkey|data-view-tracking-scope|data-id|data-[a-z0-9-]+)$/i;
+for (const a of (card.attributes || [])) {
+  if (IDENT.test(a.name)) ident.push({attr: a.name, value: (a.value || '').slice(0, 200)});
+  if (ident.length >= 20) break;
+}
+const txt = (card.innerText || '').slice(0, 600).toLowerCase();
+return {scope_hits: scope_hits, scope_nodes: nodes.length, identity_attrs: ident,
+        card_text_head: txt};
+"""
+
+_URN_IN_TEXT_RE = re.compile(r"urn(?::|%3A)li(?::|%3A)[A-Za-z_]+(?::|%3A)[^\s\"'&,)<>]{1,80}", re.I)
+_B64_CHUNK_RE = re.compile(r"[A-Za-z0-9+/_-]{16,}={0,2}")
+
+
+def decode_embedded_urns(value: str) -> list:
+    """#2593: every `urn:li:` string hiding in one attribute value, plain, percent- or base64-encoded.
+
+    Purely a reading aid for the probe report; nothing here feeds production's key chain.
+    """
+    import base64
+    from urllib.parse import unquote
+
+    found: list = []
+
+    def _add(text: str) -> None:
+        for m in _URN_IN_TEXT_RE.finditer(text or ""):
+            urn = unquote(m.group(0))[:120]
+            if urn not in found:
+                found.append(urn)
+
+    value = value or ""
+    _add(value)
+    _add(unquote(value))
+    for chunk in _B64_CHUNK_RE.findall(value):
+        padded = chunk + "=" * (-len(chunk) % 4)
+        for decoder in (base64.b64decode, base64.urlsafe_b64decode):
+            try:
+                _add(decoder(padded).decode("utf-8", "ignore"))
+            except Exception:
+                continue
+    return found
+
+
+def classify_card_kind(text: str) -> Optional[str]:
+    """#2593: promoted / suggested / reshare when the card's own text head says so, else None."""
+    head = (text or "").lower()
+    if re.search(r"\bpromoted\b", head):
+        return "promoted"
+    if re.search(r"\bsuggested\b", head):
+        return "suggested"
+    if re.search(r"\b(reposted|reshared|shared this)\b", head):
+        return "reshare"
+    return None
+
+
+def _scope_hit_keys(reading: Any) -> set:
+    hits = (reading or {}).get("scope_hits") or []
+    return {(h.get("rel"), h.get("attr"), h.get("urn")) for h in hits if isinstance(h, dict)}
+
+
+def card_deep_evidence(driver, card, sleep: Callable[[float], None] = time.sleep) -> dict:
+    """#2593: the wider read for ONE hash-keyed home card — scope subtree, late hydration, encoded ids.
+
+    Two reads of the single-post scope, the second after `scrollIntoView` plus a bounded wait, so a
+    URN that only hydrates once the card is on screen shows up in `hydrated_hits`.
+    """
+    out: dict = {}
+    try:
+        first = driver.execute_script(_CARD_DEEP_EVIDENCE_JS, card, 40) or {}
+        first = first if isinstance(first, dict) else {}
+        out["scope_hits"] = first.get("scope_hits") or []
+        out["scope_nodes"] = first.get("scope_nodes")
+        identity = []
+        for item in first.get("identity_attrs") or []:
+            if not isinstance(item, dict):
+                continue
+            entry = {"attr": item.get("attr"), "value": str(item.get("value") or "")[:200]}
+            decoded = decode_embedded_urns(entry["value"])
+            if decoded:
+                entry["decoded_urns"] = decoded
+            identity.append(entry)
+        out["identity_attrs"] = identity
+        out["card_kind"] = classify_card_kind(first.get("card_text_head") or "")
+        driver.execute_script(
+            "arguments[0].scrollIntoView({block: 'center'});", card)
+        sleep(1.5)
+        second = driver.execute_script(_CARD_DEEP_EVIDENCE_JS, card, 40) or {}
+        before = _scope_hit_keys(first)
+        out["hydrated_hits"] = [
+            h for h in (second.get("scope_hits") or [])
+            if isinstance(h, dict) and (h.get("rel"), h.get("attr"), h.get("urn")) not in before]
+    except Exception as e:
+        out["error"] = f"{type(e).__name__}: {e}"[:200]
+    return out
+
+
+def card_urn_evidence(driver, card, sleep: Callable[[float], None] = time.sleep) -> dict:
     """#2151: what the shipped key chain reads off ONE card, beside every URN the card carries.
 
     `key_source` is production's own answer (`_feed_post_identity`); `hits` is the broad scan it is
     graded against. A `hash` key beside a non-empty `hits` is the drift this capture exists for.
+    A `hash` card also gets `deep` (#2593): the single-post scope, a post-hydration re-read and the
+    card's identity-shaped attributes.
     """
     from cqc_lem.app.engagement.feed import _feed_post_identity
 
@@ -6372,6 +6510,8 @@ def card_urn_evidence(driver, card) -> dict:
     except Exception as e:
         found = {"error": f"{type(e).__name__}: {e}"[:200]}
     reading.update(found if isinstance(found, dict) else {})
+    if reading.get("key_source") == "hash":
+        reading["deep"] = card_deep_evidence(driver, card, sleep=sleep)
     return reading
 
 
@@ -6506,7 +6646,7 @@ def _walk_feed_composers(driver, feed: str, url: str, max_cards: int = 3,
     for index, card in enumerate(cards):
         entry: dict = {"index": index, "locator_hits": _locator_hits(card, _COMMENT_ACTION_LOCATORS)}
         # Read BEFORE the Comment click: an open composer re-renders the card.
-        entry["urn_evidence"] = card_urn_evidence(driver, card)
+        entry["urn_evidence"] = card_urn_evidence(driver, card, sleep=sleep)
         action = find_first(driver, wait, _COMMENT_ACTION_LOCATORS, "Comment action",
                             parent_element=card, required=False, visible_only=True, max_try=1,
                             warn_on_miss=False)
@@ -6743,7 +6883,7 @@ def probe_group_feed_composer(driver, user_id: int = 1, group_id: Optional[str] 
     return graded(reading, group_feed_composer_state(reading), group_feed_composer_verdict(reading))
 
 
-def probe_home_feed_composer(driver: Any, user_id: int = 1, max_cards: int = 3,
+def probe_home_feed_composer(driver: Any, user_id: int = 1, max_cards: int = 8,
                              sleep: Callable[[float], None] = time.sleep) -> dict[str, Any]:
     """Grade home-feed Comment → composer independently (#2467)."""
     return _walk_feed_composers(driver, "home", FEED_URL, max_cards=max_cards, sleep=sleep)
