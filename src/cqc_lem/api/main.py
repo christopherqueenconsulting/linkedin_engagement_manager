@@ -132,6 +132,7 @@ from cqc_lem.utilities.db import (
     get_lead_signals,
     get_leads,
     get_linkedin_profile_url_by_user_id,
+    get_member_analytics_token_info,
     get_passkey_by_credential_id,
     get_planned_tasks,
     get_post_type,
@@ -3421,17 +3422,27 @@ def member_analytics_callback(code: Optional[str] = None, state: Optional[str] =
                   status_code=status_code)
         return _member_analytics_account_redirect({"li_analytics_error": "profile_lookup_failed"})
 
-    # TODO(#2584): replace vanity-name bridge with a verified OIDC/subject identity bridge.
-    # LinkedIn's member IDs are app-specific, so /me.id cannot bridge these apps. The public
-    # vanity name is the only comparable field available without adding OIDC to the CMA app. This
-    # catches accidental account mismatches, but is not cryptographic identity proof: handles can
-    # change or be reassigned. Keep the analytics connection allowlisted and user-confirmed.
+    # NOTE: an OIDC `sub` bridge is not feasible (#2584). LinkedIn member IDs are unique to the
+    # context of each application and the OIDC `sub` is that same person ID, so neither /me.id nor
+    # `sub` can bridge the CMA app and the LEM app. The public vanity name is the only comparable
+    # field: it catches accidental account mismatches but is not cryptographic identity proof, as
+    # handles can change or be reassigned. The first-connected CMA member ID is therefore pinned
+    # per user below. This bridge retires once the existing LEM app gets CMA at Standard tier, an
+    # owner and LinkedIn action. Keep the analytics connection allowlisted and user-confirmed.
     stored_vanity_name = _linkedin_vanity_name(get_linkedin_profile_url_by_user_id(user_id))
     if not new_sub_id or not new_vanity_name or not stored_vanity_name:
         log_info("Member analytics OAuth profile could not be matched", user_id=user_id)
         return _member_analytics_account_redirect({"li_analytics_error": "identity_unverified"})
     if new_vanity_name.casefold() != stored_vanity_name:
         log_info("Member analytics OAuth profile did not match the existing LEM account",
+                 user_id=user_id)
+        return _member_analytics_account_redirect({"li_analytics_error": "account_mismatch"})
+
+    # Trust on first use: a reconnect that returns a different CMA member ID never silently
+    # replaces the pinned one; the user must disconnect first.
+    existing = get_member_analytics_token_info(user_id)
+    if existing and existing.get("linked_sub_id") and existing["linked_sub_id"] != new_sub_id:
+        log_info("Member analytics OAuth member differs from the pinned connection",
                  user_id=user_id)
         return _member_analytics_account_redirect({"li_analytics_error": "account_mismatch"})
 
