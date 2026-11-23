@@ -1960,7 +1960,8 @@ def get_post_performance_rows(user_id: int, days: Optional[int] = None) -> list:
             params = (user_id, user_id, days) if days is not None else (user_id, user_id)
             cursor.execute(
                 "SELECT p.id, p.scheduled_time, s.reactions, s.comments, s.reposts, s.impressions, "
-                "s.saves, s.archetype, s.hook_style, s.`format`, s.topic, s.buyer_stage "
+                "s.saves, s.archetype, s.hook_style, s.`format`, s.topic, s.buyer_stage, "
+                "s.own_comments "
                 "FROM posts p JOIN post_stats s ON s.post_id=p.id AND s.user_id=p.user_id "
                 "WHERE p.user_id=%s AND p.status='posted' "
                 "AND s.id IN (SELECT MAX(id) FROM post_stats WHERE user_id=%s GROUP BY post_id) "
@@ -1970,7 +1971,8 @@ def get_post_performance_rows(user_id: int, days: Optional[int] = None) -> list:
             return [
                 {"post_id": r[0], "scheduled_time": r[1], "reactions": r[2], "comments": r[3],
                  "reposts": r[4], "impressions": r[5], "saves": r[6], "archetype": r[7],
-                 "hook_style": r[8], "format": r[9], "topic": r[10], "buyer_stage": r[11]}
+                 "hook_style": r[8], "format": r[9], "topic": r[10], "buyer_stage": r[11],
+                 "own_comments": r[12]}
                 for r in (cursor.fetchall() or [])
             ]
     except mysql.connector.Error as err:

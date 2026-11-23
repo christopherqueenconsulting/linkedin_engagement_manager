@@ -72,6 +72,42 @@ def third_party_engagement_rate(reactions: Optional[int], comments: Optional[int
     return engagement_rate(reactions, third_party, reposts, impressions)
 
 
+def organic_engagement_summary(rows: Iterable[Mapping]) -> dict:
+    """Pooled raw vs organic engagement over `get_post_performance_rows` dicts (#2633), REPORT-ONLY.
+
+    `organic_comments = comments - own_comments`, one definition via `third_party_comments`. A post
+    whose own-comment count is unknown (None, #2023) or whose impressions are unknown is left out of
+    the ORGANIC pool and counted in `unknown_posts` — never booked as 0 — so `organic_rate` is None
+    when no post is measurable. The raw pooled rate stays alongside for comparison.
+    """
+    raw = [0, 0]      # engagement, impressions — every post with impressions
+    organic = [0, 0]  # the same, only posts where the organic read is knowable
+    organic_comments = measured = unknown = 0
+    for r in rows:
+        if not r:
+            continue
+        views = _impressions(r.get("impressions"))
+        if views is None:
+            continue
+        measured += 1
+        raw[0] += engagement_score(r.get("reactions"), r.get("comments"), r.get("reposts"))
+        raw[1] += views
+        third = third_party_comments(r.get("comments"), r.get("own_comments"))
+        if third is None:
+            unknown += 1
+            continue
+        organic[0] += engagement_score(r.get("reactions"), third, r.get("reposts"))
+        organic[1] += views
+        organic_comments += third
+    return {
+        "raw_rate": round(raw[0] / raw[1], 5) if raw[1] else None,
+        "organic_rate": round(organic[0] / organic[1], 5) if organic[1] else None,
+        "organic_comments": organic_comments,
+        "measured_posts": measured,
+        "unknown_posts": unknown,
+    }
+
+
 def recency_weight(scheduled_time: Optional[datetime], now: Optional[datetime] = None,
                    half_life_days: float = RECENCY_HALF_LIFE_DAYS) -> float:
     """Exponential half-life decay on a post's age. Missing/future timestamps and mixed timezone
@@ -316,6 +352,12 @@ def build_performance_table(rows: Iterable[Mapping]) -> list:
             "impressions": _impressions(r.get("impressions")),
             "engagement": engagement_score(reactions, comments, reposts),
             "engagement_rate": round(rate, 5) if rate is not None else None,
+            "own_comments": r.get("own_comments"),
+            "third_party_comments": third_party_comments(comments, r.get("own_comments")),
+            "organic_engagement_rate": (
+                None if (organic := third_party_engagement_rate(
+                    reactions, comments, r.get("own_comments"), reposts, r.get("impressions"))) is None
+                else round(organic, 5)),
         })
     out.sort(key=lambda row: row["scheduled_time"] or "", reverse=True)
     return out

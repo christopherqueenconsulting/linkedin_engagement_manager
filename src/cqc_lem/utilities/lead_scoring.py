@@ -215,6 +215,44 @@ def derive_stage(activities: Iterable[LeadActivity], score: int) -> str:
     return LeadStage.COLD
 
 
+FUNNEL_STAGES = (LeadStage.IN_CONVERSATION, LeadStage.MEETING_BOOKED, LeadStage.MEETING_HELD,
+                 LeadStage.WON, LeadStage.LOST)
+
+
+def _ratio(numerator: int, denominator: int) -> Optional[float]:
+    return round(numerator / denominator, 4) if denominator > 0 else None
+
+
+def build_lead_funnel(counts: Iterable[tuple]) -> dict:
+    """Funnel counts per month from `(month, to_stage, distinct leads)` rows (#2633).
+
+    Each month carries the count per funnel stage and the step conversions
+    (conversation to booked, booked to held, held to won). A conversion is None when its
+    denominator is 0 — no conversation yet is unknown, not a 0% rate. Stages outside the funnel
+    (cold, warm...) are ignored.
+    """
+    months: dict = {}
+    for month, stage, n in counts or []:
+        if stage in FUNNEL_STAGES:
+            months.setdefault(month, {s: 0 for s in FUNNEL_STAGES})[stage] += int(n)
+    out = []
+    totals = {s: 0 for s in FUNNEL_STAGES}
+    for month in sorted(months):
+        c = months[month]
+        for s in FUNNEL_STAGES:
+            totals[s] += c[s]
+        out.append({"month": month, **c, "conversion": _funnel_conversion(c)})
+    return {"months": out, "totals": {**totals, "conversion": _funnel_conversion(totals)}}
+
+
+def _funnel_conversion(c: dict) -> dict:
+    return {
+        "conversation_to_booked": _ratio(c[LeadStage.MEETING_BOOKED], c[LeadStage.IN_CONVERSATION]),
+        "booked_to_held": _ratio(c[LeadStage.MEETING_HELD], c[LeadStage.MEETING_BOOKED]),
+        "held_to_won": _ratio(c[LeadStage.WON], c[LeadStage.MEETING_HELD]),
+    }
+
+
 def recommend_action(stage: str, activities: Iterable[LeadActivity]) -> str:
     """The one next move for this lead. Never recommends something we've already done to them."""
     acts = list(activities or [])
