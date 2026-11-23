@@ -254,12 +254,12 @@ def test_full_acts_on_code_and_sets_the_model():
     assert (choice.lane, choice.model) == ("claude", OPUS)
 
 
-def test_a_codex_decision_falls_back_to_the_existing_path_until_phase_3():
-    legacy = lane.decide("review", _usage(10.0))
+def test_a_codex_review_decision_acts_on_the_codex_lane():
     for flag in ("reviews", "full"):
         got = lane.decide("review", _usage(10.0), router=_ctx("review", flag=flag))
-        assert (got.lane, got.tier, got.model, got.reason) == (legacy.lane, legacy.tier, None, legacy.reason)
-        assert "codex_pending_phase3" in got.arm and f"codex/{REVIEW}" in got.arm
+        assert (got.lane, got.model) == ("codex", REVIEW)
+        env = lane.emit_env(got)
+        assert "LEM_LANE_OVERRIDE='codex'" in env and f"LEM_LANE_MODEL='{REVIEW}'" in env
 
 
 def test_router_never_overrides_the_weekly_flip_back_onto_claude():

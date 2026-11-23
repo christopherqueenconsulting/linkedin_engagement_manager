@@ -17,7 +17,9 @@ Environment=PYTHONUNBUFFERED=1
 # usage cache is never written, and lane routing silently falls back to the failure-history estimate
 # — the exact blindness the probe exists to remove. Same root cause as the rc=127 agent runs, one
 # level up, and just as quiet.
-Environment=PATH=/home/lem/.local/bin:/usr/local/bin:/usr/bin:/bin
+# `codex` lives in ~/.npm-global/bin (#2561): same trap, so it is on the PATH here AND resolved by
+# absolute path (CODEX_BIN) in lib/run_lane.sh, which never searches PATH for it.
+Environment=PATH=/home/lem/.local/bin:/home/lem/.npm-global/bin:/usr/local/bin:/usr/bin:/bin
 EnvironmentFile=-/home/lem/agent-pipeline/secrets.env
 ExecStart=/usr/bin/python3 -m lemd.daemon
 

@@ -178,6 +178,10 @@ dispatch_lane() {
     if [ "$LANE" = "ollama" ]; then
       AGENT_TIER="${LEM_LANE_TIER:-$(_pick_ollama_tier)}"; AGENT_MODEL="$AGENT_TIER"
       [ "${CLAUDE_AVAIL:-1}" -eq 0 ] && { FALLBACK_FROM="claude"; FALLBACK_TO="ollama"; }
+    elif [ "$LANE" = "codex" ]; then
+      # Codex harness (#2561): the router's GPT reviewer. No hint fallback: a Claude model name must
+      # never be handed to Codex, so an empty model is refused by run_lane rather than defaulted.
+      AGENT_MODEL="${LEM_LANE_MODEL:-}"
     else
       # The router's model, when LEM_ROUTER acts. Empty with the router off, so the hint stands.
       AGENT_MODEL="${LEM_LANE_MODEL:-$claude_hint}"
