@@ -1,31 +1,7 @@
 import { useState } from 'react'
 import { useEngagementPrefs } from './engagementPrefsCtx'
 import { SectionCard } from './Field'
-
-type ModeKey = 'nurture_dm_mode' | 'artifact_dm_mode' | 'group_post_mode'
-
-// One row per lane that has a per-user approval mode (issue #2624). `auto` says, in one sentence,
-// what switching the lane to auto-approve means.
-export const AUTOMATION_LANES: { key: ModeKey; label: string; review: string; auto: string }[] = [
-  {
-    key: 'nurture_dm_mode',
-    label: 'Reply nurture DMs',
-    review: 'Each drafted reply to a lead waits for your approval.',
-    auto: 'Drafted replies to leads are queued as approved and sent at their slot without you seeing them.',
-  },
-  {
-    key: 'artifact_dm_mode',
-    label: 'Lead-magnet DMs',
-    review: 'Each resource DM waits for your approval.',
-    auto: 'The resource DM goes to anyone who comments your keyword, without you seeing it first.',
-  },
-  {
-    key: 'group_post_mode',
-    label: 'Weekly group post',
-    review: 'The weekly draft is held until you restore it in the studio.',
-    auto: 'The weekly group post publishes at its slot unless you skip it first.',
-  },
-]
+import { AUTOMATION_LANES, type ModeKey } from './automationLanes'
 
 /** Per-lane review vs auto-approve. Turning a lane to auto-approve asks for a named confirmation. */
 export default function AutomationCard() {

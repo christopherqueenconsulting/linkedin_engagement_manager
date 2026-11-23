@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import type { EngPrefs } from '../types'
-import AutomationCard, { AUTOMATION_LANES } from './AutomationCard'
+import AutomationCard from './AutomationCard'
+import { AUTOMATION_LANES } from './automationLanes'
 
 const setEng = vi.fn()
 const state: { eng: Partial<EngPrefs> | null; setEng: typeof setEng } = { eng: null, setEng }
