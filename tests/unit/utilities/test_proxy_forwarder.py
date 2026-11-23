@@ -401,6 +401,8 @@ class TestFailsClosed:
         b"GET /local HTTP/1.1\r\nHost: x\r\n\r\n",
         b"GARBAGE\r\n\r\n",
         b"CONNECT a:1 HTTP/2.0\r\n\r\n",
+        b"GET http://example.com/ HTTP/1.1\r\nX-A: 1\nProxy-Authorization: Basic eA==\r\n\r\n",
+        b"GET http://example.com/\x00 HTTP/1.1\r\nHost: x\r\n\r\n",
     ])
     async def test_malformed_requests_are_400_and_never_reach_upstream(self, request_bytes):
         up = await (_Upstream()).start()

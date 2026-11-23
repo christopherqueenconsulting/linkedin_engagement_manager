@@ -201,6 +201,9 @@ def _parse_head(head: bytes) -> Optional[tuple]:
     except UnicodeDecodeError:  # pragma: no cover - latin-1 decodes every byte
         return None
     lines = text.split("\r\n")
+    if any("\n" in line or "\r" in line or "\x00" in line for line in lines):
+        # A bare LF, CR or NUL is how a header gets smuggled into the upstream request.
+        return None
     parts = lines[0].split(" ")
     if len(parts) != 3 or not _HTTP_VERSION.match(parts[2]):
         return None
