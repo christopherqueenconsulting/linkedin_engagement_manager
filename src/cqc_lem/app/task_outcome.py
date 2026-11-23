@@ -23,6 +23,11 @@ from typing import Any, Optional
 from celery import Task
 
 from cqc_lem.utilities.ai_spend_cap import DailyAICapReached
+from cqc_lem.utilities.linkedin.rate_limit import (
+    begin_egress_task_scope,
+    egress_unreachable_in_task,
+    end_egress_task_scope,
+)
 from cqc_lem.utilities.logger import log_debug
 
 
@@ -80,12 +85,47 @@ class DailyCapAwareTask(Task):
     abstract = True
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        """Run the task; a cap refusal returns a `no_op` result instead of raising."""
+        """Run the task; a cap refusal returns a `no_op` result, an egress-blocked run raises.
+
+        Raises:
+            LaneTaskFailed: The task's last login could not reach linkedin.com through the egress
+                route and the lane deferred (see `egress_failed_result`).
+        """
+        token = begin_egress_task_scope()
         try:
-            return super().__call__(*args, **kwargs)
-        except DailyAICapReached as exc:
-            # DEBUG: the gate already logged the user's transition once at INFO.
-            log_debug("Task stopped by the free-trial daily AI cap", user_id=exc.user_id,
-                      task_name=getattr(self, "name", None))
-            return lane_result(TaskOutcome.NO_OP,
-                               f"Paused by the free-trial daily AI cap until {exc.resets_at.isoformat()}")
+            try:
+                result = super().__call__(*args, **kwargs)
+            except DailyAICapReached as exc:
+                # DEBUG: the gate already logged the user's transition once at INFO.
+                log_debug("Task stopped by the free-trial daily AI cap", user_id=exc.user_id,
+                          task_name=getattr(self, "name", None))
+                return lane_result(TaskOutcome.NO_OP,
+                                   f"Paused by the free-trial daily AI cap until {exc.resets_at.isoformat()}")
+            if token is not None and egress_unreachable_in_task():
+                return egress_failed_result(result)
+            return result
+        finally:
+            end_egress_task_scope(token)
+
+
+EGRESS_FAILED_PREFIX = "Egress unreachable"
+
+
+def egress_failed_result(result: Any) -> str:
+    """End a run whose browser never reached linkedin.com in Celery FAILURE (#2620).
+
+    The lane already deferred the work its own way (no attempt charged, the 429 breaker untouched)
+    and the login gate already counted the failure toward the once-per-streak escalation (#2346).
+    This only stops the run READING as a success: before, "Skipped — rate limited" ended in
+    SUCCESS, so a 13-hour outage on 2026-11-23 showed nothing but successful tasks. A route that
+    does not work is a fault under the outcome contract above, not a designed stop.
+
+    Args:
+        result: What the lane returned; kept in the failure text.
+
+    Raises:
+        LaneTaskFailed: Always, carrying ``"Egress unreachable — ..."`` and the lane's own text.
+    """
+    return lane_result(TaskOutcome.FAILED,
+                       f"{EGRESS_FAILED_PREFIX} — the browser could not reach linkedin.com through "
+                       f"its egress route; the lane deferred: {result}")
