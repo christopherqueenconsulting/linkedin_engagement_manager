@@ -4159,6 +4159,8 @@ export interface components {
          *     Everything above `has_saved_preferences` is a stored column and can be PUT back; everything from it down is derived per request and is ignored on a save.
          */
         EngagementPreferencesDetail: {
+            /** Artifact Dm Mode */
+            artifact_dm_mode: string | null;
             /** Audience Mix */
             audience_mix: {
                 [key: string]: unknown;
@@ -4208,6 +4210,8 @@ export interface components {
             forbidden_claim_terms: string[] | null;
             gate_defaults: components["schemas"]["GateDefaults"];
             gmail_forward_confirmation: components["schemas"]["GmailForwardConfirmation"] | null;
+            /** Group Post Mode */
+            group_post_mode: string | null;
             /** Has Saved Preferences */
             has_saved_preferences: boolean;
             /** Hold Repaired Posts For Review */
@@ -4250,6 +4254,8 @@ export interface components {
             min_connection_icp_score: number;
             /** Min Reactions */
             min_reactions: number | null;
+            /** Nurture Dm Mode */
+            nurture_dm_mode: string | null;
             /** Personal Goals */
             personal_goals: string | null;
             /** Post Similarity Max Pct */
@@ -4297,6 +4303,8 @@ export interface components {
          *     stored", NOT the code default, so an older client cannot resurrect a lane the user switched off.
          */
         EngagementPreferencesRequest: {
+            /** Artifact Dm Mode */
+            artifact_dm_mode?: string | null;
             /** Audience Mix */
             audience_mix?: {
                 [key: string]: unknown;
@@ -4383,6 +4391,8 @@ export interface components {
             focus_topics: string[];
             /** Forbidden Claim Terms */
             forbidden_claim_terms?: string[] | null;
+            /** Group Post Mode */
+            group_post_mode?: string | null;
             /**
              * Hold Repaired Posts For Review
              * @default true
@@ -4463,6 +4473,8 @@ export interface components {
             min_connection_icp_score: number;
             /** Min Reactions */
             min_reactions?: number | null;
+            /** Nurture Dm Mode */
+            nurture_dm_mode?: string | null;
             /** Personal Goals */
             personal_goals?: string | null;
             /** Post Similarity Max Pct */
