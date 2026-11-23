@@ -1180,6 +1180,30 @@ click. `click_first` (`utilities/selenium_util.py`) now scrolls the target eleme
 (`block: 'center'`) and retries once on that exception, the same shape as every other un-clickable
 outcome it already handles.
 
+### Home feed `/feed/foryou/`: the Comment button carries the count, and the composer is mounted but not owned (#2576)
+
+Read-only `--home-feed-composer` readings of the home feed, redacted. The surface has gone back and
+forth (drift 2026-10-19, 11-11, 11-16; ok 2026-11-23), so treat the 11-23 pass as MARGINAL (1 of 3
+cards resolved), not as settled.
+
+- **2026-11-16 (v0.207.1), `/feed/foryou/`:** 3 of 3 sampled cards carried
+  `button[aria-label='Comment']` whose visible text is the comment COUNT, so the text-match xpaths
+  (`='comment'`) miss and only the `aria-label` locator hits. The click landed, nothing mounted
+  (`page_textboxes_open: 0`), and the only editable on the page was a pre-existing
+  `<input data-testid=…>` with no contenteditable, role or label. That input was already there before
+  any click, so it is not a composer.
+- **2026-11-23 (v0.208.3), same URL:** the composer does mount, as `div[role=textbox]` with aria-label
+  "Text editor for creating comment".
+  - Card 0 resolved only via `_single_post_scope` widening.
+  - Card 1 resolved nothing.
+  - Card 2 raised the page textbox count to 2, but no box was card-owned. This is the "mounted but not
+    owned" shape. It touches the "never type into another entity's box" invariant (#1012), so it is
+    NOT a locator change to make here. It is tracked by #2593 or a new sweep-filed issue.
+- **Production cross-check already exists.** `_unowned_composer_count` (`app/engagement/feed.py`)
+  reads a page-native signal before a zero reads as "nothing to do" (#1084). Nothing changed there.
+- **Counter caveat.** Do not cite `skipped-no-composer` as home-feed evidence: that counter is
+  group-feed only. A home-feed miss records as `engage_failed`.
+
 ## The groups directory renders offers and memberships with identical hrefs (#1316)
 
 Live-grounded 2026-08-14 (`/groups/`, user 1, `--group-membership`). One page, two lists, and every
