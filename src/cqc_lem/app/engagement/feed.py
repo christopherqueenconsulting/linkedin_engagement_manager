@@ -3399,6 +3399,9 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
     examined_key_sources: dict = {}
     for source in key_source_by_key.values():
         examined_key_sources[source] = examined_key_sources.get(source, 0) + 1
+    # Home-feed cards only: the merged tally folds in roster `/recent-activity/` cards, which carry
+    # no per-post URN, so it cannot say whether the home-feed URN resolver is healthy (#2593).
+    feed_key_sources: dict = dict(examined_key_sources)
     for source, count in roster_stats["key_sources"].items():
         examined_key_sources[source] = examined_key_sources.get(source, 0) + count
     for source, count in roster_stats["commented_key_sources"].items():
@@ -3492,6 +3495,7 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
              f"roster comment-blocked {roster_stats.get('comment_blocked', 0)}, "
              f"roster followed {roster_stats.get('followed', 0)}, fallback={fallback_used}, "
              f"sort {feed_sort}, key sources {examined_key_sources}, "
+             f"feed key sources {feed_key_sources}, "
              f"feed drops {feed_drops}, roster drops {roster_stats.get('drops', {})}", user_id=user_id,
              action_type="comment", task_name="comment_on_feed_inline")
     hash_commented = posted_key_sources.get("hash", 0)
