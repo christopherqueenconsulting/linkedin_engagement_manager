@@ -643,34 +643,121 @@ _OAUTH_PLUMBING = {
     ("api/main.py", "member_analytics_callback"): "OAuth code-for-token exchange (analytics)",
     ("utilities/linkedin/token_refresh.py", "attempt_token_refresh"): "OAuth token refresh",
 }
-_MUTATING = {"post", "put", "delete", "patch", "request"}
-_HTTP_LIBS = {"requests", "httpx"}
+_MUTATING = {"post", "put", "delete", "patch", "request", "send", "stream"}
+_HTTP_LIBS = {"requests", "httpx", "urllib3", "aiohttp"}
+# Constructors of a client object whose methods then send (`requests.Session()`, `httpx.Client()`).
+_CLIENT_CTORS = {"Session", "Client", "AsyncClient", "ClientSession", "PoolManager", "RestliClient"}
+# RestliClient methods that change something on LinkedIn.
+_RESTLI_WRITES = {"create", "batch_create", "update", "batch_update", "partial_update",
+                  "batch_partial_update", "delete", "batch_delete", "action"}
+
+
+def _http_aliases(tree: ast.AST) -> tuple[set[str], set[str], set[str]]:
+    """What this module binds to an HTTP library, under ANY name (#2527: aliases were missed).
+
+    Returns (names bound to an HTTP library module, names bound to a mutating function of one, names
+    bound to a client constructor).
+    """
+    libs, verbs, ctors = set(_HTTP_LIBS), set(), {"RestliClient"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name.split(".")[0] in _HTTP_LIBS:
+                    libs.add(a.asname or a.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            root = node.module.split(".")[0]
+            for a in node.names:
+                if root in _HTTP_LIBS and a.name in _MUTATING:
+                    verbs.add(a.asname or a.name)
+                if (root in _HTTP_LIBS or root == "linkedin_api") and a.name in _CLIENT_CTORS:
+                    ctors.add(a.asname or a.name)
+    return libs, verbs, ctors
+
+
+def _client_factories(tree: ast.AST, ctors: set[str]) -> set[str]:
+    """Functions in the module that hand back a client (`def _restli() -> RestliClient`)."""
+    out = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            ret = node.returns
+            if isinstance(ret, ast.Name) and ret.id in ctors:
+                out.add(node.name)
+    return out
+
+
+def _module_clients(tree: ast.AST, libs: set[str], ctors: set[str]) -> set[str]:
+    """Module-level names holding an EXISTING client instance (`client = RestliClient()`)."""
+    out = set()
+    for node in getattr(tree, "body", []):
+        if isinstance(node, (ast.Assign, ast.AnnAssign)) and isinstance(node.value, ast.Call) \
+                and _is_ctor(node.value.func, libs, ctors):
+            for t in (node.targets if isinstance(node, ast.Assign) else [node.target]):
+                if isinstance(t, ast.Name):
+                    out.add(t.id)
+    return out
+
+
+def _is_ctor(f: ast.AST, libs: set[str], ctors: set[str]) -> bool:
+    if isinstance(f, ast.Name):
+        return f.id in ctors
+    return isinstance(f, ast.Attribute) and f.attr in _CLIENT_CTORS \
+        and isinstance(f.value, ast.Name) and f.value.id in libs
+
+
+def _function_makes_http_write(node: ast.AST, libs: set[str], verbs: set[str], ctors: set[str],
+                               factories: set[str], clients: set[str]) -> bool:
+    # The body only: a route decorator (`@router.post(...)`) is not an HTTP call.
+    for sub in (s for stmt in node.body for s in ast.walk(stmt)):
+        if not isinstance(sub, ast.Call):
+            continue
+        f = sub.func
+        if isinstance(f, ast.Name) and (f.id in verbs or f.id in factories):
+            return True
+        if _is_ctor(f, libs, ctors):
+            return True  # a client built here is a client this function sends with
+        if isinstance(f, ast.Attribute):
+            recv = f.value
+            if isinstance(recv, ast.Name) and recv.id in libs and f.attr in _MUTATING:
+                return True
+            if isinstance(recv, ast.Name) and recv.id in clients \
+                    and f.attr in _MUTATING | _RESTLI_WRITES:
+                return True
+            # `session.post(...)`, `self._client.put(...)`, `requests.Session().post(...)`: any
+            # mutating verb on a receiver that is not an HTTP library module.
+            if f.attr in {"post", "put", "patch"}:
+                return True
+            if isinstance(recv, ast.Call) and _is_ctor(recv.func, libs, ctors):
+                return True
+            if isinstance(recv, ast.Call) and isinstance(recv.func, ast.Name) \
+                    and recv.func.id in factories and f.attr in _RESTLI_WRITES:
+                return True
+    return False
+
+
+def _http_writers_in(text: str) -> set[str]:
+    """Names of the functions in this source that make a mutating HTTP call in LinkedIn code."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return set()
+    libs, verbs, ctors = _http_aliases(tree)
+    factories = _client_factories(tree, ctors)
+    clients = _module_clients(tree, libs, ctors)
+    found = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name in factories:
+            continue  # building the client is not a send; its callers are scanned
+        if _function_makes_http_write(node, libs, verbs, ctors, factories, clients) \
+                and "linkedin" in (ast.get_source_segment(text, node) or "").lower():
+            found.add(node.name)
+    return found
 
 
 def _linkedin_http_callers() -> set[tuple[str, str]]:
-    found = set()
-    for path in _all_modules():
-        text = path.read_text()
-        try:
-            tree = ast.parse(text)
-        except SyntaxError:
-            continue
-        for node in ast.walk(tree):
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            hit = False
-            for sub in ast.walk(node):
-                if not isinstance(sub, ast.Call):
-                    continue
-                f = sub.func
-                if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) \
-                        and f.value.id in _HTTP_LIBS and f.attr in _MUTATING:
-                    hit = True
-                if (f.id if isinstance(f, ast.Name) else getattr(f, "attr", "")) == "RestliClient":
-                    hit = True
-            if hit and "linkedin" in (ast.get_source_segment(text, node) or "").lower():
-                found.add((str(path.relative_to(_SRC)), node.name))
-    return found
+    return {(str(path.relative_to(_SRC)), name)
+            for path in _all_modules() for name in _http_writers_in(path.read_text())}
 
 
 class TestEveryLinkedInHttpCallerIsAccountedFor:
@@ -701,6 +788,313 @@ class TestEveryLinkedInHttpCallerIsAccountedFor:
         found = _linkedin_http_callers()
         stale = [k for k in _OAUTH_PLUMBING if k not in found]
         assert not stale, f"registered but no longer an HTTP caller: {stale}"
+
+    @pytest.mark.parametrize("source", [
+        "import requests\ndef f():\n    s = requests.Session()\n    s.post('https://api.linkedin.com')\n",
+        "import httpx\ndef f():\n    with httpx.Client() as c:\n        c.put('https://api.linkedin.com')\n",
+        "import httpx\ndef f(c):\n    c.patch('https://api.linkedin.com')\n",
+        "import requests as r\ndef f():\n    r.post('https://api.linkedin.com')\n",
+        "import httpx as hx\ndef f():\n    hx.request('POST', 'https://api.linkedin.com')\n",
+        "from requests import post as p\ndef f():\n    p('https://api.linkedin.com')\n",
+        "from httpx import Client as C\ndef f():\n    C().get('https://api.linkedin.com')\n",
+        "from linkedin_api.clients.restli.client import RestliClient\nCLIENT = RestliClient()\n"
+        "def f():\n    CLIENT.create(resource_path='/posts', entity={}, access_token='linkedin')\n",
+        "from linkedin_api.clients.restli.client import RestliClient as R\n"
+        "def _c() -> R:\n    return R()\n"
+        "def f():\n    _c().action(resource_path='/x', access_token='linkedin')\n",
+        "from linkedin_api.clients.restli.client import RestliClient\n"
+        "def _c() -> RestliClient:\n    return RestliClient()\n"
+        "def f():\n    _c().create(resource_path='/x', access_token='linkedin')\n",
+    ], ids=["session.post", "httpx.Client-ctx", "client-param.patch", "aliased-requests",
+            "aliased-httpx.request", "from-import-alias", "aliased-ctor", "module-restli-instance",
+            "aliased-restli-factory", "restli-factory"])
+    def test_the_scan_catches_each_evasion(self, source: str) -> None:
+        """#2527: session/client objects, aliased imports and existing RestliClient instances."""
+        assert _http_writers_in(source) == {"f"}
+
+    def test_the_scan_ignores_reads_and_route_decorators(self) -> None:
+        source = ("import requests\nrouter = object()\n"
+                  "@router.post('/linkedin')\ndef route():\n    return requests.get('https://linkedin.com')\n")
+        assert _http_writers_in(source) == set()
+
+
+# ---------------------------------------------------------------------------
+# #2527: the private writers in poster.py / reshare.py cannot be reached from outside
+# ---------------------------------------------------------------------------
+
+_PUBLISH_MODULE_SUFFIXES = ("linkedin.poster", "linkedin.reshare")
+
+
+def _ungated_writers() -> set[str]:
+    """Every function in poster.py/reshare.py that reaches LinkedIn WITHOUT opening on guard_send.
+
+    The private writers (`_create_post`, `_create_document_post_*`, `_restli`, ...) and the named
+    token-only helpers: each is safe only because a gated helper in the same module is its sole caller.
+    """
+    found = set(_TOKEN_ONLY_HELPERS)
+    for path in _PUBLISH_MODULES.values():
+        text = path.read_text()
+        tree = ast.parse(text)
+        libs, verbs, ctors = _http_aliases(tree)
+        factories = _client_factories(tree, ctors)
+        clients = _module_clients(tree, libs, ctors)
+        for name, fn in _functions(path).items():
+            if "guard_send" in _call_names(fn):
+                continue
+            if name in factories or _function_makes_http_write(fn, libs, verbs, ctors, factories, clients) \
+                    or any(m in (ast.get_source_segment(text, fn) or "") for m in _HTTP_MARKERS):
+                found.add(name)
+    return found
+
+
+def _publish_bindings(tree: ast.AST) -> tuple[dict[str, str], set[str]]:
+    """(local name -> poster/reshare function it is bound to, local names bound to the modules)."""
+    names: dict[str, str] = {}
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            if node.module.endswith(_PUBLISH_MODULE_SUFFIXES):
+                for a in node.names:
+                    names[a.asname or a.name] = a.name
+            elif node.module.endswith("utilities.linkedin"):
+                for a in node.names:
+                    if a.name in ("poster", "reshare"):
+                        modules.add(a.asname or a.name)
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name.endswith(_PUBLISH_MODULE_SUFFIXES) and a.asname:
+                    modules.add(a.asname)
+    return names, modules
+
+
+def _publish_references(tree: ast.AST) -> set[str]:
+    """Every poster/reshare function this module names, through any import or alias."""
+    names, modules = _publish_bindings(tree)
+    used = set(names.values())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) \
+                and node.value.id in modules:
+            used.add(node.attr)
+        # `cqc_lem.utilities.linkedin.poster._x`, spelled out in full
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Attribute) \
+                and node.value.attr in ("poster", "reshare"):
+            used.add(node.attr)
+    return used
+
+
+def _resolved_callers(helpers: set[str]) -> set[tuple[str, str]]:
+    """Functions outside poster/reshare that CALL one of `helpers`, through any import alias."""
+    found = set()
+    for path in _all_modules():
+        if path in _PUBLISH_MODULES.values():
+            continue
+        tree = ast.parse(path.read_text())
+        names, modules = _publish_bindings(tree)
+        local = {alias for alias, orig in names.items() if orig in helpers}
+        if not local and not modules:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for sub in ast.walk(node):
+                if not isinstance(sub, ast.Call):
+                    continue
+                f = sub.func
+                if (isinstance(f, ast.Name) and f.id in local) or (
+                        isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name)
+                        and f.value.id in modules and f.attr in helpers):
+                    found.add((str(path.relative_to(_SRC)), node.name))
+    return found
+
+
+class TestThePrivateWritersStayPrivate:
+    def test_the_walk_found_the_private_writers(self) -> None:
+        writers = _ungated_writers()
+        assert {"_create_post", "_restli", "_create_document_post_versioned",
+                "_create_image_post_versioned"} <= writers, writers
+
+    def test_no_module_outside_the_publish_files_reaches_an_ungated_writer(self) -> None:
+        writers = _ungated_writers()
+        offenders = []
+        for path in _all_modules():
+            if path in _PUBLISH_MODULES.values():
+                continue
+            hit = _publish_references(ast.parse(path.read_text())) & writers
+            if hit:
+                offenders.append(f"{path.relative_to(_SRC)}: {sorted(hit)}")
+        assert not offenders, (
+            "\n\nThese modules import or reference a poster/reshare function that reaches LinkedIn "
+            f"without guard_send: {offenders}\nCall the gated share_*/comment_* helper instead, or give "
+            "the function a user_id and a guard_send.\n")
+
+    @pytest.mark.parametrize("source", [
+        "from cqc_lem.utilities.linkedin.reshare import _create_post\n",
+        "from cqc_lem.utilities.linkedin.poster import upload_media as um\n",
+        "from cqc_lem.utilities.linkedin import poster as p\ndef f():\n    p._restli()\n",
+        "import cqc_lem.utilities.linkedin.reshare as rs\ndef f():\n    rs._create_post('t', {})\n",
+    ], ids=["private-import", "aliased-token-helper", "module-alias", "dotted-module-alias"])
+    def test_the_reference_scan_catches_each_route_in(self, source: str) -> None:
+        assert _publish_references(ast.parse(source)) & _ungated_writers()
+
+    def test_every_caller_through_any_alias_is_registered(self) -> None:
+        """The bare-name scan above misses `from poster import share_on_linkedin as s`; this one does not."""
+        helpers = {n for path in _PUBLISH_MODULES.values() for n, fn in _functions(path).items()
+                   if "guard_send" in _call_names(fn)}
+        unregistered = _resolved_callers(helpers) - set(_REGISTERED_CALLERS)
+        assert not unregistered, f"unregistered callers of a publish helper: {sorted(unregistered)}"
+
+
+# ---------------------------------------------------------------------------
+# #2527: the gate RUNS first, not just "is present"
+# ---------------------------------------------------------------------------
+
+class TestTheGateRunsBeforeAnyHttpCall:
+    """Each send path calls guard_send / sandbox_dry_run BEFORE any network call, observed at run time."""
+
+    @pytest.mark.parametrize("module,name", _HELPER_CALLS, ids=[c[1] for c in _HELPER_CALLS])
+    def test_guard_send_runs_before_the_network_for_a_sending_account(self, module: str,
+                                                                       name: str) -> None:
+        from cqc_lem.utilities import engagement_mode as em
+
+        events: list[str] = []
+        real_guard = em.guard_send
+
+        def gate(*a: Any, **k: Any) -> None:
+            events.append("gate")
+            real_guard(*a, **k)
+
+        def net(*_a: Any, **_k: Any) -> None:
+            events.append("net")
+            raise _NetworkReached()
+
+        with ExitStack() as stack:
+            stack.enter_context(patch(_MODE, return_value=_state("standard")))
+            stack.enter_context(patch(f"{module}.guard_send", side_effect=gate))
+            # Credentials present, so the helper goes on toward the network.
+            stack.enter_context(patch(f"{module}.get_user_access_token", return_value="tok", create=True))
+            stack.enter_context(patch(f"{module}.get_user_linked_sub_id", return_value="sub", create=True))
+            stack.enter_context(patch(f"{module}.RestliClient", side_effect=net, create=True))
+            for verb in ("post", "put", "get", "delete", "request"):
+                stack.enter_context(patch(f"requests.{verb}", side_effect=net))
+            stack.enter_context(patch("requests.Session.send", side_effect=net))
+            try:
+                _call_minimal(module, name)
+            except Exception:  # noqa: BLE001 - the order of events is the assertion
+                pass
+        assert events and events[0] == "gate", f"{name}: first event was {events[:1]}, not the gate"
+
+    @pytest.mark.parametrize("kind", ["standard", "sandbox"])
+    def test_send_scheduled_dm_asks_the_sandbox_gate_before_the_client(self, kind: str) -> None:
+        from cqc_lem.app.engagement import outreach
+
+        events: list[str] = []
+        real = outreach.sandbox_dry_run
+
+        def gate(*a: Any, **k: Any) -> bool:
+            events.append("gate")
+            return real(*a, **k)
+
+        def client(*_a: Any, **_k: Any) -> bool:
+            events.append("net")
+            return True
+
+        row = {"status": "approved", "user_id": 1, "scheduled_time": None,
+               "recipient_profile_url": "https://www.linkedin.com/in/x/", "message": "m", "source": None}
+        with ExitStack() as stack:
+            stack.enter_context(patch(_MODE, return_value=_state(kind)))
+            stack.enter_context(patch("cqc_lem.app.engagement.outreach.sandbox_dry_run", side_effect=gate))
+            stack.enter_context(patch("cqc_lem.utilities.db.get_scheduled_dm", return_value=row))
+            stack.enter_context(patch("cqc_lem.utilities.db.update_scheduled_dm_status", return_value=True))
+            stack.enter_context(patch("cqc_lem.app.engagement.outreach.send_dm_now", side_effect=client))
+            stack.enter_context(patch("cqc_lem.app.engagement.outreach.get_engagement_preferences",
+                                      return_value={"max_dms_per_day": 10}))
+            stack.enter_context(patch("cqc_lem.utilities.db.count_dms_sent_today", return_value=0))
+            stack.enter_context(patch("cqc_lem.app.engagement.outreach.remaining_actions", return_value=5))
+            outreach.send_scheduled_dm.run(dm_id=5)
+        assert events[0] == "gate"
+        assert events == (["gate", "net"] if kind == "standard" else ["gate"])
+
+
+# ---------------------------------------------------------------------------
+# #2527: a task queued with an ETA decides at RUN time, not at enqueue time
+# ---------------------------------------------------------------------------
+
+_ETA_TASKS = {"post_to_linkedin", "send_scheduled_dm", "send_catchup_touch"}
+
+
+class TestEtaQueuedSendsReReadAtRunTime:
+    def test_every_eta_dispatch_carries_only_ids(self) -> None:
+        """No status or kind is snapshotted into the message, so nothing stale can be acted on."""
+        path = _SRC / "app" / "run_scheduler.py"
+        seen = set()
+        for node in ast.walk(ast.parse(path.read_text())):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "apply_async"
+                    and any(k.arg in ("eta", "countdown") for k in node.keywords)):
+                continue
+            target = node.func.value
+            name = target.id if isinstance(target, ast.Name) else getattr(target, "attr", "")
+            if name not in _ETA_TASKS:
+                continue
+            seen.add(name)
+            kw = next((k.value for k in node.keywords if k.arg == "kwargs"), None)
+            if isinstance(kw, ast.Dict):
+                keys = {k.value for k in kw.keys if isinstance(k, ast.Constant)}
+                assert keys <= {"user_id", "post_id", "dm_id", "touch_id"}, (name, keys)
+        assert {"post_to_linkedin", "send_scheduled_dm", "send_catchup_touch"} <= seen, seen
+
+    @pytest.mark.parametrize("rel,name", [("app/engagement/posting.py", "post_to_linkedin"),
+                                          ("app/engagement/outreach.py", "send_scheduled_dm"),
+                                          ("app/engagement/outreach.py", "send_catchup_touch")])
+    def test_the_task_reads_its_row_then_the_kind_in_its_own_body(self, rel: str, name: str) -> None:
+        fn = _functions(_SRC / rel)[name]
+        calls = _call_names(fn)
+        assert {"get_post_status", "get_scheduled_dm", "get_catchup_touch"} & set(calls), name
+        assert "sandbox_dry_run" in calls, name
+
+    def test_a_post_approved_at_enqueue_on_an_account_flipped_to_sandbox_before_the_eta_is_a_dry_run(
+            self) -> None:
+        from cqc_lem.app.engagement.posting import post_to_linkedin
+
+        # Enqueued while `standard`; the message carries only ids, so the run reads `sandbox`.
+        with ExitStack() as stack:
+            stack.enter_context(patch(_MODE, return_value=_state("sandbox")))
+            stack.enter_context(patch(f"{_POST}.get_post_status", return_value="scheduled"))
+            stack.enter_context(patch(f"{_POST}.update_db_post_status", return_value=True))
+            shares = [stack.enter_context(patch(f"{_POST}.{n}")) for n in (
+                "share_on_linkedin", "share_carousel_on_linkedin", "share_document_on_linkedin",
+                "share_animated_image_on_linkedin")]
+            result = post_to_linkedin.run(1, 40)
+        assert SANDBOX_DRY_RUN_MESSAGE in result
+        for share in shares:
+            share.assert_not_called()
+
+    def test_a_dm_cancelled_after_enqueue_is_not_sent_at_its_eta(self) -> None:
+        from cqc_lem.app.engagement.outreach import send_scheduled_dm
+
+        row = {"status": "canceled", "user_id": 1, "scheduled_time": None,
+               "recipient_profile_url": "https://www.linkedin.com/in/x/", "message": "m", "source": None}
+        with ExitStack() as stack:
+            stack.enter_context(patch(_MODE, return_value=_state("standard")))
+            stack.enter_context(patch("cqc_lem.utilities.db.get_scheduled_dm", return_value=row))
+            client = stack.enter_context(patch("cqc_lem.app.engagement.outreach.send_dm_now"))
+            send_scheduled_dm.run(dm_id=5)
+        client.assert_not_called()
+
+    def test_a_catchup_touch_on_an_account_flipped_to_sandbox_is_a_dry_run(self) -> None:
+        from cqc_lem.app.engagement import outreach
+
+        touch = {"status": "approved", "user_id": 1, "message": "hi"}
+        with ExitStack() as stack:
+            stack.enter_context(patch(_MODE, return_value=_state("sandbox")))
+            stack.enter_context(patch.object(outreach, "get_catchup_touch", return_value=touch))
+            update = stack.enter_context(patch.object(outreach, "update_catchup_touch_status"))
+            stack.enter_context(patch.object(outreach, "report_catchup_run"))
+            skip = stack.enter_context(patch.object(outreach, "skip_browser_lane"))
+            result = outreach.send_catchup_touch.run(touch_id=3)
+        assert SANDBOX_DRY_RUN_MESSAGE in result
+        update.assert_called_once()
+        skip.assert_not_called()
 
 
 class TestEverySessionOpenerReachesTheBackstop:
