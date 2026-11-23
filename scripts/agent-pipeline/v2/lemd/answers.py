@@ -27,10 +27,12 @@ unchanged, because they encode judgements paid for in incidents:
 
 An owner's GitHub APPROVED review on a held PR is the answer `ok` too (`approval`), so one touch
 suffices: approving no longer has to be followed by typing `ok` under the menu. It keeps the comment
-answer's rules and adds three — the owner or a listed answer login (never a Bot, never the App), on
-the PR's CURRENT head, and newer than both the latest Decision Comment and every trusted reply after
-it. It is spent once under its own id (`review:<id>`), through the same `unpark.sh`, which re-checks
-it at execution time (`v2_owner_approved`).
+answer's rules and adds four — the owner or a listed answer login (never a Bot, never the App), on
+the PR's CURRENT head, newer than the latest Decision Comment and every trusted (or unattributable)
+reply after it, and never in place of an explicit answer: an actionable trusted reply anywhere after
+the menu is what routes, and the approval is then only a sign-off. It is spent once under its own
+id (`review:<id>`), through the same `unpark.sh`, which re-checks it at execution time
+(`v2_owner_approved`), and the runner names it to MODE=revise (`ANSWER_KIND_PR=approval`).
 
 The split mirrors `observe`: `parse` and `approval` are pure and hold everything worth arguing
 about, `read_thread` does the GitHub reads.
@@ -161,7 +163,8 @@ def menu_posted(comments: list[dict[str, Any]], owner: str = "",
                for c in reversed(comments))
 
 
-def _may_ask(author: dict[str, Any], owner: str, trusted: Callable[[str], bool] | None) -> bool:
+def _may_ask(author: dict[str, Any], owner: str,
+             trusted: Callable[[str], bool | None] | None) -> bool:
     """May this author's Decision Comment open the answer window?
 
     The pipeline (by the App's slug — this payload is untyped — or under the PAT identity, the
@@ -175,7 +178,7 @@ def _may_ask(author: dict[str, Any], owner: str, trusted: Callable[[str], bool] 
         return False
     if login == owner or github.is_pipeline_app(author) or github.names_pipeline_app(login):
         return True
-    return trusted is not None and trusted(login)
+    return trusted is not None and bool(trusted(login))
 
 
 def parse(comments: list[dict[str, Any]], owner: str,
@@ -233,35 +236,48 @@ def _at(value: Any) -> float:
 
 
 def _window(comments: list[dict[str, Any]], owner: str,
-            trusted: Callable[[str], bool] | None) -> tuple[float, float]:
-    """When the latest Decision Comment was posted, and when the newest trusted reply after it was.
+            trusted: Callable[[str], bool | None] | None, submitted: float) -> tuple[float, bool]:
+    """When the latest Decision Comment was posted, and whether a reply in its window BLOCKS an approval.
 
-    `parse`'s walk, kept to timestamps: the same window boundary (`_may_ask`) and the same reply
-    filter, except that ANY trusted reply counts here. A remark is not an answer, but it is the owner
-    speaking after the approval, and the newest trusted act after the menu is what decides.
+    `parse`'s walk: the same window boundary (`_may_ask`) and the same reply filter. Two kinds of
+    reply block an approval submitted at `submitted`, and nothing else does:
+
+    * an ACTIONABLE trusted reply (`verdict_for` says `answer`/`directive`) ANYWHERE in the window.
+      An explicit instruction is never overridden by a sign-off, in either order: before the
+      approval `parse` routes it; after the approval it is the newer act anyway;
+    * ANY reply at or after the approval whose author is trusted OR unreadable (`trusted` returned
+      None), and any trusted reply whose time is unreadable. A remark is not an answer, but it is the
+      owner speaking after the approval ("hold off" typed after approving still holds), and a reply
+      we cannot place or attribute must never be jumped.
+
+    `trusted(login)` is three-valued here: True, False, or None for a lookup that failed. Anywhere
+    else (the window boundary, a reply before the approval) None reads as untrusted, as in `parse`.
 
     Returns:
-        `(asked, replied)` in epoch seconds. `asked` is 0.0 when no menu from anyone who may ask is
-        on the thread or its time is unreadable; `replied` is 0.0 when nobody trusted replied.
+        `(asked, blocked)`. `asked` is epoch seconds, 0.0 when no menu from anyone who may ask is on
+        the thread or its time is unreadable.
     """
-    replied = 0.0
+    blocked = False
     for c in reversed(comments):
         body = c.get("body") or ""
         author = c.get("author") or {}
         if _DECISION.search(body):
             if _may_ask(author, owner, trusted):
-                return _at(c.get("createdAt")), replied
+                return _at(c.get("createdAt")), blocked
             continue
-        if replied or _AGENT.search(body):
+        if blocked or _AGENT.search(body):
             continue
         login = str(author.get("login") or "")
         if not login or github.is_pipeline_app(author) or github.names_pipeline_app(login):
             continue
-        if login != owner and not (trusted is not None and trusted(login)):
+        standing = True if login == owner else (trusted(login) if trusted is not None else False)
+        if standing is not None and not standing:
             continue
-        # A trusted reply whose time is unreadable must not let an approval jump it: read it as "now".
-        replied = _at(c.get("createdAt")) or float("inf")
-    return 0.0, replied
+        # An unreadable time reads as "now": it can never let an approval jump the reply.
+        after = (_at(c.get("createdAt")) or float("inf")) >= submitted
+        if after or (standing is not None and verdict_for(body) in ACTIONABLE):
+            blocked = True
+    return 0.0, blocked
 
 
 def _approver(user: dict[str, Any], owner: str, answer_logins: frozenset[str]) -> bool:
@@ -279,16 +295,18 @@ def _approver(user: dict[str, Any], owner: str, answer_logins: frozenset[str]) -
 
 def approval(comments: list[dict[str, Any]], reviews: list[dict[str, Any]], head_sha: str,
              owner: str, *, answer_logins: frozenset[str] = frozenset(),
-             trusted: Callable[[str], bool] | None = None) -> Answer | None:
+             trusted: Callable[[str], bool | None] | None = None) -> Answer | None:
     """The owner's GitHub APPROVED review as the answer `ok` to a held PR's latest Decision Comment.
 
     `reviews` is REST `pulls/{n}/reviews` (typed `user`, `state`, `commit_id`, `submitted_at`). The
     approver's NEWEST submitted review decides: a later `CHANGES_REQUESTED` or `COMMENTED` review
     takes the approval back, and a dismissed one reads `DISMISSED`. It counts only when it is
     `APPROVED`, on `head_sha` (an approval of an older head approved code that is no longer the PR),
-    submitted after the latest Decision Comment, and newer than every trusted reply after that menu,
-    so "hold off" typed after approving still holds. A hold phrase in the review's own body holds
-    too (`verdict="hold"`), exactly as it does in a comment.
+    submitted after the latest Decision Comment, and only when `_window` finds nothing blocking it:
+    no actionable trusted reply anywhere after that menu (an explicit answer always wins over a
+    sign-off, whichever came first), and no trusted or unattributable reply at or after the
+    approval, so "hold off" typed after approving still holds. A hold phrase in the review's own
+    body holds too (`verdict="hold"`), exactly as it does in a comment.
 
     Returns:
         An `Answer` whose id is `review:<id>`, or None, including for anything unreadable.
@@ -303,9 +321,9 @@ def approval(comments: list[dict[str, Any]], reviews: list[dict[str, Any]], head
     if (str(newest.get("state") or "").upper() != "APPROVED"
             or str(newest.get("commit_id") or "") != head_sha or not newest.get("id")):
         return None
-    asked, replied = _window(comments, owner, trusted)
     submitted = _at(newest.get("submitted_at"))
-    if not asked or submitted <= asked or replied >= submitted:
+    asked, blocked = _window(comments, owner, trusted, submitted)
+    if not asked or submitted <= asked or blocked:
         return None
     return Answer(comment_id=f"{APPROVAL_PREFIX}{newest['id']}",
                   verdict="hold" if _HOLD.search(newest.get("body") or "") else "approval",
@@ -336,8 +354,9 @@ def read_thread(slug: str, kind: str, number: int, owner: str, *,
     reaches its decision without it. Both facts come off the same read so #1736's `menu_posted`
     costs nothing the answer lane was not already paying. A held PR with a known `head_sha` and a
     menu on its thread costs ONE more read, its reviews, because an owner approval is the answer
-    `ok` there (`approval`). A qualifying approval is newer than every trusted reply, so it
-    outranks the comment answer; an unreadable review read is simply no approval.
+    `ok` there (`approval`). An approval qualifies only when no actionable trusted reply sits after
+    the menu, so it never outranks an explicit comment answer; an unreadable review read is simply
+    no approval.
 
     Returns:
         `UNREADABLE` when the thread could not be read: no answer, and `menu_posted=None`. The
@@ -374,13 +393,20 @@ def read_thread(slug: str, kind: str, number: int, owner: str, *,
             return True
         return github.comment_author_trusted(slug, login, owner, timeout=timeout)
 
+    def standing(login: str) -> bool | None:
+        # `trusted`, but a failed permission lookup is None, so a reply after an approval that we
+        # cannot attribute blocks it instead of being skipped as untrusted (`_window`).
+        if login.lower() in answer_logins and not github.names_pipeline_app(login):
+            return True
+        return github.comment_author_standing(slug, login, owner, timeout=timeout)
+
     asked = menu_posted(comments, owner, trusted)
     answer = None
     if kind == "pr" and head_sha and asked:
         reviews = _reviews(slug, number, timeout=timeout)
         if reviews is not None:
             answer = approval(comments, reviews, head_sha, owner,
-                              answer_logins=answer_logins, trusted=trusted)
+                              answer_logins=answer_logins, trusted=standing)
     return Thread(answer=answer or parse(comments, owner, trusted), menu_posted=asked)
 
 

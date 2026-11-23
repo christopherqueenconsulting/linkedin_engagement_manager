@@ -243,7 +243,7 @@ Accepted reply shapes:
 | You write | What happens |
 |---|---|
 | `ok` | Every ✅-recommended option is implemented |
-| A GitHub **Approve** review on the parked PR (no comment needed) | Same as `ok` — counts only from you (or a `LEMD_TRUSTED_ANSWER_LOGINS` login, never a bot), on the PR's **current** head, submitted **after** the Decision Comment and after any reply of yours to it. A push after you approve makes it stale |
+| A GitHub **Approve** review on the parked PR (no comment needed) | Same as `ok` — counts only from you (or a `LEMD_TRUSTED_ANSWER_LOGINS` login, never a bot), on the PR's **current** head, submitted **after** the Decision Comment and after any reply of yours to it. If you ALSO replied with letters or a directive, that reply is the answer (before or after approving) and the approval is only a sign-off. A push after you approve makes it stale |
 | `1A 2B` | Those options are implemented |
 | `1A 2C (also open an issue for X) 3A` | Options + your parenthetical instructions — extras honored, side-asks become linked issues |
 | `2D: none of those — do <your idea>` or a reply starting `@claude …` / `decision:` / `go:` | **Your off-menu answer wins over the menu** |

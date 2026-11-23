@@ -791,6 +791,17 @@ def comment_author_trusted(slug: str, login: str, owner: str = "", *, timeout: i
     The pipeline App is NOT trusted here. It is trusted for the review markers it posts itself
     (`is_pipeline_app`, used by `review_state`), never as the author of an answer to its own question.
     """
+    return bool(comment_author_standing(slug, login, owner, timeout=timeout))
+
+
+def comment_author_standing(slug: str, login: str, owner: str = "", *,
+                            timeout: int = 30) -> bool | None:
+    """`comment_author_trusted`, three-valued: None when the permission lookup was UNREADABLE.
+
+    For the one caller that must tell "not trusted" from "could not tell" — a reply after an owner's
+    approval that cannot be attributed blocks the approval (`answers._window`) rather than being
+    skipped. A 404 and a non-login stay a readable False, exactly as in `collaborator_permission`.
+    """
     if not login:
         return False
     if owner and login.lower() == owner.lower():
@@ -798,7 +809,9 @@ def comment_author_trusted(slug: str, login: str, owner: str = "", *, timeout: i
     if login.lower().endswith("[bot]"):
         return False
     perms = collaborator_permission(slug, login, timeout=timeout)
-    return bool(perms and perms & TRUSTED_PERMISSIONS)
+    if perms is None:
+        return None
+    return bool(perms & TRUSTED_PERMISSIONS)
 
 
 def label_names(obj: dict[str, Any]) -> set[str]:

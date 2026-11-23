@@ -115,6 +115,33 @@ def test_a_trusted_reply_after_the_approval_outranks_it():
     assert approve([review(at=T2)], comments=later) is None
 
 
+def test_an_actionable_reply_before_the_approval_blocks_it():
+    """Reply then approval: the explicit reply routes (via `parse`), the approval is ignored."""
+    for body in ("1B", "ok", "@claude do X instead"):
+        assert approve([review(at=T2)], comments=MENU + [comment(body, at=T1, cid="a")]) is None
+
+
+def test_an_actionable_reply_after_the_approval_blocks_it():
+    assert approve([review(at=T2)], comments=MENU + [comment("2C", at=T3, cid="a")]) is None
+
+
+def test_an_untrusted_actionable_reply_does_not_block_it():
+    got = approve([review(at=T2)], comments=MENU + [comment("1B", "outsider", at=T1, cid="o")],
+                  trusted=lambda _l: False)
+    assert got is not None and got.comment_id == "review:11"
+
+
+def test_an_unreadable_author_blocks_only_after_the_approval():
+    after = MENU + [comment("noise", "ghost", at=T3, cid="g")]
+    before = MENU + [comment("1B", "ghost", at=T1, cid="g")]
+    assert approve([review(at=T2)], comments=after, trusted=lambda _l: None) is None
+    assert approve([review(at=T2)], comments=before, trusted=lambda _l: None) is not None
+
+
+def test_an_unreadable_reply_time_blocks_it():
+    assert approve([review(at=T2)], comments=MENU + [comment("noted", at="", cid="n")]) is None
+
+
 def test_a_hold_in_the_review_body_holds():
     got = approve([review(body="looks good but don't merge until Friday")])
     assert got is not None and got.verdict == "hold" and not got.actionable
@@ -152,9 +179,68 @@ def test_read_thread_routes_an_approval(monkeypatch):
     assert got.answer.comment_id == "review:11" and got.menu_posted is True
 
 
-def test_an_approval_outranks_an_older_comment_answer(monkeypatch):
+def test_an_explicit_reply_then_an_approval_routes_the_reply(monkeypatch):
+    """An approval never overrides an explicit trusted reply: it is only the sign-off on it."""
     _serve(monkeypatch, MENU + [comment("1B", at=T1, cid="a1")], [review(at=T2)])
+    got = answers.read_thread("o/r", "pr", 7, OWNER, head_sha=HEAD).answer
+    assert (got.comment_id, got.verdict) == ("a1", "answer")
+
+
+def test_an_approval_then_an_explicit_reply_routes_the_later_reply(monkeypatch):
+    _serve(monkeypatch, MENU + [comment("2C", at=T3, cid="a2")], [review(at=T2)])
+    got = answers.read_thread("o/r", "pr", 7, OWNER, head_sha=HEAD).answer
+    assert (got.comment_id, got.verdict) == ("a2", "answer")
+
+
+def test_a_directive_before_the_approval_routes_the_directive(monkeypatch):
+    _serve(monkeypatch, MENU + [comment("decision: do X instead", at=T1, cid="d1")], [review(at=T2)])
+    assert answers.read_thread("o/r", "pr", 7, OWNER, head_sha=HEAD).answer.comment_id == "d1"
+
+
+def test_a_remark_before_the_approval_does_not_block_it(monkeypatch):
+    _serve(monkeypatch, MENU + [comment("thanks, looking now", at=T1, cid="r1")], [review(at=T2)])
     assert answers.read_thread("o/r", "pr", 7, OWNER, head_sha=HEAD).answer.comment_id == "review:11"
+
+
+def _serve_perm_outage(monkeypatch, comments, reviews):
+    """Like `_serve`, but every collaborator-permission lookup is UNREADABLE (5xx), not a 404."""
+    def gh(args, **_kw):
+        if args[0] == "api" and args[1].endswith("/reviews"):
+            return [reviews]
+        if args[0] == "api":
+            raise github.GitHubUnavailable("HTTP 502")
+        return {"comments": comments}
+
+    monkeypatch.setattr(github, "_PERMISSION_CACHE", {})
+    monkeypatch.setattr(github, "gh_json", gh)
+
+
+def test_an_unreadable_author_after_the_approval_blocks_it(monkeypatch):
+    _serve_perm_outage(monkeypatch, MENU + [comment("hold on", "writer", at=T3, cid="w")], [review(at=T2)])
+    assert answers.read_thread("o/r", "pr", 7, OWNER, head_sha=HEAD).answer is None
+
+
+def test_an_unreadable_author_before_the_approval_does_not_block_it(monkeypatch):
+    _serve_perm_outage(monkeypatch, MENU + [comment("1B", "writer", at=T1, cid="w")], [review(at=T2)])
+    assert answers.read_thread("o/r", "pr", 7, OWNER, head_sha=HEAD).answer.comment_id == "review:11"
+
+
+def test_a_readable_no_after_the_approval_does_not_block_it(monkeypatch):
+    """A 404 / read-only author is a readable "no" — skipped, as in `parse`."""
+    _serve(monkeypatch, MENU + [comment("hold on", "outsider", at=T3, cid="o")], [review(at=T2)])
+    assert answers.read_thread("o/r", "pr", 7, OWNER, head_sha=HEAD).answer.comment_id == "review:11"
+
+
+def test_comment_author_standing_is_three_valued(monkeypatch):
+    def gh(args, **_kw):
+        raise github.GitHubUnavailable("HTTP 502" if "ghost" in args[1] else "(HTTP 404)")
+
+    monkeypatch.setattr(github, "_PERMISSION_CACHE", {})
+    monkeypatch.setattr(github, "gh_json", gh)
+    assert github.comment_author_standing("o/r", "ghost", OWNER) is None
+    assert github.comment_author_standing("o/r", "nobody", OWNER) is False
+    assert github.comment_author_standing("o/r", OWNER, OWNER) is True
+    assert github.comment_author_trusted("o/r", "ghost", OWNER) is False
 
 
 def test_an_unreadable_review_read_is_not_an_answer(monkeypatch):
@@ -229,14 +315,16 @@ def _fn(src: str, name: str) -> str:
 
 SHELL = "".join(_fn(GUARDS, n) for n in (
     "pipeline_app_login", "comment_login_is_app", "comment_login_names_app", "comment_author_trusted",
-    "trusted_answer_login", "typed_answer_login", "answer_author_trusted",
-)) + _fn(COMMON, "v2_owner_answered") + _fn(COMMON, "v2_owner_approved")
+    "comment_author_lookup_failed", "trusted_answer_login", "typed_answer_login",
+    "answer_author_trusted", "decision_context", "decision_prompt_args",
+)) + "".join(_fn(COMMON, n) for n in ("v2_owner_answered", "v2_owner_approved", "v2_owner_approval"))
 
 _GH_STUB = r'''#!/usr/bin/env bash
 if [ "$1" = api ] && [ "${2%/reviews}" != "$2" ]; then
   [ -n "${REVIEWS_FAIL:-}" ] && exit 1
   printf '%s' "$REVIEWS"; exit 0
 fi
+if [ "$1" = api ] && [ -n "${PERM_FAIL:-}" ]; then echo "gh: HTTP 502" >&2; exit 1; fi
 if [ "$1" = api ]; then echo "gh: not a user (HTTP 404)" >&2; exit 1; fi
 case " $* " in *" headRefOid "*) [ -n "${HEAD_FAIL:-}" ] && exit 1; echo "$HEAD"; exit 0 ;; esac
 expr=""
@@ -296,6 +384,31 @@ class TestV2OwnerApproved:
         assert not _approved(tmp_path, [review(at=T2)],
                              comments=MENU + [comment("hold off", at=T3, cid="h")])
 
+    def test_an_explicit_reply_before_the_approval_is_refused(self, tmp_path):
+        assert not _approved(tmp_path, [review(at=T2)],
+                             comments=MENU + [comment("1B", at=T1, cid="a")])
+
+    def test_an_explicit_reply_after_the_approval_is_refused(self, tmp_path):
+        assert not _approved(tmp_path, [review(at=T2)],
+                             comments=MENU + [comment("2C", at=T3, cid="a")])
+
+    def test_a_remark_before_the_approval_is_accepted(self, tmp_path):
+        assert _approved(tmp_path, [review(at=T2)],
+                         comments=MENU + [comment("thanks, reading now", at=T1, cid="r")])
+
+    def test_an_unreadable_author_after_the_approval_is_refused(self, tmp_path):
+        assert not _approved(tmp_path, [review(at=T2)],
+                             comments=MENU + [comment("noise", "ghost", at=T3, cid="g")],
+                             PERM_FAIL="1")
+
+    def test_an_unreadable_author_before_the_approval_is_accepted(self, tmp_path):
+        assert _approved(tmp_path, [review(at=T2)],
+                         comments=MENU + [comment("1B", "ghost", at=T1, cid="g")], PERM_FAIL="1")
+
+    def test_a_readable_no_after_the_approval_is_accepted(self, tmp_path):
+        assert _approved(tmp_path, [review(at=T2)],
+                         comments=MENU + [comment("hold on", "outsider", at=T3, cid="o")])
+
     def test_unreadable_reviews_are_refused(self, tmp_path):
         assert not _approved(tmp_path, [review()], REVIEWS_FAIL="1")
 
@@ -318,6 +431,11 @@ class TestV2OwnerApproved:
     ([review(state="COMMENTED")], MENU),
     ([review(at=T2)], MENU + [comment("noted", at=T3, cid="n")]),
     ([review(at=T3)], MENU + [comment("1B", at=T2, cid="n")]),
+    ([review(at=T3)], MENU + [comment("thanks", at=T2, cid="n")]),
+    ([review(at=T3)], MENU + [comment("decision: do X", at=T2, cid="n")]),
+    ([review(at=T3)], MENU + [comment("@claude ship it?", at=T2, cid="n")]),
+    ([review(at=T3)], MENU + [comment("1B but don't merge yet", at=T2, cid="n")]),
+    ([review(at=T2)], MENU + [comment("2C", at=T3, cid="n")]),
 ])
 def test_the_daemon_never_routes_an_approval_the_action_refuses(tmp_path, monkeypatch, reviews, comments):
     """Python finding an approval implies the bash accepts the SAME review — and only then."""

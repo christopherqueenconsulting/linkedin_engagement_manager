@@ -199,21 +199,40 @@ v2_owner_answered() {
   return 0
 }
 
-# v2_owner_approved pr <number> <review-id> -> 0 when <review-id> IS an owner approval that answers
-# the latest Decision Comment as `ok` — `answers.approval`'s rules, re-asked at execution time:
-#   * the approver's NEWEST submitted review, read over REST so its author is TYPED: a `User` who is
-#     the owner ($ASSIGNEE) or a LEMD_TRUSTED_ANSWER_LOGINS login — never a Bot, never the App;
-#   * state APPROVED and commit_id equal to the PR's head RIGHT NOW (a push since makes it stale);
-#   * submitted after the latest Decision Comment from someone who may ask, and after every trusted
-#     reply to it (a "hold off" typed after approving still holds).
-# Every unreadable read refuses. Issues refuse outright: approvals exist only on pull requests.
+# v2_owner_approved pr <number> <review-id> -> 0 when <review-id> IS the owner approval that answers
+# the latest Decision Comment as `ok` RIGHT NOW (`v2_owner_approval` names it). Issues refuse
+# outright: approvals exist only on pull requests.
 v2_owner_approved() {
-  local kind="$1" n="$2" want="${3:-}" head reviews row rid login type state commit at newest=""
-  local rows url dec agent asked_at="" replied_at=""
+  local kind="$1" n="$2" want="${3:-}"
   if [ "$kind" != "pr" ] || [ -z "$want" ]; then
     log "TRUST: #$n — an approval answers only a pull request; refusing."
     return 1
   fi
+  v2_owner_approval "$n" || return 1
+  if [ "$V2_APPROVAL" != "$want" ]; then
+    log "TRUST: #$n — review $want is not the approval answering the menu now (${V2_APPROVAL}); refusing."
+    return 1
+  fi
+  return 0
+}
+
+# v2_owner_approval <pr> -> 0 and sets V2_APPROVAL=<review-id> when an owner approval answers the
+# PR's latest Decision Comment as `ok` — `answers.approval`'s rules, asked at execution time:
+#   * the approver's NEWEST submitted review, read over REST so its author is TYPED: a `User` who is
+#     the owner ($ASSIGNEE) or a LEMD_TRUSTED_ANSWER_LOGINS login — never a Bot, never the App;
+#   * state APPROVED and commit_id equal to the PR's head RIGHT NOW (a push since makes it stale);
+#   * submitted after the latest Decision Comment from someone who may ask;
+#   * NO actionable trusted reply (an option answer or a directive, `answers.verdict_for` — twinned
+#     in jq below) anywhere after that menu: an explicit answer is what routes, and the approval is
+#     then only a sign-off, whichever came first;
+#   * no reply at or after the approval from a trusted author OR one whose permission lookup was
+#     unreadable ("hold off" typed after approving still holds; a reply we cannot attribute blocks).
+# Every unreadable read refuses. Sets V2_APPROVAL="" on refusal. It is a global, not stdout, because
+# `log` tees to stdout and the permission cache only lives in the calling shell.
+v2_owner_approval() {
+  local n="$1" head reviews rid login type state commit at newest="" rows url dec agent act
+  local asked_at="" blocked=0
+  V2_APPROVAL=""
   head="$(gh pr view "$n" --repo "$SLUG" --json headRefOid --jq '.headRefOid // ""' 2>/dev/null)" || head=""
   reviews="$(gh api "repos/$SLUG/pulls/$n/reviews" --paginate --slurp 2>/dev/null \
     | jq -r '[.[][] | select(.submitted_at != null)] | sort_by(.submitted_at) | reverse | .[]
@@ -234,18 +253,30 @@ v2_owner_approved() {
     newest="$rid|$state|$commit|$at"; break
   done <<< "$reviews"
   IFS='|' read -r rid state commit at <<< "$newest"
-  if [ "${rid:-}" != "$want" ] || [ "$state" != "APPROVED" ] || [ "$commit" != "$head" ]; then
-    log "TRUST: #$n — review $want is not the owner's newest APPROVED review of head ${head:0:7}; refusing."
+  if [ -z "${rid:-}" ] || [ "$state" != "APPROVED" ] || [ "$commit" != "$head" ]; then
+    log "TRUST: #$n — no owner's newest review is an APPROVAL of head ${head:0:7}; refusing."
     return 1
   fi
-  # The window, walked exactly as `v2_owner_answered` walks it; any trusted reply counts here.
-  rows="$(gh "$kind" view "$n" --repo "$SLUG" --json comments --jq '
+  # The window, walked as `v2_owner_answered` walks it. `act` is `answers.verdict_for(body)` in
+  # (answer, directive): first non-empty line an option answer or a directive, no hold phrase
+  # anywhere, not a directive ending in `?`, under MAX_BODY. Kept in step by a parity test.
+  rows="$(gh pr view "$n" --repo "$SLUG" --json comments --jq '
+    def act: (. // "") as $b
+      | if ($b | length) == 0 or ($b | length) >= 8000 then false
+        else ([$b | gsub("\r"; "") | split("\n") | .[] | select(test("\\S"))] | first // "") as $f
+          | (if ($f | test("^\\s*(?:ok\\b|okay\\b|\\d+\\s*[A-Za-z](?:[^A-Za-z0-9]|$))"; "i")) then "answer"
+             elif ($f | test("^\\s*(?:@claude\\b|decision:|go:)"; "i")) then "directive"
+             else "" end) as $s
+          | $s != ""
+            and ($b | test("(don\u0027?t|do not) (merge|land|ship|start)|hold (off|on|this|it)\\b|\\bon hold\\b|\\bnot yet\\b|wait (for|on|until|till)\\b|stand ?by\\b"; "i") | not)
+            and (($s == "directive" and ($b | sub("\\s+$"; "") | endswith("?"))) | not)
+        end;
     (.comments // []) | reverse | .[]
     | "\(.createdAt // "")|\(.author.login // "")|\(.url // .html_url // "")"
       + "|\(if ((.body // "") | test("Human decision needed"; "i")) then 1 else 0 end)"
-      + "|\(if ((.body // "") | test("Generated with \\[Claude Code\\]")) then 1 else 0 end)"' \
-      2>/dev/null)" || rows=""
-  while IFS='|' read -r id login url dec agent; do
+      + "|\(if ((.body // "") | test("Generated with \\[Claude Code\\]")) then 1 else 0 end)"
+      + "|\(if (.body | act) then 1 else 0 end)"' 2>/dev/null)" || rows=""
+  while IFS='|' read -r id login url dec agent act; do
     [ -n "$id$login" ] || continue
     login="$(typed_answer_login "$login" "$url")"
     if [ "$dec" = 1 ]; then
@@ -254,19 +285,22 @@ v2_owner_approved() {
       fi
       continue
     fi
-    [ -z "$replied_at" ] || continue
+    [ "$blocked" = 1 ] && continue
     [ "$agent" = 1 ] && continue
     [ -n "$login" ] || continue
     comment_login_names_app "$login" && continue
-    answer_author_trusted "$login" || continue
-    replied_at="${id:-9999}"
+    # ISO-8601 UTC stamps from one API compare correctly as strings; an unreadable one is "now".
+    if answer_author_trusted "$login"; then
+      if [ "$act" = 1 ] || [ -z "$id" ] || [[ ! "$id" < "$at" ]]; then blocked=1; fi
+    elif comment_author_lookup_failed "$login"; then
+      if [ -z "$id" ] || [[ ! "$id" < "$at" ]]; then blocked=1; fi
+    fi
   done <<< "$rows"
-  # ISO-8601 UTC stamps from one API compare correctly as strings.
-  if [ -z "$asked_at" ] || [ -z "$at" ] || [[ ! "$at" > "$asked_at" ]] \
-     || { [ -n "$replied_at" ] && [[ ! "$at" > "$replied_at" ]]; }; then
-    log "TRUST: #$n — approval $want is not newer than the Decision Comment and every trusted reply; refusing."
+  if [ -z "$asked_at" ] || [ -z "$at" ] || [[ ! "$at" > "$asked_at" ]] || [ "$blocked" = 1 ]; then
+    log "TRUST: #$n — approval $rid is older than the Decision Comment, or a reply in its window outranks it; refusing."
     return 1
   fi
+  V2_APPROVAL="$rid"
   return 0
 }
 
