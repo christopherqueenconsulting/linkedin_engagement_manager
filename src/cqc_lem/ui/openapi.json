@@ -198,45 +198,6 @@
         "title": "ArtifactCtaAttribution",
         "type": "object"
       },
-      "AssistTokenRequest": {
-        "description": "Body of `POST /user/assist-token`: the credential the LEM Assist extension holds.",
-        "properties": {
-          "label": {
-            "anyOf": [
-              {
-                "maxLength": 120,
-                "pattern": "^[A-Za-z0-9 ._:\\-]*$",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Free text shown on the Security card and kept in the audit log. Letters, digits, space and . _ : - only, 120 characters at most.",
-            "title": "Label"
-          },
-          "session_token": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Session Token"
-          },
-          "ttl_days": {
-            "default": 30,
-            "maximum": 90.0,
-            "minimum": 1.0,
-            "title": "Ttl Days",
-            "type": "integer"
-          }
-        },
-        "title": "AssistTokenRequest",
-        "type": "object"
-      },
       "AuthFactorDeleteRequest": {
         "description": "Body of `POST /user/auth-factors/delete`.\n\n`factor_id` is a target: the delete is scoped to the session's own user, so another account's factor id reads as\n\"not found\", never a removal.",
         "properties": {
@@ -759,31 +720,6 @@
           "cancel_url"
         ],
         "title": "CheckoutSessionRequest",
-        "type": "object"
-      },
-      "CommentPostedRequest": {
-        "description": "Body of `POST /api/review/comment-posted`.",
-        "properties": {
-          "candidate_id": {
-            "title": "Candidate Id",
-            "type": "integer"
-          },
-          "session_token": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Session Token"
-          }
-        },
-        "required": [
-          "candidate_id"
-        ],
-        "title": "CommentPostedRequest",
         "type": "object"
       },
       "ConnectionRequestCreate": {
@@ -7439,53 +7375,6 @@
         "summary": "Get Assets"
       }
     },
-    "/api/assist/queue": {
-      "get": {
-        "description": "Approved comments ready to be typed in, limited to today's remaining comment budget.\n\nA read failure is a 503, never an empty queue.",
-        "operationId": "assist_queue_api_assist_queue_get",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "session_token",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Session Token"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Assist Queue"
-      }
-    },
     "/api/auth/email/init": {
       "post": {
         "description": "Step one of email sign-in: mail a PIN, or take the no-mail-provider bypass.\n\nThe reply is deliberately the same shape whether or not the address has an account \u2014 `bypass`\nand `user_exists` are the only signal, and the PIN itself is what proves anything.\n\nThe bypass branch (no mail provider configured) is the WEAKEST way in, so it still hands an\naccount holding a strong factor to the second-factor stage, and it does NOT stamp\n`email_verified_at` or clear the auth limiters: nothing was proved on that path.",
@@ -10959,20 +10848,77 @@
         "summary": "Bulk Update Posts Endpoint"
       }
     },
-    "/api/review/comment-posted": {
-      "post": {
-        "description": "Record that the human posted an approved candidate's comment.\n\nThe claim is one conditional UPDATE on `status = 'approved'`, so an unapproved, foreign or\nalready-reported candidate is a 409 and writes nothing.",
-        "operationId": "comment_posted_api_review_comment_posted_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CommentPostedRequest"
-              }
+    "/api/review/queue": {
+      "get": {
+        "description": "Every approval waiting on the caller, oldest first; `lane` narrows to one.",
+        "operationId": "review_queue_endpoint_api_review_queue_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "session_token",
+            "required": true,
+            "schema": {
+              "title": "Session Token",
+              "type": "string"
             }
           },
-          "required": true
+          {
+            "in": "query",
+            "name": "lane",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Lane"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_list_dict_str__Any___"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
         },
+        "summary": "Review Queue Endpoint"
+      }
+    },
+    "/api/review/summary": {
+      "get": {
+        "description": "`{total, stale_48h, oldest_age_hours, by_lane}` for the nav badge.",
+        "operationId": "review_summary_endpoint_api_review_summary_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "session_token",
+            "required": true,
+            "schema": {
+              "title": "Session Token",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -10995,7 +10941,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Comment Posted"
+        "summary": "Review Summary Endpoint"
       }
     },
     "/api/schedule_dm": {
@@ -11677,45 +11623,6 @@
           }
         },
         "summary": "Mint Agent Token"
-      }
-    },
-    "/api/user/assist-token": {
-      "post": {
-        "description": "Mint the LEM Assist extension's session: it reads the approved queue and reports a post, only.\n\nSame ceremony as the other machine seats: human session, step-up gated, `extension_scope_ok`\nNOT passed (an assist token cannot mint a successor), fixed TTL never slid, revocable per device.",
-        "operationId": "mint_assist_token_api_user_assist_token_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AssistTokenRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Mint Assist Token"
       }
     },
     "/api/user/audience-growth": {

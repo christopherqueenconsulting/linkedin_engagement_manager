@@ -75,28 +75,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/assist/queue": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Assist Queue
-         * @description Approved comments ready to be typed in, limited to today's remaining comment budget.
-         *
-         *     A read failure is a 503, never an empty queue.
-         */
-        get: operations["assist_queue_api_assist_queue_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/auth/email/init": {
         parameters: {
             query?: never;
@@ -1501,23 +1479,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/review/comment-posted": {
+    "/api/review/queue": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get?: never;
-        put?: never;
         /**
-         * Comment Posted
-         * @description Record that the human posted an approved candidate's comment.
-         *
-         *     The claim is one conditional UPDATE on `status = 'approved'`, so an unapproved, foreign or
-         *     already-reported candidate is a 409 and writes nothing.
+         * Review Queue Endpoint
+         * @description Every approval waiting on the caller, oldest first; `lane` narrows to one.
          */
-        post: operations["comment_posted_api_review_comment_posted_post"];
+        get: operations["review_queue_endpoint_api_review_queue_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/review/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Review Summary Endpoint
+         * @description `{total, stale_48h, oldest_age_hours, by_lane}` for the nav badge.
+         */
+        get: operations["review_summary_endpoint_api_review_summary_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1899,29 +1894,6 @@ export interface paths {
          *     automation and signs nobody out.
          */
         post: operations["mint_agent_token_api_user_agent_token_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/user/assist-token": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Mint Assist Token
-         * @description Mint the LEM Assist extension's session: it reads the approved queue and reports a post, only.
-         *
-         *     Same ceremony as the other machine seats: human session, step-up gated, `extension_scope_ok`
-         *     NOT passed (an assist token cannot mint a successor), fixed TTL never slid, revocable per device.
-         */
-        post: operations["mint_assist_token_api_user_assist_token_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3796,24 +3768,6 @@ export interface components {
             window_days: number;
         };
         /**
-         * AssistTokenRequest
-         * @description Body of `POST /user/assist-token`: the credential the LEM Assist extension holds.
-         */
-        AssistTokenRequest: {
-            /**
-             * Label
-             * @description Free text shown on the Security card and kept in the audit log. Letters, digits, space and . _ : - only, 120 characters at most.
-             */
-            label?: string | null;
-            /** Session Token */
-            session_token?: string | null;
-            /**
-             * Ttl Days
-             * @default 30
-             */
-            ttl_days: number;
-        };
-        /**
          * AuthFactorDeleteRequest
          * @description Body of `POST /user/auth-factors/delete`.
          *
@@ -4036,16 +3990,6 @@ export interface components {
             success_url: string;
             /** Tier */
             tier: string;
-        };
-        /**
-         * CommentPostedRequest
-         * @description Body of `POST /api/review/comment-posted`.
-         */
-        CommentPostedRequest: {
-            /** Candidate Id */
-            candidate_id: number;
-            /** Session Token */
-            session_token?: string | null;
         };
         /**
          * ConnectionRequestCreate
@@ -6810,37 +6754,6 @@ export interface operations {
             };
         };
     };
-    assist_queue_api_assist_queue_get: {
-        parameters: {
-            query?: {
-                session_token?: string | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     auth_email_init_api_auth_email_init_post: {
         parameters: {
             query?: never;
@@ -9381,18 +9294,48 @@ export interface operations {
             };
         };
     };
-    comment_posted_api_review_comment_posted_post: {
+    review_queue_endpoint_api_review_queue_get: {
         parameters: {
-            query?: never;
+            query: {
+                session_token: string;
+                lane?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CommentPostedRequest"];
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_list_dict_str__Any___"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
             };
         };
+    };
+    review_summary_endpoint_api_review_summary_get: {
+        parameters: {
+            query: {
+                session_token: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {
@@ -10034,39 +9977,6 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["AgentTokenRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    mint_assist_token_api_user_assist_token_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AssistTokenRequest"];
             };
         };
         responses: {
