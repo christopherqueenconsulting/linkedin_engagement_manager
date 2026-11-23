@@ -1821,6 +1821,7 @@ def set_user_account_kind(user_id: int, account_kind: str, *, expected_kind: str
         raise ValueError(f"unknown expected_kind {expected_kind!r}")
     try:
         with db_cursor(commit=True) as cursor:
+            written = False
             try:
                 cursor.execute("UPDATE users SET account_kind = %s WHERE id = %s AND account_kind = %s",
                                (account_kind, user_id, expected_kind))
@@ -1841,9 +1842,10 @@ def set_user_account_kind(user_id: int, account_kind: str, *, expected_kind: str
                 insert_auth_event_row(cursor, AuthAuditEvent.ACCOUNT_KIND_CHANGED, user_id=user_id,
                                       details={"from": expected_kind, "to": account_kind,
                                                **(audit_details or {})})
-            except BaseException:
-                _rollback(cursor)
-                raise
+                written = True
+            finally:
+                if not written:
+                    _rollback(cursor)
         return ACCOUNT_KIND_WRITE_OK
     except _AccountKindWriteAborted as aborted:
         return aborted.result
