@@ -452,6 +452,11 @@ def decide(snap: Snapshot, *, ttl_ci: int, ttl_review: int, ttl_queue: int,
                 # and routing on it would answer a question nobody asked.
                 return Decision(ACT_NONE, db.STATE_PARKED, "human_hold:answer_already_routed",
                                 park_reason="needs_human", wake_in=ttl_parked)
+            if ans.verdict == "approval":
+                # One owner touch (an APPROVED review of the current head, after the menu) is the
+                # answer `ok`. Same un-park, same spend-once id, its own reason so it is countable.
+                return Decision(ACT_UNPARK, db.STATE_READY, "owner_approved", mode="unpark",
+                                details={"verdict": ans.verdict, "answer": ans.excerpt})
             return Decision(ACT_UNPARK, db.STATE_READY, "owner_answered", mode="unpark",
                             details={"verdict": ans.verdict, "answer": ans.excerpt})
         if "needs-human" in snap.labels and snap.menu_posted is False:
@@ -684,7 +689,8 @@ _THREAD_NOT_READ = answers.Thread(answer=None, menu_posted=None)
 
 
 def _thread_for(slug: str, kind: str, number: int, labels: frozenset[str],
-                owner: str | None, answer_logins: frozenset[str] = frozenset()) -> answers.Thread:
+                owner: str | None, answer_logins: frozenset[str] = frozenset(),
+                head_sha: str | None = None) -> answers.Thread:
     """Read the held item's thread — the owner's newest reply AND whether a menu exists.
 
     Gated on the hold labels for cost, not for correctness: this is one `gh view --json comments`
@@ -692,10 +698,12 @@ def _thread_for(slug: str, kind: str, number: int, labels: frozenset[str],
     point is that a waiting item costs nothing. `menu_posted` (#1736) rides on the same call, so
     telling "held and asked" from "held and never asked" costs no read the answer lane was not
     already making. An item that is not held gets `menu_posted=None` — not read, so not claimed.
+    `head_sha` (PRs only) lets an owner's approval of that head answer the menu.
     """
     if not owner or not (labels & HOLD_LABELS):
         return _THREAD_NOT_READ
-    return answers.read_thread(slug, kind, number, owner, answer_logins=answer_logins)
+    return answers.read_thread(slug, kind, number, owner, answer_logins=answer_logins,
+                               head_sha=head_sha)
 
 
 def snapshot_pr(slug: str, number: int, *, owner: str | None = None,
@@ -724,7 +732,8 @@ def snapshot_pr(slug: str, number: int, *, owner: str | None = None,
         return Snapshot(kind="pr", number=number, readable=False)
 
     labels = frozenset(github.label_names(facts))
-    thread = _thread_for(slug, "pr", number, labels, owner, answer_logins)
+    thread = _thread_for(slug, "pr", number, labels, owner, answer_logins,
+                         head_sha=facts.get("headRefOid"))
     pending = github.owner_review_pending(facts, owner or "")
     # Only asked when it can change anything. The CODEOWNERS read is cached for an hour, but the
     # path match runs per observation, and there is nothing to match FOR once the owner is already
