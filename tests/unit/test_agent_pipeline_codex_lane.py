@@ -113,7 +113,7 @@ def _decide(command: str) -> str:
 @pytest.mark.parametrize("command", [
     "git status", "git diff origin/main", "git log --oneline -3", "git show HEAD",
     "gh pr view 5", "gh pr diff 5", "gh pr checks 5", "gh issue view 2561", "gh run view 1",
-    "cat src/x.py", "grep -rn foo .", "rg foo", "ls -la",
+    "cat src/x.py", "grep -rn foo .", "ls -la",
     "poetry run pytest tests/unit -q", "ruff check .",
     "/home/lem/agent-pipeline/lib/gh_safe.sh pr-comment 5 --body-file tmp/r.md",
     "/home/lem/agent-pipeline/lib/review_threads.sh list 5",
@@ -157,6 +157,7 @@ def test_the_review_toolset_is_allowed(command):
     ("cat /etc/lem", "Read(/etc/lem/**)"), ("ls ~/.ssh", "Read(~/.ssh/**)"),
     ("cat ~/.config/gh", "Read(~/.config/gh/**)"), ("cat ~/.codex", "the Codex credentials"),
     ("codex exec x", "no nested agent"),
+    ("cat /proc/self/environ", "printenv by another name"), ("rg --pre sh x .", "rg --pre executes a program"),
 ])
 def test_each_denial_the_claude_profile_enforces_is_denied(command, why):
     assert _decide(command) == "forbidden", why

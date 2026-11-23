@@ -23,7 +23,7 @@ prefix_rule(pattern=["git", ["status", "diff", "log", "show", "rev-parse", "ls-f
 prefix_rule(pattern=["git", "branch", "--show-current"], decision="allow")
 prefix_rule(pattern=["gh", ["pr", "issue"], ["view", "diff", "checks", "list"]], decision="allow")
 prefix_rule(pattern=["gh", "run", ["view", "list"]], decision="allow")
-prefix_rule(pattern=[["ls", "cat", "head", "tail", "wc", "grep", "rg", "pwd"]], decision="allow")
+prefix_rule(pattern=[["ls", "cat", "head", "tail", "wc", "grep", "pwd"]], decision="allow")
 prefix_rule(pattern=["poetry", "run", ["pytest", "ruff"]], decision="allow")
 prefix_rule(pattern=["ruff", "check"], decision="allow")
 # --- allow: the pipeline's own helpers (the only GitHub writers) ----------------------------
@@ -49,5 +49,6 @@ prefix_rule(pattern=[["rm", "mv", "cp", "dd", "tee", "truncate", "shred", "chmod
 prefix_rule(pattern=[["sed", "perl", "python", "python3", "node", "npm", "npx", "pip", "pip3", "make", "tar", "unzip"]], decision="forbidden", justification="interpreters and archivers can write anywhere")
 # --- forbidden: environment and credential reads --------------------------------------------
 prefix_rule(pattern=[["env", "printenv", "export", "set"]], decision="forbidden", justification="no environment dump")
-prefix_rule(pattern=[["cat", "head", "tail", "grep", "rg", "ls"], ["/home/lem/agent-pipeline/secrets.env", "/home/lem/agent-pipeline/config.env", "/home/lem/agent-pipeline/state/gh-app-token", "/opt/lem/.env", ".env", "/etc/lem", "~/.ssh", "~/.config/gh", "~/.codex"]], decision="forbidden", justification="credential paths")
+prefix_rule(pattern=[["cat", "head", "tail", "grep", "rg", "ls"], ["/home/lem/agent-pipeline/secrets.env", "/home/lem/agent-pipeline/config.env", "/home/lem/agent-pipeline/state/gh-app-token", "/opt/lem/.env", ".env", "/etc/lem", "~/.ssh", "~/.config/gh", "~/.codex", "/proc/self/environ"]], decision="forbidden", justification="credential paths and the process environment (cat /proc/self/environ is printenv by another name)")
+prefix_rule(pattern=["rg"], decision="forbidden", justification="rg --pre COMMAND executes an arbitrary program; grep covers the search")
 prefix_rule(pattern=["codex"], decision="forbidden", justification="no nested agent")
