@@ -160,7 +160,7 @@ def _segment_eligible(segment: IcpSegment, facts: dict) -> bool:
     """Role, industry, size and geography filters. A KNOWN mismatch fails; an unknown never does."""
     title = _norm(facts.get("job_title"))
     industry = _norm(facts.get("industry"))
-    if segment.role_titles and not _any(title, segment.role_titles):
+    if segment.role_titles and title and not _any(title, segment.role_titles):
         return False
     if segment.industries and industry and not _any(industry, segment.industries):
         return False
@@ -178,9 +178,10 @@ def _segment_eligible(segment: IcpSegment, facts: dict) -> bool:
 
 def _role_points(segment: IcpSegment, facts: dict) -> float:
     title = _norm(facts.get("job_title"))
-    title_fit = (1.0 if _any(title, segment.role_titles) else 0.0) if segment.role_titles else NEUTRAL
+    # An unread title is unknown, not a mismatch: neutral credit, same as size and geography.
+    title_fit = (1.0 if _any(title, segment.role_titles) else 0.0) if segment.role_titles and title else NEUTRAL
     level_terms = list(segment.seniority) + list(segment.function)
-    level_fit = (1.0 if _any(title, level_terms) else 0.0) if level_terms else NEUTRAL
+    level_fit = (1.0 if _any(title, level_terms) else 0.0) if level_terms and title else NEUTRAL
     return WEIGHT_ROLE * (0.6 * title_fit + 0.4 * level_fit)
 
 

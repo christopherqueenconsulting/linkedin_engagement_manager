@@ -44,6 +44,11 @@ def test_missing_size_geo_timing_score_neutral_never_filter():
     assert s.components["timing"] == 5.0
 
 
+def test_unread_title_is_neutral_not_a_segment_mismatch():
+    s = r.score_person(DEFINITION, {"company_name": "Initech", "industry": "Software"}, warmth=0)
+    assert s.eligible and s.components["role"] == 15.0
+
+
 @pytest.mark.parametrize("facts,url,degree,touched,expected", [
     (GOOD, "https://www.linkedin.com/in/Jane-Doe/", None, False, r.FILTER_DO_NOT_CONTACT),
     ({**GOOD, "company_name": "Acme Corp"}, "", None, False, r.FILTER_CLIENT),
