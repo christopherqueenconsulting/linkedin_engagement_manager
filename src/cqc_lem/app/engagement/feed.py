@@ -87,6 +87,13 @@ from cqc_lem.utilities.ai.outbound_qa import (
     refusal_reason as outbound_refusal_reason,
 )
 from cqc_lem.utilities.brand_account import held_connect_sources
+from cqc_lem.utilities.comment_candidates import (
+    SOURCE_FEED as POOL_SOURCE_FEED,
+    SOURCE_ROSTER as POOL_SOURCE_ROSTER,
+    pool_enabled,
+    record_comment_candidate,
+    report_candidate_pool,
+)
 from cqc_lem.utilities.comment_rotation import recent_comment_shapes, record_comment_shape
 from cqc_lem.utilities.connection_targeting import (
     SOURCE_ROSTER,
@@ -2817,6 +2824,7 @@ def comment_on_roster_posts(ctx: FeedRunContext, max_posts: int) -> dict:
     # roster of genuinely restricted authors from `_card_for_textbox` having drifted — the latter
     # would badge every target at once with a confident lie about their accounts.
     blocked_visits: list = []
+    pool_written = 0
     for target in select_roster_targets(targets, max_posts):
         if stats["posted"] >= max_posts or ctx.out_of_time(time.time()):
             break
@@ -2909,6 +2917,17 @@ def comment_on_roster_posts(ctx: FeedRunContext, max_posts: int) -> dict:
             if not _passes_hard_excludes(content, author, prefs):
                 _count_drop(target_drops, "excluded")
                 continue
+            # Pool the scored post BEFORE the topic gate (issue #2635): topic relevance RANKS the
+            # pool, it does not exclude from it. Flag-gated and fail-soft inside the helper.
+            # The card reads below cost DOM round trips, so they wait on the flag.
+            if pool_enabled(user_id) and record_comment_candidate(
+                    user_id, key, content, author, POOL_SOURCE_ROSTER, prefs=prefs,
+                    reactions=_post_social_counts(card)["reactions"],
+                    age_minutes=_post_age_minutes(driver, card),
+                    relevant=_literal_relevant(content, author, prefs),
+                    focus_affinity=focus_affinity(content, prefs),
+                    post_url=_post_permalink_from_card(card)):
+                pool_written += 1
             if not passes_topic_gate(content, prefs):
                 _count_drop(target_drops, "off_topic")
                 stats["off_topic_skipped"] += 1
@@ -2983,6 +3002,7 @@ def comment_on_roster_posts(ctx: FeedRunContext, max_posts: int) -> dict:
                                   queued_this_run=stats["connect_requested"]).invited:
             stats["connect_requested"] += 1
     _record_blocked_visits(user_id, blocked_visits, stats["targets_visited"])
+    report_candidate_pool(user_id, POOL_SOURCE_ROSTER, pool_written)
     return stats
 
 
@@ -3215,6 +3235,7 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
     walk_ran = False
     # Authors this walk has commented on (issue #2130): at most one comment per author per walk.
     commented_authors: set = set()
+    pool_written = 0
     own_comment_skipped = 0
     # Which filter removed each home-feed post, one count per post (issue #2102): "passed filters 0"
     # alone cannot say whether recency, reactions, excludes or the dedup ledger ate the scan. Keyed
@@ -3310,6 +3331,14 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
                     # per-candidate LLM call would be paying for ranking on every card of every walk.
                     "focus_affinity": focus_affinity(content, prefs)}
             hard_keys.add(key)
+            # Pool every scored post that cleared the cheap gates (issue #2635). Flag-gated,
+            # fail-soft, and deduped on the same key as the ledger, so a re-scan adds nothing.
+            if record_comment_candidate(
+                    user_id, key, content, author, POOL_SOURCE_FEED, prefs=prefs,
+                    reactions=counts["reactions"], age_minutes=age, relevant=meta["relevant"],
+                    focus_affinity=meta["focus_affinity"],
+                    post_url=_post_permalink_from_card(card)):
+                pool_written += 1
             candidates.append((_score_feed_post(meta, ctx.prefs, ctx.engagers), key, card, content,
                                author, age, fps, key_source))
 
@@ -3485,6 +3514,7 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
         "at": datetime.now().isoformat(),
     }
     set_feed_funnel(user_id, funnel)
+    report_candidate_pool(user_id, POOL_SOURCE_FEED, pool_written)
     track_feed_scan(user_id, funnel)
     log_info(f"Engagement scan: examined {len(examined_keys) + roster_stats['examined']}, "
              f"passed filters {len(hard_keys)}, matched topics {len(include_keys)}, "

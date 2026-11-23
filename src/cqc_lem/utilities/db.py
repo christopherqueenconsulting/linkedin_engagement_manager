@@ -188,6 +188,11 @@ from cqc_lem.platform.db.repositories.billing import (
     set_affiliate_promo_opt_in,
     set_affiliate_status,
 )
+from cqc_lem.platform.db.repositories.comment_candidates import (
+    count_comment_candidates,
+    get_comment_candidates,
+    insert_comment_candidate,
+)
 from cqc_lem.platform.db.repositories.curated_sources import (
     attach_curated_source_to_post,
     curated_url_hash,
@@ -1072,6 +1077,9 @@ __all__ = [
     "curated_url_hash",
     "get_curated_neighbors",
     "get_curated_source",
+    "count_comment_candidates",
+    "get_comment_candidates",
+    "insert_comment_candidate",
     "get_curated_sources",
     "get_curated_summaries",
     "get_demo_db_fingerprint",
