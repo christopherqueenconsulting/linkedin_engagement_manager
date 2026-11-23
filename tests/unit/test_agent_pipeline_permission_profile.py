@@ -576,13 +576,14 @@ def test_preamble_tells_agents_about_the_profile_and_the_env_prefix():
 
 
 #: A flag token, then optionally its separate value (`--tb short`, `-n 8`, `-m "not slow"`). A value
-#: never contains `/`, `.` or `:`, so a test file or node id is never mistaken for one.
-_FLAG = r"""\s+-[^\s`]+(?:\s+(?:'[^']*'|"[^"]*"|[^\s`/.:'"-][^\s`/.:]*))?"""
+#: never contains `/` or `.` (it may hold one `:`, as in `-p no:cacheprovider`), so a test file or node
+#: id is never mistaken for one.
+_FLAG = r"""\s+-[^\s`]+(?:\s+(?:'[^']*'|"[^"]*"|[^\s`/.:'"-][^\s`/.:]*(?::[^\s`/.:]+)?))?"""
 
 #: A whole-directory local run of `tests/unit`: flags only — before or after the directory — and NO
-#: file or node argument, up to the end of the code span, line or clause.
+#: file or node argument, up to the end of the code span, line or clause, or a pipe or redirect.
 _FULL_SUITE = re.compile(
-    rf"pytest(?:{_FLAG})*\s+tests/unit/?(?:{_FLAG})*\s*(?:`|$|[.,;)])", re.M
+    rf"pytest(?:{_FLAG})*\s+tests/unit/?(?:{_FLAG})*\s*(?:`|$|[.,;)|&>]|2>)", re.M
 )
 
 #: Every text that tells an agent how to run tests locally; each must say targeted files only.
@@ -614,6 +615,10 @@ def test_no_runbook_tells_an_agent_to_run_the_full_suite():
     "`poetry run pytest tests/unit --cov=src/cqc_lem --cov-report=xml`",
     "then run pytest tests/unit -q.",
     "run\npoetry run pytest tests/unit -v\nnext",
+    "`poetry run pytest tests/unit -p no:cacheprovider -q`",
+    "`poetry run pytest tests/unit -q 2>&1 | tail -5`",
+    "`poetry run pytest tests/unit -q | tail -5`",
+    "`poetry run pytest tests/unit -q > out.txt`",
 ])
 def test_full_suite_guard_catches_a_whole_directory_run(text):
     """Guard the guard: a flags-only run of the whole directory is caught, whatever the flags."""
