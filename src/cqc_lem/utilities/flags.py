@@ -83,6 +83,7 @@ OCCASION_NATIVE_PUBLISH = "occasion-native-publish-enabled"
 ANIMATED_POST = "animated-post-enabled"
 CURATED_SOURCES = "curated-sources-enabled"
 COMMENT_CANDIDATE_POOL = "comment-candidate-pool-enabled"
+WEEKLY_REPORT = "weekly-report-enabled"
 
 FLAGS: Dict[str, FlagSpec] = {
     spec.key: spec for spec in (
@@ -218,6 +219,16 @@ FLAGS: Dict[str, FlagSpec] = {
                          "in three as a reshare, re-chart or link post crediting the source. OFF "
                          "by default. Every curated draft lands PENDING and publishes only after "
                          "an owner approval — this flag never approves anything."),
+        ),
+        FlagSpec(
+            key=WEEKLY_REPORT,
+            env_var="WEEKLY_REPORT_ENABLED",
+            default=False,
+            owner="analytics",
+            description=("The weekly 5-minute report (utilities/weekly_report.py, issue #2632): "
+                         "`GET /api/user/weekly-report` answers 404 while it is off. OFF by "
+                         "default and rolled out to user 1 first. Read-only: it never sends "
+                         "or writes anything."),
         ),
     )
 }
