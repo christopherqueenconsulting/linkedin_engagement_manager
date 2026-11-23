@@ -5,7 +5,7 @@ description: Use when adding, altering, or dropping anything in the MySQL schema
 
 # Adding a database migration
 
-1. Version at authoring time (UTC): `date -u +%Y%m%d%H%M%S` → `V<stamp>__short_description.sql` in `compose/local/database/migrations/`. **Never** a bare integer; **never** rename/renumber a merged migration (Flyway tracks version + checksum).
+1. Version at authoring time (UTC): RUN `date -u +%Y%m%d%H%M%S` → `V<stamp>__short_description.sql` in `compose/local/database/migrations/` — the real current second, never a rounded or invented one (round versions collided 3x on 2026-11-23); check `git ls-tree --name-only origin/main compose/local/database/migrations/` for the same version before committing. **Never** a bare integer; **never** rename/renumber a merged migration (Flyway tracks version + checksum).
 2. Additive, independent DDL only. Flyway runs `outOfOrder=true`, so PRs apply in arbitrary order — a migration must NOT depend on a later-timestamped one having already run.
 3. MySQL ENUM columns (`logs.action_type`, `posts.status`, …): adding a value = `ALTER TABLE … MODIFY COLUMN` restating **every** existing value plus the new one. Then use the enum in code via `PostStatus` / `PostType` / `LogActionType` from `db.py` — never raw strings.
 4. All runtime access goes through functions in `src/cqc_lem/utilities/db.py` — no raw SQL anywhere else. Add the accessor there.

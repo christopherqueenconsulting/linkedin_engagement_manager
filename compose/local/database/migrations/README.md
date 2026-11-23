@@ -5,11 +5,19 @@
 ```
 V<YYYYMMDDHHMMSS>__short_description.sql
 ```
-Get the version at authoring time (UTC):
+Get the version at authoring time (UTC) by RUNNING the command — never type a rounded or invented
+time:
 ```
-date -u +%Y%m%d%H%M%S        # e.g. 20260723211500
-# -> V20260723211500__add_widget_table.sql
+date -u +%Y%m%d%H%M%S        # e.g. 20260723211437
+# -> V20260723211437__add_widget_table.sql
 ```
+Then confirm no merged migration already carries it:
+```
+git fetch origin main
+git ls-tree --name-only origin/main compose/local/database/migrations/ | grep "V<your-version>__"
+```
+A round version (`V20261123120000`) is a guess, not a timestamp: three builders picked round versions
+on one day (2026-11-23) and collided. Only the real current second keeps two branches apart.
 
 ### Why
 Sequential integers (V57, V58, …) collide when two branches are open at once — each grabs the

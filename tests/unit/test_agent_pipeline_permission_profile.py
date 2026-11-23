@@ -300,6 +300,9 @@ def test_matcher_follows_the_documented_examples():
         "npm --prefix src/cqc_lem/ui run check:api-types",
         # the preamble's lint ratchet
         "scripts/ruff_count.sh",
+        # the preamble's migration-version rule
+        "date -u +%Y%m%d%H%M%S",
+        "git ls-tree --name-only origin/main compose/local/database/migrations/",
     ],
 )
 def test_every_documented_runbook_command_is_allowed(command):
@@ -572,17 +575,63 @@ def test_preamble_tells_agents_about_the_profile_and_the_env_prefix():
     assert "--dangerously-skip-permissions" not in text
 
 
-#: A whole-suite local run: `pytest tests/unit` with no file or node after the directory.
-_FULL_SUITE = re.compile(r"pytest tests/unit/?(?: -q)?`")
+#: A flag token, then optionally its separate value (`--tb short`, `-n 8`, `-m "not slow"`). A value
+#: never contains `/`, `.` or `:`, so a test file or node id is never mistaken for one.
+_FLAG = r"""\s+-[^\s`]+(?:\s+(?:'[^']*'|"[^"]*"|[^\s`/.:'"-][^\s`/.:]*))?"""
+
+#: A whole-directory local run of `tests/unit`: flags only — before or after the directory — and NO
+#: file or node argument, up to the end of the code span, line or clause.
+_FULL_SUITE = re.compile(
+    rf"pytest(?:{_FLAG})*\s+tests/unit/?(?:{_FLAG})*\s*(?:`|$|[.,;)])", re.M
+)
+
+#: Every text that tells an agent how to run tests locally; each must say targeted files only.
+_LOCAL_TEST_GUIDANCE = (
+    *sorted(RUNBOOK_DIR.glob("*.md")),
+    REPO / ".claude" / "skills" / "test-lanes" / "SKILL.md",
+    REPO / ".claude" / "agents" / "builder.md",
+)
 
 
 def test_no_runbook_tells_an_agent_to_run_the_full_suite():
     """One local full-suite run took 10 of a 45-minute budget and timed the run out (#2623)."""
-    texts = {p.name: p.read_text(encoding="utf-8") for p in RUNBOOK_DIR.glob("*.md")}
-    assert not [n for n, t in texts.items() if _FULL_SUITE.search(t)]
-    # guard the guard: the sentence this replaced is caught
-    assert _FULL_SUITE.search("Run `poetry run pytest tests/unit -q` locally")
-    assert not _FULL_SUITE.search("`poetry run pytest tests/unit/test_x.py -q`")
+    offenders = [p.name for p in _LOCAL_TEST_GUIDANCE
+                 if _FULL_SUITE.search(p.read_text(encoding="utf-8"))]
+    assert not offenders
+
+
+@pytest.mark.parametrize("text", [
+    # the sentences the targeted-tests rule replaced
+    "Run `poetry run pytest tests/unit -q` locally",
+    "5. Run: `poetry run pytest tests/unit -v --tb=short` (fast lane)",
+    "`poetry run pytest tests/unit -q` green, and `scripts/ruff_count.sh`",
+    # any flag set, either side of the directory, with or without a trailing slash
+    "`poetry run pytest tests/unit -q -x`",
+    "`poetry run pytest tests/unit/ -v --tb=short`",
+    "`poetry run pytest -q tests/unit`",
+    "`poetry run pytest -x tests/unit --tb short -n 8`",
+    "`poetry run pytest tests/unit -m \"not slow\" -q`",
+    "`poetry run pytest tests/unit --cov=src/cqc_lem --cov-report=xml`",
+    "then run pytest tests/unit -q.",
+    "run\npoetry run pytest tests/unit -v\nnext",
+])
+def test_full_suite_guard_catches_a_whole_directory_run(text):
+    """Guard the guard: a flags-only run of the whole directory is caught, whatever the flags."""
+    assert _FULL_SUITE.search(text), text
+
+
+@pytest.mark.parametrize("text", [
+    "`poetry run pytest tests/unit/test_x.py -q`",
+    "`poetry run pytest tests/unit/test_x.py::test_a -q -x`",
+    "`poetry run pytest -q tests/unit/app/engagement/`",
+    "`poetry run pytest <files> -q`",
+    "`poetry run pytest tests/unit -q tests/unit/test_x.py`",
+    "`poetry run pytest tests/unit/test_a.py tests/unit/test_b.py -v --tb=short`",
+    "`poetry run pytest tests/integration -q`",
+])
+def test_full_suite_guard_passes_a_targeted_run(text):
+    """Guard the guard: a run naming a file, node or sub-directory is targeted, not the suite."""
+    assert not _FULL_SUITE.search(text), text
 
 
 def test_preamble_scopes_local_tests_pushes_per_step_and_regenerates_openapi():
@@ -598,6 +647,20 @@ def test_preamble_scopes_local_tests_pushes_per_step_and_regenerates_openapi():
                  "selfreview.md"):
         assert "**Targeted local tests**" in (RUNBOOK_DIR / mode).read_text(encoding="utf-8"), mode
 
+
+
+def test_preamble_makes_a_migration_version_the_real_current_second():
+    """Three builders picked round versions (`V20261123120000`) on one day and collided."""
+    text = " ".join((RUNBOOK_DIR / "_preamble.md").read_text(encoding="utf-8").split())
+    assert "CURRENT UTC time to the second" in text
+    assert "never a rounded or invented one" in text
+    for command in ("date -u +%Y%m%d%H%M%S",
+                    "git ls-tree --name-only origin/main compose/local/database/migrations/"):
+        assert f"`{command}`" in text, command
+        assert _decide(command) == "allow", command
+    # only the exact forms: `date` can set the clock, ls-tree is pinned to the migrations dir
+    assert _decide("date -s 2026-01-01") == "deny"
+    assert _decide("git ls-tree -r origin/main") == "deny"
 
 # ---------------------------------------------------------------- review_threads.sh
 
