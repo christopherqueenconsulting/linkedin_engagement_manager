@@ -98,6 +98,7 @@ class TestAnalyticsOAuth:
              patch(f"{_API}.RestliClient", return_value=restli), \
              patch(f"{_API}.get_linkedin_profile_url_by_user_id",
                    return_value="https://www.linkedin.com/in/lem-member/"), \
+             patch(f"{_API}.get_member_analytics_token_info", return_value=None), \
              patch(f"{_API}.upsert_member_analytics_token", return_value=True) as save_token, \
              patch(f"{_API}.update_user_linkedin_token") as publish_token:
             response = api_client.get("/auth/linkedin/analytics/callback", params={
@@ -112,6 +113,69 @@ class TestAnalyticsOAuth:
             resource_path="/me", access_token="cma-token", version_string="202606")
         save_token.assert_called_once_with(1, "cma-member-id", "cma-token", 3600)
         publish_token.assert_not_called()
+
+    @staticmethod
+    def _run_identity_callback(api_client, entity, profile_url, existing=None):
+        """Drive the callback with a granted token and the given /me entity; return (query, save)."""
+        client = Mock()
+        client.exchange_auth_code_for_access_token.return_value = SimpleNamespace(
+            access_token="cma-token", expires_in=3600, scope="r_basicprofile r_member_postAnalytics")
+        restli = Mock()
+        restli.get.return_value = SimpleNamespace(status_code=200, entity=entity)
+        with patch(f"{_API}.guard_linkedin"), \
+             patch(f"{_API}.LI_STATE_SALT", "state-salt"), \
+             patch(f"{_API}.LI_MEMBER_POST_ANALYTICS_REDIRECT_URL",
+                   "https://lem.test/auth/linkedin/analytics/callback"), \
+             patch(f"{_API}.get_session_user_id", return_value=1), \
+             patch(f"{_API}.member_post_analytics_connection_available_for_user", return_value=True), \
+             patch(f"{_API}.AuthClient", return_value=client), \
+             patch(f"{_API}.RestliClient", return_value=restli), \
+             patch(f"{_API}.get_linkedin_profile_url_by_user_id", return_value=profile_url), \
+             patch(f"{_API}.get_member_analytics_token_info", return_value=existing), \
+             patch(f"{_API}.upsert_member_analytics_token", return_value=True) as save_token:
+            response = api_client.get("/auth/linkedin/analytics/callback", params={
+                "code": "oauth-code", "state": "state-salt:member_analytics:session-token"},
+                follow_redirects=False)
+        return parse_qs(urlparse(response.headers["location"]).query), save_token
+
+    def test_cma_callback_rejects_vanity_mismatch(self, api_client):
+        query, save_token = self._run_identity_callback(
+            api_client, {"id": "cma-id", "vanityName": "someone-else"},
+            "https://www.linkedin.com/in/lem-member/")
+        assert query == {"li_analytics_error": ["account_mismatch"]}
+        save_token.assert_not_called()
+
+    @pytest.mark.parametrize("entity, profile_url", [
+        ({"id": "cma-id"}, "https://www.linkedin.com/in/lem-member/"),
+        ({"vanityName": "lem-member"}, "https://www.linkedin.com/in/lem-member/"),
+        ({"id": "cma-id", "vanityName": "lem-member"}, None),
+        ({"id": "cma-id", "vanityName": "lem-member"}, "https://www.linkedin.com/company/acme"),
+    ])
+    def test_cma_callback_unverified_identity_is_not_stored(self, api_client, entity, profile_url):
+        query, save_token = self._run_identity_callback(api_client, entity, profile_url)
+        assert query == {"li_analytics_error": ["identity_unverified"]}
+        save_token.assert_not_called()
+
+    def test_cma_callback_vanity_match_is_case_insensitive(self, api_client):
+        query, save_token = self._run_identity_callback(
+            api_client, {"id": "cma-id", "vanityName": "LEM-Member"},
+            "https://www.linkedin.com/in/lem-member/")
+        assert query == {"li_analytics_connected": ["1"]}
+        save_token.assert_called_once_with(1, "cma-id", "cma-token", 3600)
+
+    def test_cma_callback_pins_first_connected_member_id(self, api_client):
+        query, save_token = self._run_identity_callback(
+            api_client, {"id": "new-cma-id", "vanityName": "lem-member"},
+            "https://www.linkedin.com/in/lem-member/", existing={"linked_sub_id": "first-cma-id"})
+        assert query == {"li_analytics_error": ["account_mismatch"]}
+        save_token.assert_not_called()
+
+    def test_cma_callback_reconnect_with_same_member_id_refreshes_token(self, api_client):
+        query, save_token = self._run_identity_callback(
+            api_client, {"id": "first-cma-id", "vanityName": "lem-member"},
+            "https://www.linkedin.com/in/lem-member/", existing={"linked_sub_id": "first-cma-id"})
+        assert query == {"li_analytics_connected": ["1"]}
+        save_token.assert_called_once_with(1, "first-cma-id", "cma-token", 3600)
 
     def test_cma_callback_rejects_token_without_analytics_scope(self, api_client):
         client = Mock()
