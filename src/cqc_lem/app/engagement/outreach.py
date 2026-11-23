@@ -182,6 +182,7 @@ from cqc_lem.utilities.db import (
     release_catchup_send_attempt,
     reset_unreadable_reads,
     seconds_since_last_dm_touch,
+    stop_followup_unreadable,
     stop_followups_for_profile,
     update_catchup_touch_status,
     update_lead_signal,
@@ -1298,8 +1299,23 @@ def _last_inbound_message(driver) -> str:
     return read_last_message(driver)
 
 
+def _expect_history_enabled() -> bool:
+    """`DM_THREAD_EXPECT_HISTORY` (default ON): the #2622 rollback; off restores the old ladder."""
+    raw = os.getenv("DM_THREAD_EXPECT_HISTORY", "true")
+    return raw.strip().lower() not in ("0", "false", "no", "off")
+
+
+def _unreadable_read_terminal() -> int:
+    """`UNREADABLE_READ_TERMINAL` (default 10): per-thread unreadable reads before a row is stopped."""
+    try:
+        return max(1, int(os.getenv("UNREADABLE_READ_TERMINAL", "10")))
+    except ValueError:
+        return 10
+
+
 def check_dm_replied(driver, wait, profile_url: str, my_name: str = None,
-                     person_name: str = None, user_id: int = None) -> ThreadState:
+                     person_name: str = None, user_id: int = None,
+                     diagnostics: Optional[dict] = None) -> ThreadState:
     """Has this person replied since our last message? Opens their thread through the #731
     resolution ladder (`open_message_thread`) and reads the sender of the most recent message group.
 
@@ -1307,11 +1323,19 @@ def check_dm_replied(driver, wait, profile_url: str, my_name: str = None,
     or we don't know our own name to compare against — means *we could not tell*, and the caller
     must skip the follow-up. Before #731 that case collapsed into False ('no reply → keep sending'),
     which is how a live selector rotation turned into follow-ups sent to people who had answered.
+
+    A follow-up row exists only after a sent DM or a reply, so its thread always has history: the
+    ladder runs with `expect_history` and a bare composer never counts as the thread (#2622).
+    `diagnostics`, when given, receives `thread_unreadable=True` when the walk ended with composer
+    screens and no history — the ONLY per-thread signal the terminal stop counts. A missing
+    self-name, an exception or a walk that rendered nothing never sets it.
     """
     try:
         opened = open_message_thread(driver, wait, profile_url, person_name=person_name,
-                                     user_id=user_id)
+                                     user_id=user_id, expect_history=_expect_history_enabled())
         if not opened.opened:
+            if diagnostics is not None and opened.composer_only_routes:
+                diagnostics["thread_unreadable"] = True
             return ThreadState.UNKNOWN
         last_sender = read_last_sender(driver)
         if not last_sender:
@@ -1646,10 +1670,20 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
                     "follow-up in this run will be skipped as unreadable. Set it under "
                     "Settings > Setup & Connection.", user_id=user_id, action_type="followup",
                     task_name="process_user_followups")
+    # Terminal-stop bookkeeping (#2622): rows that hit UNREADABLE_READ_TERMINAL per-thread unreadable
+    # reads wait here until the run ends, because the stop is only trustworthy when SOME read in
+    # the same run succeeded — a run where every read was UNKNOWN is drift or an outage, not one bad
+    # thread.
+    stop_candidates: list = []
+    readable_seen = False
     try:
         for f in due[:max_per_run]:
+            diagnostics: dict = {}
             state = check_dm_replied(driver, wait, f["profile_url"], my_name=self_name,
-                                     person_name=f.get("first_name"), user_id=user_id)
+                                     person_name=f.get("first_name"), user_id=user_id,
+                                     diagnostics=diagnostics)
+            if state is not ThreadState.UNKNOWN:
+                readable_seen = True
             if state is ThreadState.UNKNOWN:
                 # We could not read the thread, so we do NOT know whether they answered. Sending
                 # anyway is the one irreversible mistake here (issue #731) — leave the row 'pending'
@@ -1676,7 +1710,17 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
                 # read at the start of this run, so a write that matched nothing means the counter
                 # never advanced — warning anyway would announce a backoff that did not happen, and
                 # then announce it again on every following beat.
-                if not record_unreadable_read(f["id"], due_at=backoff_due_at):
+                thread_specific = bool(diagnostics.get("thread_unreadable"))
+                # Only a per-thread unreadable read bumps the counter the terminal stop reads, and
+                # the kwarg is passed only then so every other UNKNOWN keeps its old call shape.
+                counted = (record_unreadable_read(f["id"], due_at=backoff_due_at,
+                                                  thread_specific=True) if thread_specific
+                           else record_unreadable_read(f["id"], due_at=backoff_due_at))
+                if (counted and thread_specific
+                        and int(f.get("thread_unreadable_reads") or 0) + 1
+                        >= _unreadable_read_terminal()):
+                    stop_candidates.append(f)
+                if not counted:
                     log_error(f"Could not count an unreadable read against follow-up {f['id']} — "
                               f"the row keeps its old due_at and will be re-read next run",
                               user_id=user_id, action_type=LogActionType.FOLLOWUP,
@@ -1788,6 +1832,21 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
             sent += 1
             enqueue_next_followup(user_id, f["profile_url"], f["first_name"], f["event_type"], f["next_step"])
             time.sleep(random.uniform(5, 12))
+        if stop_candidates and not readable_seen:
+            log_debug(f"{len(stop_candidates)} follow-up(s) at the unreadable-thread ceiling were NOT "
+                      f"stopped: every read in this run was UNKNOWN, which reads as drift, not as "
+                      f"bad threads", user_id=user_id, action_type=LogActionType.FOLLOWUP,
+                      task_name="process_user_followups")
+        elif stop_candidates:
+            for f in stop_candidates:
+                if stop_followup_unreadable(f["id"]):
+                    # WARNING per stop (owner ruling on #2622): the stop is one-way and the row now
+                    # needs a human to check the thread by hand.
+                    log_warning(f"Follow-up thread with {f.get('first_name') or f['profile_url']} "
+                                f"stopped after repeated unreadable reads — check this thread by "
+                                f"hand (nothing was sent)", user_id=user_id,
+                                action_type=LogActionType.FOLLOWUP,
+                                task_name="process_user_followups")
     except Exception as e:
         # A crashed tab ends the run: every later thread read fails on the same dead tab. It is an
         # expected transient (one escalating WARNING), not a fresh `$exception` (issue #2421). The

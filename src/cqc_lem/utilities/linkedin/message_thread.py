@@ -57,6 +57,7 @@ Grounding, 2026-09-01 (issue #1796, two independent read-only passes on two 1st-
 import random
 import re
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, Collection, Optional
@@ -92,6 +93,10 @@ ROUTES = (ROUTE_ANCHOR, ROUTE_TEXT_NODE, ROUTE_OVERFLOW, ROUTE_DIRECT_URL, ROUTE
 # to five routes per person, so this is a POLL budget, not a WebDriverWait per locator: the DOM scan
 # itself is instant and only the verification waits.
 THREAD_RENDER_TIMEOUT_SECONDS = 8.0
+# A caller that KNOWS the thread has history (a follow-up row exists only after a sent DM or a reply)
+# polls a composer-only overlay this long before rejecting the route: LinkedIn paints the compose
+# form well before the message list, and 8s is not always enough (#2622).
+EXPECTED_HISTORY_RENDER_TIMEOUT_SECONDS = 15.0
 _POLL_SECONDS = 0.5
 
 SURFACE_OVERLAY = "overlay"
@@ -254,6 +259,10 @@ class ThreadOpen:
     # Routes after which a message editor was on screen that the thread readers could not see
     # (`_readers_blind`, issue #2463) — selector drift, not "nobody to message".
     blind_routes: list[str] = field(default_factory=list)
+    # Routes that rendered a composer with no messages and were rejected because the caller passed
+    # `expect_history` (#2622) — the per-thread "unreadable" evidence, distinct from a route that
+    # rendered nothing at all (egress/429/drift).
+    composer_only_routes: list[str] = field(default_factory=list)
 
     def __bool__(self) -> bool:
         """True when the ladder verified an open thread."""
@@ -571,7 +580,7 @@ def _wait_thread_open(driver: WebDriver, timeout: float = THREAD_RENDER_TIMEOUT_
         time.sleep(_POLL_SECONDS)
 
 
-def is_open_thread(reading: Optional[dict]) -> bool:
+def is_open_thread(reading: Optional[dict], expect_history: bool = False) -> bool:
     """Does this verification reading prove a THREAD is open, or only that a composer rendered?
 
     Message EVENTS are proof on any surface — there is a conversation on screen. A composer with
@@ -588,11 +597,17 @@ def is_open_thread(reading: Optional[dict]) -> bool:
 
     Nothing is lost when it genuinely was an empty thread: it carries no reply to detect either way,
     so the caller's UNKNOWN-and-skip is the same outcome it already reached.
+
+    `expect_history` is for a caller that knows the thread cannot be empty (#2622): a zero-event
+    reading is then not proof on ANY surface, so the ladder keeps walking to a route that shows the
+    messages instead of stopping on a bare overlay composer.
     """
     if not reading:
         return False
     if reading.get("events"):
         return True
+    if expect_history:
+        return False
     if not reading.get("composer"):
         return False
     return reading.get("surface") == SURFACE_OVERLAY
@@ -623,15 +638,24 @@ def open_thread_reason(reading: Optional[dict]) -> str:
     return OPEN_REASON_COMPOSE_SCREEN
 
 
-def _verified_reading(reading: Optional[dict]) -> Optional[dict]:
+# One entry per composer-only reading a history-expecting ladder rejected, so `open_message_thread`
+# can attribute it to a route without threading a sink through every `_try_*`.
+_COMPOSER_ONLY_REJECTIONS: ContextVar[Optional[list]] = ContextVar(
+    "_COMPOSER_ONLY_REJECTIONS", default=None)
+
+
+def _verified_reading(reading: Optional[dict], expect_history: bool = False) -> Optional[dict]:
     """The reading a ladder route may report as success — None when only a composer rendered.
 
     The rejection is DEBUG: reaching a compose screen instead of a thread is an ordinary step in the
     ladder, not selector rot, and the ladder as a whole already reports exhaustion at DEBUG (#1752).
     """
-    if is_open_thread(reading):
+    if is_open_thread(reading, expect_history):
         return reading
     if reading and reading.get("composer"):
+        sink = _COMPOSER_ONLY_REJECTIONS.get()
+        if expect_history and sink is not None:
+            sink.append(1)
         log_debug("A compose screen with no messages is not an open thread — continuing the ladder",
                   action_type="followup")
     return None
@@ -748,7 +772,8 @@ def _close_opened_windows(driver: WebDriver, ledger: _WindowLedger) -> None:
                   exc=e, action_type="followup")
 
 
-def _rehome_reading(driver: WebDriver, ledger: _WindowLedger, timeout: float) -> Optional[dict]:
+def _rehome_reading(driver: WebDriver, ledger: _WindowLedger, timeout: float,
+                    expect_history: bool = False) -> Optional[dict]:
     """A thread verified in a NEW window is closed and re-opened, by URL, on the original window.
 
     The caller reads the sender from whichever window the driver is left on, and the ladder promises
@@ -774,7 +799,7 @@ def _rehome_reading(driver: WebDriver, ledger: _WindowLedger, timeout: float) ->
         log_debug("Could not re-open the thread on the original window", exc=e,
                   action_type="followup")
         return None
-    return _verified_reading(_wait_thread_open(driver, timeout))
+    return _verified_reading(_wait_thread_open(driver, timeout), expect_history)
 
 
 def _surface_evidence(driver: WebDriver, reading: dict, new_windows: int) -> dict:
@@ -794,7 +819,8 @@ def _surface_evidence(driver: WebDriver, reading: dict, new_windows: int) -> dic
 
 
 def _grade_after_action(driver: WebDriver, ledger: _WindowLedger, timeout: float,
-                        record: Optional[dict] = None) -> Optional[dict]:
+                        record: Optional[dict] = None,
+                        expect_history: bool = False) -> Optional[dict]:
     """Verify the outcome of ONE click/navigation, on whichever window it rendered in.
 
     If the action opened windows, the newest is where the outcome is graded — the driver reading the
@@ -805,12 +831,14 @@ def _grade_after_action(driver: WebDriver, ledger: _WindowLedger, timeout: float
     `record`, when given, receives the post-click surface reading under `surface` — the evidence a
     traced walk reports, taken on the window the outcome was graded on.
     """
+    if expect_history:
+        timeout = max(timeout, EXPECTED_HISTORY_RENDER_TIMEOUT_SECONDS)
     opened = _windows_opened_since(driver, ledger)
     if not opened:
         reading = _wait_thread_open(driver, timeout)
         if record is not None:
             record["surface"] = _surface_evidence(driver, reading, 0)
-        return _verified_reading(reading)
+        return _verified_reading(reading, expect_history)
     try:
         driver.switch_to.window(opened[-1])
     except WebDriverException as e:
@@ -819,9 +847,9 @@ def _grade_after_action(driver: WebDriver, ledger: _WindowLedger, timeout: float
     reading = _wait_thread_open(driver, timeout)
     if record is not None:
         record["surface"] = _surface_evidence(driver, reading, len(opened))
-    verified = _verified_reading(reading)
+    verified = _verified_reading(reading, expect_history)
     if verified:
-        return _rehome_reading(driver, ledger, timeout)
+        return _rehome_reading(driver, ledger, timeout, expect_history)
     _close_opened_windows(driver, ledger)
     return None
 
@@ -968,7 +996,7 @@ def _trace_click(trace: Optional[dict], chosen: dict) -> Optional[dict]:
 
 def _try_control(driver: WebDriver, locators: list[tuple[str, str]], root=None,
                  timeout: float = THREAD_RENDER_TIMEOUT_SECONDS, accept=None,
-                 trace: Optional[dict] = None) -> Optional[dict]:
+                 trace: Optional[dict] = None, expect_history: bool = False) -> Optional[dict]:
     """Click each accepted, shown control in turn; return the verification reading once one opens.
 
     `accept` is the attribution gate (`_control_belongs_to_target`): a candidate it refuses is never
@@ -987,14 +1015,14 @@ def _try_control(driver: WebDriver, locators: list[tuple[str, str]], root=None,
             continue
         if record is not None:
             record["clicked"] = True
-        verified = _grade_after_action(driver, ledger, timeout, record)
+        verified = _grade_after_action(driver, ledger, timeout, record, expect_history)
         if verified:
             return verified
     return None
 
 
 def _try_overflow(driver: WebDriver, timeout: float, accept=None,
-                  trace: Optional[dict] = None) -> Optional[dict]:
+                  trace: Optional[dict] = None, expect_history: bool = False) -> Optional[dict]:
     """LinkedIn demotes Message into the top-card **More** menu for some profiles/states.
 
     Several 'More' controls can share a page, so each is opened in turn and routes 1-2 re-run
@@ -1006,14 +1034,16 @@ def _try_overflow(driver: WebDriver, timeout: float, accept=None,
             continue
         time.sleep(_POLL_SECONDS)
         for locators in (_ANCHOR_LOCATORS, _TEXT_NODE_LOCATORS):
-            reading = _try_control(driver, locators, timeout=timeout, accept=accept, trace=trace)
+            reading = _try_control(driver, locators, timeout=timeout, accept=accept, trace=trace,
+                                   expect_history=expect_history)
             if reading:
                 return reading
     return None
 
 
 def _try_direct_url(driver: WebDriver, timeout: float, urn: Optional[str] = None,
-                    profile_url: str = "", trace: Optional[dict] = None) -> Optional[dict]:
+                    profile_url: str = "", trace: Optional[dict] = None,
+                    expect_history: bool = False) -> Optional[dict]:
     """The strongest fallback: navigate straight to the compose URL built from the person's URN.
 
     Nothing depends on a rendered control at all.
@@ -1043,12 +1073,13 @@ def _try_direct_url(driver: WebDriver, timeout: float, urn: Optional[str] = None
     driver.get(compose_url_for(urn))
     if record is not None:
         record["clicked"] = True
-    return _grade_after_action(driver, ledger, timeout, record)
+    return _grade_after_action(driver, ledger, timeout, record, expect_history)
 
 
 def _try_messaging_search(driver: WebDriver, wait: WebDriverWait, person_name: Optional[str],
                           profile_url: str, timeout: float,
-                          trace: Optional[dict] = None) -> Optional[dict]:
+                          trace: Optional[dict] = None,
+                          expect_history: bool = False) -> Optional[dict]:
     """Slowest route, and the only one that works when the profile page offers nothing.
 
     Opens /messaging/, searches the person by name, and opens the matching conversation.
@@ -1102,7 +1133,7 @@ def _try_messaging_search(driver: WebDriver, wait: WebDriverWait, person_name: O
             continue
         if record is not None:
             record["clicked"] = True
-        verified = _grade_after_action(driver, ledger, timeout, record)
+        verified = _grade_after_action(driver, ledger, timeout, record, expect_history)
         if verified:
             return verified
     return None
@@ -1144,7 +1175,7 @@ def open_message_thread(driver: WebDriver, wait: WebDriverWait, profile_url: str
                         person_name: Optional[str] = None, user_id: Optional[int] = None,
                         timeout: float = THREAD_RENDER_TIMEOUT_SECONDS,
                         skip_routes: Optional[Collection[str]] = None,
-                        trace: bool = False) -> ThreadOpen:
+                        trace: bool = False, expect_history: bool = False) -> ThreadOpen:
     """Open this person's 1:1 message thread, walking every known route until one VERIFIABLY works.
 
     Routes, in order: profile anchor → tag-agnostic 'Message' text node → the top-card More menu →
@@ -1192,7 +1223,27 @@ def open_message_thread(driver: WebDriver, wait: WebDriverWait, profile_url: str
     A crashed tab (`is_tab_crashed`) is the one failure the ladder does NOT absorb: it re-raises, so
     the lane ends its run once instead of every later route and poll warning on the same dead tab
     (issue #2421).
+
+    `expect_history=True` (#2622) is for a caller that knows the thread has messages: a composer
+    with zero events is not a verified thread on any surface, the ladder keeps walking to
+    `direct_url` / `messaging_search`, and a composer-only overlay is polled up to
+    `EXPECTED_HISTORY_RENDER_TIMEOUT_SECONDS`. A walk that ends with only composer-only readings
+    warns ONCE. Read routes only — sending uses `open_addressed_composer`, which is unchanged.
     """
+    rejections: list = []
+    token = _COMPOSER_ONLY_REJECTIONS.set(rejections)
+    try:
+        return _walk_message_thread(driver, wait, profile_url, person_name, user_id, timeout,
+                                    skip_routes, trace, expect_history, rejections)
+    finally:
+        _COMPOSER_ONLY_REJECTIONS.reset(token)
+
+
+def _walk_message_thread(driver: WebDriver, wait: WebDriverWait, profile_url: str,
+                         person_name: Optional[str], user_id: Optional[int], timeout: float,
+                         skip_routes: Optional[Collection[str]], trace: bool,
+                         expect_history: bool, rejections: list) -> ThreadOpen:
+    """The ladder walk `open_message_thread` documents; `rejections` is its composer-only sink."""
     result = ThreadOpen()
     try:
         driver.get(profile_url)
@@ -1210,13 +1261,18 @@ def open_message_thread(driver: WebDriver, wait: WebDriverWait, profile_url: str
 
     attempts = (
         (ROUTE_ANCHOR, lambda rt: _try_control(driver, _ANCHOR_LOCATORS, timeout=timeout,
-                                               accept=belongs, trace=rt)),
+                                               accept=belongs, trace=rt,
+                                               expect_history=expect_history)),
         (ROUTE_TEXT_NODE, lambda rt: _try_control(driver, _TEXT_NODE_LOCATORS, timeout=timeout,
-                                                  accept=belongs, trace=rt)),
-        (ROUTE_OVERFLOW, lambda rt: _try_overflow(driver, timeout, accept=belongs, trace=rt)),
-        (ROUTE_DIRECT_URL, lambda rt: _try_direct_url(driver, timeout, urn, profile_url, trace=rt)),
+                                                  accept=belongs, trace=rt,
+                                                  expect_history=expect_history)),
+        (ROUTE_OVERFLOW, lambda rt: _try_overflow(driver, timeout, accept=belongs, trace=rt,
+                                                  expect_history=expect_history)),
+        (ROUTE_DIRECT_URL, lambda rt: _try_direct_url(driver, timeout, urn, profile_url, trace=rt,
+                                                      expect_history=expect_history)),
         (ROUTE_MESSAGING_SEARCH, lambda rt: _try_messaging_search(driver, wait, person_name,
-                                                                  profile_url, timeout, trace=rt)),
+                                                                  profile_url, timeout, trace=rt,
+                                                                  expect_history=expect_history)),
     )
     skip = set(skip_routes or ())
     unknown = skip - set(ROUTES)
@@ -1242,6 +1298,7 @@ def open_message_thread(driver: WebDriver, wait: WebDriverWait, profile_url: str
         if route_trace is not None:
             result.route_trace.append(route_trace)
         ledger = _window_ledger(driver)
+        rejected_before = len(rejections)
         try:
             reading = attempt(route_trace)
         except Exception as e:
@@ -1261,6 +1318,8 @@ def open_message_thread(driver: WebDriver, wait: WebDriverWait, profile_url: str
             # menu's tab, a window a raising route never graded — is closed here, before the next
             # route or the next person. Fail-open, and never a change to `reading`.
             _close_opened_windows(driver, ledger)
+            if len(rejections) > rejected_before:
+                result.composer_only_routes.append(route)
         if reading:
             result.opened = True
             result.route = route
@@ -1285,6 +1344,15 @@ def open_message_thread(driver: WebDriver, wait: WebDriverWait, profile_url: str
         log_warning("Message-thread readers are blind to a message editor on screen — no route "
                     "could verify the thread", user_id=user_id, action_type="followup",
                     profile_url=profile_url, selectors=list(result.blind_routes))
+        return result
+    if result.composer_only_routes:
+        # The caller knows this thread has messages, yet every route that rendered anything showed a
+        # bare composer — the message list is not being read (#2622). That is the drift signal the
+        # old silent DEBUG hid. ONE warning per walk, however many routes saw it.
+        log_warning("Message-thread routes rendered only an empty composer for a thread that must "
+                    "have history — no route could verify it", user_id=user_id,
+                    action_type="followup", profile_url=profile_url,
+                    selectors=list(result.composer_only_routes))
         return result
     log_debug(f"No route opened a message thread for {profile_url}", user_id=user_id,
               action_type="followup", selectors=list(result.tried), profile_url=profile_url)
