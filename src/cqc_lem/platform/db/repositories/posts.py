@@ -2584,3 +2584,59 @@ def soft_delete_posts(post_ids: list[int], rejection_reason: Optional[str] = Non
     """
     return bulk_update_posts(post_ids, status=PostStatus.REJECTED, rejection_reason=rejection_reason,
                              user_id=user_id)
+
+
+def get_weekly_post_rows(user_id: int, start: datetime, end: datetime) -> Optional[list]:
+    """Posts published in [start, end), each with its LATEST post_stats row (issue #2632).
+
+    Each item: id, impressions, reactions, comments, own_comments, reposts — NULL where the capture
+    could not read it. None on a database fault, so the caller reports "not measured" instead of
+    a week with zero posts.
+    """
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT p.id, s.impressions, s.reactions, s.comments, s.own_comments, s.reposts "
+                "FROM posts p LEFT JOIN post_stats s "
+                "  ON s.post_id=p.id AND s.user_id=p.user_id "
+                "  AND s.id IN (SELECT MAX(id) FROM post_stats WHERE user_id=%s GROUP BY post_id) "
+                "WHERE p.user_id=%s AND p.status=%s AND p.scheduled_time >= %s "
+                "  AND p.scheduled_time < %s ORDER BY p.scheduled_time",
+                (user_id, user_id, PostStatus.POSTED.value, to_naive_utc(start), to_naive_utc(end)))
+            return cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        log_error("Could not read weekly post rows", exc=err, user_id=user_id)
+        return None
+
+
+def count_pending_drafts(user_id: int) -> Optional[int]:
+    """Posts waiting on the user's review (status `pending`); None on a database fault."""
+    try:
+        with db_cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) FROM posts WHERE user_id=%s AND status=%s",
+                           (user_id, PostStatus.PENDING.value))
+            row = cursor.fetchone()
+            return int(row[0]) if row else 0
+    except mysql.connector.Error as err:
+        log_error("Could not count pending drafts", exc=err, user_id=user_id)
+        return None
+
+
+def get_weekly_engager_icp_scores(user_id: int, start: datetime, end: datetime) -> Optional[list]:
+    """`icp_score` of each person who engaged with the user's posts in [start, end) (issue #2632).
+
+    One entry per engager; None for an engager with no `leads` row (no fit reading). The list is
+    None on a database fault. `post_engagers` is last-write-wins, so this is "engaged most recently
+    in the window", never an event history.
+    """
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT l.icp_score FROM post_engagers e LEFT JOIN leads l "
+                "  ON l.user_id=e.user_id AND l.person_profile_url=e.engager_profile_url "
+                "WHERE e.user_id=%s AND e.last_engaged_at >= %s AND e.last_engaged_at < %s",
+                (user_id, to_naive_utc(start), to_naive_utc(end)))
+            return [r.get("icp_score") for r in (cursor.fetchall() or [])]
+    except mysql.connector.Error as err:
+        log_error("Could not read weekly engager ICP scores", exc=err, user_id=user_id)
+        return None
