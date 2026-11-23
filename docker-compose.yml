@@ -360,7 +360,9 @@ services:
       start_period: 20s
 
   selenium-chrome:
-    image: selenium/standalone-chrome:latest
+    # Pinned (#2620): `:latest` let Chrome change under a running stack. Same Selenium release
+    # (4.53.0-20261120, Chrome 158) as the grid overlay's hub/node. Bump them together, on purpose.
+    image: selenium/standalone-chrome:4.53.0-20261120@sha256:11b1c18434233ea10e065ba2c43f8599373a014f8253e689d1df6cd96f9ea8e5
     container_name: selenium-chrome
     hostname: selenium-chrome
     # shm scales with sessions — a starved /dev/shm crashes tabs.
@@ -410,6 +412,33 @@ services:
       timeout: 10s
       retries: 5
       start_period: 20s
+
+  # Authenticating egress forwarder (#2620, docs/PER_USER_PROXY.md). Chrome reaches each user's
+  # proxy through this service with NO credentials (`--proxy-server=http://proxy-forwarder:<20000 +
+  # user id>`), and it adds the upstream Proxy-Authorization itself. Current Chrome ignores
+  # command-line extensions, so the old in-browser auth extension never loaded.
+  # Off until PROXY_FORWARDER_HOST=proxy-forwarder is set in .env: the workers read that to decide.
+  # NO `ports:` on purpose: the listeners carry other people's proxy credentials and must be
+  # reachable from the compose network only. Fails closed: it never connects anywhere directly.
+  proxy-forwarder:
+    image: ${DOCKER_IMAGE_NAME}
+    container_name: proxy-forwarder
+    hostname: proxy-forwarder
+    command: ["/run-as-celery", "python", "-m", "cqc_lem.utilities.proxy_forwarder"]
+    volumes_from:
+      - web_app
+    env_file:
+      - .env
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-m", "cqc_lem.utilities.proxy_forwarder", "--check"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   litellm:
     image: ghcr.io/berriai/litellm:main-latest

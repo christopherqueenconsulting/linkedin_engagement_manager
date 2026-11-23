@@ -322,6 +322,13 @@ missing reading.
 | `auth_failed` | the proxy answered 407: the credentials (or its IP allowlist) refused us | the proxy credentials in `users.proxy_url` / `REGION_PROXIES` / `PROXY_URL`, and the provider's allowlist |
 | `refused` | the proxy answered but would not open the tunnel | the provider's target restrictions and plan status |
 
+The probe takes the route Chrome takes (#2620): with `PROXY_FORWARDER_HOST` set it goes through
+the `proxy-forwarder` service with no credentials, so `auth_failed` means the forwarder's injected
+credentials were refused, `refused` with nothing else wrong can be the forwarder's own 502/504 (an
+upstream it could not reach), and `unreachable` can mean the forwarder itself is down
+(`docker ps --filter name=proxy-forwarder`). With the forwarder off the probe sends no credentials,
+because Chrome cannot send them either, so a credentials-only proxy reads `auth_failed`.
+
 The body names no proxy, so find the failing one in the app log
 (`/opt/lem/logs/cqc_lem_YYYY_MM_DD.log`, one file per UTC day; `docs/production-logs.md`). Every
 Selenium session logs the egress it used, as host:port and never with credentials:

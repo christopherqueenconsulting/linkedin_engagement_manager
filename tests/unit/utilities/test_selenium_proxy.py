@@ -13,6 +13,13 @@ from cqc_lem.utilities.selenium_util import apply_proxy
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def _forwarder_off(monkeypatch):
+    """The legacy tests below describe the forwarder-OFF path; each forwarder test turns it on."""
+    monkeypatch.delenv("PROXY_FORWARDER_HOST", raising=False)
+    monkeypatch.delenv("PROXY_FORWARDER_BASE_PORT", raising=False)
+
+
 def _args(options):
     return [c.args[0] for c in options.add_argument.call_args_list]
 
@@ -92,3 +99,46 @@ def test_sticky_username_with_special_chars_embedded_safely():
     bg = _extension_files(b64)["background.js"]
     # embedded via json.dumps → the exact username string round-trips inside a JS literal
     assert json.dumps(user) in bg
+
+
+# --- the proxy forwarder (#2620) -------------------------------------------------------------
+
+
+def test_forwarder_on_routes_chrome_to_the_users_port_with_no_credentials(monkeypatch):
+    monkeypatch.setenv("PROXY_FORWARDER_HOST", "proxy-forwarder")
+    opts = MagicMock()
+    apply_proxy(opts, "http://user:secret@host.example:3128", user_id=7)
+    assert [a for a in _args(opts) if a.startswith("--proxy-server")] == \
+        ["--proxy-server=http://proxy-forwarder:20007"]
+    assert all("secret" not in a and "user" not in a for a in _args(opts))
+    opts.add_encoded_extension.assert_not_called()
+
+
+def test_forwarder_on_also_carries_an_authless_http_proxy(monkeypatch):
+    monkeypatch.setenv("PROXY_FORWARDER_HOST", "proxy-forwarder")
+    opts = MagicMock()
+    apply_proxy(opts, "https://host.example:3128", user_id=2)
+    assert "--proxy-server=http://proxy-forwarder:20002" in _args(opts)
+
+
+def test_forwarder_on_leaves_socks_on_the_direct_path(monkeypatch):
+    monkeypatch.setenv("PROXY_FORWARDER_HOST", "proxy-forwarder")
+    opts = MagicMock()
+    apply_proxy(opts, "socks5://exit.local:1080", user_id=7)
+    assert "--proxy-server=socks5://exit.local:1080" in _args(opts)
+
+
+def test_forwarder_on_without_a_user_keeps_the_legacy_path(monkeypatch):
+    monkeypatch.setenv("PROXY_FORWARDER_HOST", "proxy-forwarder")
+    opts = MagicMock()
+    apply_proxy(opts, "http://host.example:3128")
+    assert "--proxy-server=http://host.example:3128" in _args(opts)
+
+
+def test_forwarder_on_an_unmappable_user_fails_closed_never_unproxied(monkeypatch):
+    monkeypatch.setenv("PROXY_FORWARDER_HOST", "proxy-forwarder")
+    opts = MagicMock()
+    apply_proxy(opts, "http://user:secret@host.example:3128", user_id=99999)
+    assert [a for a in _args(opts) if a.startswith("--proxy-server")] == \
+        ["--proxy-server=http://proxy-forwarder:20000"]
+    opts.add_encoded_extension.assert_not_called()

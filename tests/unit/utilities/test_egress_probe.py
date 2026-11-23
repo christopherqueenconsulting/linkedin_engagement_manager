@@ -80,7 +80,8 @@ def fake_proxy():
 @pytest.fixture(autouse=True)
 def _fresh_cache(monkeypatch):
     for name in ("EGRESS_PROBE_CACHE_SECONDS", "EGRESS_DEGRADE_AFTER_SECONDS",
-                 "HEALTH_DEEP_EGRESS_DEGRADES", "EGRESS_PROBE_TIMEOUT_SECONDS"):
+                 "HEALTH_DEEP_EGRESS_DEGRADES", "EGRESS_PROBE_TIMEOUT_SECONDS",
+                 "PROXY_FORWARDER_HOST", "PROXY_FORWARDER_BASE_PORT"):
         monkeypatch.delenv(name, raising=False)
     from cqc_lem.utilities.egress_probe import reset_cache
     reset_cache()
@@ -374,6 +375,94 @@ class TestConfiguredEgressProxies:
         from cqc_lem.utilities.egress_probe import configured_egress_proxies
         with patch("cqc_lem.utilities.db.get_active_user_ids", return_value=[]):
             assert configured_egress_proxies() == []
+
+
+class TestChromePathTarget:
+    """The probe takes the route Chrome takes, and never sends credentials Chrome would not (#2620)."""
+
+    def test_forwarder_on_probes_the_users_forwarder_port_without_credentials(self, monkeypatch):
+        monkeypatch.setenv("PROXY_FORWARDER_HOST", "proxy-forwarder")
+        target = _egress_probe.chrome_path_target("http://u:p@up.example:12323", 4)
+        assert target == "http://proxy-forwarder:20004"
+
+    def test_forwarder_off_strips_the_credentials(self):
+        assert _egress_probe.chrome_path_target("http://u:p@up.example:12323", 4) == \
+            "http://up.example:12323"
+
+    def test_an_ipv6_upstream_keeps_its_brackets(self):
+        assert _egress_probe.chrome_path_target("http://u:p@[::1]:8080", 4) == "http://[::1]:8080"
+
+    def test_socks_is_never_forwarded(self, monkeypatch):
+        monkeypatch.setenv("PROXY_FORWARDER_HOST", "proxy-forwarder")
+        assert _egress_probe.chrome_path_target("socks5://u:p@s:1080", 4) == "socks5://s:1080"
+
+    def test_an_unmappable_user_probes_the_fail_closed_port(self, monkeypatch):
+        monkeypatch.setenv("PROXY_FORWARDER_HOST", "proxy-forwarder")
+        assert _egress_probe.chrome_path_target("http://u:p@h:1", 99999) == \
+            "http://proxy-forwarder:20000"
+
+    def test_no_user_id_is_the_stripped_upstream(self, monkeypatch):
+        monkeypatch.setenv("PROXY_FORWARDER_HOST", "proxy-forwarder")
+        assert _egress_probe.chrome_path_target("http://u:p@h:1", None) == "http://h:1"
+
+    def test_configured_targets_go_through_the_forwarder_once_per_upstream(self, monkeypatch):
+        monkeypatch.setenv("PROXY_FORWARDER_HOST", "proxy-forwarder")
+        monkeypatch.delenv("REGION_PROXIES", raising=False)
+        monkeypatch.delenv("PROXY_URL", raising=False)
+        rows = [{"user_id": 1, "proxy_url": "http://a:pw@own:1", "country": "US"},
+                {"user_id": 2, "proxy_url": "http://a:pw@own:1", "country": "US"},
+                {"user_id": 3, "proxy_url": "http://b:pw@other:2", "country": "US"}]
+        with patch("cqc_lem.utilities.db.get_active_user_ids", return_value=[1, 2, 3]), \
+             patch("cqc_lem.utilities.db.get_users_proxy_config", return_value=rows):
+            targets = _egress_probe.configured_egress_proxies()
+        assert targets == ["http://proxy-forwarder:20001", "http://proxy-forwarder:20003"]
+        assert not any("pw" in t for t in targets)
+
+    def test_the_probe_sends_no_credentials_of_its_own(self, fake_proxy):
+        proxy = fake_proxy(b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n")
+        target = _egress_probe.chrome_path_target(f"http://u:p@127.0.0.1:{proxy.port}", 1)
+        assert _egress_probe.probe_proxy(target, timeout=2) == "auth_failed"
+        assert b"Proxy-Authorization" not in proxy.requests[0]
+
+    def test_end_to_end_through_a_forwarder_injecting_credentials(self, monkeypatch):
+        """Probe -> real forwarder -> fake upstream: ok when the forwarder's credentials work."""
+        import asyncio
+
+        from cqc_lem.utilities import proxy_forwarder as pf
+
+        async def scenario(reply: bytes) -> tuple:
+            heads = []
+
+            async def upstream(reader, writer):
+                heads.append(await reader.readuntil(b"\r\n\r\n"))
+                writer.write(reply)
+                await writer.drain()
+                writer.close()
+
+            up = await asyncio.start_server(upstream, "127.0.0.1", 0)
+            up_port = up.sockets[0].getsockname()[1]
+            base = _free_port()
+            fwd = pf.ProxyForwarder(
+                lambda: {1: pf.parse_upstream(f"http://alice:fake-pw@127.0.0.1:{up_port}")},
+                bind_host="127.0.0.1", base=base, connect_timeout=2, head_timeout=2)
+            await fwd.start_health()
+            await fwd.refresh()
+            monkeypatch.setenv("PROXY_FORWARDER_HOST", "127.0.0.1")
+            monkeypatch.setenv("PROXY_FORWARDER_BASE_PORT", str(base))
+            target = _egress_probe.chrome_path_target(
+                f"http://alice:fake-pw@127.0.0.1:{up_port}", 1)
+            try:
+                state = await asyncio.to_thread(_egress_probe.probe_proxy, target, 2)
+            finally:
+                await fwd.close()
+                up.close()
+            return state, heads
+
+        state, heads = asyncio.run(scenario(b"HTTP/1.1 200 Connection established\r\n\r\n"))
+        assert state == "ok"
+        assert b"Proxy-Authorization: Basic " in heads[0]
+        state, _ = asyncio.run(scenario(b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n"))
+        assert state == "auth_failed"
 
 
 class TestFailOpenEdges:

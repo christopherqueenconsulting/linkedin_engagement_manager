@@ -194,7 +194,7 @@ How a session stays signed in and unflagged. One row per surface.
 
 | Surface | The ONE place | The invariant that bites | Doc |
 |---|---|---|---|
-| **Proxy + browser identity** | `utilities/proxy.py`, `_build_proxy_auth_extension_b64` | Per-user static residential proxy behind an in-memory MV3 auth extension — never URL-embedded credentials (MV2 background pages died in Chrome 149+) | `docs/PER_USER_PROXY.md` |
+| **Proxy + browser identity** | `utilities/proxy.py`, `utilities/proxy_forwarder.py` (#2620) | Chrome gets NO credentials: the forwarder adds them, one port per user, failing CLOSED. The MV3 extension is rollback-only (Chrome 158 ignores it) | `docs/PER_USER_PROXY.md` |
 | **Cookie + PIN login** | `linkedin/verification_pin.py` | `li_at` is the DEFAULT engagement login since #745, not a nicety — the password fallback is the path that draws a challenge | `docs/LINKEDIN_COOKIE.md` |
 | **Sign-in visibility** (#933) | `linkedin/login_status.py` | `_persist_session_cookies` is where both login paths meet, so it is where a sign-in is recorded. Fails open: `unknown` means nothing recorded, NOT a broken connection | `docs/linkedin-session-health.md` |
 | **OAuth renewal** (#600) | `resolve_token_status` in `linkedin/token_refresh.py` | The ONE place token state is decided. LinkedIn caps auth at 60 days, so the daily 08:30 beat is the only way a token outlives that. `days_remaining` is `None`, never 0, when unreadable | same |

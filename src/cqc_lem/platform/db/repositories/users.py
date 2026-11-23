@@ -2007,6 +2007,23 @@ def get_users_proxy_config(user_ids: list) -> list:
     except mysql.connector.Error as err:
         log_error("Could not fetch proxy config for users", exc=err)
         return []
+def get_all_users_proxy_config() -> Optional[list]:
+    """(user_id, proxy_url, country) for every account that is not admin-disabled (#2620).
+
+    The proxy forwarder's route table. Unlike `get_users_proxy_config` a failed read is None, not an
+    empty list: the forwarder keeps its last routes on None, while an empty list would close every
+    listener during a database blip.
+    """
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute("SELECT id, proxy_url, country FROM users WHERE disabled_at IS NULL")
+            return [
+                {"user_id": row["id"], "proxy_url": row.get("proxy_url"), "country": row.get("country")}
+                for row in (cursor.fetchall() or [])
+            ]
+    except mysql.connector.Error as err:
+        log_error("Could not fetch proxy config for all users", exc=err)
+        return None
 def get_margin_users() -> list:
     """Users the margin report covers: everyone on an active/past-due subscription or an open trial.
     Trials are included (tier `free_trial`, $0 MRR) so the cost they incur still lands in system

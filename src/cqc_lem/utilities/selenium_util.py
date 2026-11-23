@@ -8,7 +8,9 @@ egresses from the host's datacenter IP with a location that contradicts it, whic
 configuration behind the sustained LinkedIn /feed 429s.
 
 Also owned here: the in-memory MV3 proxy-auth extension (`_build_proxy_auth_extension_b64`), because
-Chrome cannot take proxy credentials on the command line and MV2 background pages are gone; and the
+Chrome cannot take proxy credentials on the command line and MV2 background pages are gone. Current
+Chrome no longer loads it, so it is the rollback path only: with ``PROXY_FORWARDER_HOST`` set,
+`apply_proxy` routes through `utilities/proxy_forwarder.py` instead (#2620). And the
 ordered-fallback locators (`find_first` / `click_first` / `find_all_first`) that LinkedIn's churning
 SDUI markup requires.
 """
@@ -419,7 +421,7 @@ def get_docker_driver(headless: bool = True, session_name: str = "ChromeTests", 
     options.add_argument("--ignore-certificate-errors")
     options.add_argument(f"--lang={user_locale}")
     if effective_proxy:
-        apply_proxy(options, effective_proxy)
+        apply_proxy(options, effective_proxy, user_id=user_id)
     if headless:
         options = add_headless_options(options)
 
@@ -667,12 +669,19 @@ def apply_debug_node(options: Options, debug: bool = False, required: bool = Fal
     return False
 
 
-def apply_proxy(options: Options, proxy_url: str) -> None:
+def apply_proxy(options: Options, proxy_url: str, user_id: Optional[int] = None) -> None:
     """Route the browser's egress through `proxy_url` (scheme://[user:pass@]host:port).
 
-    Auth-less proxies (IP-allowlisted, Tailscale/cloudflared exit node) work via a bare
-    --proxy-server=scheme://host:port. Credentialed proxies additionally get an MV3
-    auth-handler extension so Chrome can answer the proxy's 407 challenge (see
+    With the proxy forwarder on (``PROXY_FORWARDER_HOST``, #2620) an HTTP/HTTPS proxy is reached
+    through it: Chrome gets ``--proxy-server=http://<forwarder>:<port for user_id>`` with no
+    credentials, and the forwarder adds them upstream. Chrome no longer loads extensions passed on
+    the command line, so this is the only path on which a credentialed proxy actually
+    authenticates. A session the forwarder cannot route fails closed (see
+    `proxy_forwarder.unroutable_proxy_server`); it never starts unproxied.
+
+    With the forwarder off (the rollback path), auth-less proxies (IP-allowlisted,
+    Tailscale/cloudflared exit node) work via a bare --proxy-server=scheme://host:port, and
+    credentialed proxies additionally get the legacy MV3 auth-handler extension (see
     docs/PER_USER_PROXY.md). Best-effort: a malformed URL is logged and ignored rather
     than failing driver creation.
     """
@@ -688,6 +697,19 @@ def apply_proxy(options: Options, proxy_url: str) -> None:
                         action_type="login")
             return
         hostport = f"{host}:{parsed.port}" if parsed.port else host
+        from cqc_lem.utilities import proxy_forwarder
+        if user_id is not None and proxy_forwarder.is_enabled() and \
+                proxy_forwarder.can_forward(proxy_url):
+            server = proxy_forwarder.chrome_proxy_server(user_id)
+            if server is None:
+                # The id maps outside the port range. Point Chrome at a port that refuses every
+                # request rather than dropping the proxy: unproxied is the one outcome never allowed.
+                log_warning("Proxy forwarder has no port for this user — the session will fail "
+                            "closed", user_id=user_id, action_type="login")
+                server = proxy_forwarder.unroutable_proxy_server()
+            options.add_argument(f"--proxy-server={server}")
+            log_info(f"Routing browser egress via the proxy forwarder to {scheme}://{hostport}")
+            return
         options.add_argument(f"--proxy-server={scheme}://{hostport}")
         log_info(f"Routing browser egress via proxy {scheme}://{hostport}")
         if parsed.username and parsed.password:

@@ -87,8 +87,44 @@ options above sidestep that by authenticating on *source IP* (lock the nodes to 
 A credentialed commercial proxy — one whose sticky-session and geo target live in the *username*,
 as DataImpulse's do — cannot.
 
-`_build_proxy_auth_extension_b64` in `utilities/selenium_util.py` is the ONE place that gap is
-closed, and it is the only sanctioned way credentials reach a browser session:
+### The proxy forwarder (#2620) — the live path
+
+**`utilities/proxy_forwarder.py` is the ONE place credentials are attached**, and Chrome never sees
+them. It runs as the `proxy-forwarder` compose service and is switched on by
+`PROXY_FORWARDER_HOST=proxy-forwarder` in `.env`.
+
+- **One listener per user, and the port is the identity.** User N's Chrome is started with
+  `--proxy-server=http://proxy-forwarder:<PROXY_FORWARDER_BASE_PORT + N>` (base 20000). A
+  connection on that port is forwarded only to user N's own upstream, resolved by the same
+  `resolve_proxy` rule as everything else (own `users.proxy_url`, else region, else `PROXY_URL`).
+  One user's session can never leave through another user's proxy.
+- **The forwarder adds `Proxy-Authorization` upstream** and drops any the client sent. Chrome
+  connects with no credentials, so nothing depends on an extension or an IP allowlist.
+- **Fails closed.** It never connects to a destination itself. No route for a port, an unreachable
+  upstream or a refused tunnel is an error to Chrome (502, 504, or the upstream's own status, a 407
+  included, minus its `Proxy-Authenticate`). A database it cannot read keeps the last routes.
+- **Internal only.** The service publishes no port; only containers on the compose network reach
+  it. It logs host:port and user ids, never credentials. The base port answers
+  `GET /healthz` with counts only, and returns 502 to any proxy request.
+- **Routes refresh every `PROXY_FORWARDER_REFRESH_SECONDS` (30).** An edit to `users.proxy_url` is
+  live within one refresh, with no restart. A brand-new user waits up to one refresh for a listener
+  and fails closed until then.
+- **HTTP and HTTPS upstreams only.** A SOCKS proxy keeps the direct `--proxy-server` path (Chrome
+  cannot authenticate to SOCKS at all).
+- **Same host only.** Chrome resolves `proxy-forwarder` through compose DNS, so a Grid node on a
+  second box (`docker-compose.grid-node.yml`) cannot reach it. Do not enable the forwarder with
+  second-box nodes registered until that is solved.
+- `/health/deep`'s egress probe takes the same route (`egress_probe.chrome_path_target`): through
+  the forwarder, with no credentials of its own.
+
+### The auth extension (rollback path only)
+
+Chrome 158 ignores `--load-extension`, and the encoded extension below never appeared in a node's
+`chrome://extensions` (2026-11-23). It is kept, unchanged, for `PROXY_FORWARDER_HOST` empty, which
+is the rollback. On that path a credentialed proxy works only if it also allowlists the host's IP,
+and the egress probe now says so: it sends no credentials, because Chrome sends none.
+
+`_build_proxy_auth_extension_b64` in `utilities/selenium_util.py`:
 
 - It builds an **MV3 Chrome extension in memory** whose service worker answers
   `chrome.webRequest.onAuthRequired` with the username/password.

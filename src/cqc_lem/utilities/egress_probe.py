@@ -7,7 +7,9 @@ measured only Celery. This module is the missing reading: for each distinct egre
 users are routed through, ask the proxy to open a tunnel to LinkedIn and report what it said.
 
 The probe is a bare HTTP ``CONNECT www.linkedin.com:443`` — the same request Chrome makes first for
-every HTTPS page behind an HTTP proxy. On a ``200`` the proxy has opened a TCP connection to
+every HTTPS page behind an HTTP proxy, sent along the route Chrome takes (`chrome_path_target`):
+through the proxy forwarder when it is on, and never with credentials Chrome would not send itself
+(#2620). On a ``200`` the proxy has opened a TCP connection to
 www.linkedin.com:443 from the egress IP; the probe closes it straight away, before any TLS, so no
 HTTP request, cookie or account is ever sent and the bytes are negligible on a metered plan. That
 happens at most once per ``EGRESS_PROBE_CACHE_SECONDS`` per API process per distinct proxy. SOCKS
@@ -150,24 +152,54 @@ def probe_proxy(proxy_url: str, timeout: Optional[float] = None) -> str:
             pass  # Closing a probe socket that is already dead is not news.
 
 
+def _strip_credentials(proxy_url: str) -> str:
+    """``scheme://host:port`` with any ``user:pass@`` removed."""
+    parsed = urlparse(proxy_url)
+    host = parsed.hostname or ""
+    if ":" in host:
+        host = f"[{host}]"
+    netloc = f"{host}:{parsed.port}" if parsed.port else host
+    return parsed._replace(netloc=netloc).geturl()
+
+
+def chrome_path_target(proxy_url: str, user_id: Optional[int]) -> str:
+    """The proxy URL to probe so the probe takes the SAME route this user's Chrome takes (#2620).
+
+    With the proxy forwarder on, that is the forwarder's port for the user, with no credentials:
+    the forwarder adds them, exactly as it does for Chrome. With it off, it is the upstream with the
+    credentials stripped, because Chrome sends none either (it cannot load the auth extension), so
+    only an IP allowlist lets it through. The old probe sent credentials up front, which is why
+    `/health/deep` read `ok` through a 13-hour outage on 2026-11-23.
+    """
+    from cqc_lem.utilities import proxy_forwarder
+    if user_id is not None and proxy_forwarder.is_enabled() and \
+            proxy_forwarder.can_forward(proxy_url):
+        server = proxy_forwarder.chrome_proxy_server(int(user_id))
+        return server or proxy_forwarder.unroutable_proxy_server()
+    return _strip_credentials(proxy_url)
+
+
 def configured_egress_proxies() -> Optional[list]:
-    """The distinct egress proxy URLs the active users' browsers are routed through.
+    """One probe target per distinct egress proxy the active users' browsers are routed through.
 
     Resolved with the same rule `get_driver_wait_pair` uses (`proxy.resolve_proxy`: the user's own
-    proxy, else their region's, else the global default). Returns an empty list when no active
-    user is proxied, and None only when resolving raised. Note the DB helpers swallow a MySQL
-    error and return no rows, so a database outage reads as an empty list (`direct`), not None.
+    proxy, else their region's, else the global default), then turned into the route Chrome
+    actually takes (`chrome_path_target`). Returns an empty list when no active user is proxied,
+    and None only when resolving raised. Note the DB helpers swallow a MySQL error and return no
+    rows, so a database outage reads as an empty list (`direct`), not None.
     """
     try:
         from cqc_lem.utilities.db import get_active_user_ids, get_users_proxy_config
         from cqc_lem.utilities.proxy import resolve_proxy
         user_ids = get_active_user_ids() or []
         seen: list = []
+        targets: list = []
         for row in get_users_proxy_config(list(user_ids)) if user_ids else []:
             url = resolve_proxy(row.get("proxy_url"), row.get("country"))
             if url and url not in seen:
                 seen.append(url)
-        return seen
+                targets.append(chrome_path_target(url, row.get("user_id")))
+        return targets
     except Exception as e:
         log_debug(f"Egress probe could not read the proxy configuration: {type(e).__name__}")
         return None
