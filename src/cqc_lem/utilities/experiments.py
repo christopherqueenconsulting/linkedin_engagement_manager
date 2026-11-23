@@ -95,9 +95,9 @@ COST_ROUTING_ARM = "cost-routing-arm"
 COMMENT_CONTRACT_PROMPT = "comment-contract-prompt"
 POST_MEDIA_VARIANT = "post-media-variant"
 
-# The pilot prompt variant (G2). Named for what it changes, not "variant-b", so the readout says
-# which prompt won.
-COMMENT_CONTRACT_AUTHOR_QUESTION = "author-question"
+# The pre-#2626 prompt (persona "single goal is to EARN A REPLY" + a mandatory closing question),
+# kept selectable only as a named legacy arm. The `author-question` arm it replaces is retired.
+COMMENT_CONTRACT_LEGACY = "legacy-question"
 
 EXPERIMENTS: Dict[str, ExperimentSpec] = {
     spec.key: spec for spec in (
@@ -118,12 +118,12 @@ EXPERIMENTS: Dict[str, ExperimentSpec] = {
         ),
         ExperimentSpec(
             key=COMMENT_CONTRACT_PROMPT,
-            variants=(CONTROL, COMMENT_CONTRACT_AUTHOR_QUESTION),
+            variants=(CONTROL, COMMENT_CONTRACT_LEGACY),
             owner="content",
             metric_events=("comment_outcome",),
-            description=("Pilot LLM prompt experiment (G2): the feed-comment quality contract's "
-                         "closing ask. Control offers four value-adds and any open question; "
-                         "treatment REQUIRES a question only the post's author could answer. "
+            description=("Feed-comment system prompt (#2626). Control has no persona and no "
+                         "mandatory closing question; `legacy-question` is the old prompt "
+                         "(\"earn a reply\" persona, always end on a question). "
                          "Metric = author-reply rate (D4) from the #628 T+24h outcome sweep. At "
                          "current single-user volume this is underpowered by design — see the "
                          "small-sample caveat in docs/experiments.md."),

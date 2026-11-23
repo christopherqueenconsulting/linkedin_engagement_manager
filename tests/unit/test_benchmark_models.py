@@ -207,8 +207,9 @@ class TestAssertions:
         case = _case(assertions=[{"type": "comment_contract"}],
                      context={"post_content": "We deleted our staging environment and put every "
                                               "change behind a feature flag."})
-        good = ("Deleting staging only works because the flag expires. In my experience flags that "
-                "outlive the change become a second configuration surface. How do you enforce it?")
+        good = ("Deleting staging only works because the flag expires. Flags that outlive the change "
+                "become a second configuration surface. How do you enforce flag expiry across "
+                "teams?")
         assert bm.evaluate_case(case, good)["passes"] is True
         assert bm.evaluate_case(case, "Great post! Thanks for sharing.")["passes"] is False
 

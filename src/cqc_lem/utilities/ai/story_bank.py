@@ -18,6 +18,7 @@ from datetime import date, datetime
 from typing import Optional
 
 from cqc_lem.utilities.ai.content_framework import (
+    _FIRST_PERSON_RE,
     content_tokens,
     first_person_proof_sentences,
     numeric_claims,
@@ -398,6 +399,94 @@ def unsourced_specifics(content: Optional[str], sources: Optional[list]) -> list
     for sentence in first_person_proof_sentences(content):
         for token in sorted(specific_tokens(sentence)):
             if token not in allowed and token not in found:
+                found.append(token)
+    return found
+
+
+# --- Comment-only claim parser (#2626) --------------------------------------------------------
+# `specific_tokens` above also drives the newsletter / group-post fact holds and story-echo, so its
+# vocabulary stays as it is. A feed comment ships with no review step and is where the model hedges
+# ("roughly thirty percent", "a third", "2x") past a twelve-word number list, so it gets its own
+# wider reading rather than a change to the shared one.
+_COMMENT_UNITS = {
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+    "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+    "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
+}
+_COMMENT_TENS = {"twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70,
+                 "eighty": 80, "ninety": 90}
+_COMMENT_SCALES = {"hundred": 100, "thousand": 1000, "million": 1_000_000}
+_COMMENT_FRACTIONS = {"half": "1/2", "halves": "1/2", "third": "1/3", "thirds": "1/3",
+                      "quarter": "1/4", "quarters": "1/4"}
+_COMMENT_VAGUE_COUNTS = ("dozens", "hundreds", "thousands", "millions")
+_COMMENT_MULTIPLE_RE = re.compile(r"(?<![\w.])(\d+(?:\.\d+)?)\s?x\b")
+_COMMENT_WORD_RE = re.compile(r"[a-z]+(?:-[a-z]+)?")
+
+
+def _number_word_value(word: str) -> Optional[int]:
+    """Value of a spelled number ('thirty', 'twenty-five'), or None."""
+    if word in _COMMENT_UNITS:
+        return _COMMENT_UNITS[word]
+    if word in _COMMENT_TENS:
+        return _COMMENT_TENS[word]
+    head, _, tail = word.partition("-")
+    if tail and head in _COMMENT_TENS and 0 < _COMMENT_UNITS.get(tail, 0) < 10:
+        return _COMMENT_TENS[head] + _COMMENT_UNITS[tail]
+    return None
+
+
+def comment_specific_tokens(text: Optional[str]) -> set:
+    """The checkable particulars of a COMMENT, wider than `specific_tokens`.
+
+    Adds every spelled number, fractions ('a third', 'half'), 'Nx' multiples and vague counts
+    ('dozens') to what `specific_tokens` reads. A hedge ('roughly', 'about') does not change what is being claimed, so the quantity under it
+    is graded like a bare one.
+    """
+    low = (text or "").lower()
+    out = specific_tokens(low)
+    for match in _COMMENT_MULTIPLE_RE.findall(low):
+        out.add(_normalize_digits(match) + "x")
+    words = _COMMENT_WORD_RE.findall(low)
+    for i, word in enumerate(words):
+        value = _number_word_value(word)
+        if value is not None:
+            nxt = words[i + 1] if i + 1 < len(words) else ""
+            if nxt in _COMMENT_SCALES:
+                value *= _COMMENT_SCALES[nxt]
+            out.add(str(value))
+        elif word in _COMMENT_FRACTIONS:
+            out.add(_COMMENT_FRACTIONS[word])
+        elif word in _COMMENT_VAGUE_COUNTS:
+            out.add(word)
+    return out
+
+
+def unsourced_comment_specifics(content: Optional[str], sources: Optional[list]) -> list:
+    """Specifics a comment claims about the author that no supplied source states IN ONE SENTENCE.
+
+    Stricter than `unsourced_specifics` on both axes the finding named: the vocabulary is
+    `comment_specific_tokens`, and a first-person sentence's numbers must all sit together in a
+    single sentence of one source, so "40%" in the post cannot launder "we cut it 40% in 3 weeks"
+    when the post says 40% about something else.
+
+    Args:
+        content: The finished comment.
+        sources: Text the author may legitimately claim (post body, story-bank facts).
+
+    Returns:
+        The offending specifics in order of appearance, or [] when every claim traces.
+    """
+    source_sets = [comment_specific_tokens(sentence) for source in sources or []
+                   for sentence in _CLAIM_SENTENCE_SPLIT.split(source or "") if sentence.strip()]
+    found: list = []
+    for sentence in _CLAIM_SENTENCE_SPLIT.split(content or ""):
+        if not sentence.strip() or not _FIRST_PERSON_RE.search(sentence):
+            continue
+        tokens = comment_specific_tokens(sentence)
+        if not tokens or any(tokens <= known for known in source_sets):
+            continue
+        for token in sorted(tokens):
+            if token not in found:
                 found.append(token)
     return found
 

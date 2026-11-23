@@ -562,7 +562,7 @@ class TestCommentGenerationWiring:
              "warehouses last year and pick times fell 18% before we touched the software. "
              "How long did the fast movers stay stable for you?")
     _SLOPPED = ("The front-aisle move is the part most layout posts skip. We tried it and pick "
-                "times fell 18%. Here's the kicker: nobody measured it. Thoughts?")
+                "times fell 18%. Here's the kicker: nobody measured it. How long did the fast movers stay stable?")
 
     def test_a_slopped_draft_regenerates_with_the_lint_directive(self):
         from cqc_lem.utilities.ai import ai_helper

@@ -481,9 +481,8 @@ def lint_repaired(draft: "str | None", content_type: str, redraft, prefs: dict =
 
 def _comment_contract_variant(user_id: int = None) -> "str | None":
     """This user's arm of the comment-contract prompt experiment (issue #652). Never raises: a
-    PostHog problem must cost us the experiment, not the comment — and `comment_contract_directive`
-    treats None (like any unknown arm) as the control contract, which is the prompt that shipped
-    before the experiment existed.
+    PostHog problem must cost us the experiment, not the comment. None (like any unknown arm) is
+    the control: the no-persona, no-mandatory-question prompt (#2626).
     """
     try:
         from cqc_lem.utilities.experiments import COMMENT_CONTRACT_PROMPT, resolve_variant
@@ -636,18 +635,23 @@ def generate_ai_response(post_content: Any, profile: LinkedInProfile,
             "image_url": {"url": f"{post_img_url}"},
         })
 
-    # System prompt to be included in every request
-    system_prompt = {
-        "role": "system",
-        "content": """You are an expert LinkedIn engagement strategist writing a comment AS the LinkedIn
+    # System prompt to be included in every request. The control has no persona and no mandatory
+    # closing question (#2626: 98% of shipped comments ended on one); the old prompt is the named
+    # legacy arm of the comment-contract experiment.
+    legacy_prompt = False
+    if post_comment is None:
+        try:
+            from cqc_lem.utilities.experiments import COMMENT_CONTRACT_LEGACY
+            legacy_prompt = _comment_contract_variant(user_id) == COMMENT_CONTRACT_LEGACY
+        except Exception:
+            legacy_prompt = False
+    if legacy_prompt:
+        system_head = """You are an expert LinkedIn engagement strategist writing a comment AS the LinkedIn
         user whose profile is provided. Your single goal is to EARN A REPLY: on LinkedIn, comment threads
         (back-and-forth conversation) drive far more reach than likes, so you are starting a conversation,
         not delivering a monologue.
-
-        GROUND EVERYTHING IN THE TARGET POST. The comment must be about what THIS post actually says —
-        react to its specific content. The user's profile is provided ONLY so you can match their authentic
-        voice, tone, and credibility angle; it is NOT the subject. """ + _NO_SELF_PROMO_GUARDRAIL + """
-
+"""
+        system_rules = """
         Then follow these rules exactly:
         - React to ONE specific point from the post (paraphrase or lightly quote it) so it's clearly a
           real reply. NEVER open with generic praise like "Great post!", "Well said", or "Thanks for
@@ -658,10 +662,34 @@ def generate_ai_response(post_content: Any, profile: LinkedInProfile,
         - END with a single, natural, open-ended question aimed at the author that invites them to reply.
         - Keep it SHORT and human — a few sentences, conversational, varied sentence structure. No
           preamble, no sign-off, no hashtags/emojis unless explicitly allowed below.
-
+"""
+    else:
+        system_head = """You write a LinkedIn comment AS the user whose profile is provided.
+"""
+        system_rules = """
+        Then follow these rules exactly:
+        - React to ONE specific point from the post (paraphrase or lightly quote it) so it's clearly a
+          real reply. NEVER open with generic praise like "Great post!", "Well said", or "Thanks for
+          sharing", and do not open by restating the author ("You say…", "Your point…").
+        - Add one thing the post did not say: a specific counterpoint, a precise question, or a fact
+          from the user's own material you were given. It must stay ON the post's topic —
+          never a pivot to the user's own projects, products, or work.
+        - NEVER invent an experience, client, event, number or percentage as the user's own. If you
+          have nothing of theirs to cite, make the point without a personal claim.
+        - Vary the shape. A question is fine when you genuinely have one, but do not end on one by
+          default; a statement, a counterpoint or a single sentence can be the whole comment.
+        - Keep it SHORT and human, conversational. No preamble, no sign-off, no hashtags/emojis unless
+          explicitly allowed below.
+"""
+    system_prompt = {
+        "role": "system",
+        "content": system_head + """
+        GROUND EVERYTHING IN THE TARGET POST. The comment must be about what THIS post actually says —
+        react to its specific content. The user's profile is provided ONLY so you can match their authentic
+        voice, tone, and credibility angle; it is NOT the subject. """ + _NO_SELF_PROMO_GUARDRAIL
+        + system_rules + """
         Output ONLY the final comment text — no quotes, no labels, no explanation.""" + blueprint_block
-        + (_framework.comment_contract_directive(_comment_contract_variant(user_id))
-           if post_comment is None else "")
+        + (_framework.comment_contract_directive() if post_comment is None else "")
     }
 
     # User prompt to be sent with each API call
@@ -805,9 +833,9 @@ def _ungrounded_first_person_metrics(candidate: "str | None", post_content: Any,
         The offending specifics in the order they appear, or [] when every one of them traces.
     """
     sources = [_story_bank.without_own_text(str(post_content or ""), own_comments)]
-    if not _story_bank.unsourced_specifics(candidate, sources):
+    if not _story_bank.unsourced_comment_specifics(candidate, sources):
         return []
-    return _story_bank.unsourced_specifics(candidate, sources + _story_bank_sources(user_id))
+    return _story_bank.unsourced_comment_specifics(candidate, sources + _story_bank_sources(user_id))
 
 
 def unattended_fact_hold(content: "str | None", surface: str, user_id: "int | None",

@@ -135,14 +135,29 @@ class TestContractChecks:
         assert fw.references_post("Two sentences here. And a second one.", "") is True
 
     def test_value_adds_are_detected_individually(self):
-        assert "experience" in fw.comment_value_adds(
-            "We ran that layout swap last year. It held.")
-        assert "data_point" in fw.comment_value_adds(
-            "Pick times fell 18% for us. That held for a quarter.")
         assert "disagreement" in fw.comment_value_adds(
             "The aisle framing is where I'd push back. Layout only helps once volume is stable.")
         assert "question" in fw.comment_value_adds(
             "The aisle framing lands. How long did the fast movers stay stable for you?")
+
+    def test_invented_experience_and_bare_numbers_are_not_value_adds(self):
+        """#2626: crediting them selected for the exact invention the grounding gate must catch."""
+        assert fw.comment_value_adds("We ran that layout swap last year. It held.") == []
+        assert fw.comment_value_adds("Pick times fell 18% for us. That held for a quarter.") == []
+        report = fw.comment_contract_report(
+            "In a recent rollout I led, layout beat software by 30%. The front aisle held up.", _POST)
+        assert report["checks"]["value_add"] is False
+        assert "adds no counterpoint or genuine question" in report["failures"]
+
+    def test_you_openers_are_filler(self):
+        for opener in ("Your point about layout is right.", "You say layout beats software.",
+                       "You call it a layout problem.", "You point out the front aisle."):
+            assert fw.filler_openers_found(opener + " It holds.")
+
+    def test_directive_no_longer_offers_experience_or_data_points(self):
+        text = fw.comment_contract_directive()
+        assert "first-hand experience of your own" not in text
+        assert "NEVER invent an experience" in text
 
     def test_reflex_closer_is_not_a_genuine_question(self):
         assert fw.has_genuine_question("Layout beats software here. Thoughts?") is False
@@ -415,45 +430,39 @@ class TestRecentCommentHistoryQuery:
 
 
 class TestPromptExperiment:
-    """The pilot LLM prompt experiment (issue #652): the contract's closing ask is the variable, and
-    the six graded rules are deliberately NOT — an arm that loosened one would change what "passes
-    the gate" means and the two arms would stop being comparable.
+    """The comment-contract prompt experiment (#652, reshaped by #2626): control is the new
+    no-persona / no-mandatory-question prompt, `legacy-question` the old one.
     """
 
-    _RULE = "END ON A QUESTION ONLY THIS AUTHOR COULD ANSWER"
+    _PERSONA = "EARN A REPLY"
+    _QUESTION_RULE = "END with a single, natural, open-ended question"
 
-    def test_treatment_adds_the_author_question_rule(self):
-        text = fw.comment_contract_directive(fw.COMMENT_CONTRACT_AUTHOR_QUESTION_VARIANT)
-        assert self._RULE in text
-        # The graded rules are untouched, so both arms face the same deterministic gate.
-        for rule in ("REFERENCE A SPECIFIC CLAIM", "WRITE FOR THE POST'S READERS",
-                     "NEVER open with validation filler"):
-            assert rule in text and rule in fw.comment_contract_directive()
-
-    @pytest.mark.parametrize("variant", [None, "", "control", "some-unknown-arm"])
-    def test_every_other_arm_is_the_control_contract(self, variant):
-        assert fw.comment_contract_directive(variant) == fw.comment_contract_directive()
-
-    def test_the_users_arm_reaches_the_feed_comment_prompt(self):
+    def _system(self, variant=None, raises=False):
         from cqc_lem.utilities.ai import ai_helper
+        kwargs = ({"side_effect": RuntimeError("posthog down")} if raises
+                  else {"return_value": variant})
         with patch(f"{_AI}._call_llm", return_value=_resp(_GOOD)) as m, \
-             patch("cqc_lem.utilities.experiments.resolve_variant",
-                   return_value=fw.COMMENT_CONTRACT_AUTHOR_QUESTION_VARIANT) as resolve:
+             patch("cqc_lem.utilities.experiments.resolve_variant", **kwargs) as resolve, \
+             patch(f"{_AI}.log_warning"):
             ai_helper.generate_ai_response(_POST, _profile(), user_id=7)
-        assert self._RULE in m.call_args.kwargs["messages"][0]["content"]
         assert resolve.call_args.args[1] == 7
+        return m.call_args.kwargs["messages"][0]["content"]
 
-    def test_a_broken_experiment_plane_still_writes_the_control_contract(self):
-        from cqc_lem.utilities.ai import ai_helper
-        with patch(f"{_AI}._call_llm", return_value=_resp(_GOOD)) as m, \
-             patch("cqc_lem.utilities.experiments.resolve_variant",
-                   side_effect=RuntimeError("posthog down")), \
-             patch(f"{_AI}.log_warning") as warn:
-            out = ai_helper.generate_ai_response(_POST, _profile(), user_id=7)
-        assert out == _GOOD
-        assert "COMMENT QUALITY CONTRACT" in m.call_args.kwargs["messages"][0]["content"]
-        assert self._RULE not in m.call_args.kwargs["messages"][0]["content"]
-        assert warn.called
+    @pytest.mark.parametrize("variant", [None, "", "control", "author-question", "unknown-arm"])
+    def test_every_arm_but_legacy_gets_the_new_prompt(self, variant):
+        text = self._system(variant)
+        assert self._PERSONA not in text and self._QUESTION_RULE not in text
+        assert "NEVER invent an experience" in text
+        assert "COMMENT QUALITY CONTRACT" in text
+
+    def test_legacy_arm_restores_the_old_prompt(self):
+        from cqc_lem.utilities.experiments import COMMENT_CONTRACT_LEGACY
+        text = self._system(COMMENT_CONTRACT_LEGACY)
+        assert self._PERSONA in text and self._QUESTION_RULE in text
+
+    def test_a_broken_experiment_plane_still_writes_the_new_prompt(self):
+        text = self._system(raises=True)
+        assert "COMMENT QUALITY CONTRACT" in text and self._PERSONA not in text
 
     def test_replying_to_a_comment_is_not_part_of_the_experiment(self):
         """A reply has its own acknowledge-and-answer contract, and the #628 sweep never measures it,

@@ -187,6 +187,8 @@ class TestOurOwnCommentsNeverGround:
 
     _ONLY_CLAIM = ("The second tier being the thing that slowed it down is the part most queue "
                    "posts miss. We saw retries fall from 18% to 6% once we dropped it.")
+    # The same claim with a genuine question, so the contract passes and only the gate decides.
+    _CLAIM_AND_QUESTION = _ONLY_CLAIM + " What finally made you unwind it?"
 
     def test_a_comment_grounded_only_on_our_own_prior_comment_fails_the_gate(self):
         from cqc_lem.utilities.ai import ai_helper
@@ -203,8 +205,8 @@ class TestOurOwnCommentsNeverGround:
     def test_the_same_draft_passes_when_the_card_text_is_a_third_party_post(self):
         """The contrast that proves the gate, not the contract, refused the draft above."""
         post = self._card().replace("Jane Doe\n", "Sam Author\n")
-        out, llm, _ = _generate_on(post, self._ONLY_CLAIM, recent_comments=[])
-        assert out == self._ONLY_CLAIM
+        out, llm, _ = _generate_on(post, self._CLAIM_AND_QUESTION, recent_comments=[])
+        assert out == self._CLAIM_AND_QUESTION
         assert llm.call_count == 1
 
     def test_the_laundered_claim_is_stripped_rather_than_shipped(self):
