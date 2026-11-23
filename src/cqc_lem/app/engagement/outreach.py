@@ -112,6 +112,7 @@ from cqc_lem.utilities.connection_targeting import (
     SOURCE_ADJACENT_POST,
     SOURCE_OWN_POST,
     CandidateSignal,
+    apply_icp_rubric,
     rank_candidates,
     target_terms_from_prefs,
 )
@@ -212,6 +213,7 @@ from cqc_lem.utilities.human_pacing import (
     record_action,
     remaining_actions,
 )
+from cqc_lem.utilities.icp_rubric import ICP_RUBRIC_VERSION, parse_icp_definition
 from cqc_lem.utilities.lead_scoring import (
     _author_display_name,
     _flag_lead_signal,
@@ -3355,10 +3357,26 @@ def scan_connection_candidates(self, user_id: int, max_new: int = None):
     terms = target_terms_from_prefs(prefs)
     urls = sorted({s.person_profile_url for s in signals if s.person_profile_url})
     min_icp = int(prefs.get("min_connection_icp_score") or 0)
-    candidates = rank_candidates(signals, now, facts_by_url=get_profile_facts(urls),
-                                 target_terms=terms, min_icp=min_icp,
-                                 exclude_keys=get_requested_person_keys(user_id),
-                                 limit=budget)
+    facts_by_url = get_profile_facts(urls)
+    # ICP rubric (#2630): per-user flag, default OFF. On with no usable definition falls back to
+    # `icp_fit`, so a half-configured user is never filtered down to nothing.
+    icp_definition = (parse_icp_definition(prefs.get("icp_definition"))
+                      if prefs.get("icp_builder_enabled") else None)
+    rubric_scores: dict = {}
+    if icp_definition is not None:
+        ranked_all = rank_candidates(signals, now, facts_by_url=facts_by_url, target_terms=terms,
+                                     min_icp=0, exclude_keys=get_requested_person_keys(user_id))
+        candidates, rubric_scores, held = apply_icp_rubric(
+            ranked_all, icp_definition, facts_by_url=facts_by_url, min_score=min_icp, limit=budget)
+        if held:
+            log_info(f"ICP rubric held {held} candidate(s) with no scraped profile facts",
+                     user_id=user_id, task_name="scan_connection_candidates",
+                     action_type="connection_targeting")
+    else:
+        candidates = rank_candidates(signals, now, facts_by_url=facts_by_url,
+                                     target_terms=terms, min_icp=min_icp,
+                                     exclude_keys=get_requested_person_keys(user_id),
+                                     limit=budget)
     if not candidates:
         _log_candidate_funnel(user_id, budget, own_post, adjacent)
         log_debug("Connection targeting filed nothing: every candidate was already requested, "
@@ -3387,6 +3405,11 @@ def scan_connection_candidates(self, user_id: int, max_new: int = None):
                      task_name="scan_connection_candidates", action_type="connection_targeting")
             continue
         note = _draft_connect_note(user_id, candidate, topic=topic)
+        rubric = rubric_scores.get(candidate.person_key)
+        provenance = ({"segment_id": rubric.segment_id,
+                       "icp_rubric_version": ICP_RUBRIC_VERSION,
+                       "icp_components": rubric.components, "icp_reason": rubric.reason}
+                      if rubric else {})
         request_id = insert_connection_request(
             user_id, candidate.person_profile_url, message=note,
             recipient_name=candidate.person_name, status=status,
@@ -3394,7 +3417,7 @@ def scan_connection_candidates(self, user_id: int, max_new: int = None):
             # No facts to score against means no score. Storing ICP_UNKNOWN here filed rows that
             # read as "below your floor" to whoever approves them; `reasons` says fit is unverified.
             icp_score=(candidate.icp_score if candidate.known_fit else None),
-            reasons=candidate.reasons)
+            reasons=candidate.reasons, **provenance)
         if not request_id:
             continue
         filed += 1

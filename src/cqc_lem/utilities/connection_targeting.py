@@ -10,10 +10,12 @@ at all; warmth (how recently/often they engaged, and whose content they engaged 
 order we work through them.
 """
 
+import dataclasses
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Iterable, Optional
 
+from cqc_lem.utilities.icp_rubric import IcpDefinition, IcpScore, has_facts, score_person
 from cqc_lem.utilities.lead_scoring import ICP_UNKNOWN, icp_fit, person_key, profile_slug, recency_weight
 
 # How they showed up on our radar. Engaging with OUR content is a stronger statement of interest in
@@ -237,6 +239,37 @@ def rank_candidates(signals: Iterable[CandidateSignal], now: datetime, facts_by_
         out.append(candidate)
     out.sort(key=lambda c: (c.score, c.warmth_score, c.signal_count), reverse=True)
     return out if limit is None else out[:max(0, int(limit))]
+
+
+def apply_icp_rubric(candidates: Iterable[ScoredCandidate], definition: IcpDefinition,
+                     facts_by_url: dict = None, min_score: int = 0, limit: int = None
+                     ) -> tuple:
+    """Re-score ranked candidates with the #2630 rubric (flag-on path only).
+
+    Returns `(kept, scores, held)`. `kept` are copies of the candidates with `icp_score` /
+    `reasons` carrying the rubric's total and one-line reason, best first; `scores` maps
+    `person_key` to its `IcpScore` for the provenance columns. `held` is how many people had NO
+    scraped facts: they are neither scored blind nor excluded, so a later scan picks them up once
+    a profile scrape has run. A hard-filter failure or a total under `min_score` is dropped.
+    """
+    facts_by_slug = {profile_slug(k): v for k, v in (facts_by_url or {}).items() if profile_slug(k)}
+    kept: list = []
+    scores: dict = {}
+    held = 0
+    for c in candidates or []:
+        facts = facts_by_slug.get(profile_slug(c.person_profile_url or ""), {})
+        if not has_facts(facts):
+            held += 1
+            continue
+        result: IcpScore = score_person(definition, facts, c.person_profile_url or "",
+                                        warmth=c.warmth_score, connection_degree=c.connection_degree)
+        if not result.eligible or result.total < int(min_score or 0):
+            continue
+        scores[c.person_key] = result
+        kept.append(dataclasses.replace(c, icp_score=result.total, known_fit=True,
+                                        score=result.total, reasons=result.reason))
+    kept.sort(key=lambda c: (c.score, c.warmth_score, c.signal_count), reverse=True)
+    return (kept if limit is None else kept[:max(0, int(limit))]), scores, held
 
 
 def first_name(name: str = None) -> str:

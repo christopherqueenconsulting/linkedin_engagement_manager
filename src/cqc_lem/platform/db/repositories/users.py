@@ -2576,6 +2576,10 @@ _ENGAGEMENT_DEFAULTS: dict = {
     # Dual-audience alternation (showcase round 5, utilities/ai/audience_mix.py). None = a single
     # audience; decoded by `parse_audience_mix`, never through `_ENGAGEMENT_JSON_FIELDS`.
     "audience_mix": None,
+    # ICP rubric (issue #2630). OFF by default: off keeps `icp_fit` and the current scan. The
+    # definition is a JSON object validated by `icp_rubric.parse_icp_definition`, decoded like
+    # `brand_kit`, never through `_ENGAGEMENT_JSON_FIELDS`.
+    "icp_builder_enabled": False, "icp_definition": None,
 }
 _ENGAGEMENT_JSON_FIELDS = ("include_topics", "exclude_topics", "include_keywords",
                            "exclude_keywords", "include_authors", "exclude_authors", "post_types",
@@ -2585,7 +2589,7 @@ _ENGAGEMENT_BOOL_FIELDS = ("use_emojis", "use_hashtags", "reply_to_own_comments"
                            "feed_fallback_when_empty", "link_in_first_comment",
                            "text_post_images", "roster_auto_follow", "roster_auto_connect",
                            "hold_repaired_posts_for_review",
-                           "profile_viewer_dm_auto_send")
+                           "profile_viewer_dm_auto_send", "icp_builder_enabled")
 _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "use_hashtags",
                     "include_topics", "exclude_topics", "include_keywords", "exclude_keywords",
                     "include_authors", "exclude_authors", "post_types", "focus_topics",
@@ -2605,7 +2609,7 @@ _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "us
                     "text_post_images", "roster_auto_follow", "max_follows_per_day",
                     "roster_auto_connect", "hold_repaired_posts_for_review",
                     "profile_viewer_dm_auto_send", "forbidden_claim_terms", "brand_kit",
-                    "audience_mix")
+                    "audience_mix", "icp_builder_enabled", "icp_definition")
 VALID_REPLY_MODES = ("event", "scheduled", "off")
 # Approval posture for the proactive connect flow (issue #398 owner review).
 VALID_CONNECTION_REQUEST_MODES = ("auto_approve", "pre_review")
@@ -2648,6 +2652,16 @@ def _decode_brand_kit(raw, user_id: int) -> Optional[dict]:
             return None
     kit = parse_brand_kit(raw)
     return None if kit is None or kit.is_empty() else kit.to_dict()
+def _decode_json_object(raw) -> Optional[dict]:
+    """A JSON column as a dict, or None when NULL, unparseable or not an object."""
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode("utf-8", errors="replace")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None
+    return raw if isinstance(raw, dict) else None
 def _select_engagement_row(user_id: int) -> Optional[dict]:
     """The user's SAVED engagement row, decoded — or None when they have never saved one.
 
@@ -2696,6 +2710,7 @@ def _select_engagement_row(user_id: int) -> Optional[dict]:
             row[f] = bool(row.get(f))
         row["brand_kit"] = _decode_brand_kit(row.get("brand_kit"), user_id)
         row["audience_mix"] = parse_audience_mix(row.get("audience_mix"))
+        row["icp_definition"] = _decode_json_object(row.get("icp_definition"))
         return row
     finally:
         cursor.close()
@@ -2866,7 +2881,7 @@ def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
 
     def _val(col):
         v = merged[col]
-        if col in ("brand_kit", "audience_mix"):
+        if col in ("brand_kit", "audience_mix", "icp_definition"):
             return None if v is None else json.dumps(v)
         if col in _ENGAGEMENT_JSON_FIELDS:
             return json.dumps(v or [])

@@ -404,3 +404,38 @@ class TestCandidateFunnelLine:
             _scan(prefs=_prefs(connection_targeting_mode="off"))
         assert not any(str(c.args[0]).startswith("Connection candidate funnel")
                        for c in info.call_args_list)
+
+
+_ICP_DEF = {"segments": [{"id": "ops", "name": "Ops", "role_titles": ["head of operations"]}],
+            "exclusions": {}}
+_JANE = "https://www.linkedin.com/in/jane-doe"
+
+
+class TestIcpRubricFlag:
+    """Issue #2630: the rubric runs only behind the per-user flag; off is today's behaviour."""
+
+    def test_flag_on_files_rubric_provenance(self):
+        facts = {_JANE: {"job_title": "Head of Operations", "company_name": "Initech",
+                         "industry": "Software"}}
+        _out, insert = _scan(prefs=_prefs(icp_builder_enabled=True, icp_definition=_ICP_DEF,
+                                          min_connection_icp_score=0), facts=facts)
+        kwargs = insert.call_args.kwargs
+        assert kwargs["segment_id"] == "ops"
+        assert kwargs["icp_rubric_version"] == "v1"
+        assert set(kwargs["icp_components"]) == {"role", "firmographic", "engagement",
+                                                  "reachability", "timing"}
+        assert kwargs["icp_reason"] and kwargs["icp_score"] is not None
+
+    def test_flag_on_holds_candidate_without_facts(self):
+        out, insert = _scan(prefs=_prefs(icp_builder_enabled=True, icp_definition=_ICP_DEF),
+                            facts={})
+        insert.assert_not_called()
+        assert "No new connection candidates" in out
+
+    def test_flag_on_without_definition_keeps_legacy_scoring(self):
+        _out, insert = _scan(prefs=_prefs(icp_builder_enabled=True, icp_definition=None))
+        assert "segment_id" not in insert.call_args.kwargs
+
+    def test_flag_off_ignores_definition(self):
+        _out, insert = _scan(prefs=_prefs(icp_builder_enabled=False, icp_definition=_ICP_DEF))
+        assert "segment_id" not in insert.call_args.kwargs

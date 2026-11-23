@@ -5,6 +5,7 @@ secret-sealing rules described there apply here unchanged; `cqc_lem.utilities.db
 re-exports every name below, so existing importers and patch targets keep resolving.
 """
 
+import json
 import time
 from datetime import (
     date,
@@ -502,22 +503,31 @@ def insert_connection_request(user_id: int, recipient_profile_url: str, message:
                               recipient_name: str = None,
                               status: "ConnectionRequestStatus" = ConnectionRequestStatus.PENDING,
                               source: str = None, icp_score: int = None, reasons: str = None,
-                              recipient_email: Optional[str] = None) -> Optional[int]:
+                              recipient_email: Optional[str] = None,
+                              segment_id: Optional[str] = None,
+                              icp_rubric_version: Optional[str] = None,
+                              icp_components: Optional[dict] = None,
+                              icp_reason: Optional[str] = None) -> Optional[int]:
     """Queue an approval-gated connection request and return its id; None when the insert failed.
 
     Nothing is sent from here — the default status is PENDING. `source` / `icp_score` / `reasons` carry
     the targeting provenance (issue #486) so the person approving can see WHY the row exists.
     `recipient_email` (issue #1836) is the recipient's email, used only when LinkedIn's Connect
     dialog demands one to verify the connection — most rows never carry one.
+    `segment_id` / `icp_rubric_version` / `icp_components` / `icp_reason` (issue #2630) are the ICP
+    rubric's provenance, written only when the per-user builder flag scored the target.
     """
     try:
         with db_cursor(commit=True) as cursor:
             cursor.execute(
                 "INSERT INTO connection_requests (user_id, recipient_profile_url, recipient_name, "
-                "message, status, source, icp_score, reasons, recipient_email) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                "message, status, source, icp_score, reasons, recipient_email, segment_id, "
+                "icp_rubric_version, icp_components, icp_reason) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (user_id, recipient_profile_url, recipient_name, message, str(status),
-                 source, icp_score, (reasons or None), recipient_email))
+                 source, icp_score, (reasons or None), recipient_email, segment_id,
+                 icp_rubric_version,
+                 None if icp_components is None else json.dumps(icp_components), icp_reason))
             return cursor.lastrowid
     except mysql.connector.Error as err:
         log_error("Could not insert connection request", exc=err, user_id=user_id)
