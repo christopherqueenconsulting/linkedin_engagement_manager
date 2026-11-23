@@ -721,6 +721,11 @@ class EngagementPreferencesRequest(BaseModel):
     # older SPA build that never learned this field must not resurrect 3 follows/day over a 0 the
     # user set to switch an outbound lane off.
     max_follows_per_day: Optional[int] = None
+    # Per-lane approval mode (issue #2624). None = leave what is stored (a stale SPA tab, #743,
+    # must never overwrite the migration's backfill); an unknown value is a 422.
+    nurture_dm_mode: Optional[str] = None
+    artifact_dm_mode: Optional[str] = None
+    group_post_mode: Optional[str] = None
     # Opt-in auto-connect for roster targets following did not unlock (issue #979), OFF by default
     # and independent of roster_auto_follow. No cap of its own — roster invites take at most a
     # minority share of whatever max_invites_per_day has left.
@@ -789,6 +794,13 @@ class EngagementPreferencesRequest(BaseModel):
     @classmethod
     def _coerce_connection_mode(cls, v: str) -> str:
         return v if v in ("auto_approve", "pre_review") else "auto_approve"
+
+    @field_validator("nurture_dm_mode", "artifact_dm_mode", "group_post_mode")
+    @classmethod
+    def _check_approval_mode(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in ("pre_review", "auto_approve"):
+            raise ValueError("must be 'pre_review' or 'auto_approve'")
+        return v
 
     @field_validator("connection_targeting_mode")
     @classmethod
@@ -2262,6 +2274,10 @@ def update_engagement_preferences_endpoint(request: EngagementPreferencesRequest
     # which would overwrite a deliberate 0 and restart an outbound lane the user had switched off.
     if prefs.get("max_follows_per_day") is None:
         prefs.pop("max_follows_per_day", None)
+    # Same rule for the per-lane approval modes (issue #2624): omitted keeps the stored mode.
+    for mode_key in ("nurture_dm_mode", "artifact_dm_mode", "group_post_mode"):
+        if prefs.get(mode_key) is None:
+            prefs.pop(mode_key, None)
     # Same rule for the forbidden-claim list (issue #2047): omitted or null is "leave what is
     # stored", never "store an empty list" — the saved subjects must survive a partial PUT.
     if prefs.get("forbidden_claim_terms") is None:

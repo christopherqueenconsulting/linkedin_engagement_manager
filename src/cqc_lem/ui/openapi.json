@@ -1242,6 +1242,17 @@
       "EngagementPreferencesDetail": {
         "description": "The saved engagement preferences, plus the read-only context the Settings hub renders.\n\nEverything above `has_saved_preferences` is a stored column and can be PUT back; everything from it down is derived per request and is ignored on a save.",
         "properties": {
+          "artifact_dm_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Dm Mode"
+          },
           "audience_mix": {
             "anyOf": [
               {
@@ -1423,6 +1434,17 @@
               }
             ]
           },
+          "group_post_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group Post Mode"
+          },
           "has_saved_preferences": {
             "title": "Has Saved Preferences",
             "type": "boolean"
@@ -1547,6 +1569,17 @@
               }
             ],
             "title": "Min Reactions"
+          },
+          "nurture_dm_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nurture Dm Mode"
           },
           "personal_goals": {
             "anyOf": [
@@ -1693,6 +1726,9 @@
           "text_post_images",
           "roster_auto_follow",
           "max_follows_per_day",
+          "nurture_dm_mode",
+          "artifact_dm_mode",
+          "group_post_mode",
           "roster_auto_connect",
           "hold_repaired_posts_for_review",
           "profile_viewer_dm_auto_send",
@@ -1721,6 +1757,17 @@
       "EngagementPreferencesRequest": {
         "description": "Body of `PUT /user/engagement-preferences` \u2014 targeting, voice and the per-day caps.\n\nTwo rules run through the whole model. The `max_length=` bounds are kept in lockstep with the\nDB column widths so an over-long value is a clean 422 instead of a MySQL 1406 that silently\nrolls back the whole upsert. And the `_coerce_*` validators never reject an unknown enum value,\nthey fall back to the safe default \u2014 an SPA build that predates a mode must not 422 a settings\nsave. `Optional[...] = None` on a cap (e.g. `max_follows_per_day`) means \"leave what is\nstored\", NOT the code default, so an older client cannot resurrect a lane the user switched off.",
         "properties": {
+          "artifact_dm_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Dm Mode"
+          },
           "audience_mix": {
             "anyOf": [
               {
@@ -1892,6 +1939,17 @@
             ],
             "title": "Forbidden Claim Terms"
           },
+          "group_post_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group Post Mode"
+          },
           "hold_repaired_posts_for_review": {
             "default": true,
             "title": "Hold Repaired Posts For Review",
@@ -2022,6 +2080,17 @@
               }
             ],
             "title": "Min Reactions"
+          },
+          "nurture_dm_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nurture Dm Mode"
           },
           "personal_goals": {
             "anyOf": [

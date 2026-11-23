@@ -72,6 +72,7 @@ from cqc_lem.utilities.ai.outbound_qa import (
     SURFACE_COMMENT as OUTBOUND_SURFACE_COMMENT,
     outbound_violations,
 )
+from cqc_lem.utilities.approval_modes import ARTIFACT_DM_MODE, may_auto_approve
 from cqc_lem.utilities.audience_stats import (
     parse_connection_count,
     parse_follower_count,
@@ -1148,9 +1149,12 @@ def _queue_artifact_delivery(user_id: int, profile_url: str, first_name: str, co
         # Due now: the operator's approval is the only gate on timing, and a resource someone just
         # asked for is worthless a day late.
         due = datetime.now(timezone.utc).replace(tzinfo=None)
+        # `artifact_dm_mode` (issue #2624): review by default; `auto_approve` files it approved.
+        status = (ScheduledDmStatus.APPROVED if may_auto_approve(user_id, ARTIFACT_DM_MODE, prefs)
+                  else ScheduledDmStatus.PENDING)
         dm_id = insert_scheduled_dm(user_id, profile_url, message, due,
                                     recipient_name=first_name or None,
-                                    status=ScheduledDmStatus.PENDING,
+                                    status=status,
                                     source=SCHEDULED_DM_SOURCE_ARTIFACT)
         if not dm_id:
             log_warning(f"Artifact delivery: drafted the lead magnet for "

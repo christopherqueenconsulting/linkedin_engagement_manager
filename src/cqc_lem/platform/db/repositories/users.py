@@ -2597,6 +2597,10 @@ _ENGAGEMENT_DEFAULTS: dict = {
     # definition is a JSON object validated by `icp_rubric.parse_icp_definition`, decoded like
     # `brand_kit`, never through `_ENGAGEMENT_JSON_FIELDS`.
     "icp_builder_enabled": False, "icp_definition": None,
+    # Per-lane approval mode (issue #2624): 'pre_review' (new-user default) | 'auto_approve'.
+    # Existing rows were backfilled by the migration to what each lane did before it.
+    "nurture_dm_mode": "pre_review", "artifact_dm_mode": "pre_review",
+    "group_post_mode": "pre_review",
 }
 _ENGAGEMENT_JSON_FIELDS = ("include_topics", "exclude_topics", "include_keywords",
                            "exclude_keywords", "include_authors", "exclude_authors", "post_types",
@@ -2626,7 +2630,10 @@ _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "us
                     "text_post_images", "roster_auto_follow", "max_follows_per_day",
                     "roster_auto_connect", "hold_repaired_posts_for_review",
                     "profile_viewer_dm_auto_send", "forbidden_claim_terms", "brand_kit",
-                    "audience_mix", "icp_builder_enabled", "icp_definition")
+                    "audience_mix", "icp_builder_enabled", "icp_definition",
+                    "nurture_dm_mode", "artifact_dm_mode", "group_post_mode")
+_APPROVAL_MODE_COLS = ("nurture_dm_mode", "artifact_dm_mode", "group_post_mode")
+VALID_APPROVAL_MODES = ("pre_review", "auto_approve")
 VALID_REPLY_MODES = ("event", "scheduled", "off")
 # Approval posture for the proactive connect flow (issue #398 owner review).
 VALID_CONNECTION_REQUEST_MODES = ("auto_approve", "pre_review")
@@ -2792,6 +2799,10 @@ def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
         merged["connection_request_mode"] = "auto_approve"
     if merged.get("connection_targeting_mode") not in VALID_CONNECTION_TARGETING_MODES:
         merged["connection_targeting_mode"] = "suggest"
+    for _mode_col in _APPROVAL_MODE_COLS:
+        # An unknown value lands on the review side — never on auto_approve.
+        if merged.get(_mode_col) not in VALID_APPROVAL_MODES:
+            merged[_mode_col] = "pre_review"
     _icp = merged.get("min_connection_icp_score")
     try:
         merged["min_connection_icp_score"] = (min(ICP_SCORE_MAX, max(ICP_SCORE_MIN, int(_icp)))
