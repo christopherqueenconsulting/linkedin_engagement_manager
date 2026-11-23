@@ -338,18 +338,18 @@ css = ["tinycss2 (>=1.1.0)"]
 
 [[package]]
 name = "boto3"
-version = "1.44.2"
+version = "1.44.7"
 description = "The AWS SDK for Python (Boto3)"
 optional = false
 python-versions = ">=3.10"
 groups = ["main"]
 files = [
-    {file = "boto3-1.44.2-py3-none-any.whl", hash = "sha256:d62ff8a9eb06cab9f0b4242d7a2907a8fff9cca630e27ef736660f9d53e5b18e"},
-    {file = "boto3-1.44.2.tar.gz", hash = "sha256:70c02826640da17c15067033af01667059dde5e86057c2d1227cd8523c2f24dd"},
+    {file = "boto3-1.44.7-py3-none-any.whl", hash = "sha256:15fac273416d37cd5e3f0c02b33fd8d7f27d3e64c5f64b911f8b953772302609"},
+    {file = "boto3-1.44.7.tar.gz", hash = "sha256:cc19922a2db90ac98f259b5290e08fcf7143a314eb6b2e430afec26a5d1f4e10"},
 ]
 
 [package.dependencies]
-botocore = ">=1.44.2,<1.45.0"
+botocore = ">=1.44.7,<1.45.0"
 jmespath = ">=0.7.1,<2.0.0"
 s3transfer = ">=0.19.0,<0.20.0"
 
@@ -358,14 +358,14 @@ crt = ["botocore[crt] (>=1.21.0,<2.0a0)"]
 
 [[package]]
 name = "botocore"
-version = "1.44.3"
+version = "1.44.9"
 description = "Low-level, data-driven core of boto 3."
 optional = false
 python-versions = ">=3.10"
 groups = ["main"]
 files = [
-    {file = "botocore-1.44.3-py3-none-any.whl", hash = "sha256:793eac2a7ca167e9376b136cf000e1675e9ffe8d7ec609160cc1ee00b93ace28"},
-    {file = "botocore-1.44.3.tar.gz", hash = "sha256:44d86fff55ce2d014bd72183ebc164b21b36598253b8234d4f59e8600e09b8b3"},
+    {file = "botocore-1.44.9-py3-none-any.whl", hash = "sha256:6966752d38514a8e457ea062ea171b2b320c55bad23c8ae4f74f88296e00890d"},
+    {file = "botocore-1.44.9.tar.gz", hash = "sha256:1f783e0b31f0053f41f4239b7a7e2e73957f25cdc6b2f45d113f1b575a4db10b"},
 ]
 
 [package.dependencies]
@@ -1098,14 +1098,14 @@ ssh = ["bcrypt (>=3.1.5)"]
 
 [[package]]
 name = "dateparser"
-version = "1.5.0"
+version = "1.5.1"
 description = "Date parsing library designed to parse dates from HTML pages"
 optional = false
 python-versions = ">=3.10"
 groups = ["main"]
 files = [
-    {file = "dateparser-1.5.0-py3-none-any.whl", hash = "sha256:7c4e088f25458f57db391510035af0878439a6df71d159318dcdb0a7553932e3"},
-    {file = "dateparser-1.5.0.tar.gz", hash = "sha256:08d62f2c00d3a1e806fc59d40c79e7554e31d84d3b8c6145820af051c92e7292"},
+    {file = "dateparser-1.5.1-py3-none-any.whl", hash = "sha256:1d312d2dbc3cddd61fe96d336af733b54bd01d7beb5657a432c7d1c2a144a5c8"},
+    {file = "dateparser-1.5.1.tar.gz", hash = "sha256:1c3d4a568b4f4d615adfc2945b54596adffc14f955c9b435030b5236226a4366"},
 ]
 
 [package.dependencies]
@@ -1612,15 +1612,15 @@ trio = ["trio (>=0.22.0,<1.0)"]
 
 [[package]]
 name = "httpcore2"
-version = "2.16.0"
+version = "2.16.2"
 description = "A minimal low-level HTTP client."
 optional = false
 python-versions = ">=3.11"
 groups = ["main", "mcp"]
 markers = "sys_platform != \"emscripten\""
 files = [
-    {file = "httpcore2-2.16.0-py3-none-any.whl", hash = "sha256:5c4358319f2602d984ad93182c9fee5160f22e9da7babdda870a5e7c4e2dc34f"},
-    {file = "httpcore2-2.16.0.tar.gz", hash = "sha256:c72cd0413563b17e1cd8354677dff887466f8ec2551679759e93126534428643"},
+    {file = "httpcore2-2.16.2-py3-none-any.whl", hash = "sha256:16051ae2a42f776007543f32de9349a317b23d2cbb4e1456b4bac0e88b87419a"},
+    {file = "httpcore2-2.16.2.tar.gz", hash = "sha256:6c519d0f7b44f7269fa9bbb4d2763db395a4a2370f046d8e8e0a4b38227815d2"},
 ]
 
 [package.dependencies]
@@ -1660,19 +1660,19 @@ zstd = ["zstandard (>=0.18.0)"]
 
 [[package]]
 name = "httpx2"
-version = "2.16.0"
+version = "2.16.2"
 description = "The next generation HTTP client."
 optional = false
 python-versions = ">=3.11"
 groups = ["main", "mcp"]
 files = [
-    {file = "httpx2-2.16.0-py3-none-any.whl", hash = "sha256:fd2c5d7909e8d86fe92d53020c310ca0e4e431b838c207c5754b9bbf0308d49a"},
-    {file = "httpx2-2.16.0.tar.gz", hash = "sha256:0d54c98128e8f2ff7fbbde0fca8c359e5f032edeaaaac443cdb7f31f685bcd7f"},
+    {file = "httpx2-2.16.2-py3-none-any.whl", hash = "sha256:f05c13aade4c45dbf1c9060647a1058f0acad62398fad96e741269edb33d46f5"},
+    {file = "httpx2-2.16.2.tar.gz", hash = "sha256:748b615678f07d8e3b183efe81ad13b655ca88bfc56ce4589219b2d442860574"},
 ]
 
 [package.dependencies]
 anyio = {version = ">=4.10", markers = "sys_platform != \"emscripten\""}
-httpcore2 = {version = "2.16.0", markers = "sys_platform != \"emscripten\""}
+httpcore2 = {version = "2.16.2", markers = "sys_platform != \"emscripten\""}
 httpx2-jsfetch = {version = "*", markers = "sys_platform == \"emscripten\" and python_version >= \"3.12\""}
 idna = ">=3.18"
 truststore = {version = ">=0.10", markers = "sys_platform != \"emscripten\""}
@@ -2780,19 +2780,18 @@ htmlsoup = ["BeautifulSoup4"]
 
 [[package]]
 name = "markdownify"
-version = "1.2.3"
+version = "1.2.4"
 description = "Convert HTML to markdown."
 optional = false
 python-versions = "*"
 groups = ["main"]
 files = [
-    {file = "markdownify-1.2.3-py3-none-any.whl", hash = "sha256:a189a0bedfd14009030fde5f85bb6f77c56897cb839b5c25315dd7d4e3e290ba"},
-    {file = "markdownify-1.2.3.tar.gz", hash = "sha256:1a176f05522c8a2cb1dd3ab9d307dcdadbed5c26ae717855bfc42b3b6d38d937"},
+    {file = "markdownify-1.2.4-py3-none-any.whl", hash = "sha256:e0375484fdd2bb007e86779fe34c59673d0011b14f8299953aaf0bf092269220"},
+    {file = "markdownify-1.2.4.tar.gz", hash = "sha256:3837f5eb4caa627473451f9ebb91e00d0f12120fc64d64246bea23934244bd01"},
 ]
 
 [package.dependencies]
 beautifulsoup4 = ">=4.9,<5"
-six = ">=1.15,<2"
 
 [[package]]
 name = "markupsafe"
@@ -3326,14 +3325,14 @@ files = [
 
 [[package]]
 name = "openai"
-version = "3.50.0"
+version = "3.57.0"
 description = "The official Python library for the openai API"
 optional = false
 python-versions = ">=3.10"
 groups = ["main"]
 files = [
-    {file = "openai-3.50.0-py3-none-any.whl", hash = "sha256:7002115247cacb167154a3da4c668d074e61014a661d2c1ac02583da24e2ce19"},
-    {file = "openai-3.50.0.tar.gz", hash = "sha256:ff094ba851ce512e0682f259e8c5bdc4802c7ef5373f68e7fd261261bb4496f2"},
+    {file = "openai-3.57.0-py3-none-any.whl", hash = "sha256:f97bc74024c06ced8428b56c4a3594066709d3082779bf9d0b4b6092fbf587a8"},
+    {file = "openai-3.57.0.tar.gz", hash = "sha256:5a0a89d6a542efc85e2a8cec701ca9265b795d578c777828e10fafdf80e333b6"},
 ]
 
 [package.dependencies]
@@ -4180,14 +4179,14 @@ test = ["pretend", "pytest (>=3.0.1)", "pytest-rerunfailures"]
 
 [[package]]
 name = "pyotp"
-version = "2.10.0"
+version = "2.12.1"
 description = "Python One Time Password Library"
 optional = false
-python-versions = ">=3.8"
+python-versions = ">=3.10"
 groups = ["main"]
 files = [
-    {file = "pyotp-2.10.0-py3-none-any.whl", hash = "sha256:1df2f6a1bcc3bb0716172a5215ddc2f8c7c7fd26a13df9927d52e1746934836c"},
-    {file = "pyotp-2.10.0.tar.gz", hash = "sha256:d01e9703443616b03c57c700b5cbffd56a1f929c1b0f8f03131bc78c1fca9d3f"},
+    {file = "pyotp-2.12.1-py3-none-any.whl", hash = "sha256:2f65978d0a0afe5588ec960c810cbb974ba1957ffbf29775d8d4e1b2d4b8984c"},
+    {file = "pyotp-2.12.1.tar.gz", hash = "sha256:8d0c4192f3c5d1b1a8792df23b9d8acbb7e70abd2b160962af55c5700edbd236"},
 ]
 
 [package.extras]
@@ -4433,14 +4432,14 @@ dev = ["black", "build", "freezegun", "mdx_truly_sane_lists", "mike", "mkdocs", 
 
 [[package]]
 name = "python-multipart"
-version = "0.0.33"
+version = "0.0.34"
 description = "A streaming multipart parser for Python"
 optional = false
 python-versions = ">=3.11"
 groups = ["main", "mcp"]
 files = [
-    {file = "python_multipart-0.0.33-py3-none-any.whl", hash = "sha256:8f16c07b36add9da6b2ee87d3efcaf0a45a6de9c3d0a5dd94e9ccf7675a7bc45"},
-    {file = "python_multipart-0.0.33.tar.gz", hash = "sha256:b8112424a6abd162ec08d390565dd113ad699f2fe6fef3c987b8bbcbfe9e390d"},
+    {file = "python_multipart-0.0.34-py3-none-any.whl", hash = "sha256:ebacd224bd686eee2f9aa1066a657affe07435a185834e05e5235e2e59173e91"},
+    {file = "python_multipart-0.0.34.tar.gz", hash = "sha256:b998ae90ca6e1e363261ce2e0e230281b8af53867b757970abd69ee9edcd843a"},
 ]
 
 [[package]]
@@ -5140,42 +5139,42 @@ files = [
 
 [[package]]
 name = "ruff"
-version = "0.17.5"
+version = "0.17.6"
 description = "An extremely fast Python linter and code formatter, written in Rust."
 optional = false
 python-versions = ">=3.7"
 groups = ["lint", "test"]
 files = [
-    {file = "ruff-0.17.5-py3-none-linux_armv6l.whl", hash = "sha256:d511dd302982e46a285528942fa6557d57730edc4bdb9def95e86a2603d77396"},
-    {file = "ruff-0.17.5-py3-none-macosx_10_12_x86_64.whl", hash = "sha256:b72fbc232e328bdbb9cdddf4f1aedcd61bd1aa64d75fc012114b4add0bd7f26b"},
-    {file = "ruff-0.17.5-py3-none-macosx_11_0_arm64.whl", hash = "sha256:6f0db748508f04a04e3fbebcc636a5c8b3bd76274f8ed28f497c44d75c2ea2d7"},
-    {file = "ruff-0.17.5-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:6f6a7b138edf9cc402ca736a59d9525e6d766e5395760b72e7e146e6251ac963"},
-    {file = "ruff-0.17.5-py3-none-manylinux_2_17_armv7l.manylinux2014_armv7l.whl", hash = "sha256:e52622ecf3a0df9d03e796fe3eed4aa085adda65520db7e0619cbd2192a97342"},
-    {file = "ruff-0.17.5-py3-none-manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:54c0f67d1be11b55d12c184a819fc229f5eee3ef45c16c4fcad41258e83b4882"},
-    {file = "ruff-0.17.5-py3-none-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl", hash = "sha256:dd0dfe7c6fe5a447fce467c58e69893be1d9a7e4378f5b9906432da33d94a97f"},
-    {file = "ruff-0.17.5-py3-none-manylinux_2_17_s390x.manylinux2014_s390x.whl", hash = "sha256:ec4ecf40fb4d6e1265b009dbe551727920926fc0f769070c452d6d84b422a74d"},
-    {file = "ruff-0.17.5-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:40ca8afaac309b41a5b2e09e4e7beb1f824826b93c25697c4d74f573324fba4e"},
-    {file = "ruff-0.17.5-py3-none-manylinux_2_31_riscv64.whl", hash = "sha256:8e85601bd6d9b6c3e3b95c0e0dccdbac1d23c6bcef006d187fbcddaf8225a5df"},
-    {file = "ruff-0.17.5-py3-none-musllinux_1_2_aarch64.whl", hash = "sha256:f93d2b7d449ed9545304f6923699ca20d13c675b69f258481709a08ae61076db"},
-    {file = "ruff-0.17.5-py3-none-musllinux_1_2_armv7l.whl", hash = "sha256:0e5c125c5b31dc8efc948d41357496a4c4a312977565ccba740030efdff83580"},
-    {file = "ruff-0.17.5-py3-none-musllinux_1_2_i686.whl", hash = "sha256:50dfc3c6b3ebd0a932f11dfd579bd42234b0b7137e68940eb6abdbfdb9d69697"},
-    {file = "ruff-0.17.5-py3-none-musllinux_1_2_x86_64.whl", hash = "sha256:86bd1f3b83c25f9b8055c6e796f0685b39d3127ce947322098c3108cf82fd586"},
-    {file = "ruff-0.17.5-py3-none-win32.whl", hash = "sha256:e1546609b2ad73f1d6c5c076881b788672b7b3cc3283981182cbdbb6524ed88a"},
-    {file = "ruff-0.17.5-py3-none-win_amd64.whl", hash = "sha256:aa415d57c244299279901d776607fee3df7831c2a7435433fbfacde8632c6550"},
-    {file = "ruff-0.17.5-py3-none-win_arm64.whl", hash = "sha256:64a6fd668a336df959c522991de33e9e3c8be463afc0c9ac8f029f9d19ef756e"},
-    {file = "ruff-0.17.5.tar.gz", hash = "sha256:625e57d80cd43352d12ea81690f3eac46cddc8c0f35026d137fb0f157f94592e"},
+    {file = "ruff-0.17.6-py3-none-linux_armv6l.whl", hash = "sha256:084d9c8f5ec718e7eba007dba339e7cb4f7571d2f267558ae080bf428fb6a69b"},
+    {file = "ruff-0.17.6-py3-none-macosx_10_12_x86_64.whl", hash = "sha256:9d44ef2140402043fd6f689ef541858b80883a8b0a02e38539ef0614ebe57d0c"},
+    {file = "ruff-0.17.6-py3-none-macosx_11_0_arm64.whl", hash = "sha256:9fbddc08577592e283c265d865e0182de6e33db185494db7b06290d989d888e5"},
+    {file = "ruff-0.17.6-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:435241c61af5909a022f76219d3d1bf24730dc1bf0acabb5ddf4b569ab3cbb30"},
+    {file = "ruff-0.17.6-py3-none-manylinux_2_17_armv7l.manylinux2014_armv7l.whl", hash = "sha256:d006bbb2945edb17b0ce6a0c1b5f5a8d81ba11dbac294a0a925effa22ce34feb"},
+    {file = "ruff-0.17.6-py3-none-manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:fd661702202a89c00a4c9d0339008805fa5876bfa1c57e165495c2e62230dfbf"},
+    {file = "ruff-0.17.6-py3-none-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl", hash = "sha256:6a12c50a33936dc00db2be21ba25fb168a8b95c55eda2a3ac85005af69885e4b"},
+    {file = "ruff-0.17.6-py3-none-manylinux_2_17_s390x.manylinux2014_s390x.whl", hash = "sha256:b5aba93b3db4b70c5697e4fee6e0d5b9c8452a9a3a03679611cadc25915a2173"},
+    {file = "ruff-0.17.6-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:aa3b08254a732acba246891089a152c47c5733dc36b8ecb76ce8602f8326e5e4"},
+    {file = "ruff-0.17.6-py3-none-manylinux_2_31_riscv64.whl", hash = "sha256:0692088e6b33455572fb18465e891b443f196e98dc1986825685c77ff6f4c5ac"},
+    {file = "ruff-0.17.6-py3-none-musllinux_1_2_aarch64.whl", hash = "sha256:fb589e032806bb942e4fb526f30b80a1a64112147ed9f1d38cc3de2e255b6f45"},
+    {file = "ruff-0.17.6-py3-none-musllinux_1_2_armv7l.whl", hash = "sha256:1939b3d701c7b6981b7cf93473de5bf88b129b9ba84efaed5154cc517c44634d"},
+    {file = "ruff-0.17.6-py3-none-musllinux_1_2_i686.whl", hash = "sha256:1a0bea6aa1216e0ec4cd35d3dbccec0d772a7c2aad28ec9c6e82571dff2c20b0"},
+    {file = "ruff-0.17.6-py3-none-musllinux_1_2_x86_64.whl", hash = "sha256:3db61f5015600543a581b07fa7f6f64afa0eeedefe16034cadd88c4074087582"},
+    {file = "ruff-0.17.6-py3-none-win32.whl", hash = "sha256:c2f4af6670b7a0501904e881bb3f1f24bd0d964dec1eedbd85f0eb73786e1128"},
+    {file = "ruff-0.17.6-py3-none-win_amd64.whl", hash = "sha256:9cd2fd9923e9806b8b6b67a3469e2258e84bd4d21e45d5a1a690afdfb9c8e57d"},
+    {file = "ruff-0.17.6-py3-none-win_arm64.whl", hash = "sha256:d8b14e1473dc86ab9069cf7a2ba5041dc012f59110201844ed04cfddf07055a0"},
+    {file = "ruff-0.17.6.tar.gz", hash = "sha256:2b04276561331300325040bdca21460770029ec574d4c479099e39e8ad1ed43c"},
 ]
 
 [[package]]
 name = "runwayml"
-version = "5.27.0"
+version = "5.28.0"
 description = "The official Python library for the runwayml API"
 optional = false
 python-versions = ">=3.9"
 groups = ["main"]
 files = [
-    {file = "runwayml-5.27.0-py3-none-any.whl", hash = "sha256:798777146e62eba5629818534f317a1c443b82042bfecec2960449a20187a8d1"},
-    {file = "runwayml-5.27.0.tar.gz", hash = "sha256:d12064f710790c911357f0c97557afc8e06805d278330531aad18d669ecde6cd"},
+    {file = "runwayml-5.28.0-py3-none-any.whl", hash = "sha256:9029decc1bf6c24b7aa7fc2a75872b5136bef7e55cf3b6f3d848724fd91301d4"},
+    {file = "runwayml-5.28.0.tar.gz", hash = "sha256:44739d6832e7827bc0f7db313e843dc45a23f384e8aa6e938aade151fa4d99ed"},
 ]
 
 [package.dependencies]
@@ -5209,14 +5208,14 @@ crt = ["botocore[crt] (>=1.37.4,<2.0a0)"]
 
 [[package]]
 name = "selenium"
-version = "4.52.0"
+version = "4.53.0"
 description = "Official Python bindings for Selenium WebDriver"
 optional = false
 python-versions = ">=3.10"
 groups = ["main"]
 files = [
-    {file = "selenium-4.52.0-py3-none-any.whl", hash = "sha256:caa2860d486f71cdeb21fee3248c2f604bba590120dfb4d3d18c4d7cf97c6f1f"},
-    {file = "selenium-4.52.0.tar.gz", hash = "sha256:40f423c598cc85390c403ef626c9d3457c1ae834d4cf1f38637ebba3cb6f0d7a"},
+    {file = "selenium-4.53.0-py3-none-any.whl", hash = "sha256:f0906a56324f5dfb19b87971a7cfd2162ea473e5afa25ee458aaa5a3816b98ac"},
+    {file = "selenium-4.53.0.tar.gz", hash = "sha256:efb45b129cbd7f46da99c82e7d327978bda29ed987223465c341f96404a86a2c"},
 ]
 
 [package.dependencies]
@@ -5393,14 +5392,14 @@ full = ["httpx (>=0.27.0,<0.29.0)", "httpx2 (>=2.0.0)", "itsdangerous", "jinja2"
 
 [[package]]
 name = "stripe"
-version = "17.0.0"
+version = "17.1.0"
 description = "Python bindings for the Stripe API"
 optional = false
 python-versions = ">=3.9"
 groups = ["main"]
 files = [
-    {file = "stripe-17.0.0-py3-none-any.whl", hash = "sha256:955bd99082dadcaf41b0d2d5075c0da8e6e848df1dccbbfcf7c856d9ac003420"},
-    {file = "stripe-17.0.0.tar.gz", hash = "sha256:5e1bdde6eac0311f6c3dea60457e3e49091789785db9c90d28d75a0398835589"},
+    {file = "stripe-17.1.0-py3-none-any.whl", hash = "sha256:c8089bacd9f7d95b62e3f4c0fc6cb5dc719eb09b9d09c6ff330800d36bf8b6eb"},
+    {file = "stripe-17.1.0.tar.gz", hash = "sha256:767b8e0f350b2b00fae7f8fbe7e28d4c215aac23529c833f0e77ec20c5f3bb48"},
 ]
 
 [package.dependencies]
@@ -5412,14 +5411,14 @@ async = ["httpx"]
 
 [[package]]
 name = "syrupy"
-version = "7.0.0"
+version = "7.0.2"
 description = "Pytest Snapshot Test Utility"
 optional = false
 python-versions = ">=3.11"
 groups = ["test"]
 files = [
-    {file = "syrupy-7.0.0-py3-none-any.whl", hash = "sha256:c2f00abec70c444771c999295a166bb0b957da0853a015dff0d0f95930a121f7"},
-    {file = "syrupy-7.0.0.tar.gz", hash = "sha256:2e8733d9b3b42b665143be49f38b7543d77f4243e8fb29545ec410ef467c7b0a"},
+    {file = "syrupy-7.0.2-py3-none-any.whl", hash = "sha256:bb7999d6cc1cce6731154fe46ad98874b484904d3e3fba950e244c5666c53c1b"},
+    {file = "syrupy-7.0.2.tar.gz", hash = "sha256:b35d3efc800a3362c20f24026d1d116b91fcd4578a315745860ec234e023592c"},
 ]
 
 [package.dependencies]
