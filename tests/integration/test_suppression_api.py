@@ -80,9 +80,10 @@ class _FakeRedis:
 
 
 def _stat_row(offset: int, impressions: int) -> tuple:
-    # (post_id, scheduled_time, reactions, comments, reposts, impressions, saves, + attribution)
+    # (post_id, scheduled_time, reactions, comments, reposts, impressions, saves, + attribution,
+    # + own_comments, #2633)
     return (100 + offset, _START + timedelta(days=offset), 10, 1, 0, impressions, 0,
-            None, None, None, None, None)
+            None, None, None, None, None, None)
 
 
 def _history(baseline: int, recent: int) -> list:
