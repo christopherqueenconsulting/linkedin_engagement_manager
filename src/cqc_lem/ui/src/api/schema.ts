@@ -7466,6 +7466,8 @@ export interface components {
         UpdateDmRequest: {
             /** Action */
             action?: string | null;
+            /** Authenticity Override Reason */
+            authenticity_override_reason?: string | null;
             /** Dm Id */
             dm_id: number;
             /** Message */

@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.224.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.223.0...v0.224.0) (2026-11-24)
+
+
+### Features
+
+* **mcp:** AI/media spend tools under daily AI cap + MCP sub-cap ([#2730](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2730)) ([589c00b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/589c00bfb766f31b532457f438f06ac1535cf01d))
+* **voice:** authenticity loop for comment and DM drafts (closes [#2751](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2751)) ([#2785](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2785)) ([0d02268](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/0d0226849f979b1d82f3c4c31670ba125c04a081))
+* **voice:** speaker model in image, audio enrollment and upload, Phase 2b (closes [#2780](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2780)) ([#2787](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2787)) ([e29f002](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e29f002a6780c8b656ad25def09f28c4007246d7))
+
 ## [0.223.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.222.0...v0.223.0) (2026-11-24)
 
 

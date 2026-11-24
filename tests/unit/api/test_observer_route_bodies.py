@@ -61,6 +61,7 @@ _WHEN = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
 
 # --- the explicit whitelists, one per route -----------------------------------------------------
 _DMS = {"id", "user_id", "recipient_profile_url", "recipient_name", "message", "source",
+        "authenticity_score", "authenticity_issues",
         "scheduled_time", "status", "created_at", "updated_at"}
 _CONNECTION_REQUESTS = {"id", "user_id", "recipient_profile_url", "recipient_name", "message", "source",
                         "icp_score", "reasons", "failure_reason", "status", "attempts", "created_at",

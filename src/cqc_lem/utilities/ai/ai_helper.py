@@ -29,6 +29,7 @@ from dotenv import load_dotenv
 
 from cqc_lem import assets_dir
 from cqc_lem.utilities.ai import (
+    authenticity_loop as _authenticity_loop,
     comment_candidates as _comment_candidates,
     content_framework as _framework,
     slop_lint as _slop,
@@ -1122,15 +1123,29 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
             "max_attempts": attempts, "failed_checks": last["checks"]})
 
     multi = multi_candidate and _comment_candidates.enabled(user_id)
+    # Authenticity loop (#2751): pre-text rides every draft call ("" when off, so the off path is
+    # byte-identical), and each regeneration it asks for gets its own attempt on top of the budget.
+    authentic = surface == "comment" and _authenticity_loop.enabled(user_id)
+    pre = _authenticity_loop.pre_text(user_id) if authentic else ""
+    auth_loops = 0
+    if authentic:
+        attempts += _authenticity_loop.MAX_LOOPS
+
+    def _authenticity_issues(text: str) -> "list | None":
+        """The judge's issues when `text` scores below the floor, else None (also when unscored)."""
+        scored = _authenticity_loop.score_draft(text, _call_llm, user_id)
+        if scored is None or not _authenticity_loop.below_floor(scored[0]):
+            return None
+        return scored[1] or ["make it more specific and personal"]
 
     for attempt in range(1, attempts + 1):
         if multi:
             candidate = _comment_candidates.select_candidate(
-                lambda: draft(fix_directive), lambda c: not _grade(c)[0],
+                lambda: draft(fix_directive + pre), lambda c: not _grade(c)[0],
                 lambda clean: _comment_candidates.judge_pick(clean, str(post_content or ""),
                                                              _call_llm, user_id))
         else:
-            candidate = draft(fix_directive)
+            candidate = draft(fix_directive + pre)
         if candidate is None:
             if lint_fallback:
                 _track(GATE_SHIPPED, attempt - 1)
@@ -1148,8 +1163,21 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
                 hints = (_framework.comment_batch_report(shipped, recent_comments)["hints"]
                          if surface == "comment" and attempt < attempts else [])
                 if not hints:
-                    _track(GATE_SHIPPED if shipped == candidate else GATE_STRIPPED, attempt)
-                    return shipped
+                    low = _authenticity_issues(shipped) if authentic else None
+                    if low is None:
+                        _track(GATE_SHIPPED if shipped == candidate else GATE_STRIPPED, attempt)
+                        return shipped
+                    auth_loops += 1
+                    log_info(f"Comment held by the authenticity loop (loop {auth_loops}/"
+                             f"{_authenticity_loop.MAX_LOOPS}): {'; '.join(low)}",
+                             user_id=user_id, action_type="comment")
+                    failures = low
+                    last["checks"] = ["authenticity"]
+                    if auth_loops > _authenticity_loop.MAX_LOOPS:
+                        break
+                    fix_directive = _authenticity_loop.fix_directive(low)
+                    lint_fallback[:] = []
+                    continue
                 log_debug(f"Comment batch lint asked for a different shape: {'; '.join(hints)}",
                           user_id=user_id, action_type="comment")
                 fix_directive = _framework.comment_retry_directive(hints)
@@ -2022,7 +2050,9 @@ def generate_nurture_dm(their_message: str, intent: str, profile: "LinkedInProfi
 
     def _draft(fix: str = "") -> "str | None":
         response = _call_llm(model=VOICE_TIER,
-                             messages=[{"role": "system", "content": system_prompt["content"] + fix},
+                             messages=[{"role": "system",
+                                        "content": system_prompt["content"] + fix
+                                        + _authenticity_loop.pre_text(user_id)},
                                        user_prompt],
                              temperature=temperature)
         content = response.choices[0].message.content

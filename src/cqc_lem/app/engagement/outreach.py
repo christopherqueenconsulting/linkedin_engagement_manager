@@ -78,7 +78,7 @@ from cqc_lem.app.engagement.invites import invite_to_connect
 from cqc_lem.app.my_celery import app as shared_task
 from cqc_lem.app.queue_once import QueueOnce
 from cqc_lem.app.task_outcome import TaskOutcome, lane_result
-from cqc_lem.utilities.ai import story_bank as _story_bank
+from cqc_lem.utilities.ai import authenticity_loop, story_bank as _story_bank
 from cqc_lem.utilities.ai.ai_helper import (
     ai_check_message_history,
     generate_ai_response,
@@ -201,6 +201,7 @@ from cqc_lem.utilities.db import (
     release_catchup_send_attempt,
     reset_unreadable_reads,
     seconds_since_last_dm_touch,
+    set_scheduled_dm_authenticity,
     stop_followup_unreadable,
     stop_followups_for_profile,
     update_catchup_touch_status,
@@ -284,6 +285,7 @@ from cqc_lem.utilities.linkedin.session import ProfileUnavailableError, get_curr
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text
 from cqc_lem.utilities.log_escalation import masked_recipient
 from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
+from cqc_lem.utilities.notifications import notify_authenticity_hold
 from cqc_lem.utilities.observability import (
     FEATURE_COMMENT,
     FEATURE_DM,
@@ -1458,6 +1460,21 @@ def _nurture_enabled() -> bool:
     return raw.strip().lower() not in ("0", "false", "no", "off")
 
 
+def _authenticity_check_dm(user_id: int, message: str) -> "authenticity_loop.LoopResult":
+    """Run the authenticity loop on a nurture draft (#2751); a no-op pass when the flag is off.
+
+    Regeneration re-refines the draft with the judge's issues, within the 300-char DM budget.
+    """
+    if not authenticity_loop.enabled(user_id):
+        return authenticity_loop.LoopResult(text=message, score=None, passed=True)
+    from cqc_lem.utilities.ai.ai_helper import _call_llm
+
+    def _redraft(directive: str) -> "str | None":
+        return get_ai_message_refinement(message, character_limit=300, extra_directive=directive)
+
+    return authenticity_loop.run_loop(_redraft, _call_llm, user_id, first=message)
+
+
 def _nurture_auto_approve(user_id: int, prefs: dict = None) -> bool:
     """Per-user `nurture_dm_mode` (issue #2624): `pre_review` by default — a drafted reply to a real
     prospect is exactly the thing a human should see before it sends. `auto_approve` files the draft
@@ -1572,10 +1589,13 @@ def _nurture_after_reply(user_id: int, followup: dict, their_message: str,
                         user_id=user_id, action_type="dm")
             return None
 
+        authenticity = _authenticity_check_dm(user_id, message)
+        message = authenticity.text or message
         due = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=nurture_delay_hours(intent))
         # A blocked draft is filed PENDING even under auto-approve: it waits for the operator's edit
-        # and is never sent on its own.
-        status = (ScheduledDmStatus.APPROVED if not blocked and _nurture_auto_approve(user_id, prefs)
+        # and is never sent on its own. So is one the authenticity loop could not lift to the floor.
+        status = (ScheduledDmStatus.APPROVED
+                  if not blocked and authenticity.passed and _nurture_auto_approve(user_id, prefs)
                   else ScheduledDmStatus.PENDING)
         if blocked:
             log_info(f"DM nurture: the draft for {first_name or profile_url} failed the content gate "
@@ -1589,6 +1609,10 @@ def _nurture_after_reply(user_id: int, followup: dict, their_message: str,
                         f"{masked_recipient(first_name, profile_url)} but the scheduled_dms insert "
                         f"failed", user_id=user_id, action_type="dm")
             return None
+        if authenticity.score is not None:
+            set_scheduled_dm_authenticity(dm_id, authenticity.score, authenticity.issues)
+        if not authenticity.passed:
+            notify_authenticity_hold(user_id, "DM", authenticity.score, authenticity.issues)
         log_info(f"DM nurture: drafted a '{intent}' next message for {first_name or profile_url} "
                  f"(step {step}, {status})", user_id=user_id, action_type="dm")
 

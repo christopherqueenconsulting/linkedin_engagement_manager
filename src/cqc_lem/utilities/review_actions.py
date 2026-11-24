@@ -49,6 +49,7 @@ EMPTY_MESSAGE = "empty_message"
 WRITE_FAILED = "write_failed"
 # An agent-created row (MCP W2) is approved one at a time, never swept up in a multi-item approve.
 APPROVE_ONE_AT_A_TIME = "agent_created_approve_individually"
+AUTHENTICITY_BELOW_FLOOR = "authenticity_below_floor"
 
 
 def _label_edited_approval(user_id: int, lane: str, item_id: int, final: Optional[str]) -> None:
@@ -64,6 +65,11 @@ def approve_scheduled_dm(user_id: int, item_id: int) -> Optional[str]:
         return NOT_FOUND
     from cqc_lem.app.engagement.outreach import scheduled_dm_is_stale
     dm = get_scheduled_dm(item_id)
+    from cqc_lem.utilities.ai import authenticity_loop
+    if authenticity_loop.enabled(user_id) and authenticity_loop.below_floor(
+            (dm or {}).get("authenticity_score")):
+        # A plain approve never clears a below-floor draft; only `PUT /dm` with a reason does.
+        return AUTHENTICITY_BELOW_FLOOR
     slot = datetime.now(timezone.utc) if dm and scheduled_dm_is_stale(dm.get("scheduled_time")) else None
     if not update_scheduled_dm(item_id, scheduled_time=slot, status=ScheduledDmStatus.APPROVED):
         return WRITE_FAILED
