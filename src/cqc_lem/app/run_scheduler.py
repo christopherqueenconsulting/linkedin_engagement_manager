@@ -2918,7 +2918,9 @@ def auto_weekly_youtube_token_check(self):
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})
 def auto_impact_report(self):
-    """Daily impact-report beat (issue #2643): email the owner the 14-days-after report for each
+    """Daily impact-report beat (issue #2643).
+
+    Emails the owner the 14-days-after report for each
     release that has aged in, plus the monthly baseline. Default OFF behind `impact-report-enabled`;
     GitHub only ever receives a one-line note with no metrics. Rollback: remove the beat entry.
     """

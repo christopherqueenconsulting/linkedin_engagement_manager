@@ -5,8 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from cqc_lem.utilities import impact_report as ir
-from cqc_lem.utilities import impact_report_job as job
+from cqc_lem.utilities import impact_report as ir, impact_report_job as job
 
 pytestmark = pytest.mark.unit
 
