@@ -13,6 +13,7 @@ import {
   recordMcpTokenRevoked,
   recordMcpTokenRotated,
 } from '../utils/analytics'
+import AgentActivityCard from './agents/AgentActivityCard'
 import ConnectCommands from './agents/ConnectCommands'
 import ConnectedAgentsCard from './agents/ConnectedAgentsCard'
 import McpCredentialCard from './agents/McpCredentialCard'
@@ -289,6 +290,7 @@ function AgentsContent({ readOnly }: { readOnly: boolean }) {
         <ConnectedAgentsCard tokens={info.data.tokens} busyId={rowBusy} onRotate={onRotate} onRevoke={onRevoke} />
       )}
       {rowStatus}
+      {info.data && info.data.tokens.length > 0 && <AgentActivityCard />}
     </div>
   )
 }
