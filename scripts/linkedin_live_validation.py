@@ -616,6 +616,10 @@ SURFACES = (
     {"key": "profile_experiences", "surface": "Profile experience rows (/details/experience/)",
      "code": "scrapper.parse_profile_experiences", "flag": "--profile-experiences",
      "arg": "<profile-url>", "sweep": True},
+    {"key": "profile_audit_fields",
+     "surface": "Own-profile audit fields (headline / About / Featured / banner / custom URL)",
+     "code": "scrapper.parse_profile_header(is_main_user=True)",
+     "flag": "--profile-audit-fields", "sweep": True},
     {"key": "connect_dialog",
      "surface": "Connect invite entry points (top-card Connect / More menu / custom-invite anchor)",
      "code": "engagement.invites._open_connect_invite_dialog", "flag": "--connect-dialog",
@@ -7406,6 +7410,193 @@ def probe_profile_experiences(driver, profile_url: str, max_entities: int = 6,
                   profile_experiences_verdict(reading))
 
 
+# ───────────────────────── own-profile audit fields (#2755, parser from #2631) ─────────────────────
+# The five fields `parse_profile_header(..., is_main_user=True)` reads for the profile audit. The
+# About / Featured / banner selectors shipped in #2745 ungrounded, and PROFILE_AUDIT_ENABLED stays
+# off until a live reading says they resolve — this probe is that reading.
+_PROFILE_AUDIT_FIELDS = ("headline", "about", "featured_count", "banner_state", "custom_url")
+_AUDIT_BANNER_CSS = '[class*="background-image"], [class*="cover-photo"]'
+_AUDIT_SNIPPET_LIMIT = 1200
+_AUDIT_ATTR_VALUE_LIMIT = 40
+
+
+def _audit_field_value(parsed: dict, field: str):
+    """The parsed value for `field`, or None when the parser read nothing (`unknown` included)."""
+    value = (parsed or {}).get(field)
+    return None if value is None or value == "" or value == "unknown" else value
+
+
+def _audit_deepest_text_match(source, wanted: str):
+    """The deepest element whose whole visible text is `wanted` (case-insensitive), or None."""
+    def matches(el) -> bool:
+        return el.get_text(" ", strip=True).lower() == wanted
+
+    node = next((el for el in source.find_all(True) if matches(el)), None)
+    while node is not None:
+        child = next((c for c in node.find_all(True, recursive=False) if matches(c)), None)
+        if child is None:
+            return node
+        node = child
+    return None
+
+
+def _audit_sanitised_snippet(node, limit: int = _AUDIT_SNIPPET_LIMIT) -> str:
+    """A short copy of `node`'s HTML that is safe to paste into an issue.
+
+    Keeps tags and the structural attributes a locator keys on (class / role / data-* / aria-*,
+    each value short); drops scripts, SVG, every URL and id, and truncates long text.
+    """
+    import copy
+
+    clone = copy.copy(node)
+    for tag in clone.find_all(["script", "style", "svg", "noscript"]):
+        tag.decompose()
+    for el in [clone] + clone.find_all(True):
+        el.attrs = {
+            name: value for name, value in (el.attrs or {}).items()
+            if (name in ("class", "role") or name.startswith("data-") or name.startswith("aria-"))
+            and len(" ".join(value) if isinstance(value, list) else str(value))
+            <= _AUDIT_ATTR_VALUE_LIMIT * (3 if name == "class" else 1)
+        }
+    for text in clone.find_all(string=True):
+        if len(text) > 80:
+            text.replace_with(text[:80] + "…")
+    return str(clone)[:limit]
+
+
+def _audit_dom_reading(source, field: str) -> dict:
+    """What the page renders around an unresolved field: the nearest section, its heading text and
+    a short sanitised HTML snippet — the input a locator-chain fix is written from.
+    """
+    anchor = None
+    heading = None
+    if field in ("about", "featured_count"):
+        heading = "About" if field == "about" else "Featured"
+        anchor = _audit_deepest_text_match(source, heading.lower())
+    elif field == "headline":
+        anchor = source.find("h1")
+        heading = anchor.get_text(" ", strip=True) if anchor is not None else None
+    elif field == "banner_state":
+        anchor = next(iter(source.select(_AUDIT_BANNER_CSS)), None)
+    if anchor is None:
+        main = source.find("main") or source
+        return {"section": None, "heading": heading,
+                "html": _audit_sanitised_snippet(main, 800)}
+    section = anchor.find_parent("section")
+    container = section if section is not None else (
+        anchor.parent.parent if anchor.parent is not None and anchor.parent.parent is not None
+        else anchor.parent or anchor)
+    section_heading = section.find(["h2", "h3"]) if section is not None else None
+    return {"section": container.name,
+            "heading": (section_heading.get_text(" ", strip=True) if section_heading is not None
+                        else heading),
+            "html": _audit_sanitised_snippet(container)}
+
+
+def _audit_page_shows(source, field: str, rendered: bool) -> bool:
+    """Whether the page itself renders `field`'s section, independent of the parser that missed it.
+
+    Without this an unresolved field cannot be told from a profile that simply has no such section.
+    `custom_url` is read off the URL, never the page, so the page can never show it.
+    """
+    if field == "custom_url" or not rendered:
+        return False
+    if field == "headline":
+        return True
+    if field == "banner_state":
+        return bool(source.select(_AUDIT_BANNER_CSS)) or any(
+            re.search(r"background|cover", img.get("alt") or "", re.I)
+            for img in source.find_all("img"))
+    return _audit_deepest_text_match(source, "about" if field == "about" else "featured") is not None
+
+
+def profile_audit_fields_state(reading: Optional[dict]) -> str:
+    """Grade one own-profile audit reading (#1013's three states).
+
+    `ok` — all five fields resolved. `drift` — the page renders the section for a field the parser
+    read as `unknown`. `unknown` — the page never rendered, or the misses have no evidence on the
+    page (a profile with no About section is not selector rot).
+    """
+    reading = dict(reading or {})
+    if not reading.get("rendered"):
+        return STATE_UNKNOWN
+    unresolved = reading.get("unresolved") or []
+    if not unresolved:
+        return STATE_OK
+    evidence = reading.get("page_shows") or {}
+    return STATE_DRIFT if any(evidence.get(f) for f in unresolved) else STATE_UNKNOWN
+
+
+def profile_audit_fields_verdict(reading: Optional[dict]) -> str:
+    reading = dict(reading or {})
+    if reading.get("refused"):
+        return reading["refused"]
+    if not reading.get("rendered"):
+        return ("the own profile did not render (auth wall / rate limit / not loaded) — nothing "
+                "is graded")
+    unresolved = reading.get("unresolved") or []
+    if not unresolved:
+        return "all five audit fields resolved — compare each value against the profile as rendered"
+    evidence = reading.get("page_shows") or {}
+    seen = [f for f in unresolved if evidence.get(f)]
+    if seen:
+        return (f"drift: the page renders the section but the parser read unknown for "
+                f"{', '.join(seen)} — re-ground each as a locator chain from `dom_readings`")
+    return (f"{', '.join(unresolved)} read unknown and the page shows no matching section — the "
+            "profile may simply lack it; `dom_readings` holds the raw reading")
+
+
+def probe_profile_audit_fields(driver, user_id: int, profile_url: str = "",
+                               sleep: Callable[[float], None] = time.sleep) -> dict:
+    """#2755: run the SHIPPED `parse_profile_header(..., is_main_user=True)` against the account's
+    OWN profile and report each audit field's value or `unknown`, with the DOM around every unknown.
+
+    Read-only: it navigates and parses — no click, no typing. It only ever opens the account's own
+    profile: a `profile_url` that is not that profile is refused before anything is navigated, since
+    the audit fields are never read for a third party (#2631).
+    """
+    from bs4 import BeautifulSoup
+
+    from cqc_lem.utilities.linkedin.scrapper import ProfileUnavailableError, parse_profile_header
+
+    def refused(why: str, own: str = "") -> dict:
+        return graded({"own_profile_url": own, "profile_url": profile_url, "refused": why,
+                       "rendered": False, "fields": {}, "unresolved": []},
+                      STATE_UNKNOWN, why)
+
+    own = (_sweep_own_profile(driver, user_id) or "").rstrip("/")
+    if not own:
+        return refused("the user's own profile URL did not resolve, so nothing was navigated and "
+                       "nothing is graded")
+    if profile_url and _own_slug(profile_url) != _own_slug(own):
+        return refused("refused: the audit fields are read for the account's OWN profile only, and "
+                       "the URL given is a different profile — nothing was navigated", own)
+
+    driver.get(own)
+    sleep(6)
+    reading = {"own_profile_url": own, "profile_url": own,
+               "url": getattr(driver, "current_url", own), "page_text": page_text_sample(driver)}
+    source = BeautifulSoup(driver.page_source, "html.parser")
+    try:
+        parsed = parse_profile_header(source, own, is_main_user=True)
+    except ProfileUnavailableError as e:
+        parsed, reading["parse_error"] = {}, str(e)[:200]
+    except Exception as e:
+        parsed, reading["parse_error"] = {}, f"{type(e).__name__}: {e}"[:200]
+
+    rendered = bool(parsed.get("full_name"))
+    values = {f: _audit_field_value(parsed, f) for f in _PROFILE_AUDIT_FIELDS}
+    unresolved = [f for f, v in values.items() if v is None]
+    reading.update({
+        "rendered": rendered,
+        "fields": {f: ("unknown" if v is None else v) for f, v in values.items()},
+        "unresolved": unresolved,
+        "page_shows": {f: _audit_page_shows(source, f, rendered) for f in unresolved},
+        "dom_readings": {f: _audit_dom_reading(source, f) for f in unresolved} if rendered else {},
+    })
+    return graded(reading, profile_audit_fields_state(reading), profile_audit_fields_verdict(reading))
+
+
 def probe_message_thread(driver, profile_url: str, person_name: str = "", self_name: str = "",
                          sleep: Callable[[float], None] = time.sleep) -> dict:
     """#731: walk the message-thread resolution ladder against a REAL profile and report which route
@@ -7740,6 +7931,7 @@ def run_sweep(driver, user_id: int, runners: Optional[dict] = None,
             driver, profile_url or _sweep_own_profile(driver, user_id)),
         "profile_experiences": lambda: probe_profile_experiences(
             driver, profile_url or _sweep_own_profile(driver, user_id)),
+        "profile_audit_fields": lambda: probe_profile_audit_fields(driver, user_id, profile_url),
         "catchup_cards": lambda: probe_catchup_cards(driver),
         "group_membership": lambda: probe_group_membership(driver, user_id),
         "group_feed_composer": lambda: probe_group_feed_composer(driver, user_id),
@@ -7906,6 +8098,12 @@ def build_parser() -> "argparse.ArgumentParser":
                              "off /details/experience/, beside the raw lines it read (#970), and "
                              "how many entries lost their company_name (#1096). "
                              "Read-only: it navigates and parses, nothing else.")
+    parser.add_argument("--profile-audit-fields", action="store_true",
+                        help="run the shipped parse_profile_header(is_main_user=True) against the "
+                             "account's OWN profile and report headline / about / featured_count / "
+                             "banner_state / custom_url, each a value or unknown, with the DOM "
+                             "around every unknown (#2755). Own profile only. Read-only: it "
+                             "navigates and parses, nothing else.")
     parser.add_argument("--feed-sort", action="store_true",
                         help="report whether the home feed's 'Sort by -> Recent' control resolves "
                              "and whether the flip sticks (#817)")
@@ -8011,6 +8209,7 @@ def main(argv: Optional[list] = None) -> int:
             or args.roster_follow or args.roster_connect or args.appreciation_sources
             or args.sent_invites or args.profile_views or args.connect_dialog
             or args.profile_scrape or args.profile_experiences or args.catchup_cards
+            or args.profile_audit_fields
             or args.group_composer or args.group_membership is not None
             or args.occasion_composer is not None
             or args.group_feed_composer is not None
@@ -8022,7 +8221,7 @@ def main(argv: Optional[list] = None) -> int:
                      "--comment-outcome-url, --commenter-read, "
                      "--dm-thread-url, --article-editor-url, --feed-sort, "
                      "--profile-views, --profile-scrape, --profile-experiences, "
-                     "--connect-dialog, --catchup-cards, "
+                     "--profile-audit-fields, --connect-dialog, --catchup-cards, "
                      "--group-composer, --group-membership, --group-feed-composer, "
                      "--company-invite, --reaction-probe, --home-feed-composer, "
                      "--roster-follow, "
@@ -8129,6 +8328,8 @@ def main(argv: Optional[list] = None) -> int:
         if args.profile_experiences:
             report["profile_experiences"] = probe_profile_experiences(driver,
                                                                       args.profile_experiences)
+        if args.profile_audit_fields:
+            report["profile_audit_fields"] = probe_profile_audit_fields(driver, args.user_id)
         if args.catchup_cards:
             report["catchup_cards"] = probe_catchup_cards(driver)
         if args.group_composer:
