@@ -1586,6 +1586,21 @@ def get_engager_candidates(user_id: int, days: int = 30) -> list:
     except mysql.connector.Error as err:
         log_error("Could not read engager candidates", exc=err, user_id=user_id)
         return []
+def get_scheduled_post_times(user_id: int, start: datetime, end: datetime) -> list:
+    """UTC `scheduled_time`s of the user's live posts between `start` and `end` (window B input).
+
+    Fails safe to an empty list: window B then simply does not open, and the fixed windows decide.
+    """
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT scheduled_time FROM posts WHERE user_id=%s AND scheduled_time >= %s "
+                "AND scheduled_time < %s AND status IN ('approved','scheduled')",
+                (user_id, start.replace(tzinfo=None), end.replace(tzinfo=None)))
+            return [row[0] for row in cursor.fetchall() if row and row[0]]
+    except mysql.connector.Error as err:
+        log_error("Could not read scheduled post times", exc=err, user_id=user_id)
+        return []
 def has_scheduled_post_today(user_id: int) -> bool:
     """True if the user has a post going out today (UTC) — those days are already covered by the
     pre-post commenting trigger, so the standalone daily engagement run should skip them. Fails

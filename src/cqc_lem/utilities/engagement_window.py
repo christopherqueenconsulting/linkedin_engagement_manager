@@ -20,6 +20,7 @@ failed dispatch.
 """
 
 import hashlib
+import math
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -458,28 +459,33 @@ def _zone(tz_name: Optional[str]):
         return timezone.utc
 
 
-# --- Session window gate (issue #2628, Phase 1: off | shadow) ---------------------------------
+# --- Session window gate (issue #2628: off | shadow | enforce) --------------------------------
 #
 # One answer to "may a BACKGROUND browser session open for this user right now": weekday daytime in
-# the user's own timezone, at most SESSION_DAILY_TARGET sessions a local day. Phase 1 only
-# OBSERVES: `shadow` counts and logs what enforcement would defer and never refuses; `enforce` is a
-# later phase and is treated as `shadow` until it lands.
+# the user's own timezone, a bounded number of sessions a local day. `shadow` counts and logs what
+# enforcement would defer and never refuses. `enforce` raises `SessionDeferred` at the session seam
+# (`selenium_util.get_docker_driver`); the Celery task base re-queues the task with an eta at the
+# next window start, so work is deferred, never dropped.
 
 SESSION_WINDOW_MODE_ENV = "SESSION_WINDOW_MODE"
 SESSION_WINDOW_OFF = "off"
 SESSION_WINDOW_SHADOW = "shadow"
-SESSION_DAILY_TARGET = 3  # hard ceiling of 4 arrives with enforcement
+SESSION_WINDOW_ENFORCE = "enforce"
+SESSION_DAILY_TARGET = 3
+SESSION_DAILY_CEILING = 4
 FALLBACK_TIMEZONE = "America/New_York"  # the users.timezone default — NOT UTC
 
-# Local-clock windows in minutes since midnight: A 08:00-08:45, C 12:30-13:15 (B, the post-tied
-# window, needs a post time and arrives with enforcement).
+# Local-clock block starts in minutes since midnight. A and C are the default windows; the third
+# and fourth blocks only open when the day's approved comment volume needs them.
+SESSION_BLOCK_STARTS = (("A", 8 * 60), ("C", 12 * 60 + 30), ("D", 16 * 60), ("E", 10 * 60))
 SESSION_WINDOWS = {"A": (8 * 60, 8 * 60 + 45), "C": (12 * 60 + 30, 13 * 60 + 15)}
+SESSION_BLOCK_MIN_MINUTES = 45
+SESSION_BLOCK_MAX_MINUTES = 60
+SECONDS_PER_COMMENT = 88  # measured: one approved comment typed per ~88 s
+PRE_POST_WINDOW_LEAD_MINUTES = 15  # window B: 15 min before a scheduled post ...
+PRE_POST_WINDOW_TAIL_MINUTES = 60  # ... to 60 min after it
 SESSION_BAN_START_HOUR = 19
 SESSION_BAN_END_HOUR = 7
-
-# Sessions the USER starts are exempt (owner decision): profile refresh, a Publish click, login.
-# Matched case-insensitively as a substring of the Grid session name.
-USER_STARTED_SESSION_MARKERS = ("profile refresh", "refresh profile", "publish now", "login")
 
 SESSION_REASON_EXEMPT = "user_started"
 SESSION_REASON_WEEKEND = "weekend"
@@ -503,16 +509,28 @@ class SessionWindowDecision:
     day: str  # the user's local date, the counter's key
 
 
+class SessionDeferred(BaseException):
+    """Raised at the session seam in enforce mode: this background session may not open now.
+
+    Carries the UTC instant of the next window start; the Celery task base re-queues the task
+    there instead of failing it. A `BaseException` on purpose: lanes wrap session opening in
+    `except Exception` and would log a designed deferral as a failure. Only the task base and the
+    content-generation profile fallbacks catch it.
+    """
+
+    def __init__(self, user_id: int, lane: str, reason: str, eta: datetime) -> None:
+        """Record which session was deferred, why, and the UTC instant it should re-run."""
+        super().__init__(f"Session '{lane}' deferred ({reason}) until {eta.isoformat()}")
+        self.user_id = user_id
+        self.lane = lane
+        self.reason = reason
+        self.eta = eta
+
+
 def session_window_mode() -> str:
-    """`off` (default) or `shadow`. Anything unrecognised is `off`; `enforce` is not built yet."""
+    """`off` (default), `shadow` or `enforce`. Anything unrecognised is `off`."""
     raw = (os.environ.get(SESSION_WINDOW_MODE_ENV) or SESSION_WINDOW_OFF).strip().lower()
-    return SESSION_WINDOW_SHADOW if raw in (SESSION_WINDOW_SHADOW, "enforce") else SESSION_WINDOW_OFF
-
-
-def is_user_started_session(lane: str) -> bool:
-    """True for a session the user triggered themselves (exempt from the window)."""
-    name = (lane or "").lower()
-    return any(marker in name for marker in USER_STARTED_SESSION_MARKERS)
+    return raw if raw in (SESSION_WINDOW_SHADOW, SESSION_WINDOW_ENFORCE) else SESSION_WINDOW_OFF
 
 
 def resolve_session_zone(tz_name: Optional[str]) -> ZoneInfo:
@@ -527,34 +545,116 @@ def resolve_session_zone(tz_name: Optional[str]) -> ZoneInfo:
     return ZoneInfo(FALLBACK_TIMEZONE)
 
 
+def session_blocks(approved_comments: int = 0) -> dict:
+    """Window name -> (start, end) minutes since local midnight for a day with this comment volume.
+
+    With no approved comments this is exactly A and C. Otherwise the typing time (~88 s a comment)
+    is spread over 2 to 4 blocks of 45 to 60 minutes: 100 comments is about 3 x 50 min.
+    """
+    if approved_comments <= 0:
+        return dict(SESSION_WINDOWS)
+    total_minutes = approved_comments * SECONDS_PER_COMMENT / 60
+    count = min(SESSION_DAILY_CEILING, max(2, math.ceil(total_minutes / SESSION_BLOCK_MAX_MINUTES)))
+    length = min(SESSION_BLOCK_MAX_MINUTES,
+                 max(SESSION_BLOCK_MIN_MINUTES, math.ceil(total_minutes / count)))
+    return {name: (start, start + length) for name, start in SESSION_BLOCK_STARTS[:count]}
+
+
+def _session_cap(blocks: dict) -> int:
+    return min(SESSION_DAILY_CEILING, max(SESSION_DAILY_TARGET, len(blocks)))
+
+
+def _post_windows(local_day, post_times: Tuple[datetime, ...], zone: ZoneInfo) -> list:
+    """Window B ranges (minutes since local midnight) for the posts scheduled on `local_day`."""
+    ranges = []
+    for post_time in post_times:
+        local_post = _as_utc(post_time).astimezone(zone)
+        if local_post.date() != local_day:
+            continue
+        minute = local_post.hour * 60 + local_post.minute
+        ranges.append((minute - PRE_POST_WINDOW_LEAD_MINUTES, minute + PRE_POST_WINDOW_TAIL_MINUTES))
+    return ranges
+
+
 def session_window_decision(user_id: int, lane: str, now: Optional[datetime] = None,
-                            tz: Optional[str] = None,
-                            sessions_today: int = 0) -> SessionWindowDecision:
+                            tz: Optional[str] = None, sessions_today: int = 0,
+                            user_started: bool = False, approved_comments: int = 0,
+                            post_times: Tuple[datetime, ...] = ()) -> SessionWindowDecision:
     """Pure decision: may a background `lane` session open for `user_id` at `now`?
 
     `sessions_today` is how many sessions already opened on the user's local day. Dispatch is
     decided on the user's wall clock (zoneinfo), so DST shifts move the UTC instant, never the hour.
+    `user_started` is the explicit exemption flag its entry point passes; the lane name is never
+    matched. Window B (`post_times`, UTC) opens 15 min before to 60 min after a scheduled post.
     """
-    local_now = _as_utc(now if now is not None else datetime.now(timezone.utc)).astimezone(
-        resolve_session_zone(tz))
+    zone = resolve_session_zone(tz)
+    local_now = _as_utc(now if now is not None else datetime.now(timezone.utc)).astimezone(zone)
     day = local_now.date().isoformat()
 
     def decide(allowed: bool, reason: str, window: Optional[str] = None) -> SessionWindowDecision:
         return SessionWindowDecision(allowed, reason, window, local_now, day)
 
-    if is_user_started_session(lane):
+    if user_started:
         return decide(True, SESSION_REASON_EXEMPT)
     if local_now.weekday() >= 5:
         return decide(False, SESSION_REASON_WEEKEND)
     if local_now.hour >= SESSION_BAN_START_HOUR or local_now.hour < SESSION_BAN_END_HOUR:
         return decide(False, SESSION_REASON_NIGHT)
     minute = local_now.hour * 60 + local_now.minute
-    window = next((n for n, (start, end) in SESSION_WINDOWS.items() if start <= minute < end), None)
+    blocks = session_blocks(approved_comments)
+    window = next((n for n, (start, end) in blocks.items() if start <= minute < end), None)
+    if window is None and any(start <= minute < end for start, end in
+                              _post_windows(local_now.date(), post_times, zone)):
+        window = "B"
     if window is None:
         return decide(False, SESSION_REASON_OUTSIDE_WINDOW)
-    if sessions_today >= SESSION_DAILY_TARGET:
+    if sessions_today >= _session_cap(blocks):
         return decide(False, SESSION_REASON_OVER_TARGET, window)
     return decide(True, "in_window", window)
+
+
+def _local_minutes_to_utc(day, minutes: int, zone: ZoneInfo) -> datetime:
+    local = datetime(day.year, day.month, day.day, minutes // 60, minutes % 60, tzinfo=zone)
+    return local.astimezone(timezone.utc)
+
+
+def next_window_start(now: datetime, tz: Optional[str] = None, approved_comments: int = 0,
+                      sessions_today: int = 0) -> datetime:
+    """The UTC instant a deferred session should re-run: the next block start on a weekday.
+
+    A day already at its session cap is skipped, so a deferral never lands in a window that would
+    refuse it; otherwise the next weekday's earliest block (window A).
+    """
+    zone = resolve_session_zone(tz)
+    local_now = _as_utc(now).astimezone(zone)
+    blocks = session_blocks(approved_comments)
+    starts = sorted(start for start, _ in blocks.values())
+    day = local_now.date()
+    if local_now.weekday() < 5 and sessions_today < _session_cap(blocks):
+        minute = local_now.hour * 60 + local_now.minute
+        later = [start for start in starts if start > minute]
+        if later:
+            return _local_minutes_to_utc(day, later[0], zone)
+    day += timedelta(days=1)
+    while day.weekday() >= 5:
+        day += timedelta(days=1)
+    return _local_minutes_to_utc(day, starts[0], zone)
+
+
+def _session_key(user_id: int, day: str) -> str:
+    return f"{_SESSION_COUNT_PREFIX}{int(user_id)}:{day}"
+
+
+def peek_session_count(user_id: int, day: str) -> Optional[int]:
+    """Sessions already counted on local `day`, or None when Redis can't answer (fails OPEN)."""
+    client = shared_redis_client()
+    if client is None:
+        return None
+    try:
+        return int(client.get(_session_key(user_id, day)) or 0)
+    except Exception as e:
+        log_warning("Could not read the session count for the window gate", exc=e, user_id=user_id)
+        return None
 
 
 def count_session(user_id: int, day: str) -> Optional[int]:
@@ -566,7 +666,7 @@ def count_session(user_id: int, day: str) -> Optional[int]:
     client = shared_redis_client()
     if client is None:
         return None
-    key = f"{_SESSION_COUNT_PREFIX}{int(user_id)}:{day}"
+    key = _session_key(user_id, day)
     try:
         count = int(client.incr(key))
         if count == 1:
@@ -577,30 +677,59 @@ def count_session(user_id: int, day: str) -> Optional[int]:
         return None
 
 
-def observe_session_window(user_id: Optional[int], lane: str,
-                           now: Optional[datetime] = None) -> Optional[SessionWindowDecision]:
-    """Shadow hook at the one browser-session seam, `selenium_util.get_docker_driver`.
+def observe_session_window(user_id: Optional[int], lane: str, now: Optional[datetime] = None,
+                           user_started: bool = False) -> Optional[SessionWindowDecision]:
+    """The hook at the one browser-session seam, `selenium_util.get_docker_driver`.
 
-    Every `get_driver_wait_pair` lane reaches that seam. Counts the session and logs/emits what
-    enforcement WOULD defer. Never raises and never refuses; `off` returns None untouched.
+    Every `get_driver_wait_pair` lane reaches that seam. `shadow` counts the session and logs/emits
+    what enforcement WOULD defer; it never refuses. `enforce` raises `SessionDeferred` for a
+    session outside the window; a fault reading state fails OPEN. `off` returns None untouched.
+
+    Raises:
+        SessionDeferred: In enforce mode, when a background session may not open now.
     """
-    if user_id is None or session_window_mode() == SESSION_WINDOW_OFF:
+    mode = session_window_mode()
+    if user_id is None or mode == SESSION_WINDOW_OFF:
         return None
     try:
-        from cqc_lem.utilities.db import get_user_timezone
+        from cqc_lem.utilities.db import (
+            get_approved_comment_candidates,
+            get_scheduled_post_times,
+            get_user_timezone,
+        )
         tz = get_user_timezone(user_id)
-        local = _as_utc(now if now is not None else datetime.now(timezone.utc)).astimezone(
-            resolve_session_zone(tz))
-        prior = 0
-        if not is_user_started_session(lane):
-            counted = count_session(user_id, local.date().isoformat())
-            prior = (counted - 1) if counted else 0
-        decision = session_window_decision(user_id, lane, now=now, tz=tz, sessions_today=prior)
-        if not decision.allowed:
+        current = _as_utc(now if now is not None else datetime.now(timezone.utc))
+        day = current.astimezone(resolve_session_zone(tz)).date().isoformat()
+        enforce = mode == SESSION_WINDOW_ENFORCE
+        approved, post_times, prior = 0, (), 0
+        if not user_started:
+            if enforce:
+                approved = len(get_approved_comment_candidates(user_id) or [])
+                post_times = tuple(get_scheduled_post_times(
+                    user_id, current - timedelta(days=1), current + timedelta(days=2)))
+                prior = peek_session_count(user_id, day) or 0
+            else:
+                counted = count_session(user_id, day)
+                prior = (counted - 1) if counted else 0
+        decision = session_window_decision(user_id, lane, now=current, tz=tz, sessions_today=prior,
+                                           user_started=user_started, approved_comments=approved,
+                                           post_times=post_times)
+        if decision.allowed:
+            if enforce and not user_started:
+                count_session(user_id, day)
+        elif enforce:
+            eta = next_window_start(current, tz, approved, prior)
+            log_info(f"Session window enforce: deferring '{lane}' ({decision.reason})",
+                     user_id=user_id)
+            track_session_window_shadow(user_id, decision.reason, lane, "deferred")
+            raise SessionDeferred(user_id, lane, decision.reason, eta)
+        else:
             log_info(f"Session window shadow: would defer '{lane}' ({decision.reason})",
                      user_id=user_id)
             track_session_window_shadow(user_id, decision.reason, lane, decision.window or "none")
         return decision
-    except Exception as e:  # observation must never cost a session
-        log_warning("Session window shadow check failed", exc=e, user_id=user_id)
+    except SessionDeferred:
+        raise
+    except Exception as e:  # a fault reading state must never cost a session
+        log_warning("Session window check failed", exc=e, user_id=user_id)
         return None

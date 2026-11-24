@@ -380,7 +380,7 @@
     "version": 1
   },
   "post.carousel": {
-    "changed_in": "issue #2367",
+    "changed_in": null,
     "content_hash": null,
     "history": [
       {
@@ -392,10 +392,15 @@
         "hash": "sha256:cdfae460131c8646143c9d7216f4bbca6e967e21033dee3f50990cc91ad8ff82",
         "retired": "2026-10-11",
         "version": 2
+      },
+      {
+        "hash": "sha256:3c47d57e29a33227f0ecfd08713087320c63ae0e197a5040861970f2c57c5021",
+        "retired": "2026-11-24",
+        "version": 3
       }
     ],
-    "source_hash": "sha256:3c47d57e29a33227f0ecfd08713087320c63ae0e197a5040861970f2c57c5021",
-    "version": 3
+    "source_hash": "sha256:38287f94880e57d2d04408ad1292a2c32b4338ede30a741f4eb6c35435fd3a59",
+    "version": 4
   },
   "post.engagement_prompt": {
     "changed_in": null,

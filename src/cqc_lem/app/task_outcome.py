@@ -23,6 +23,7 @@ from typing import Any, Optional
 from celery import Task
 
 from cqc_lem.utilities.ai_spend_cap import DailyAICapReached
+from cqc_lem.utilities.engagement_window import SessionDeferred
 from cqc_lem.utilities.linkedin.rate_limit import (
     begin_egress_task_scope,
     egress_unreachable_in_task,
@@ -101,11 +102,29 @@ class DailyCapAwareTask(Task):
                           task_name=getattr(self, "name", None))
                 return lane_result(TaskOutcome.NO_OP,
                                    f"Paused by the free-trial daily AI cap until {exc.resets_at.isoformat()}")
+            except SessionDeferred as exc:
+                return self._requeue_deferred(exc, args, kwargs)
             if token is not None and egress_unreachable_in_task():
                 return egress_failed_result(result)
             return result
         finally:
             end_egress_task_scope(token)
+
+    def _requeue_deferred(self, exc: SessionDeferred, args: Any, kwargs: Any) -> str:
+        """Re-run this task at the next session window, so an out-of-window run is deferred, never dropped (#2628).
+
+        If the re-queue itself fails the original error is raised: a lost deferral must not read as
+        a success.
+        """
+        try:
+            # Celery's own apply_async, NOT self.apply_async: a QueueOnce task still holds its dedup
+            # lock while running, and a graceful rejection returns quietly, which would drop the run.
+            Task.apply_async(self, args=args, kwargs=kwargs, eta=exc.eta)
+        except Exception as requeue_error:
+            raise exc from requeue_error
+        log_debug("Task deferred to the next session window", user_id=exc.user_id,
+                  task_name=getattr(self, "name", None))
+        return lane_result(TaskOutcome.NO_OP, f"Deferred to the next session window: {exc.eta.isoformat()}")
 
 
 EGRESS_FAILED_PREFIX = "Egress unreachable"

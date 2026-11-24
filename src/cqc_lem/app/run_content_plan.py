@@ -222,6 +222,7 @@ from cqc_lem.utilities.db import (
     update_post_generation_record,
 )
 from cqc_lem.utilities.engagement_mode import browser_automation_allowed
+from cqc_lem.utilities.engagement_window import SessionDeferred
 from cqc_lem.utilities.env_constants import (
     AI_DISCLOSURE_ENABLED,
     AI_DISCLOSURE_TEXT,
@@ -4276,14 +4277,21 @@ def _resolve_user_profile(user_id: int) -> LinkedInProfile:
     # profile below, which is what a failed live scrape falls back to anyway.
     if browser_automation_allowed(user_id):
         user_email, user_password = get_user_password_pair_by_id(user_id)
-        driver, wait = get_driver_wait_pair(session_name='Create Text Post', user_id=user_id)
         try:
-            user_profile = get_my_profile(driver, wait, user_email, user_password, user_id=user_id)
-        except Exception as e:
-            log_info(f"Error getting user profile: {e}")
-            user_profile = None
-        finally:
-            quit_gracefully(driver)
+            driver, wait = get_driver_wait_pair(session_name='Create Text Post', user_id=user_id)
+        except SessionDeferred as deferred:
+            # Outside the session window (#2628): write from the cached profile below.
+            log_debug(f"Live profile scrape deferred ({deferred.reason}) — using cached profile",
+                      user_id=user_id)
+            driver = None
+        if driver is not None:
+            try:
+                user_profile = get_my_profile(driver, wait, user_email, user_password, user_id=user_id)
+            except Exception as e:
+                log_info(f"Error getting user profile: {e}")
+                user_profile = None
+            finally:
+                quit_gracefully(driver)
     else:
         log_debug("Live profile scrape skipped — suggest-only engagement mode", user_id=user_id)
 
