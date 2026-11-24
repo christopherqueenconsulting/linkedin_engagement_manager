@@ -568,6 +568,7 @@ _NO_LINKEDIN_ACTION = {
     "auto_sync_brand_account": "database config for the brand account",
     "auto_notify_missing_linkedin_session": "email to the account owner",
     "auto_refresh_linkedin_tokens": "OAuth token refresh: credential plumbing, not a content action",
+    "auto_watch_member_analytics_tokens": "email to the account owner about an expiring analytics token",
     "auto_onboarding_nudges": "email to the account owner",
     "auto_survey_prompts": "analytics prompts",
     "auto_backfill_missing_assets": "media generation",

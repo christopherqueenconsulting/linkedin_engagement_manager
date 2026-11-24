@@ -12,7 +12,7 @@ from urllib.parse import quote
 import requests
 
 from cqc_lem.utilities.demo_mode import DemoModeError, guard_linkedin
-from cqc_lem.utilities.logger import log_warning
+from cqc_lem.utilities.logger import log_info, log_warning
 
 API_URL = "https://api.linkedin.com/rest/memberCreatorPostAnalytics"
 _POST_URN_RE = re.compile(r"urn:li:(share|ugcPost):[0-9]+")
@@ -151,6 +151,18 @@ def fetch_member_post_analytics(post_url: str, access_token: str, version: str,
     if len(counts) != len(_METRICS):
         return counts, "partial_response"
     return counts, None
+
+
+def log_member_post_analytics_summary(user_id: int, posts_read: int, posts_captured: int,
+                                      metrics_read: int, failures: int) -> None:
+    """One INFO line per CMA post-stats sweep, so a working API read leaves evidence.
+
+    `calls_max` is the ceiling of GETs spent (one per metric per post); a failure stops the sweep
+    early, so the true count can be lower. No token or response content is ever passed in.
+    """
+    log_info("Member post analytics API sweep", user_id=user_id, posts_read=posts_read,
+             posts_captured=posts_captured, metrics_read=metrics_read, failures=failures,
+             calls_max=posts_read * len(_METRICS), task_name="auto_scrape_post_stats")
 
 
 def log_member_post_analytics_failure(reason: str, user_id: int, post_id: int) -> None:

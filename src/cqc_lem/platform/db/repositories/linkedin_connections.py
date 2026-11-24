@@ -13,8 +13,12 @@ _ACCESS_FIELD = "linkedin_member_analytics_tokens.access_token"
 
 
 def upsert_member_analytics_token(user_id: int, linked_sub_id: str, access_token: str,
-                                  access_token_expires_in: Optional[int]) -> bool:
-    """Store the Development-app token encrypted and bound to this user and column."""
+                                  access_token_expires_in: Optional[int],
+                                  granted_scope: Optional[str] = None) -> bool:
+    """Store the Development-app token encrypted and bound to this user and column.
+
+    `granted_scope` is the scope string LinkedIn granted, kept so callers can check scopes later.
+    """
     if not encryption_enabled():
         log_error("Refusing member analytics token storage without LEM_SECRET_KEY", user_id=user_id)
         return False
@@ -24,16 +28,17 @@ def upsert_member_analytics_token(user_id: int, linked_sub_id: str, access_token
             cursor.execute(
                 """INSERT INTO linkedin_member_analytics_tokens
                        (user_id, linked_sub_id, access_token, access_token_expires_in,
-                        access_token_created_at)
-                   VALUES (%s, %s, %s, %s, %s)
+                        access_token_created_at, granted_scope)
+                   VALUES (%s, %s, %s, %s, %s, %s)
                    ON DUPLICATE KEY UPDATE
                        linked_sub_id = VALUES(linked_sub_id),
                        access_token = VALUES(access_token),
                        access_token_expires_in = VALUES(access_token_expires_in),
-                       access_token_created_at = VALUES(access_token_created_at)""",
+                       access_token_created_at = VALUES(access_token_created_at),
+                       granted_scope = VALUES(granted_scope)""",
                 (user_id, linked_sub_id,
                  encrypt_secret(access_token, user_id, _ACCESS_FIELD),
-                 access_token_expires_in, now),
+                 access_token_expires_in, now, granted_scope),
             )
             return cursor.rowcount > 0
     except mysql.connector.Error as err:
@@ -48,7 +53,7 @@ def get_member_analytics_token_info(user_id: int) -> Optional[dict]:
         with db_cursor(dictionary=True) as cursor:
             cursor.execute(
                 """SELECT linked_sub_id, access_token, access_token_expires_in,
-                          access_token_created_at
+                          access_token_created_at, granted_scope
                    FROM linkedin_member_analytics_tokens WHERE user_id = %s""",
                 (user_id,),
             )

@@ -2317,6 +2317,42 @@ def auto_refresh_linkedin_tokens():
 
 
 @shared_task.task
+def auto_watch_member_analytics_tokens():
+    """Email the owner as a CMA analytics token nears expiry.
+
+    Daily. The token has no refresh token, so the email goes out inside 30 days and again inside 7
+    days. An unreadable expiry is unknown and sends nothing.
+    """
+    from cqc_lem.utilities.env_constants import LI_MEMBER_POST_ANALYTICS_USER_IDS
+    from cqc_lem.utilities.linkedin.member_post_analytics import (
+        member_post_analytics_connection_available_for_user,
+    )
+    from cqc_lem.utilities.linkedin.token_refresh import resolve_member_analytics_token_status
+    from cqc_lem.utilities.notifications import notify_member_analytics_token_expiring
+
+    notified = 0
+    checked = 0
+    for user_id in sorted(LI_MEMBER_POST_ANALYTICS_USER_IDS):
+        if not member_post_analytics_connection_available_for_user(user_id):
+            continue
+        try:
+            status = resolve_member_analytics_token_status(user_id)
+            if not status["connected"]:
+                continue
+            checked += 1
+            if status["warning_tier"] is not None and notify_member_analytics_token_expiring(
+                    user_id, status["days_remaining"], status["token_expiry_date"],
+                    status["warning_tier"]):
+                notified += 1
+        except Exception as e:
+            log_warning("Failed to check analytics token expiry", exc=e, user_id=user_id,
+                        task_name="auto_watch_member_analytics_tokens")
+    log_info(f"Analytics tokens: checked {checked}, emailed {notified}",
+             task_name="auto_watch_member_analytics_tokens")
+    return f"Checked {checked} analytics token(s), emailed {notified}"
+
+
+@shared_task.task
 def auto_onboarding_nudges():
     """Daily: advance every not-yet-activated user's checklist (persisting steps + emitting the
     activation funnel to PostHog) and email the ONE next-best nudge to those who stalled (issue

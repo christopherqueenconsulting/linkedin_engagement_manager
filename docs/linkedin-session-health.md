@@ -83,6 +83,14 @@ LinkedIn caps authorization at **60 days**. The daily beat `refresh-linkedin-tok
 the token's life) is the only way a token outlives that cap. It runs BEFORE the 09:00 missing-session
 pass, so a token renewed at 08:30 never produces a reconnect email half an hour later.
 
+**CMA analytics token (#2698).** The separate `linkedin_member_analytics_tokens` token has no refresh
+token, so the daily `watch-member-analytics-tokens` beat (`auto_watch_member_analytics_tokens`, 08:35
+UTC) emails the owner inside 30 days and again inside 7 days, once per tier per expiry date and at most
+once a day. `resolve_member_analytics_token_status` reports an unreadable expiry as unknown, never
+expired. The connect flow also requests `r_member_profileAnalytics` and `r_1st_connections_size` and
+stores the granted scope string in `granted_scope`; nothing reads those scopes yet (pending an owner
+and legal decision on LinkedIn Marketing API Terms).
+
 ### The returned document
 
 `connected`, `token_expiry_date`, `days_remaining`, `is_expiring_soon`, `is_expired`,

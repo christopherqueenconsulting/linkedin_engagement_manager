@@ -128,6 +128,7 @@ from cqc_lem.utilities.db import (
     own_comment_count_or_none,
     record_comment_followup,
     record_comment_outcome,
+    record_connection_accepted,
     record_follower_stat,
     record_lead_magnet_sent,
     record_post_stats,
@@ -136,7 +137,6 @@ from cqc_lem.utilities.db import (
     update_db_post_content,
     update_db_post_first_comment_link,
     update_db_post_status,
-    record_connection_accepted,
     upsert_engager,
 )
 from cqc_lem.utilities.demo_mode import DemoModeError
@@ -199,6 +199,7 @@ from cqc_lem.utilities.linkedin.member_post_analytics import (
     fetch_member_post_analytics,
     get_member_post_analytics_access_token,
     log_member_post_analytics_failure,
+    log_member_post_analytics_summary,
     member_post_analytics_enabled_for_user,
     member_post_analytics_max_posts_per_sweep,
 )
@@ -624,6 +625,8 @@ def auto_scrape_post_stats(self, user_id: int) -> str:
             api_access_token = get_member_post_analytics_access_token(user_id)
     if api_access_token and api_max_posts:
         api_only_ids = set()
+        api_metrics_read = 0
+        api_failures = 0
         for pid in post_ids:
             if api_posts_attempted >= api_max_posts:
                 break
@@ -633,14 +636,18 @@ def auto_scrape_post_stats(self, user_id: int) -> str:
             api_posts_attempted += 1
             api_counts, api_failure = fetch_member_post_analytics(
                 url, api_access_token, LI_API_VERSION)
+            api_metrics_read += len(api_counts)
             if api_failure:
                 log_member_post_analytics_failure(api_failure, user_id, pid)
                 api_state["disabled"] = True
+                api_failures += 1
                 break
             if _record_member_api_post_stats(
                     user_id, pid, url, post_types, shipped_variants, api_counts):
                 api_only_ids.add(pid)
                 api_captured += 1
+        log_member_post_analytics_summary(user_id, api_posts_attempted, api_captured,
+                                          api_metrics_read, api_failures)
         if api_only_ids:
             post_ids = [pid for pid in post_ids if pid not in api_only_ids]
     if not post_ids:

@@ -488,6 +488,35 @@ def send_linkedin_token_expiring_email(to_email: str, days_remaining: Optional[i
     return _dispatch_email(to_email, subject, html, high_priority=True)
 
 
+def send_member_analytics_token_expiring_email(to_email: str, days_remaining: Optional[int],
+                                               expires_on: Optional[str] = None) -> bool:
+    """Tell the owner the LinkedIn analytics (Community Management) connection is lapsing.
+
+    The token has no refresh token, so reconnecting the analytics app by hand is the only fix;
+    until then own-post stats fall back to scraping.
+    """
+    url = _account_url()
+    expires_on = _human_date(expires_on)
+    if days_remaining is not None and days_remaining <= 0:
+        headline = "Your LinkedIn analytics connection has expired"
+        when = "It has expired, so post stats are being scraped instead of read from the API."
+    else:
+        day_word = "day" if days_remaining == 1 else "days"
+        headline = f"Your LinkedIn analytics connection expires in {days_remaining} {day_word}"
+        when = (f"It expires in <strong>{days_remaining} {day_word}</strong>"
+                f"{f' (on {html_escape(expires_on)})' if expires_on else ''}.")
+    html = f"""
+    <html><body style="font-family:Arial,Helvetica,sans-serif;color:#222;">
+    <h2>{headline}</h2>
+    <p>{when} This connection cannot renew itself; reconnect it from your account page.</p>
+    <p><a href="{url}" style="background:#0a66c2;color:#fff;padding:10px 16px;border-radius:6px;
+    text-decoration:none;">Reconnect LinkedIn analytics</a></p>
+    </body></html>
+    """
+    subject = "⚠️ Action needed: your LinkedIn analytics connection is expiring"
+    return _dispatch_email(to_email, subject, html, high_priority=True)
+
+
 def _newsletter_queue_url() -> str:
     """Deep link to the newsletter queue — the ONE screen that can approve an edition or a cover."""
     import os

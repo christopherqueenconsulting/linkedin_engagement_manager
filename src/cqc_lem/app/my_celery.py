@@ -345,6 +345,11 @@ app.conf.update(
             # produces a reconnect email half an hour later. Email is throttled per-user (#600).
             'schedule': crontab(hour='8', minute='30')
         },
+        'watch-member-analytics-tokens': {
+            'task': 'cqc_lem.app.run_scheduler.auto_watch_member_analytics_tokens',
+            # Daily 8:35 AM, right after the main-token renewal beat. Emails inside 30d and 7d.
+            'schedule': crontab(hour='8', minute='35')
+        },
         'onboarding-nudges': {
             'task': 'cqc_lem.app.run_scheduler.auto_onboarding_nudges',
             # Daily 9:30 AM — right after the missing-session email, so a user who just got that one
