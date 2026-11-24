@@ -106,6 +106,7 @@ def create_outreach_target_endpoint(request: OutreachTargetRequest) -> ResponseM
     if get_outreach_target_by_url(user_id, target_profile_url):
         raise HTTPException(status_code=409, detail="Target is already in the outreach funnel")
     _main._refuse_agent_approved_status(request.status)
+    _main._require_linkedin_profile_url(target_profile_url)
     status = OutreachStatus.APPROVED if request.status == "approved" else OutreachStatus.PENDING
     target_id = insert_outreach_target(user_id, target_profile_url,
                                        target_name=target_name, context_url=context_url,
@@ -153,6 +154,14 @@ def update_outreach_target_endpoint(request: UpdateOutreachTargetRequest) -> Res
     if status is None and all(v is None for v in (request.target_name, request.context_url,
                                                   request.draft_text)):
         raise HTTPException(status_code=422, detail="Nothing to update — provide at least one field or an action")
+    if _main._edits_pending_only():
+        fields = {k: v for k, v in (("target_name", request.target_name),
+                                    ("context_url", request.context_url),
+                                    ("draft_text", request.draft_text),
+                                    ("status", status)) if v is not None}
+        _main._pending_edit_or_raise("outreach_target", request.target_id, user_id, fields,
+                                     "Could not update outreach target")
+        return ResponseModel(status_code=200, detail="Outreach target updated")
     if not update_outreach_target(request.target_id, target_name=request.target_name,
                                   context_url=request.context_url, draft_text=request.draft_text,
                                   status=status,

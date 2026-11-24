@@ -122,6 +122,7 @@ from cqc_lem.utilities.db import (
     SESSION_SCOPE_FULL,
     SESSION_SCOPE_OBSERVER,
     SESSION_SCOPE_OPERATOR,
+    SESSION_SCOPE_RECOVERY,
     STORY_BANK_KINDS,
     STORY_BANK_TARGET_ENTRIES,
     VALID_CATCHUP_MESSAGE_SOURCES,
@@ -277,6 +278,10 @@ from cqc_lem.utilities.webauthn_util import (
 # The FULL prefix, declared here rather than passed to `include_router`: `route.path` is what
 # `_scope_path`, `_hide_admin_routes_from_schema` and the session-scope guards all read.
 router = APIRouter(prefix="/api/user")
+
+# The scopes a person signs in with. None is no scope stamped at all: the resolver was bypassed,
+# which only a direct handler call does, since every real resolve stamps one (`_scope_checked`).
+_HUMAN_SESSION_SCOPES = frozenset({None, SESSION_SCOPE_FULL, SESSION_SCOPE_RECOVERY})
 
 
 def _release_enrollment_hold(user_id: int, session_token: Optional[str]) -> None:
@@ -2283,12 +2288,18 @@ def get_engagement_preferences_endpoint(session_token: str) -> ResponseModel[dic
     except Exception:
         prefs["has_saved_preferences"] = True
     # Read-only: the address the user forwards LinkedIn comment-notification emails to (event mode).
-    try:
-        from cqc_lem.integrations.linkedin.notification_email import reply_inbound_address
-        token = get_or_create_reply_inbound_token(user_id)
-        prefs["reply_inbound_address"] = reply_inbound_address(token) if token else None
-    except Exception:
-        prefs["reply_inbound_address"] = None
+    # A human session only (issue #2684). The address carries `reply_inbound_token`, a bearer secret
+    # that routes mail into this account's reply automation, and reading it MINTS one when the
+    # account has none, so a machine seat neither creates nor sees it.
+    if _main._request_session_scope.get() in _HUMAN_SESSION_SCOPES:
+        try:
+            from cqc_lem.integrations.linkedin.notification_email import reply_inbound_address
+            token = get_or_create_reply_inbound_token(user_id)
+            prefs["reply_inbound_address"] = reply_inbound_address(token) if token else None
+        except Exception:
+            prefs["reply_inbound_address"] = None
+    else:
+        prefs.pop("reply_inbound_address", None)
     # Gmail forwarding auto-confirmation status (so the UI can surface the code if auto-confirm failed).
     prefs["gmail_forward_confirmation"] = _main.get_gmail_forward_confirmation(user_id)
     # Read-only: the highest catch-up cap this plan allows, so the UI can bound the input and show

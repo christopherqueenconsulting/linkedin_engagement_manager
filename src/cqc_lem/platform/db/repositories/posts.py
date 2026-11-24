@@ -2324,23 +2324,57 @@ def insert_post(email: str, content: str, scheduled_time: datetime, post_type: P
                 video_quality: str = "standard", status: PostStatus = PostStatus.PENDING,
                 use_avatar: Optional[bool] = None, image_url: Optional[str] = None,
                 approved_by: Optional[str] = None) -> bool:
-    """Insert a fully-formed post for the account behind `email`.
+    """Insert a fully-formed post for the account behind `email`; True when one row was written.
 
     A post inserted APPROVED records `approved_by` and the time (issue #2116).
 
     `use_avatar` is deliberately three-valued: NULL means the composer expressed no preference for this
     post, so the per-user opt-ins decide (issue #744); 0/1 is an explicit compose-time choice. An unknown
-    email is logged and returns False rather than raising.
+    email is logged and returns False rather than raising. `insert_post_returning_id` is the same
+    write for a caller that needs the new row's id.
+    """
+    return insert_post_returning_id(email, content, scheduled_time, post_type, video_url=video_url,
+                                    carousel_slides=carousel_slides, video_quality=video_quality,
+                                    status=status, use_avatar=use_avatar, image_url=image_url,
+                                    approved_by=approved_by) is not None
+
+
+def insert_post_returning_id(email: str, content: str, scheduled_time: datetime, post_type: PostType,
+                             video_url: Optional[str] = None,
+                             carousel_slides: Optional[list[str]] = None,
+                             video_quality: str = "standard",
+                             status: PostStatus = PostStatus.PENDING,
+                             use_avatar: Optional[bool] = None, image_url: Optional[str] = None,
+                             approved_by: Optional[str] = None) -> Optional[int]:
+    """`insert_post`, answering the new row's id instead of a bool (MCP W1, issue #2684).
+
+    `POST /schedule_post/` returns the id so a caller can name the draft it just queued.
+
+    Args:
+        email: The account the post belongs to.
+        content: The post body.
+        scheduled_time: When it should publish; stored as naive UTC.
+        post_type: text, carousel, video or document.
+        video_url: The video asset, for a video post.
+        carousel_slides: Slide URLs, stored as JSON.
+        video_quality: The render tier a video post asked for.
+        status: The row's initial status.
+        use_avatar: The three-valued compose-time avatar choice (issue #744).
+        image_url: A validated compose-time image.
+        approved_by: The actor recorded when `status` is APPROVED.
+
+    Returns:
+        The new post's id, or None when nothing was written (unknown email, or a database error).
     """
     user_id = get_user_id(email)
-
-    success = False
 
     if not user_id:
         # WARNING, not INFO: the post is silently dropped. Once is a bad argument; repeatedly is
         # something systematically composing posts against an account that does not exist.
         log_warning("Cannot insert post — no user for that email")
-        return success
+        return None
+
+    post_id = None
 
     try:
         with db_cursor(commit=True) as cursor:
@@ -2365,12 +2399,12 @@ def insert_post(email: str, content: str, scheduled_time: datetime, post_type: P
                   None if use_avatar is None else int(bool(use_avatar)), image_url,
                   approver, approved_at))
 
-            success = cursor.rowcount == 1
+            if cursor.rowcount == 1:
+                post_id = cursor.lastrowid
     except mysql.connector.Error as e:
-        success = False
         log_error("Could not insert post", exc=e)
 
-    return success
+    return post_id
 
 
 # Columns the Review & Edit list may be ordered by. Whitelisted to keep the
