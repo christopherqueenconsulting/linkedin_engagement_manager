@@ -155,8 +155,8 @@ export default function CallIngestPanel() {
     const tag = (ev.target as HTMLElement).tagName
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || ev.metaKey || ev.ctrlKey) return
     if (!candidates.length) return
-    const at = candidates.findIndex((c) => c.id === focusId)
-    const current = candidates[at] ?? candidates[0]
+    const at = Math.max(candidates.findIndex((c) => c.id === focusId), 0)
+    const current = candidates[at]
     if (ev.key === 'j') setFocusId(candidates[Math.min(at + 1, candidates.length - 1)].id)
     else if (ev.key === 'k') setFocusId(candidates[Math.max(at - 1, 0)].id)
     else if (ev.key === 'a') reviewMutation.mutate({ candidate_id: current.id, decision: 'accept' })
