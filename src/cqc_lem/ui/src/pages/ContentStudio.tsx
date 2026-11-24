@@ -15,6 +15,7 @@ import LeadsInbox from './review/LeadsInbox'
 import LeadsPipeline from './review/LeadsPipeline'
 import CatchupTouches from './review/CatchupTouches'
 import GroupPostQueue from './review/GroupPostQueue'
+import DailyReview from './review/DailyReview'
 import ComposePost from './content/ComposePost'
 import { useAuth } from '../contexts/useAuth'
 import { useUserTimezoneState } from '../hooks/useUserTimezone'
@@ -28,8 +29,9 @@ import Icon from '../components/marketing/Icon'
 
 // Consolidated content hub: compose posts, schedule DMs, manage newsletters, and review/edit
 // existing content — one page, four tabs, synced to ?tab= for deep-linking.
-type View = 'posts' | 'dms' | 'connections' | 'catchup' | 'outreach' | 'leads' | 'pipeline' | 'newsletters' | 'groups' | 'review'
+type View = 'daily' | 'posts' | 'dms' | 'connections' | 'catchup' | 'outreach' | 'leads' | 'pipeline' | 'newsletters' | 'groups' | 'review'
 const VIEWS: { key: View; label: string }[] = [
+  { key: 'daily', label: 'Daily review' },
   { key: 'posts', label: 'Posts' },
   { key: 'dms', label: 'DMs' },
   { key: 'connections', label: 'Connections' },
@@ -126,6 +128,17 @@ const STATUS_COLORS: Record<string, string> = {
 export default function ContentStudio() {
   const { user, sessionToken } = useAuth()
   const email = user?.email ?? ''
+  // Badge on the Daily review tab: how many approvals are waiting. Best-effort — a failed read
+  // shows no badge rather than a zero.
+  const { data: reviewWaiting } = useQuery<number | null>({
+    queryKey: ['review-summary', sessionToken],
+    queryFn: () =>
+      api
+        .get(`/review/summary?session_token=${encodeURIComponent(sessionToken!)}`)
+        .then((r) => (r?.data?.detail?.total as number | undefined) ?? null),
+    enabled: !!sessionToken,
+    staleTime: 60 * 1000,
+  })
   const qc = useQueryClient()
   const { timezone: userTimezone, isResolved: timezoneResolved } = useUserTimezoneState()
   // Say which clock a typed time is read in. Until the user's own zone has loaded we say so rather
@@ -687,6 +700,14 @@ export default function ContentStudio() {
             }`}
           >
             {v.label}
+            {v.key === 'daily' && !!reviewWaiting && (
+              <span
+                data-testid="daily-review-badge"
+                className="ml-1.5 rounded-full bg-accent px-1.5 py-0.5 text-xs font-semibold text-white"
+              >
+                {reviewWaiting}
+              </span>
+            )}
           </button>
         ))}
       </div>
@@ -696,6 +717,8 @@ export default function ContentStudio() {
       <div className={view === 'posts' ? '' : 'hidden'}>
         <ComposePost onNavigateTab={(t) => setView(t as View)} />
       </div>
+
+      {view === 'daily' && <DailyReview />}
 
       {view === 'newsletters' && (
         <NewsletterQueue userTimezone={userTimezone} timezoneResolved={timezoneResolved} />

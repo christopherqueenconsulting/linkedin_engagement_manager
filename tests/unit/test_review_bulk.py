@@ -145,3 +145,28 @@ def test_agent_session_gets_403_and_nothing_runs(api_client):
          patch("cqc_lem.api.routers.review.apply_review_action") as ap:
         r = _post(api_client, [{"lane": "scheduled_dms", "id": 1}])
     assert r.status_code == 403 and not ap.called
+
+
+def test_undo_cancels_an_approved_unsent_dm_that_left_the_queue(api_client):
+    with patch("cqc_lem.api.routers.review.is_approved_unsent_dm", return_value=True), \
+         patch("cqc_lem.api.routers.review.apply_review_action",
+               return_value={"ok": True}) as ap:
+        r = _post(api_client, [{"lane": "scheduled_dms", "id": 1}], action="cancel", queue=False)
+    assert r.status_code == 200 and ap.called
+
+
+def test_undo_window_never_opens_for_approve_or_other_lanes(api_client):
+    with patch("cqc_lem.api.routers.review.is_approved_unsent_dm", return_value=True), \
+         patch("cqc_lem.api.routers.review.apply_review_action") as ap:
+        _post(api_client, [{"lane": "scheduled_dms", "id": 1}], action="approve", queue=False)
+        _post(api_client, [{"lane": "connection_requests", "id": 1}], action="cancel", queue=False)
+    assert not ap.called
+
+
+def test_is_approved_unsent_dm_checks_owner_and_status():
+    with patch.object(ra, "get_scheduled_dm", return_value={"user_id": 1, "status": "approved"}):
+        assert ra.is_approved_unsent_dm(1, 5) and not ra.is_approved_unsent_dm(2, 5)
+    with patch.object(ra, "get_scheduled_dm", return_value={"user_id": 1, "status": "scheduled"}):
+        assert not ra.is_approved_unsent_dm(1, 5)
+    with patch.object(ra, "get_scheduled_dm", return_value=None):
+        assert not ra.is_approved_unsent_dm(1, 5)

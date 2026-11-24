@@ -86,9 +86,9 @@ COMMENT_CANDIDATE_POOL = "comment-candidate-pool-enabled"
 WEEKLY_REPORT = "weekly-report-enabled"
 COMMENT_CANDIDATE_CRAWL = "comment-candidate-crawl-enabled"
 IMPACT_REPORT = "impact-report-enabled"
+COMMENT_RAMP = "comment-ramp-enabled"
 MCP_SERVER = "mcp-server-enabled"
 MCP_SERVER_WRITES = "mcp-server-writes"
-COMMENT_RAMP = "comment-ramp-enabled"
 
 FLAGS: Dict[str, FlagSpec] = {
     spec.key: spec for spec in (

@@ -12,7 +12,13 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from cqc_lem.api.models import ResponseModel
-from cqc_lem.utilities.review_actions import BULK_ACTIONS, BULK_CAP, NOT_WAITING, apply_review_action
+from cqc_lem.utilities.review_actions import (
+    BULK_ACTIONS,
+    BULK_CAP,
+    NOT_WAITING,
+    apply_review_action,
+    is_approved_unsent_dm,
+)
 from cqc_lem.utilities.review_queue import LANE_IDS, get_review_queue, summarize
 
 router = APIRouter(prefix="/api/review")
@@ -77,7 +83,14 @@ def review_bulk_endpoint(request: BulkReviewRequest) -> ResponseModel[list[dict[
     # already sent or canceled (a second live send). Only rows still waiting in the queue are acted on.
     waiting = {(q["lane"], q["id"]) for q in get_review_queue(user_id)
                if request.action in q["allowed_actions"]}
-    results = [apply_review_action(user_id, i.lane, i.id, request.action) if (i.lane, i.id) in waiting
+    def runnable(i: BulkItem) -> bool:
+        if (i.lane, i.id) in waiting:
+            return True
+        # Undo of a just-approved scheduled DM: it has left the queue but has not been sent.
+        return (request.action == "cancel" and i.lane == "scheduled_dms"
+                and is_approved_unsent_dm(user_id, i.id))
+
+    results = [apply_review_action(user_id, i.lane, i.id, request.action) if runnable(i)
                else {"lane": i.lane, "id": i.id, "ok": False, "error": NOT_WAITING}
                for i in request.items]
     return ResponseModel(status_code=200, detail=results)

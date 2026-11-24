@@ -2298,10 +2298,12 @@ def get_engagement_preferences_endpoint(session_token: str) -> ResponseModel[dic
         prefs["has_saved_preferences"] = has_engagement_preferences(user_id)
     except Exception:
         prefs["has_saved_preferences"] = True
-    # Read-only: the address the user forwards LinkedIn comment-notification emails to (event mode).
-    # A human session only (issue #2684). The address carries `reply_inbound_token`, a bearer secret
-    # that routes mail into this account's reply automation, and reading it MINTS one when the
-    # account has none, so a machine seat neither creates nor sees it.
+    # Read-only: the address the user forwards LinkedIn comment-notification emails to (event mode),
+    # and the Gmail forwarding auto-confirmation status (so the UI can surface the code if
+    # auto-confirm failed). A human session only (issue #2684). The address carries
+    # `reply_inbound_token`, a bearer secret that routes mail into this account's reply automation,
+    # and reading it MINTS one when the account has none; the confirmation can carry the code that
+    # verifies a forwarding address. A machine seat neither creates nor sees either.
     if _main._request_session_scope.get() in _HUMAN_SESSION_SCOPES:
         try:
             from cqc_lem.integrations.linkedin.notification_email import reply_inbound_address
@@ -2309,10 +2311,10 @@ def get_engagement_preferences_endpoint(session_token: str) -> ResponseModel[dic
             prefs["reply_inbound_address"] = reply_inbound_address(token) if token else None
         except Exception:
             prefs["reply_inbound_address"] = None
+        prefs["gmail_forward_confirmation"] = _main.get_gmail_forward_confirmation(user_id)
     else:
         prefs.pop("reply_inbound_address", None)
-    # Gmail forwarding auto-confirmation status (so the UI can surface the code if auto-confirm failed).
-    prefs["gmail_forward_confirmation"] = _main.get_gmail_forward_confirmation(user_id)
+        prefs.pop("gmail_forward_confirmation", None)
     # Read-only: the highest catch-up cap this plan allows, so the UI can bound the input and show
     # what upgrading unlocks (10/day is premium-only).
     prefs["max_catchup_touches_allowed"] = max_catchup_touches_allowed(user_id)

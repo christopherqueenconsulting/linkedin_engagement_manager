@@ -63,6 +63,16 @@ def cancel_scheduled_dm(user_id: int, item_id: int) -> Optional[str]:
     return None if update_scheduled_dm_status(item_id, ScheduledDmStatus.CANCELED) else WRITE_FAILED
 
 
+def is_approved_unsent_dm(user_id: int, item_id: int) -> bool:
+    """True for the caller's own DM that is approved but not yet dispatched — the Undo window.
+
+    Such a row has left the review queue, so the router's "still waiting" check would refuse
+    its Undo; cancel-until-sent is real only while the status is still `approved`.
+    """
+    dm = get_scheduled_dm(item_id)
+    return bool(dm and dm.get("user_id") == user_id and dm.get("status") == ScheduledDmStatus.APPROVED)
+
+
 def approve_connection_request(user_id: int, item_id: int) -> Optional[str]:
     """Approve a connection request, stamping `approved_by`."""
     if get_connection_request_user_id(item_id) != user_id:
