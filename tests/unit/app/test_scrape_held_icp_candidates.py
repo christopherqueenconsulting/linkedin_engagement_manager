@@ -10,7 +10,8 @@ _OUT = "cqc_lem.app.engagement.outreach"
 _URLS = ["https://www.linkedin.com/in/a", "https://www.linkedin.com/in/b"]
 
 
-def _run(prefs=None, window=True, batch=None, scrape=None, session_error=None, skip=False):
+def _run(prefs=None, window=True, batch=None, scrape=None, session_error=None, skip=False,
+         requeue_mock=None):
     from cqc_lem.app.engagement import outreach as ra
     prefs = {"icp_builder_enabled": True} if prefs is None else prefs
     with patch(f"{_OUT}.skip_browser_lane", return_value=skip), \
@@ -18,7 +19,7 @@ def _run(prefs=None, window=True, batch=None, scrape=None, session_error=None, s
          patch(f"{_OUT}.get_user_timezone", return_value="UTC"), \
          patch(f"{_OUT}.in_scrape_window", return_value=window), \
          patch(f"{_OUT}.claim_batch", return_value=_URLS if batch is None else batch) as claim, \
-         patch(f"{_OUT}.requeue") as requeue, \
+         patch(f"{_OUT}.requeue", new=requeue_mock or MagicMock()) as requeue, \
          patch(f"{_OUT}.time.sleep"), \
          patch(f"{_OUT}.quit_gracefully") as quit_, \
          patch(f"{_OUT}.get_linkedin_profile_from_url", side_effect=scrape) as fetch, \
@@ -76,8 +77,10 @@ def test_rate_limited_session_requeues_and_skips():
 
 
 def test_session_failure_requeues():
-    out, _c, requeue, _f, _s, _q = _run(session_error=RuntimeError("boom"))
-    assert "failed" in out
+    from cqc_lem.app.task_outcome import LaneTaskFailed
+    requeue = MagicMock()
+    with pytest.raises(LaneTaskFailed, match="failed"):
+        _run(session_error=RuntimeError("boom"), requeue_mock=requeue)
     requeue.assert_called_once_with(2, _URLS)
 
 

@@ -3556,11 +3556,12 @@ def scrape_held_icp_candidates(self, user_id: int):
         requeue(user_id, batch[scraped:])
         log_debug("ICP profile scrape deferred — LinkedIn rate-limited or cooling down", exc=e,
                   user_id=user_id, task_name=task)
-        return f"Skipped — rate limited: {e}"
+        return lane_result(TaskOutcome.NO_OP, f"Skipped — rate limited: {e}")
     except Exception as e:
         requeue(user_id, batch[scraped:])
         log_warning("ICP profile scrape session failed", exc=e, user_id=user_id, task_name=task)
-        return f"ICP profile scrape failed for user {user_id}"
+        return lane_result(TaskOutcome.FAILED, f"ICP profile scrape failed for user {user_id}",
+                           cause=e)
     finally:
         if driver is not None:
             quit_gracefully(driver)
