@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.219.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.218.0...v0.219.0) (2026-11-24)
+
+
+### Features
+
+* **voice:** few-shot in more writers, edited-draft labels, upload card (closes [#2749](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2749)) ([#2766](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2766)) ([37ee61b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/37ee61babf7deb8877a51b16c5f4cda9aa02c811))
+
 ## [0.218.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.217.0...v0.218.0) (2026-11-24)
 
 
