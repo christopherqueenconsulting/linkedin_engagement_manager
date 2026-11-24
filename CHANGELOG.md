@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.218.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.217.0...v0.218.0) (2026-11-24)
+
+
+### Features
+
+* **probe:** own-profile audit fields live probe (refs [#2755](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2755)) ([#2769](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2769)) ([ca861d2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ca861d2ccfd3691c481cf0635dd42931c9a80100))
+* **reports:** conversations, calls and profile-view-to-call attribution (closes [#2668](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2668)) ([#2763](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2763)) ([c50775e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c50775e995b2e3b232ad875620d7440ddaa1f4b2))
+
 ## [0.217.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.216.0...v0.217.0) (2026-11-24)
 
 
