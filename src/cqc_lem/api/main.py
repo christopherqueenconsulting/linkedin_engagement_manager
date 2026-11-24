@@ -1103,6 +1103,7 @@ def _release_hold(token: str) -> bool:
 # deliberate edit to THIS table, which `test_observer_route_bodies.py` pins key for key.
 _OBSERVER_ROW_FIELDS: Dict[str, frozenset] = {
     "dms": frozenset({"id", "user_id", "recipient_profile_url", "recipient_name", "message", "source",
+                      "authenticity_score", "authenticity_issues",
                       "scheduled_time", "status", "created_at", "updated_at"}),
     "connection_requests": frozenset({
         "id", "user_id", "recipient_profile_url", "recipient_name", "message", "source", "icp_score",
