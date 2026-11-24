@@ -127,9 +127,15 @@ def test_summary_route(client):
 
 
 def test_review_paths_are_off_every_scoped_surface():
+    """No scoped session (agent, operator, observer, ...) may reach /review/*.
+
+    One exception, owner-decided in #2635/#2647: the Assist scope posts the done receipt to
+    /review/comment-posted (POST only). It is the only /review path on any scoped surface.
+    """
     from cqc_lem.api import main
-    for surface in main._SCOPE_SURFACES.values():
-        assert not any(p.startswith("/review") for p in surface)
+    for scope, surface in main._SCOPE_SURFACES.items():
+        allowed = {"/review/comment-posted"} if scope == main.SESSION_SCOPE_ASSIST else set()
+        assert {p for p in surface if p.startswith("/review")} <= allowed, scope
 
 
 # --- digest beat ------------------------------------------------------------------------------
