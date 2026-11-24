@@ -683,7 +683,7 @@ The owner writes a go/no-go before W2 starts. D2 write dogfood runs for at least
 **Rollback.** Each step is owner-run (Tier 2), and the exact command is in `docs/mcp-server.md`.
 1. **Kill.** Use `POST /api/admin/mcp-kill {on:true}` (step-up, audited) or `scripts/mcp_kill.py on`. It takes effect on the next request. The env fallback `MCP_SERVER_KILL=1` ships only through `deploy.sh`.
 2. **Narrow.** Remove the flag overrides. This is not instant; it takes up to `POSTHOG_FLAG_POLL_SECONDS` per worker.
-3. **Revoke all.** Run `scripts/mcp_revoke_all.py`, which calls `revoke_sessions_by_scope(("mcp","mcp_outreach"))` and writes audited rows. It replaces the raw SQL.
+3. **Revoke all.** Run `sudo docker exec -i celery_worker python - --reason incident-2026-11 --yes < scripts/mcp_revoke_all.py`, which calls `revoke_sessions_by_scope(("mcp","mcp_outreach"))` and writes audited rows. It replaces the raw SQL. `--yes` is required in this form, because STDIN is the script and no prompt can be answered.
 4. **Redeploy `.last_good_tag`.** The owner dispatches `deploy-vps.yml`. **Revert order:** kill on, then revoke all, then revert P4/P3, then P2. Revoking first means old code never sees an unknown `mcp` scope, which would WARN on every call.
 
 ---

@@ -228,6 +228,7 @@ from cqc_lem.utilities.env_constants import (
     API_URL_FINAL,
     AVATAR_LIKENESS_PROBE_ENABLED,
     AVATAR_LIKENESS_VIDEO_HOLD_ENABLED,
+    C2PA_ENABLED,
     DEFAULT_IMAGE_RATIO,
     DEFAULT_VIDEO_RATIO,
     PREMIUM_TOP_VIDEO_CREDITS,
@@ -1649,6 +1650,69 @@ def _post_used_avatar_media(post_id: Optional[int]) -> bool:
         return False
 
 
+def _metadata_disclosure_active() -> bool:
+    """Is the metadata-first disclosure policy on (issue #2634)?
+
+    Read at the call site, never at import, so a flip needs no redeploy of the constant. Needs BOTH
+    the mode and ``C2PA_ENABLED``: without signing there is no embedded disclosure to lean on.
+    """
+    from cqc_lem.utilities.env_constants import get_constant_from_env, isTrue
+    return bool(C2PA_ENABLED) and isTrue(
+        get_constant_from_env('AI_DISCLOSURE_METADATA_MODE', default_value='False'))
+
+
+def _avatar_likeness_possible(post_id: Optional[int]) -> bool:
+    """True when the post used avatar media OR that cannot be read — fail toward disclosure.
+
+    Deliberately not `_post_used_avatar_media`, which turns an unreadable flag into False.
+    """
+    try:
+        from cqc_lem.utilities.db import post_avatar_media_state
+        state = post_avatar_media_state(post_id)
+    except Exception as e:
+        log_warning("Could not read the avatar-media flag — keeping the visible AI disclosure",
+                    exc=e, post_id=post_id)
+        return True
+    return state is None or bool(state)
+
+
+def _needs_ai_disclosure(post_id: Optional[int], *, ai_video: bool,
+                         ai_video_signed: bool = False) -> bool:
+    """Decide whether this post's caption carries the visible AI-visuals line (issue #2634).
+
+    This is the ONE decision, at all three disclosure paths.
+
+    Mode off (or ``C2PA_ENABLED`` false): the legacy rule, any AI video or avatar media. Mode on:
+    the line stays only for avatar likeness (true OR unknown); any other AI video drops it only when
+    signing succeeded for THIS asset in this run, and a signing failure keeps it with one WARNING.
+    """
+    if not _metadata_disclosure_active():
+        return bool(ai_video or _post_used_avatar_media(post_id))
+    if _avatar_likeness_possible(post_id):
+        return True
+    if not ai_video:
+        return False
+    if ai_video_signed:
+        return False
+    log_warning("AI video was not signed — keeping the visible AI disclosure", post_id=post_id)
+    return True
+
+
+def _sign_ai_video(video_file_path: str, *, post_id: int, user_id: Optional[int],
+                   task_name: str) -> bool:
+    """Attach AI Content Credentials; True only when a manifest was actually written."""
+    try:
+        from cqc_lem.utilities.c2pa_helper import add_ai_content_credentials
+        return bool(add_ai_content_credentials(video_file_path))
+    except Exception as e:
+        # WARNING: c2pa_helper's own docstring promises it "never raises into the generation
+        # pipeline" and logs its own skips, so anything arriving here is the best-effort module
+        # itself broken — which recurs on every AI video until someone looks.
+        log_warning("C2PA signing raised — the video ships without content credentials", exc=e,
+                    user_id=user_id, post_id=post_id, task_name=task_name)
+        return False
+
+
 def _apply_ai_disclosure(content: str) -> str:
     """Append the AI-visuals disclosure line to a caption (idempotent)."""
     if not AI_DISCLOSURE_ENABLED or not content:
@@ -2550,7 +2614,8 @@ def _clip_check_extra(brief_info: Optional[dict]) -> Optional[dict]:
 def _store_video_asset(post_id: int, video_src_url: str, content: Optional[str] = None,
                        user_id: Optional[int] = None, brief=None,
                        gate_verdict: Optional[str] = None,
-                       clip_check: Optional[dict] = None) -> Optional[str]:
+                       clip_check: Optional[dict] = None,
+                       signing: Optional[dict] = None) -> Optional[str]:
     """Download a generated video into the shared assets volume, probe it, and attach C2PA
     credentials to AI output. Persist posts.video_url and return the public API asset URL only when
     the probe passes. The ONE place a regenerated video is stored — both the asset-only healer and
@@ -2561,6 +2626,8 @@ def _store_video_asset(post_id: int, video_src_url: str, content: Optional[str] 
     gate's reading of that frame; both are recorded beside the stored file (issue #1377). A `brief`
     of None — a Pexels fallback, or a caller that has no brief in hand — records nothing rather than
     an empty receipt. `clip_check` is the post-render clip check's record (PR #2249), ridden along.
+    `signing`, when given, is filled with ``ai`` (the asset is AI output) and ``signed`` (a manifest
+    was written for it), which the caption's disclosure decision needs (issue #2634).
     """
     videos_dir = os.path.join(assets_dir, 'videos', 'runwayml')
     create_folder_if_not_exists(videos_dir)
@@ -2585,16 +2652,13 @@ def _store_video_asset(post_id: int, video_src_url: str, content: Optional[str] 
                          task_name="regenerate_post_video_task")
 
     # Only AI (Runway, http) output gets C2PA AI credentials — not Pexels stock.
-    if str(video_src_url).startswith("http"):
-        try:
-            from cqc_lem.utilities.c2pa_helper import add_ai_content_credentials
-            add_ai_content_credentials(video_file_path)
-        except Exception as e:
-            # WARNING: c2pa_helper's own docstring promises it "never raises into the generation
-            # pipeline" and logs its own skips, so anything arriving here is the best-effort module
-            # itself broken — which recurs on every AI video until someone looks.
-            log_warning("C2PA signing raised — the video ships without content credentials", exc=e,
-                        post_id=post_id, task_name="regenerate_post_video_task")
+    is_ai = str(video_src_url).startswith("http")
+    signed = False
+    if is_ai:
+        signed = _sign_ai_video(video_file_path, post_id=post_id, user_id=user_id,
+                                task_name="regenerate_post_video_task")
+    if signing is not None:
+        signing.update(ai=is_ai, signed=signed)
     # Measured LAST, on the bytes that ship, and BEFORE the URL is persisted — the file is deleted
     # at publish, so this is the only moment the measurement can be taken (issue #1517).
     _record_video_asset_measures(post_id, video_file_path, user_id=user_id,
@@ -2640,17 +2704,28 @@ def regenerate_video_for_post(post_id: int) -> Optional[str]:
     if not video_src_url:
         return None
 
+    signing: dict = {}
     try:
         api_video_url = _store_video_asset(post_id, video_src_url, content=text_content,
                                            user_id=user_id, brief=brief_info.get("brief"),
                                            gate_verdict=brief_info.get("gate_verdict"),
-                                           clip_check=brief_info.get("clip_check"))
+                                           clip_check=brief_info.get("clip_check"),
+                                           signing=signing)
     except Exception as e:
         # A hard probe failure (or any other storage error) should not strand the post; log it
         # and let the missing-asset gate hold it for review / backfill.
         log_warning("Could not store the regenerated video asset", exc=e,
                     post_id=post_id, task_name="regenerate_post_video_task")
         return None
+
+    # This path used to never disclose, so a premium upgrade or backfill re-render of an avatar
+    # video shipped undisclosed (issue #2634). Same decision as create and regenerate_post.
+    if api_video_url and _needs_ai_disclosure(post_id, ai_video=bool(signing.get("ai")),
+                                              ai_video_signed=bool(signing.get("signed"))):
+        disclosed = _apply_ai_disclosure(text_content)
+        if disclosed != text_content:
+            update_db_post_content(post_id, disclosed)
+            text_content = disclosed
 
     # Symmetric with regenerate_post_carousel_task: a real video now exists, so an ERROR post is
     # re-gated and healed — never straight to 'approved' (issue #2100).
@@ -2802,14 +2877,14 @@ def _post_is_flagged_error(post_id: int) -> bool:
 
 def _finish_regenerated_post(user_id: int, post_id: int, content: str,
                              post_type_value: str, video_url: Optional[str] = None,
-                             ai_media: bool = False) -> str:
+                             ai_media: bool = False, ai_signed: bool = False) -> str:
     """Shared close-out for a regenerated post: disclose AI visuals, persist content, re-score
     dwell, refresh gate findings, and reset the post to PENDING for re-review. Returns the content
     as PERSISTED — the caller must return this, not its pre-disclosure copy.
     """
     # Regeneration replaces the whole caption, so the old draft's disclosure line went with it —
     # re-apply it here or a regenerated video/avatar post ships undisclosed (issue #744).
-    if ai_media or _post_used_avatar_media(post_id):
+    if _needs_ai_disclosure(post_id, ai_video=ai_media, ai_video_signed=ai_signed):
         content = _apply_ai_disclosure(content)
     _score_and_persist_dwell(user_id, post_id, content)
     update_db_post_content(post_id, content)
@@ -2885,13 +2960,15 @@ def regenerate_post(post_id: int, guidance: str = None) -> Optional[str]:
         video_src_url = _generate_video_src(user_id, content, user_profile, post_id,
                                             brief_info=brief_info)
         api_video_url = None
+        signing: dict = {}
         if video_src_url:
             try:
                 api_video_url = _store_video_asset(post_id, video_src_url, content=content,
                                                    user_id=user_id,
                                                    brief=brief_info.get("brief"),
                                                    gate_verdict=brief_info.get("gate_verdict"),
-                                                   clip_check=brief_info.get("clip_check"))
+                                                   clip_check=brief_info.get("clip_check"),
+                                                   signing=signing)
             except Exception as e:
                 # Losing the download must not lose the regenerated caption too — persist it and
                 # let the missing-asset gate hold the post, exactly as a failed render does.
@@ -2900,7 +2977,8 @@ def regenerate_post(post_id: int, guidance: str = None) -> Optional[str]:
         # No video asset means the post is held for review with a missing_asset finding.
         content = _finish_regenerated_post(
             user_id, post_id, content, pt_value, api_video_url,
-            ai_media=bool(api_video_url) and str(video_src_url).startswith("http"))
+            ai_media=bool(api_video_url) and str(video_src_url).startswith("http"),
+            ai_signed=bool(signing.get("signed")))
         log_info(f"regenerate_post: video post {post_id} regenerated"
                 f"{'' if api_video_url else ' (caption only — video asset failed)'}")
         return content
@@ -5954,6 +6032,7 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
     try:
         # Copy the video from url to our assets/video folder and store it to the database for later retrieval via api call
         ai_video = False
+        ai_video_signed = False
         if video_url:
             # AI (Runway) output is a remote http URL; Pexels fallback is a local path.
             ai_video = str(video_url).startswith("http")
@@ -5992,15 +6071,8 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
                                      task_name="auto_create_weekly_content")
             # Attach AI Content Credentials to AI-generated video only (not stock).
             if ai_video:
-                try:
-                    from cqc_lem.utilities.c2pa_helper import add_ai_content_credentials
-                    add_ai_content_credentials(video_file_path)
-                except Exception as e:
-                    # Same as _store_video_asset: c2pa_helper never raises by contract, so this
-                    # handler only sees the best-effort module itself failing.
-                    log_warning("C2PA signing raised — the video ships without content credentials",
-                                exc=e, user_id=user_id, post_id=post_id,
-                                task_name="auto_create_weekly_content")
+                ai_video_signed = _sign_ai_video(video_file_path, post_id=post_id, user_id=user_id,
+                                                 task_name="auto_create_weekly_content")
             if video_file_path:
                 # Same as _store_video_asset: measured last, on the bytes that ship, because
                 # purge_post_assets deletes this file at publish (issue #1517).
@@ -6029,7 +6101,7 @@ def _create_content_for_planned_post(post: dict, prefs: dict) -> bool:
         # A synthetic likeness of a real person needs the disclosure at least as much as a
         # stock-motion video does, so ANY media that came out of the avatar LoRA counts —
         # carousel slides and post images included, not just video (issue #744).
-        if ai_video or _post_used_avatar_media(post_id):
+        if _needs_ai_disclosure(post_id, ai_video=ai_video, ai_video_signed=ai_video_signed):
             content = _apply_ai_disclosure(content)
 
         # Dwell-proxy score (issue #391 — C2) for EVERY post type: the text post, the carousel

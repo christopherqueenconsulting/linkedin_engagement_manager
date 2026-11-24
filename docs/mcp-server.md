@@ -211,7 +211,8 @@ In this order. Revoking before reverting means old code never meets an `mcp` sco
 1. **Kill**: the Redis key or the admin route (§ Kill switch). Takes effect on the next request.
 2. **Narrow**: remove the flag overrides in PostHog (not instant: up to `POSTHOG_FLAG_POLL_SECONDS`
    per worker).
-3. **Revoke all**: `sudo docker exec -i celery_worker python - --reason <why> < scripts/mcp_revoke_all.py`
+3. **Revoke all**: `sudo docker exec -i celery_worker python - --reason <why> --yes < scripts/mcp_revoke_all.py`
+   (`--yes` is required: STDIN is the script, so no prompt can be answered)
    (one `mcp_sessions_revoked` audit row per affected account).
 4. **Redeploy** the release before the change (below); revert P4/P3, then P2.
 
