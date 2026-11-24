@@ -301,7 +301,8 @@ def _banner_from_structure(source, full_name: str) -> str:
         if element.name == 'img':
             src = (element.get('src') or element.get('data-delayed-url') or "").strip()
             blob = " ".join([src, classes, element.get('alt') or ""])
-            if not src or _AVATAR_RE.search(blob):
+            alt = (element.get('alt') or "").strip().lower()
+            if not src or _AVATAR_RE.search(blob) or (full_name and alt == full_name.lower()):
                 continue
         elif _BACKGROUND_URL_RE.search(style):
             blob = f"{style} {classes}"

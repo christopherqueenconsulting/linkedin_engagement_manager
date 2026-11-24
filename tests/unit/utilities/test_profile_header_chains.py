@@ -71,6 +71,12 @@ def test_banner_ignores_images_outside_main_and_below_name():
     assert _parse(page)["banner_state"] == "unknown"
 
 
+def test_banner_avatar_whose_alt_is_just_the_name_is_not_a_banner():
+    page = ('<main><section><img src="https://x.test/p.jpg" alt="Jane Doe">'
+            '<p>Jane Doe</p></section></main>')
+    assert _parse(page)["banner_state"] == "unknown"
+
+
 def test_banner_class_selector_still_first():
     page = ('<main><div class="cover-photo default"></div><p>Jane Doe</p></main>')
     assert _parse(page)["banner_state"] == "default"
