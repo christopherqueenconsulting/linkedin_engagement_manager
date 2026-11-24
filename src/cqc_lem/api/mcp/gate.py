@@ -70,7 +70,7 @@ from cqc_lem.api.mcp.limits import (
     release_user_slot,
     worker_slots,
 )
-from cqc_lem.api.mcp.server import mcp_server
+from cqc_lem.api.mcp.server import FREE_RESOURCE_URIS, mcp_server
 from cqc_lem.utilities.db import (
     MCP_SESSION_SCOPES,
     AuthAuditEvent,
@@ -442,6 +442,10 @@ def _rpc_summary(body: bytes) -> RpcSummary:
         if method == "tools/call":
             tool_calls += 1
             first_tool = first_tool or _clean(params.get("name"), _TOOL_NAME_CHARS, 64)
+        elif method == "resources/read" and params.get("uri") not in FREE_RESOURCE_URIS:
+            # A data resource runs the same tool a `tools/call` would (`calls.read_resource`), so it
+            # spends the same budget. Only the two static text resources are free.
+            tool_calls += 1
         elif method == "initialize":
             info = params.get("clientInfo")
             if isinstance(info, dict):

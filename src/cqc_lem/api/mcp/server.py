@@ -30,6 +30,13 @@ from mcp_types import (
 
 SERVER_NAME = "lem"
 
+# The two STATIC resources: fixed text, no inner call, so reading them spends no budget. Every other
+# `resources/read` (the account and plan resources, `lem://post/{id}`) runs a tool and is counted by
+# the gate as a tool call (`gate._rpc_summary`).
+GUIDE_URI = "lem://guide/how-lem-works"
+POLICY_URI = "lem://policy/write-rules"
+FREE_RESOURCE_URIS = frozenset({GUIDE_URI, POLICY_URI})
+
 # Static on purpose: `instructions` is shown to the connecting agent and must never carry account
 # data or anything a caller can influence. The agent prompt in plan §6 minus its first sentence.
 INSTRUCTIONS = (
