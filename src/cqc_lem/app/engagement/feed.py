@@ -3049,7 +3049,8 @@ def crawl_roster_candidates(driver: WebDriver, user_id: int, prefs: dict, budget
             continue
         time.sleep(random.uniform(3, 6))
         stats["targets_visited"] += 1
-        record_roster_visit(user_id, target.get("id"))
+        # No record_roster_visit: the crawl must not advance the commenting rotation, or every
+        # target it reads looks freshly visited to the comment pass while nothing reads the pool yet.
         read_here = 0
         for box in driver.find_elements(By.CSS_SELECTOR, _FEED_POST_TEXT_SEL):
             if (read_here >= _CRAWL_POSTS_PER_AUTHOR or stats["written"] >= budget
