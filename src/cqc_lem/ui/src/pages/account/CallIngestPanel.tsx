@@ -165,10 +165,13 @@ export default function CallIngestPanel() {
     ev.preventDefault()
   }
 
-  const grouped = candidates.reduce<Record<number, CallCandidate[]>>((acc, c) => {
-    (acc[c.ingest_id] ??= []).push(c)
-    return acc
-  }, {})
+  // A Map keeps the server's order (newest call first). Integer-keyed object entries would
+  // re-sort ascending and make j/k, which walks `candidates`, jump around the screen.
+  const grouped = candidates.reduce<Map<number, CallCandidate[]>>((acc, c) => {
+    const rows = acc.get(c.ingest_id) ?? []
+    rows.push(c)
+    return acc.set(c.ingest_id, rows)
+  }, new Map())
   const callTitle = (id: number) => calls.find((c) => c.id === id)?.title || `Call #${id}`
   const activeId = focusId ?? candidates[0]?.id ?? null
   const above = candidates.filter((c) => c.confidence >= BULK_CONFIDENCE).length
@@ -236,9 +239,9 @@ export default function CallIngestPanel() {
               Accept all above {BULK_CONFIDENCE} confidence ({above})
             </button>
           </div>
-          {Object.entries(grouped).map(([ingestId, rows]) => (
+          {[...grouped.entries()].map(([ingestId, rows]) => (
             <div key={ingestId} className="space-y-2">
-              <h4 className="text-xs font-semibold text-fg">{callTitle(Number(ingestId))}</h4>
+              <h4 className="text-xs font-semibold text-fg">{callTitle(ingestId)}</h4>
               {rows.map((c) => (
                 <div key={c.id} data-testid={`candidate-${c.id}`}
                      className={`border rounded-panel p-3 space-y-2 ${
