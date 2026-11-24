@@ -43,8 +43,11 @@ from linkedin_api.clients.auth.client import AuthClient
 from linkedin_api.clients.restli.client import RestliClient
 from linkedin_api.common.errors import ResponseFormattingError
 from pydantic import BaseModel, Field, field_validator
+from starlette.routing import Route
 
 from cqc_lem import assets_dir
+from cqc_lem.api.mcp.gate import McpGate
+from cqc_lem.api.mcp.lifespan import MCP_PATH, mcp_lifespan
 
 # Re-exported, not merely imported: 363 annotations in this file say `ResponseModel`, and every test
 # and router that reaches `cqc_lem.api.main.ResponseModel` keeps resolving. It lives in `api.models`
@@ -238,12 +241,46 @@ from cqc_lem.utilities.webauthn_util import (
 # swagger_ui_oauth2_redirect_url must be set explicitly: FastAPI defaults it to the fixed literal
 # "/docs/oauth2-redirect" and does NOT derive it from docs_url, so moving docs_url alone strands
 # the helper outside /api and breaks Swagger's Authorize flow silently.
+#
+# `mcp_lifespan` starts the MCP SDK's session manager and fails OPEN (epic #2682): a broken MCP
+# stack makes `/api/mcp` answer 503 and leaves `/health` and every other route serving.
 app = FastAPI(
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
     swagger_ui_oauth2_redirect_url="/api/docs/oauth2-redirect",
+    lifespan=mcp_lifespan,
 )
+
+# The end-user MCP endpoint (epic #2682, `docs/agent-mcp-plan.md`). Registered first, so nothing
+# below — the /api routers or the SPA catch-all — can claim the path. `methods=None` hands EVERY
+# method to the gate, so a GET or DELETE gets the gate's JSON 405 rather than Starlette's plain-text
+# one. It is public at the edge (`_PUBLIC_API_EXACT`) because the gate does its own auth.
+app.router.routes.append(Route(MCP_PATH, McpGate, methods=None, include_in_schema=False))
+
+
+def _well_known_not_found() -> JSONResponse:
+    """No OAuth metadata is published here: the MCP server takes a LEM-minted bearer, not OAuth.
+
+    An explicit JSON 404 rather than the SPA shell, so an MCP client probing for OAuth discovery
+    gets a definite "no" instead of HTML. `no-store` is set here because these paths are outside
+    `/api`, where `api_cache_control_middleware` does not reach.
+    """
+    return JSONResponse(status_code=404, headers={"Cache-Control": NO_STORE_CACHE_CONTROL},
+                        content={"status_code": 404, "detail": "Not Found"})
+
+
+@app.get("/.well-known/oauth-protected-resource{suffix:path}", include_in_schema=False)
+async def well_known_oauth_protected_resource(suffix: str) -> JSONResponse:
+    """JSON 404 for RFC 9728 protected-resource metadata, including path-suffixed forms."""
+    return _well_known_not_found()
+
+
+@app.get("/.well-known/oauth-authorization-server{suffix:path}", include_in_schema=False)
+async def well_known_oauth_authorization_server(suffix: str) -> JSONResponse:
+    """JSON 404 for RFC 8414 authorization-server metadata, including path-suffixed forms."""
+    return _well_known_not_found()
+
 
 @app.exception_handler(DailyAICapReached)
 async def daily_ai_cap_handler(request: Request, exc: DailyAICapReached) -> JSONResponse:
@@ -402,11 +439,18 @@ _PUBLIC_API_PREFIXES = ("/api/auth/", "/api/billing/webhook", "/api/assets",
                         "/api/extension/", "/api/user/linkedin-cookie",
                         "/api/docs", "/api/redoc", "/api/openapi.json")
 
+# Public by EXACT match only, never a subtree (epic #2682). `/api/mcp` is the MCP gate, which
+# authenticates its own bearer; a prefix entry would also open `/api/mcp/x` and its like, which must
+# stay behind the edge gate. Kept out of `_PUBLIC_API_PREFIXES` for exactly that reason.
+_PUBLIC_API_EXACT = frozenset({MCP_PATH})
+
 
 def _is_public_api_path(path: str) -> bool:
     # An entry ending in "/" opens that whole subtree; every other entry matches only itself or a
     # path segment beneath it. Without the boundary, "/api/faq" would also unlock a future
     # "/api/faq-admin".
+    if path in _PUBLIC_API_EXACT:
+        return True
     for prefix in _PUBLIC_API_PREFIXES:
         if prefix.endswith("/"):
             if path.startswith(prefix):
