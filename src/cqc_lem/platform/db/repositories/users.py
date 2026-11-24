@@ -2617,6 +2617,7 @@ _ENGAGEMENT_DEFAULTS: dict = {
     "nurture_dm_mode": "pre_review", "artifact_dm_mode": "pre_review",
     "group_post_mode": "pre_review",
     "followup_step_mode": "pre_review", "appreciation_dm_mode": "pre_review",
+    "funnel_stage_mode": "pre_review",
 }
 _ENGAGEMENT_JSON_FIELDS = ("include_topics", "exclude_topics", "include_keywords",
                            "exclude_keywords", "include_authors", "exclude_authors", "post_types",
@@ -2648,9 +2649,9 @@ _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "us
                     "profile_viewer_dm_auto_send", "forbidden_claim_terms", "brand_kit",
                     "audience_mix", "icp_builder_enabled", "icp_definition",
                     "nurture_dm_mode", "artifact_dm_mode", "group_post_mode",
-                    "followup_step_mode", "appreciation_dm_mode")
+                    "followup_step_mode", "appreciation_dm_mode", "funnel_stage_mode")
 _APPROVAL_MODE_COLS = ("nurture_dm_mode", "artifact_dm_mode", "group_post_mode",
-                       "followup_step_mode", "appreciation_dm_mode")
+                       "followup_step_mode", "appreciation_dm_mode", "funnel_stage_mode")
 VALID_APPROVAL_MODES = ("pre_review", "auto_approve")
 VALID_REPLY_MODES = ("event", "scheduled", "off")
 # Approval posture for the proactive connect flow (issue #398 owner review).
@@ -2821,6 +2822,9 @@ def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
         # An unknown value lands on the review side — never on auto_approve.
         if merged.get(_mode_col) not in VALID_APPROVAL_MODES:
             merged[_mode_col] = "pre_review"
+    # Hard server-side ceiling on comment volume for every user (#2647 P5), whatever a caller sent.
+    from cqc_lem.utilities.comment_ramp import clamp_comments_per_day
+    merged["max_comments_per_day"] = clamp_comments_per_day(merged.get("max_comments_per_day"))
     _icp = merged.get("min_connection_icp_score")
     try:
         merged["min_connection_icp_score"] = (min(ICP_SCORE_MAX, max(ICP_SCORE_MIN, int(_icp)))
@@ -3130,3 +3134,64 @@ def has_engagement_preferences(user_id: int) -> bool:
     WRITE on the answer must use the three-valued function instead (issue #952).
     """
     return engagement_preferences_are_configured(user_id) is True
+
+
+def get_review_digest_enabled(user_id: int) -> bool:
+    """Whether the daily stale-approval email may be sent to this account (#2625).
+
+    NULL (never chosen) is ON; only an explicit 0 opts out. An unreadable row reads as ON too — the
+    email is a reminder about work waiting on the author, so a database blip must not silence it.
+    """
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute("SELECT review_digest_enabled FROM engagement_preferences "
+                           "WHERE user_id = %s", (user_id,))
+            row = cursor.fetchone()
+            return not (row and row["review_digest_enabled"] is not None
+                        and not row["review_digest_enabled"])
+    except mysql.connector.Error as err:
+        log_error("Could not read review_digest_enabled", exc=err, user_id=user_id)
+        return True
+
+
+def get_weekly_report_enabled(user_id: int) -> bool:
+    """Whether the account may receive the weekly report email (#2666).
+
+    NULL (never chosen) is ON; only an explicit 0 opts out. An unreadable row reads as OFF: unlike a
+    reminder about work waiting, this is an unsolicited email, so a database blip must not send one
+    to an account that may have opted out.
+    """
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute("SELECT weekly_report_enabled FROM engagement_preferences "
+                           "WHERE user_id = %s", (user_id,))
+            row = cursor.fetchone()
+            return not (row and row["weekly_report_enabled"] is not None
+                        and not row["weekly_report_enabled"])
+    except mysql.connector.Error as err:
+        log_error("Could not read weekly_report_enabled", exc=err, user_id=user_id)
+        return False
+
+
+def claim_weekly_report_send(user_id: int, iso_year_week: str) -> bool:
+    """Take the one send slot for (user, ISO week). True only for the caller that inserted the row."""
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("INSERT IGNORE INTO weekly_report_sends (user_id, iso_year_week) "
+                           "VALUES (%s, %s)", (user_id, iso_year_week))
+            return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        log_error("Could not claim weekly report send", exc=err, user_id=user_id)
+        return False
+
+
+def release_weekly_report_send(user_id: int, iso_year_week: str) -> bool:
+    """Give the slot back after a failed send so the next beat can retry the week."""
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("DELETE FROM weekly_report_sends WHERE user_id = %s AND iso_year_week = %s",
+                           (user_id, iso_year_week))
+            return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        log_error("Could not release weekly report send", exc=err, user_id=user_id)
+        return False

@@ -18,7 +18,29 @@ class TestGetLatestPostStats:
             from cqc_lem.utilities.db import get_latest_post_stats
             assert get_latest_post_stats(1, 9) == row
         sql = mock_database_connection["cursor"].execute.call_args[0][0]
-        assert "ORDER BY id DESC" in sql and "LIMIT 1" in sql
+        assert "ORDER BY (source='api') DESC, id DESC" in sql and "LIMIT 1" in sql
+
+    def test_record_post_stats_tags_source(self, mock_database_connection):
+        with patch(_GET_CONN, return_value=mock_database_connection["connection"]):
+            mock_database_connection["cursor"].fetchone.return_value = None
+            from cqc_lem.utilities.db import record_post_stats
+            assert record_post_stats(1, 9, 2, 1, source="api")
+            assert record_post_stats(1, 9, 2, 1)
+        calls = [c for c in mock_database_connection["cursor"].execute.call_args_list
+                 if "INSERT INTO post_stats" in c[0][0]]
+        assert calls[0][0][1][-1] == "api"
+        assert calls[1][0][1][-1] == "scrape"
+
+    def test_record_post_stats_rejects_unknown_source(self):
+        from cqc_lem.utilities.db import record_post_stats
+        with pytest.raises(ValueError):
+            record_post_stats(1, 9, 2, 1, source="merged")
+
+    def test_readers_prefer_the_api_row(self):
+        from cqc_lem.platform.db.repositories import posts
+        assert "(source='api') DESC" in posts._LATEST_STATS_IDS
+        assert posts._LATEST_STATS_IDS.count("%s") == 1
+        assert "%s" not in posts._LATEST_STATS_IDS_ALL_USERS
 
     def test_no_capture_yet_is_none(self, mock_database_connection):
         with patch(_GET_CONN, return_value=mock_database_connection["connection"]):

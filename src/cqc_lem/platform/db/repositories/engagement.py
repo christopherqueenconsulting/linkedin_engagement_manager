@@ -5,9 +5,8 @@ secret-sealing rules described there apply here unchanged; `cqc_lem.utilities.db
 re-exports every name below, so existing importers and patch targets keep resolving.
 """
 
-from typing import Optional
-
 import os
+from typing import Optional
 
 import mysql.connector
 
@@ -259,6 +258,28 @@ def count_comments_today(user_id: int) -> int:
     spend the same budget twice. A read error counts 0, which fails OPEN: the cap stops nothing.
     """
     return _count_actions_today(user_id, *COMMENT_LOG_ACTION_TYPES)
+
+
+def get_comment_log_times(user_id: int, start, end) -> Optional[list]:
+    """`created_at` of every SUCCESS comment log in [start, end), ascending. None on a read error.
+
+    Unlike `count_comments_today` this does NOT fail open: a report must not read a fault as a
+    week with no comments.
+    """
+    placeholders = ",".join(["%s"] * len(COMMENT_LOG_ACTION_TYPES))
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                f"SELECT created_at FROM logs WHERE user_id=%s AND action_type IN ({placeholders}) "
+                "AND result=%s AND created_at >= %s AND created_at < %s ORDER BY created_at",
+                (user_id, *(str(a) for a in COMMENT_LOG_ACTION_TYPES),
+                 str(LogResultType.SUCCESS), start, end))
+            return [r[0] for r in cursor.fetchall() or []]
+    except mysql.connector.Error as err:
+        log_error("Could not read comment log times", exc=err, user_id=user_id)
+        return None
+
+
 def count_invites_sent_today(user_id: int) -> int:
     """Invitations actually sent today, counted as a COMBINED daily budget (issue #398 owner review):
     both the reactive profile-viewer flow and the proactive connect flow send via invite_to_connect_now,
@@ -559,6 +580,75 @@ def get_comment_outcome_targets(user_id: int, min_age_hours: int = 24, max_age_h
     except mysql.connector.Error as err:
         log_error("Could not get comment outcome targets", exc=err, user_id=user_id)
         return []
+def get_comment_outcome_backfill_targets(user_id: int, min_age_hours: int = 24,
+                                         max_age_hours: int = 168, limit: int = 15) -> list:
+    """Comments with a v1 outcome row and NO v2 row — the v2 backfill's work list (#2663).
+
+    A comment that already has a v2 row (checked OR skipped) is never selected again, which is what
+    makes the backfill terminate. Known positives come first: comments whose post carries a
+    `comment_followups` row, i.e. the follow-up sweep saw a reply the v1 reader scored as 0. They are
+    exempt from the age ceiling, because that evidence does not expire with the 168 h window.
+    """
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT l.id AS log_id, l.post_url, l.message, l.created_at, "
+                "  EXISTS(SELECT 1 FROM comment_followups cf "
+                "         WHERE cf.user_id = l.user_id AND cf.post_key = l.post_url) AS known_positive "
+                "FROM logs l "
+                "WHERE l.user_id=%s AND l.action_type IN (%s, %s) AND l.result=%s "
+                "  AND l.post_url LIKE 'feedurn://%%' "
+                "  AND l.created_at <= (NOW() - INTERVAL %s HOUR) "
+                "  AND EXISTS(SELECT 1 FROM comment_outcomes c1 "
+                "             WHERE c1.log_id = l.id AND c1.user_id = l.user_id AND c1.reader_version = 1) "
+                "  AND NOT EXISTS(SELECT 1 FROM comment_outcomes c2 "
+                "             WHERE c2.log_id = l.id AND c2.user_id = l.user_id AND c2.reader_version >= 2) "
+                "  AND (l.created_at >= (NOW() - INTERVAL %s HOUR) "
+                "       OR EXISTS(SELECT 1 FROM comment_followups cf2 "
+                "                 WHERE cf2.user_id = l.user_id AND cf2.post_key = l.post_url)) "
+                "ORDER BY known_positive DESC, l.created_at ASC LIMIT %s",
+                (user_id, *COMMENT_LOG_ACTION_TYPES, LogResultType.SUCCESS.value,
+                 int(min_age_hours), int(max_age_hours), max(1, int(limit))))
+            return list(cursor.fetchall() or [])
+    except mysql.connector.Error as err:
+        log_error("Could not get comment outcome backfill targets", exc=err, user_id=user_id)
+        return []
+def get_reader_disagreements(user_id: int, days: int = 14) -> dict:
+    """Posts where the follow-up sweep saw a reply but the latest v2 outcome says `reply_count = 0`.
+
+    Returns `{"followup_posts": n, "disagreeing_posts": m}` over comments with follow-up evidence
+    from the last `days`. A follow-up row created AFTER the reading is no evidence (the reply may have
+    arrived later, and a v2 row is never re-read, so it would warn daily). Only a CHECKED v2 reading can disagree: a v1 row's zero is unscored (the
+    v1 reader's zeros were wrong) and a skipped row read nothing, so neither is counted.
+    """
+    out = {"followup_posts": 0, "disagreeing_posts": 0}
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT l.id AS log_id, co.reader_version, co.checked_at, co.status, co.reply_count "
+                "FROM comment_followups cf "
+                "JOIN logs l ON l.user_id = cf.user_id AND l.post_url = cf.post_key "
+                "  AND l.action_type IN (%s, %s) AND l.result=%s "
+                "JOIN comment_outcomes co ON co.log_id = l.id AND co.user_id = l.user_id "
+                "WHERE cf.user_id=%s AND cf.created_at >= (NOW() - INTERVAL %s DAY) "
+                "  AND cf.created_at <= co.checked_at",
+                (*COMMENT_LOG_ACTION_TYPES, LogResultType.SUCCESS.value, user_id, max(1, int(days))))
+            rows = list(cursor.fetchall() or [])
+    except mysql.connector.Error as err:
+        log_error("Could not read reader disagreements", exc=err, user_id=user_id)
+        return out
+    latest: dict = {}
+    for row in rows:
+        key = (int(row.get("reader_version") or 1), row.get("checked_at") or 0)
+        cur = latest.get(row.get("log_id"))
+        if cur is None or key > cur[0]:
+            latest[row.get("log_id")] = (key, row)
+    out["followup_posts"] = len(latest)
+    for _key, row in latest.values():
+        if (int(row.get("reader_version") or 1) >= 2 and row.get("status") == "checked"
+                and row.get("reply_count") is not None and int(row["reply_count"]) == 0):
+            out["disagreeing_posts"] += 1
+    return out
 def record_comment_outcome(user_id: int, log_id: int, post_key: str = None,
                            author_replied: bool = False, reply_count: int = 0,
                            like_count: int = 0, visible_most_relevant: "bool | None" = None,

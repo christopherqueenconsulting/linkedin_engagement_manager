@@ -206,6 +206,12 @@ app.conf.update(
             # automated emails in the same minute. Auto-pauses engagement on a reach collapse (#629).
             'schedule': crontab(hour='9', minute='15')
         },
+        'comment-ramp': {
+            'task': 'cqc_lem.app.run_scheduler.auto_comment_ramp',
+            # Daily 09:25 UTC — after the 09:15 suppression tripwire, so a fresh trip steps the ramp
+            # down the same morning (#2647). No-op unless COMMENT_RAMP_ENABLED.
+            'schedule': crontab(hour='9', minute='25')
+        },
         'nightly-content-quality': {
             'task': 'cqc_lem.app.run_scheduler.auto_nightly_content_quality',
             # Nightly 02:40 UTC — after the 23:00 post-stats scrape and the 23:40 follower capture, so
@@ -238,6 +244,12 @@ app.conf.update(
             # Daily 10:30 UTC — after the 10:00 draft top-up, so a cover queued by that run has
             # rendered before this pass reads its status (issue #1432).
             'schedule': crontab(hour='10', minute='30')
+        },
+        'notify-stale-approvals': {
+            'task': 'cqc_lem.app.run_scheduler.auto_notify_stale_approvals',
+            # Daily 13:00 UTC: one digest per user when any approval has waited over
+            # REVIEW_STALE_HOURS (issue #2625).
+            'schedule': crontab(hour='13', minute='0')
         },
         'publish-scheduled-newsletters': {
             'task': 'cqc_lem.app.run_scheduler.auto_publish_scheduled_editions',
@@ -339,6 +351,11 @@ app.conf.update(
             # produces a reconnect email half an hour later. Email is throttled per-user (#600).
             'schedule': crontab(hour='8', minute='30')
         },
+        'watch-member-analytics-tokens': {
+            'task': 'cqc_lem.app.run_scheduler.auto_watch_member_analytics_tokens',
+            # Daily 8:35 AM, right after the main-token renewal beat. Emails inside 30d and 7d.
+            'schedule': crontab(hour='8', minute='35')
+        },
         'onboarding-nudges': {
             'task': 'cqc_lem.app.run_scheduler.auto_onboarding_nudges',
             # Daily 9:30 AM — right after the missing-session email, so a user who just got that one
@@ -374,6 +391,12 @@ app.conf.update(
             # Mondays 12:00 UTC — after the 6:00 Stripe sync, so MRR reflects current tiers, and after
             # Sunday night's stats scrape, so cohort engagement lift covers the full week.
             'schedule': crontab(hour='12', minute='0', day_of_week='monday')
+        },
+        'weekly-report': {
+            'task': 'cqc_lem.app.run_scheduler.auto_weekly_report',
+            # Fridays 13:00 UTC (issue #2666) — after the week's stats scrape. Off unless
+            # WEEKLY_REPORT_ENABLED; idempotent per user per ISO week.
+            'schedule': crontab(hour='13', minute='0', day_of_week='friday')
         },
         'file-feedback-issues': {
             'task': 'cqc_lem.app.run_scheduler.auto_file_feedback_issues',
@@ -434,6 +457,12 @@ app.conf.update(
             # Daily 14:30 UTC (issue #2643). Inert unless `impact-report-enabled` is on; a release
             # is reported once, 14 days after publish, and the monthly baseline on the 1st.
             'schedule': crontab(hour='14', minute='30')
+        },
+        'poll-calendly-bookings': {
+            'task': 'cqc_lem.app.run_scheduler.auto_poll_calendly_bookings',
+            # Hourly (issue #2658): Calendly Free has no webhooks. Does nothing unless
+            # BOOKING_HOOK_ENABLED is set.
+            'schedule': crontab(minute='17')
         },
         'weekly-cost-routing': {
             'task': 'cqc_lem.app.run_scheduler.auto_weekly_cost_routing',

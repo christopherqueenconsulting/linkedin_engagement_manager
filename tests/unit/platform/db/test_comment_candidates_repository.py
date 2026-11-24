@@ -71,3 +71,32 @@ def test_count_reads_the_day_and_is_none_on_a_fault():
         assert repo.count_comment_candidates(1) == 0
     with patch(_CUR, side_effect=_ERR):
         assert repo.count_comment_candidates(1) is None
+
+
+def test_assist_activity_splits_and_sorts_timestamps():
+    from datetime import datetime
+    s, e = datetime(2026, 11, 1), datetime(2026, 11, 8)
+    a, b = datetime(2026, 11, 2), datetime(2026, 11, 3)
+    cur, ctx = _cursor(rows=[(b, None), (a, b), (datetime(2026, 10, 1), None)])
+    with patch(_CUR, return_value=ctx):
+        out = repo.get_assist_activity(1, s, e)
+    assert out == {"approved_at": [a, b], "posted_at": [b]}
+
+
+def test_assist_activity_none_on_a_fault():
+    from datetime import datetime
+    with patch(_CUR, side_effect=_ERR):
+        assert repo.get_assist_activity(1, datetime(2026, 11, 1), datetime(2026, 11, 8)) is None
+
+
+def test_comment_log_times_reads_times_and_is_none_on_a_fault():
+    from datetime import datetime
+
+    from cqc_lem.platform.db.repositories import engagement
+    t = datetime(2026, 11, 2)
+    cur, ctx = _cursor(rows=[(t,)])
+    target = "cqc_lem.platform.db.repositories.engagement.db_cursor"
+    with patch(target, return_value=ctx):
+        assert engagement.get_comment_log_times(1, t, t) == [t]
+    with patch(target, side_effect=_ERR):
+        assert engagement.get_comment_log_times(1, t, t) is None

@@ -3406,6 +3406,15 @@ def _linkedin_exception_status_code(exc: BaseException) -> Optional[int]:
     return status_code if isinstance(status_code, int) else None
 
 
+# Only r_member_postAnalytics is REQUIRED by the callback. The two count scopes are requested now so
+# the next owner reconnect carries them (a grant cannot include a scope never asked for); the
+# callback tolerates their absence.
+MEMBER_ANALYTICS_REQUESTED_SCOPES = [
+    "r_basicprofile", "r_member_postAnalytics", "r_member_profileAnalytics",
+    "r_1st_connections_size",
+]
+
+
 @app.get("/auth/linkedin/analytics/", response_model=None, include_in_schema=False)
 @router.get("/auth/linkedin/analytics/", response_model=None, include_in_schema=False)
 def member_analytics_auth_init(session_token: Optional[str] = None) -> RedirectResponse:
@@ -3429,7 +3438,7 @@ def member_analytics_auth_init(session_token: Optional[str] = None) -> RedirectR
     # these fields let the callback match the account because member IDs differ across apps.
     auth_url = client.generate_member_auth_url(
         state=state,
-        scopes=["r_basicprofile", "r_member_postAnalytics"],
+        scopes=MEMBER_ANALYTICS_REQUESTED_SCOPES,
     )
     return RedirectResponse(url=auth_url)
 
@@ -3527,6 +3536,7 @@ def member_analytics_callback(code: Optional[str] = None, state: Optional[str] =
         new_sub_id,
         access_token,
         getattr(token_response, "expires_in", None),
+        granted_scope=" ".join(sorted(granted_scopes)) or None,
     )
     if not stored:
         return _member_analytics_account_redirect({"li_analytics_error": "token_store_failed"})
@@ -4283,6 +4293,7 @@ from cqc_lem.api.routers import (  # noqa: E402
     billing as _billing_router,
     curated as _curated_router,
     outreach as _outreach_router,
+    review as _review_router,
     user as _user_router,
 )
 
@@ -4293,6 +4304,7 @@ app.include_router(_avatar_router.router)
 app.include_router(_billing_router.router)
 app.include_router(_curated_router.router)
 app.include_router(_outreach_router.router)
+app.include_router(_review_router.router)
 app.include_router(_user_router.router)
 
 

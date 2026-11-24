@@ -293,6 +293,13 @@
     "source_hash": "sha256:f1ae00ae9abd6c502fce1ada8d90eb60820943af1d8f45eed82f91cac3c25fa2",
     "version": 2
   },
+  "judge.comment_claims": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:ce2f7d887831109f711d509a9873d9e4a353b4c88dca349ca2e728cf22be5a20",
+    "version": 1
+  },
   "marketing.affiliate_post": {
     "changed_in": null,
     "content_hash": null,

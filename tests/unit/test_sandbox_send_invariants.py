@@ -540,6 +540,10 @@ _NO_LINKEDIN_ACTION = {
                            "get_docker_driver backstop refuses a sandbox account",
     "auto_draft_group_post": "drafts text with an LLM and stores it; the publish is auto_post_to_group",
     "render_avatar_samples_task": "image generation",
+    "auto_notify_stale_approvals": "reads the approval queue and emails the owner a digest; no LinkedIn "
+                                   "session is opened",
+    "auto_weekly_report": "reads post stats and emails the account owner a weekly report; no LinkedIn "
+                          "session is opened",
     "auto_generate_content": "content generation (LLM), stores drafts",
     "plan_content_for_user": "content planning (LLM), stores drafts",
     "regenerate_post_video_task": "media generation",
@@ -550,6 +554,7 @@ _NO_LINKEDIN_ACTION = {
     "collect_curated_sources": "reads public sources; publishes nothing",
     "dispatch_golden_hour_engagement": "only enqueues the gated reply-sweep tasks",
     "auto_weekly_comment_quality": "analytics over stored comments",
+    "auto_comment_ramp": "moves a stored daily-comment ceiling in Redis; sends nothing",
     "auto_suppression_tripwire": "analytics over stored impressions; pauses, never sends",
     "auto_nightly_content_quality": "analytics over stored posts",
     "auto_weekly_content_quality": "analytics over stored posts",
@@ -566,6 +571,7 @@ _NO_LINKEDIN_ACTION = {
     "auto_sync_brand_account": "database config for the brand account",
     "auto_notify_missing_linkedin_session": "email to the account owner",
     "auto_refresh_linkedin_tokens": "OAuth token refresh: credential plumbing, not a content action",
+    "auto_watch_member_analytics_tokens": "email to the account owner about an expiring analytics token",
     "auto_onboarding_nudges": "email to the account owner",
     "auto_survey_prompts": "analytics prompts",
     "auto_backfill_missing_assets": "media generation",
@@ -585,6 +591,7 @@ _NO_LINKEDIN_ACTION = {
     "auto_weekly_cost_routing": "internal analytics",
     "auto_produce_feature_tutorial": "renders our own SPA; DEMO_MODE-gated, no account",
     "auto_weekly_youtube_token_check": "YouTube token health check",
+    "auto_poll_calendly_bookings": "reads Calendly and labels leads; sends nothing",
 }
 
 

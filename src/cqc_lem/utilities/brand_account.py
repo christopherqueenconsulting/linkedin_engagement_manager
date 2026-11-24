@@ -73,14 +73,29 @@ def current_launch_phase() -> str:
     return phase
 
 
+def brand_cap_ceiling(cap: str) -> int:
+    """The ceiling for one brand cap. Only the comment ramp (#2647) lifts one above
+    `BRAND_CAP_CEILINGS`, and only `max_comments_per_day`; a raw preference never does.
+    """
+    base = BRAND_CAP_CEILINGS[cap]
+    if cap != "max_comments_per_day":
+        return base
+    try:
+        from cqc_lem.utilities.comment_ramp import ramp_comment_ceiling
+        return max(base, ramp_comment_ceiling(brand_user_id()))
+    except Exception as exc:
+        log_debug(f"Comment ramp unreadable — keeping the base brand ceiling: {exc}")
+        return base
+
+
 def brand_outbound_policy(phase: Optional[str] = None) -> dict:
     """The brand's caps + approval posture for `phase` (defaults to the active one), clamped to the
     per-user ceilings.
     """
     resolved = (phase or current_launch_phase()).strip().upper()
     policy = dict(PHASE_OUTBOUND_POLICY.get(resolved) or PHASE_OUTBOUND_POLICY[DEFAULT_LAUNCH_PHASE])
-    for cap, ceiling in BRAND_CAP_CEILINGS.items():
-        policy[cap] = max(0, min(ceiling, int(policy.get(cap) or 0)))
+    for cap in BRAND_CAP_CEILINGS:
+        policy[cap] = max(0, min(brand_cap_ceiling(cap), int(policy.get(cap) or 0)))
     return policy
 
 
@@ -206,7 +221,7 @@ def brand_preference_overrides(existing: Optional[dict] = None, phase: Optional[
     overrides: dict = {}
     if configured:
         for cap in CAP_FIELDS:
-            clamped = _over_ceiling(current.get(cap), BRAND_CAP_CEILINGS[cap])
+            clamped = _over_ceiling(current.get(cap), brand_cap_ceiling(cap))
             if clamped is not None:
                 overrides[cap] = clamped
     else:

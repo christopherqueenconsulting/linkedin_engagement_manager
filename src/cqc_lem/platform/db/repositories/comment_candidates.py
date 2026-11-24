@@ -120,6 +120,29 @@ def get_approved_comment_candidates(user_id: int, limit: int = 150) -> Optional[
         return None
 
 
+def get_assist_activity(user_id: int, start: datetime, end: datetime) -> Optional[dict]:
+    """Approval and posted timestamps of the user's candidates touched in [start, end).
+
+    Returns `{"approved_at": [...], "posted_at": [...]}` (each ascending, NULLs dropped). A
+    candidate is `posted` only through the Assist done endpoint, so `posted_at` is the Assist
+    comment record. None on a read error: an unreadable week is not an empty one.
+    """
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT approved_at, posted_at FROM comment_candidates WHERE user_id = %s "
+                "AND ((approved_at >= %s AND approved_at < %s) "
+                "OR (posted_at >= %s AND posted_at < %s))",
+                (user_id, start, end, start, end))
+            rows = list(cursor.fetchall() or [])
+    except mysql.connector.Error as err:
+        log_error("Could not read assist activity", exc=err, user_id=user_id)
+        return None
+    approved = sorted(r[0] for r in rows if r[0] is not None and start <= r[0] < end)
+    posted = sorted(r[1] for r in rows if r[1] is not None and start <= r[1] < end)
+    return {"approved_at": approved, "posted_at": posted}
+
+
 def claim_approved_candidate_posted(user_id: int, candidate_id: int) -> Optional[dict]:
     """Atomically move ONE approved candidate to `posted`; return its row, or None.
 

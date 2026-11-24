@@ -488,6 +488,35 @@ def send_linkedin_token_expiring_email(to_email: str, days_remaining: Optional[i
     return _dispatch_email(to_email, subject, html, high_priority=True)
 
 
+def send_member_analytics_token_expiring_email(to_email: str, days_remaining: Optional[int],
+                                               expires_on: Optional[str] = None) -> bool:
+    """Tell the owner the LinkedIn analytics (Community Management) connection is lapsing.
+
+    The token has no refresh token, so reconnecting the analytics app by hand is the only fix;
+    until then own-post stats fall back to scraping.
+    """
+    url = _account_url()
+    expires_on = _human_date(expires_on)
+    if days_remaining is not None and days_remaining <= 0:
+        headline = "Your LinkedIn analytics connection has expired"
+        when = "It has expired, so post stats are being scraped instead of read from the API."
+    else:
+        day_word = "day" if days_remaining == 1 else "days"
+        headline = f"Your LinkedIn analytics connection expires in {days_remaining} {day_word}"
+        when = (f"It expires in <strong>{days_remaining} {day_word}</strong>"
+                f"{f' (on {html_escape(expires_on)})' if expires_on else ''}.")
+    html = f"""
+    <html><body style="font-family:Arial,Helvetica,sans-serif;color:#222;">
+    <h2>{headline}</h2>
+    <p>{when} This connection cannot renew itself; reconnect it from your account page.</p>
+    <p><a href="{url}" style="background:#0a66c2;color:#fff;padding:10px 16px;border-radius:6px;
+    text-decoration:none;">Reconnect LinkedIn analytics</a></p>
+    </body></html>
+    """
+    subject = "⚠️ Action needed: your LinkedIn analytics connection is expiring"
+    return _dispatch_email(to_email, subject, html, high_priority=True)
+
+
 def _newsletter_queue_url() -> str:
     """Deep link to the newsletter queue — the ONE screen that can approve an edition or a cover."""
     import os
@@ -580,6 +609,37 @@ def send_newsletter_cover_pending_email(to_email: str, edition_title: str, sched
     return _dispatch_email(
         to_email, f"🖼️ Approve the cover before this edition goes out: {title}", html,
         high_priority=True)
+
+
+def send_stale_approvals_email(to_email: str, total: int, stale: int, oldest_age_hours: float,
+                               by_lane: dict, stale_hours: int, review_url: Optional[str] = None
+                               ) -> bool:
+    """Email an author that approvals have waited past `stale_hours` (issue #2625).
+
+    `by_lane` maps a lane label to its waiting count; zero lanes are omitted. The caller never
+    sends at zero, so this takes `stale >= 1` as given.
+    """
+    import os
+    base = (os.getenv("LEM_APP_URL") or "https://lem.christopherqueenconsulting.com").rstrip("/")
+    url = html_escape(review_url or f"{base}/content?tab=review")
+    rows = "".join(f"<li>{html_escape(str(label))}: <strong>{int(n)}</strong></li>"
+                   for label, n in by_lane.items() if n)
+    days = round(oldest_age_hours / 24, 1)
+    html = f"""
+    <html><body style="font-family:Arial,Helvetica,sans-serif;color:#222;">
+    <h2>{stale} approval{'s' if stale != 1 else ''} waiting more than {stale_hours} hours</h2>
+    <p>{total} item{'s are' if total != 1 else ' is'} waiting for your review; the oldest has
+    waited {days} days. Review them before their slots arrive.</p>
+    <ul>{rows}</ul>
+    <p><a href="{url}" style="background:#0a66c2;color:#fff;padding:10px 16px;border-radius:6px;
+    text-decoration:none;">Review now</a></p>
+    <p style="color:#888;font-size:12px;">You get this reminder once a day, and only while
+    something has waited over {stale_hours} hours.</p>
+    </body></html>
+    """
+    return _dispatch_email(
+        to_email, f"⏳ {stale} approval{'s' if stale != 1 else ''} waiting over {stale_hours}h",
+        html, high_priority=True)
 
 
 def send_content_generation_ready_email(to_email: str, ready_count: int,
@@ -729,6 +789,57 @@ def send_impact_report_email(to_email: str, subject: str, text: str) -> bool:
     html = ('<html><body style="font-family:Arial,Helvetica,sans-serif;color:#222;">'
             f'<pre style="font-size:13px;">{html_escape(text)}</pre></body></html>')
     return _dispatch_email(to_email, subject, html, text)
+
+
+def weekly_report_lines(report: dict) -> Tuple[list, list]:
+    """(numbers, actions) for the email: at most 5 `label: value` lines and 3 (text, path) actions.
+
+    Reads only the payload `load_weekly_report` built, so the email cannot disagree with the API. A
+    number that was not measured is left out (it is named in `not_measured`, never shown as zero).
+    """
+    nums = report.get("numbers") or {}
+    icp = report.get("icp_share")
+    rate = nums.get("organic_engagement_rate")
+    followers = nums.get("follower_delta")
+    candidates = [
+        ("Posts published", nums.get("posts_published")),
+        ("Median impressions", None if nums.get("median_impressions") is None
+         else f"{nums['median_impressions']:,.0f}"),
+        ("Organic engagement rate", None if rate is None else f"{rate * 100:.1f}%"),
+        ("Follower change", None if followers is None else f"{followers:+d}"),
+        ("Engagers in your ICP", None if not icp else f"{icp['share'] * 100:.0f}% of {icp['n']}"),
+    ]
+    numbers = [f"{label}: {value}" for label, value in candidates if value is not None][:5]
+    actions = [(a["text"], a["link"]) for a in (report.get("actions") or [])][:3]
+    return numbers, actions
+
+
+def send_weekly_report_email(to_email: str, report: dict) -> bool:
+    """Email the weekly 5-minute report (issue #2666): up to 5 numbers and 3 actions.
+
+    The opt-out link goes to the authenticated Account page, never an unauthenticated route.
+    """
+    import os
+    base = (os.getenv("LEM_APP_URL") or "https://lem.christopherqueenconsulting.com").rstrip("/")
+    numbers, actions = weekly_report_lines(report)
+    account = _account_url()
+    num_html = "".join(f"<li>{html_escape(n)}</li>" for n in numbers) or "<li>Nothing measured yet</li>"
+    act_html = "".join(f'<li><a href="{html_escape(base + path)}">{html_escape(text)}</a></li>'
+                       for text, path in actions)
+    html = f"""
+    <html><body style="font-family:Arial,Helvetica,sans-serif;color:#222;">
+    <h2>Your week on LinkedIn</h2>
+    <ul>{num_html}</ul>
+    <h3>Do next</h3>
+    <ol>{act_html}</ol>
+    <p style="color:#888;font-size:12px;">Turn this weekly report off in
+    <a href="{html_escape(account)}">your account settings</a>.</p>
+    </body></html>
+    """
+    text_lines = ["Your week on LinkedIn", ""] + [f"- {n}" for n in numbers] + ["", "Do next:"]
+    text_lines += [f"{i}. {t} ({base}{p})" for i, (t, p) in enumerate(actions, 1)]
+    text_lines += ["", f"Turn this off in your account settings: {account}"]
+    return _dispatch_email(to_email, "Your weekly LinkedIn report", html, "\n".join(text_lines))
 
 
 def send_faq_answer_email(to_email: str, question: str, answer: str,

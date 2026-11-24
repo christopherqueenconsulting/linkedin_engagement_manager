@@ -625,6 +625,52 @@
         "title": "BulkDeleteRequest",
         "type": "object"
       },
+      "BulkItem": {
+        "description": "One queue item named by lane and row id.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "lane": {
+            "title": "Lane",
+            "type": "string"
+          }
+        },
+        "required": [
+          "lane",
+          "id"
+        ],
+        "title": "BulkItem",
+        "type": "object"
+      },
+      "BulkReviewRequest": {
+        "description": "Body of `POST /api/review/bulk` \u2014 at most `BULK_CAP` items, one action for all.",
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/BulkItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "session_token": {
+            "title": "Session Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_token",
+          "items",
+          "action"
+        ],
+        "title": "BulkReviewRequest",
+        "type": "object"
+      },
       "BulkUpdateRequest": {
         "description": "Body of `POST /posts/bulk_update/`.\n\nEvery id in `post_ids` is a target the handler proves the session owns (`_require_own_posts`, fails closed)\nbefore any of them is touched.",
         "properties": {
@@ -1507,6 +1553,17 @@
             ],
             "title": "Forbidden Claim Terms"
           },
+          "funnel_stage_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Funnel Stage Mode"
+          },
           "gate_defaults": {
             "$ref": "#/components/schemas/GateDefaults"
           },
@@ -1817,6 +1874,7 @@
           "group_post_mode",
           "followup_step_mode",
           "appreciation_dm_mode",
+          "funnel_stage_mode",
           "roster_auto_connect",
           "hold_repaired_posts_for_review",
           "profile_viewer_dm_auto_send",
@@ -2048,6 +2106,17 @@
               }
             ],
             "title": "Forbidden Claim Terms"
+          },
+          "funnel_stage_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Funnel Stage Mode"
           },
           "group_post_mode": {
             "anyOf": [
@@ -3509,6 +3578,88 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "IcpDefinitionDetail": {
+        "description": "`detail` of `GET`/`PUT /user/icp-definition` (#2655).\n\n`draft` is a suggestion built from the roster and best leads, present only while no definition\nis saved; it is never stored until the user confirms it.",
+        "properties": {
+          "draft": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Draft"
+          },
+          "draft_sample_size": {
+            "title": "Draft Sample Size",
+            "type": "integer"
+          },
+          "icp_builder_enabled": {
+            "title": "Icp Builder Enabled",
+            "type": "boolean"
+          },
+          "icp_definition": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Icp Definition"
+          }
+        },
+        "required": [
+          "icp_builder_enabled",
+          "icp_definition",
+          "draft",
+          "draft_sample_size"
+        ],
+        "title": "IcpDefinitionDetail",
+        "type": "object"
+      },
+      "IcpDefinitionRequest": {
+        "description": "Body of `PUT /user/icp-definition` (#2655). Omitted fields keep what is stored.\n\nA definition is checked against the rubric's own model, so what saves is what the scan reads:\n`{}` clears it, anything else must parse and carry at least one segment with a unique id.",
+        "properties": {
+          "icp_builder_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Icp Builder Enabled"
+          },
+          "icp_definition": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Icp Definition"
+          },
+          "session_token": {
+            "title": "Session Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_token"
+        ],
+        "title": "IcpDefinitionRequest",
         "type": "object"
       },
       "LeadMagnetDetail": {
@@ -5644,6 +5795,23 @@
           "detail"
         ],
         "title": "ResponseModel[EngagementTargetsDetail]",
+        "type": "object"
+      },
+      "ResponseModel_IcpDefinitionDetail_": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/IcpDefinitionDetail"
+          },
+          "status_code": {
+            "title": "Status Code",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status_code",
+          "detail"
+        ],
+        "title": "ResponseModel[IcpDefinitionDetail]",
         "type": "object"
       },
       "ResponseModel_LeadMagnetDetail_": {
@@ -10959,6 +11127,45 @@
         "summary": "Bulk Update Posts Endpoint"
       }
     },
+    "/api/review/bulk": {
+      "post": {
+        "description": "Approve or cancel several queue items; the answer is one `{lane,id,ok,error}` per item.\n\nApproving releases live sends, so the caller-level guard runs first (an agent session is a 403\nfor the whole request) and each item then goes through the same guards as its single-item\nendpoint. A funnel-target cancel aborts that target's WHOLE funnel. A fault on one item is that\nitem's error and never stops the rest.",
+        "operationId": "review_bulk_endpoint_api_review_bulk_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkReviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_list_dict_str__Any___"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Review Bulk Endpoint"
+      }
+    },
     "/api/review/comment-posted": {
       "post": {
         "description": "Record that the human posted an approved candidate's comment.\n\nThe claim is one conditional UPDATE on `status = 'approved'`, so an unapproved, foreign or\nalready-reported candidate is a 409 and writes nothing.",
@@ -10996,6 +11203,102 @@
           }
         },
         "summary": "Comment Posted"
+      }
+    },
+    "/api/review/queue": {
+      "get": {
+        "description": "Every approval waiting on the caller, oldest first; `lane` narrows to one.",
+        "operationId": "review_queue_endpoint_api_review_queue_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "session_token",
+            "required": true,
+            "schema": {
+              "title": "Session Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "lane",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Lane"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_list_dict_str__Any___"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Review Queue Endpoint"
+      }
+    },
+    "/api/review/summary": {
+      "get": {
+        "description": "`{total, stale_48h, oldest_age_hours, by_lane}` for the nav badge.",
+        "operationId": "review_summary_endpoint_api_review_summary_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "session_token",
+            "required": true,
+            "schema": {
+              "title": "Session Token",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Review Summary Endpoint"
       }
     },
     "/api/schedule_dm": {
@@ -12607,6 +12910,83 @@
           }
         },
         "summary": "Update User Groups Endpoint"
+      }
+    },
+    "/api/user/icp-definition": {
+      "get": {
+        "description": "The caller's ICP definition, builder flag and a roster/leads pre-fill draft (issue #2655).",
+        "operationId": "get_icp_definition_endpoint_api_user_icp_definition_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "session_token",
+            "required": true,
+            "schema": {
+              "title": "Session Token",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_IcpDefinitionDetail_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Icp Definition Endpoint"
+      },
+      "put": {
+        "description": "Save the caller's ICP definition and/or builder flag; omitted fields are left as stored.",
+        "operationId": "update_icp_definition_endpoint_api_user_icp_definition_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IcpDefinitionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_IcpDefinitionDetail_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Icp Definition Endpoint"
       }
     },
     "/api/user/lead-magnet": {

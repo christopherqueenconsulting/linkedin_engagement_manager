@@ -83,3 +83,26 @@ def get_planned_tasks(user_id: int, limit: int = 10) -> list[dict]:
 
     tasks.sort(key=lambda t: t["scheduled_time"])
     return tasks[:limit]
+
+
+def get_user_ids_with_pending_review() -> list[int]:
+    """Users with ANY approval waiting across the lanes the Daily review reads (#2625).
+
+    The stale-approval beat's candidate list: a cheap superset (one UNION, ids only) so the beat
+    does not build the full queue for every account. Lane exactness is the registry's job.
+    A read error is the empty list.
+    """
+    try:
+        with _connection.db_cursor() as cursor:
+            cursor.execute(
+                "SELECT user_id FROM scheduled_dms WHERE status = 'pending' UNION "
+                "SELECT user_id FROM connection_requests WHERE status = 'pending' UNION "
+                "SELECT user_id FROM outreach_funnel_targets WHERE status = 'pending' UNION "
+                "SELECT user_id FROM catchup_touches WHERE status = 'pending' UNION "
+                "SELECT user_id FROM posts WHERE status = 'pending' UNION "
+                "SELECT user_id FROM newsletter_editions WHERE status = 'draft' UNION "
+                "SELECT user_id FROM group_post_drafts WHERE status = 'ready'")
+            return [int(r[0]) for r in cursor.fetchall()]
+    except mysql.connector.Error as err:
+        log_error("Could not list users with pending review items", exc=err)
+        return []

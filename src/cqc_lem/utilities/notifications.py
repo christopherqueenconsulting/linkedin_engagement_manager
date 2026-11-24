@@ -116,6 +116,64 @@ def notify_linkedin_token_expiring(user_id: int, days_remaining: Optional[int] =
     return sent
 
 
+MEMBER_ANALYTICS_EMAIL_TIER_KEY = "lem:member_analytics_token_email:{user_id}:{tier}:{expires_on}"
+MEMBER_ANALYTICS_EMAIL_DAILY_KEY = "lem:member_analytics_token_email_daily:{user_id}"
+
+
+def notify_member_analytics_token_expiring(user_id: int, days_remaining: Optional[int],
+                                           expires_on: Optional[str], tier: int) -> bool:
+    """Email the owner that the CMA analytics token is lapsing.
+
+    Once per warning tier (30 and 7 days) per expiry date, and at most once a day. A reconnect
+    changes the expiry date, which restarts both tiers. Redis trouble fails open (the email goes
+    out); a failed send releases the claims so tomorrow's pass retries.
+
+    Returns:
+        True only if an email was actually sent.
+    """
+    keys: list[tuple[str, int]] = [
+        (MEMBER_ANALYTICS_EMAIL_TIER_KEY.format(
+            user_id=user_id, tier=tier, expires_on=(expires_on or "unknown")[:10]), 31 * 86400),
+        (MEMBER_ANALYTICS_EMAIL_DAILY_KEY.format(user_id=user_id), 86400),
+    ]
+    client = None
+    claimed: list[str] = []
+    try:
+        from cqc_lem.utilities.linkedin.rate_limit import shared_redis_client
+        client = shared_redis_client()
+        if client is not None:
+            for key, ttl in keys:
+                if not client.set(key, "1", nx=True, ex=ttl):
+                    for done in claimed:
+                        client.delete(done)
+                    return False
+                claimed.append(key)
+    except Exception as e:
+        log_warning("Could not read analytics token email throttle — sending anyway", exc=e,
+                    user_id=user_id, action_type="token_expiry")
+
+    sent = False
+    try:
+        email = get_user_email(user_id)
+        if email:
+            from cqc_lem.utilities.email import send_member_analytics_token_expiring_email
+            sent = send_member_analytics_token_expiring_email(email, days_remaining, expires_on)
+        if sent:
+            log_info("Sent analytics token-expiring notice", user_id=user_id, tier=tier,
+                     action_type="token_expiry")
+    except Exception as e:
+        log_warning("Could not send analytics token-expiring notice", exc=e, user_id=user_id,
+                    action_type="token_expiry")
+    if not sent and client is not None:
+        try:
+            for done in claimed:
+                client.delete(done)
+        except Exception as e:
+            log_warning("Could not release analytics token email throttle", exc=e,
+                        user_id=user_id, action_type="token_expiry")
+    return sent
+
+
 def notify_onboarding_nudge(user_id: int, nudge: dict) -> bool:
     """Email a stalled user their next-best activation nudge (issue #500). Throttling is the caller's
     job — each nudge is one-shot per user via the onboarding_nudges ledger. Returns True only if an
@@ -316,6 +374,55 @@ def notify_newsletter_cover_pending(user_id: int, edition_id: int, edition_title
         except Exception as e:
             log_warning("Could not release the newsletter cover reminder claim after a failed send",
                         exc=e, user_id=user_id, action_type="newsletter_cover")
+    return sent
+
+
+STALE_APPROVALS_EMAIL_KEY = "lem:stale_approvals_email:{user_id}:{day}"
+
+
+def notify_stale_approvals(user_id: int, summary: dict, stale_hours: int) -> bool:
+    """Email the author the daily stale-approval digest (#2625). ONE per user per UTC day.
+
+    The claim is taken through Redis BEFORE the send and released when the send fails, like
+    `notify_newsletter_cover_pending`. **Fails open**: a Redis outage degrades to at most one email
+    per beat run, never to silence. Returns True only if an email was actually sent.
+    """
+    from datetime import timezone
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    key = STALE_APPROVALS_EMAIL_KEY.format(user_id=user_id, day=day)
+    claimed_client = None
+    try:
+        from cqc_lem.utilities.linkedin.rate_limit import shared_redis_client
+        client = shared_redis_client()
+        if client is not None:
+            if not client.set(key, "1", nx=True, ex=2 * 86400):
+                return False
+            claimed_client = client
+    except Exception as e:
+        log_warning("Could not read the stale-approvals claim — sending anyway", exc=e,
+                    user_id=user_id, action_type="review_digest")
+
+    sent = False
+    try:
+        email = get_user_email(user_id)
+        if email:
+            from cqc_lem.utilities.email import send_stale_approvals_email
+            from cqc_lem.utilities.review_queue import LANE_LABELS
+            by_lane = {LANE_LABELS.get(k, k): n for k, n in summary["by_lane"].items()}
+            sent = send_stale_approvals_email(email, summary["total"], summary["stale_48h"],
+                                              summary["oldest_age_hours"], by_lane, stale_hours)
+        if sent:
+            log_info("Sent stale-approvals digest", user_id=user_id, action_type="review_digest")
+    except Exception as e:
+        log_warning("Could not send the stale-approvals digest", exc=e, user_id=user_id,
+                    action_type="review_digest")
+
+    if not sent and claimed_client is not None:
+        try:
+            claimed_client.delete(key)
+        except Exception as e:
+            log_warning("Could not release the stale-approvals claim after a failed send",
+                        exc=e, user_id=user_id, action_type="review_digest")
     return sent
 
 

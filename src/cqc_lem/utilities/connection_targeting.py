@@ -313,6 +313,67 @@ def apply_icp_rubric(candidates: Iterable[ScoredCandidate], definition: IcpDefin
     return (kept if limit is None else kept[:max(0, int(limit))]), scores, held
 
 
+def rubric_icp_scorer(definition: IcpDefinition):
+    """An `icp_scorer` for `lead_scoring.score_lead` backed by the #2630 rubric (flag-on path).
+
+    A lead is never dropped here, only re-ranked: no facts (or a suspected bot) stays at
+    `ICP_UNKNOWN`, a known hard-filter or segment mismatch scores 0, and a fit scores its total.
+    """
+    def scorer(facts: dict, profile_url: str, engagement: int) -> int:
+        if not has_facts(facts) or suspected_bot(facts):
+            return ICP_UNKNOWN
+        result = score_person(definition, facts, profile_url, warmth=engagement)
+        return result.total if result.eligible else 0
+    return scorer
+
+
+def apply_icp_to_prospects(prospects: Iterable[dict], definition: IcpDefinition,
+                           facts_by_url: dict = None, touched_slugs: Optional[set] = None) -> tuple:
+    """Rubric-rank outreach-funnel prospects (`profile_url`, `name`, `stage`) — flag-on path.
+
+    Returns `(kept, held_urls)`. A COMMENT-stage prospect is a roster author or commenter the user
+    chose to engage, so it is never held or dropped for missing facts: unscraped, it keeps a neutral
+    place after the scored ones. A CONNECT-stage engager with no scraped profile is held for the
+    paced scrape. Dropped: the 90-day cooldown, a scraped profile with no facts, a suspected bot, a
+    hard-filter failure. These only ADD exclusions — the forever dedup stays downstream.
+    """
+    facts_by_slug = {profile_slug(k): v for k, v in (facts_by_url or {}).items() if profile_slug(k)}
+    touched = touched_slugs or set()
+    scored: list = []
+    unscored: list = []
+    held: list = []
+    for p in prospects or []:
+        url = str(p.get("profile_url") or "")
+        slug = profile_slug(url)
+        if slug and slug in touched:
+            continue
+        facts = facts_by_slug.get(slug)
+        if facts is None:
+            (unscored if p.get("stage") == "comment" else held).append(p)
+            continue
+        if not has_facts(facts) or suspected_bot(facts, p.get("name")):
+            continue
+        result = score_person(definition, facts, url)
+        if result.eligible:
+            scored.append((result.total, p))
+    scored.sort(key=lambda t: t[0], reverse=True)
+    return [p for _, p in scored] + unscored, [str(p.get("profile_url")) for p in held if p.get("profile_url")]
+
+
+def rank_roster_suggestions(suggestions: Iterable[dict], definition: IcpDefinition,
+                            facts_by_url: dict = None, touched_slugs: Optional[set] = None,
+                            limit: int = 20) -> list:
+    """Order roster seed suggestions by the #2630 rubric (flag-on path).
+
+    A suggestion is a read-only list for the operator, so an unscraped person is never held or
+    hidden: it keeps a neutral place after the scored ones. Ineligible, bot and cooldown people drop.
+    """
+    ranked, _held = apply_icp_to_prospects(
+        [{**s, "stage": "comment"} for s in suggestions or []], definition,
+        facts_by_url=facts_by_url, touched_slugs=touched_slugs)
+    return [{k: v for k, v in s.items() if k != "stage"} for s in ranked][:max(0, int(limit))]
+
+
 def first_name(name: str = None) -> str:
     """First token of a scraped display name, safe to drop straight into a greeting.
 

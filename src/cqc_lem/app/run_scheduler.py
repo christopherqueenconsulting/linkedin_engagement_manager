@@ -48,6 +48,7 @@ from cqc_lem.app.engagement.outreach import (
 )
 from cqc_lem.app.engagement.posting import (
     auto_publish_occasion_post,
+    check_outcome_reader_disagreement,
     post_to_linkedin,
     sweep_comment_followups,
     sweep_comment_outcomes,
@@ -74,7 +75,6 @@ from cqc_lem.utilities.db import (
     get_due_scheduled_dms,
     get_engagement_preferences,
     get_orphaned_catchup_touches,
-    get_user_ids_with_catchup_touches_in_flight,
     get_orphaned_connection_requests,
     get_orphaned_occasion_claims,
     get_orphaned_scheduled_dms,
@@ -82,6 +82,7 @@ from cqc_lem.utilities.db import (
     get_posts_missing_their_seed_comment,
     get_ready_occasion_posts,
     get_ready_to_post_posts,
+    get_user_ids_with_catchup_touches_in_flight,
     get_user_ids_with_dms_in_flight,
     get_user_timezone,
     get_users_with_reply_mode,
@@ -788,6 +789,11 @@ def dispatch_comment_outcome_sweeps():
             except Exception:
                 due = True
         if due:
+            try:
+                check_outcome_reader_disagreement(user_id)  # DB-only daily tripwire (#2663)
+            except Exception as e:
+                log_warning("Outcome reader disagreement check failed", exc=e, user_id=user_id,
+                            task_name="dispatch_comment_outcome_sweeps")
             sweep_comment_outcomes.apply_async(kwargs={'user_id': user_id},
                                                countdown=dispatch_jitter_seconds())
             dispatched += 1
@@ -824,6 +830,19 @@ def dispatch_comment_candidate_crawls():
                                                  countdown=dispatch_jitter_seconds())
             dispatched += 1
     return f"Candidate crawls dispatched for {dispatched}/{len(users)} user(s)"
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})
+def auto_comment_ramp(self):
+    """Daily comment-volume ramp evaluation for the brand account (#2647, Phase 5).
+
+    Moves the brand's comment ceiling 20 -> 40 -> 70 -> 100 when every gate is clear and back down
+    on a breach. A no-op with `COMMENT_RAMP_ENABLED` off; an unreadable gate holds the step.
+    """
+    from cqc_lem.utilities.brand_account import brand_user_id
+    from cqc_lem.utilities.comment_ramp import evaluate_ramp
+    result = evaluate_ramp(brand_user_id())
+    return f"Comment ramp: {result['move']} at {result['step']}/day ({result['reason']})"
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})
@@ -1513,6 +1532,51 @@ def auto_notify_pending_covers():
 
 
 @shared_task.task
+def auto_notify_stale_approvals():
+    """Daily digest to authors whose approvals have waited past REVIEW_STALE_HOURS (issue #2625).
+
+    Never emails at zero stale items, honours the `review_digest_enabled` opt-out (NULL = on), and
+    is deduped to one email per user per day inside `notify_stale_approvals`.
+    """
+    from cqc_lem.utilities.db import get_review_digest_enabled, get_user_ids_with_pending_review
+    from cqc_lem.utilities.notifications import notify_stale_approvals
+    from cqc_lem.utilities.review_queue import REVIEW_STALE_HOURS, get_review_queue, summarize
+    candidates = get_user_ids_with_pending_review()
+    notified = 0
+    for uid in candidates:
+        try:
+            if not get_review_digest_enabled(uid):
+                continue
+            summary = summarize(get_review_queue(uid))
+            if summary["stale_48h"] and notify_stale_approvals(uid, summary, REVIEW_STALE_HOURS):
+                notified += 1
+        except Exception as e:
+            log_warning("Could not build the stale-approvals digest", exc=e, user_id=uid,
+                        task_name="auto_notify_stale_approvals")
+    # An empty sweep is the normal state, so it stays DEBUG.
+    if notified:
+        log_info(f"Sent {notified} stale-approvals digest(s)",
+                 task_name="auto_notify_stale_approvals")
+    else:
+        log_debug(f"No stale approvals to report ({len(candidates)} candidate(s))",
+                  task_name="auto_notify_stale_approvals")
+    return f"Sent {notified} stale-approvals digest(s)"
+
+
+@shared_task.task
+def auto_weekly_report():
+    """Friday: email each eligible user the weekly 5-minute report (issue #2666).
+
+    Gated per user by `WEEKLY_REPORT_ENABLED` (default OFF) and the `weekly_report_enabled` opt-out;
+    idempotent per user per ISO week via the `weekly_report_sends` claim.
+    """
+    from cqc_lem.utilities.weekly_report import send_weekly_reports
+    result = send_weekly_reports()
+    return (f"Weekly report: sent {result['sent']}, skipped {result['skipped']}, "
+            f"failed {result['failed']}")
+
+
+@shared_task.task
 def regenerate_newsletter_edition(edition_id: int, guidance: str = None):
     """Regenerate ONE queued newsletter edition in place. Generation is a slow lem-complex call, so
     it runs as a task (not inline in the API request). Honors free-text `guidance` when provided
@@ -1957,6 +2021,7 @@ def _rebuild_leads_for_user(user_id: int, days: int = LEAD_ACTIVITY_WINDOW_DAYS)
     """Re-score one user's whole pipeline from existing engagement data. The reset runs first (and
     even when there's no activity at all) so people who went quiet decay out of 'hot'.
     """
+    from cqc_lem.utilities.connection_targeting import rubric_icp_scorer
     from cqc_lem.utilities.db import (
         get_lead_activity,
         get_lead_stage_map,
@@ -1965,6 +2030,7 @@ def _rebuild_leads_for_user(user_id: int, days: int = LEAD_ACTIVITY_WINDOW_DAYS)
         reset_lead_scores,
         upsert_lead,
     )
+    from cqc_lem.utilities.icp_rubric import parse_icp_definition
     from cqc_lem.utilities.lead_scoring import score_leads
 
     # Snapshot BEFORE the reset: it sets every stage to cold, so a diff taken afterwards would
@@ -1979,8 +2045,12 @@ def _rebuild_leads_for_user(user_id: int, days: int = LEAD_ACTIVITY_WINDOW_DAYS)
     prefs = get_engagement_preferences(user_id) or {}
     urls = sorted({r.get("person_profile_url") for r in rows if r.get("person_profile_url")})
     now = datetime.now(timezone.utc).replace(tzinfo=None)
+    # ICP rubric (#2630): flag off, or no usable definition, keeps `icp_fit` exactly as before.
+    definition = (parse_icp_definition(prefs.get("icp_definition"))
+                  if prefs.get("icp_builder_enabled") else None)
     leads = score_leads(rows, now, facts_by_url=get_profile_facts(urls),
-                        target_terms=_lead_target_terms(prefs))
+                        target_terms=_lead_target_terms(prefs),
+                        icp_scorer=rubric_icp_scorer(definition) if definition else None)
     saved = 0
     for lead in leads:
         if upsert_lead(user_id, lead.person_key, person_name=lead.person_name,
@@ -2276,6 +2346,42 @@ def auto_refresh_linkedin_tokens():
              f"connected user(s)", task_name="auto_refresh_linkedin_tokens")
     return (f"Refreshed {refreshed} and emailed {notified} of {len(user_ids)} "
             f"connected user(s)")
+
+
+@shared_task.task
+def auto_watch_member_analytics_tokens():
+    """Email the owner as a CMA analytics token nears expiry.
+
+    Daily. The token has no refresh token, so the email goes out inside 30 days and again inside 7
+    days. An unreadable expiry is unknown and sends nothing.
+    """
+    from cqc_lem.utilities.env_constants import LI_MEMBER_POST_ANALYTICS_USER_IDS
+    from cqc_lem.utilities.linkedin.member_post_analytics import (
+        member_post_analytics_connection_available_for_user,
+    )
+    from cqc_lem.utilities.linkedin.token_refresh import resolve_member_analytics_token_status
+    from cqc_lem.utilities.notifications import notify_member_analytics_token_expiring
+
+    notified = 0
+    checked = 0
+    for user_id in sorted(LI_MEMBER_POST_ANALYTICS_USER_IDS):
+        if not member_post_analytics_connection_available_for_user(user_id):
+            continue
+        try:
+            status = resolve_member_analytics_token_status(user_id)
+            if not status["connected"]:
+                continue
+            checked += 1
+            if status["warning_tier"] is not None and notify_member_analytics_token_expiring(
+                    user_id, status["days_remaining"], status["token_expiry_date"],
+                    status["warning_tier"]):
+                notified += 1
+        except Exception as e:
+            log_warning("Failed to check analytics token expiry", exc=e, user_id=user_id,
+                        task_name="auto_watch_member_analytics_tokens")
+    log_info(f"Analytics tokens: checked {checked}, emailed {notified}",
+             task_name="auto_watch_member_analytics_tokens")
+    return f"Checked {checked} analytics token(s), emailed {notified}"
 
 
 @shared_task.task
@@ -2928,6 +3034,17 @@ def auto_impact_report(self):
 
     result = run_impact_report_sweep()
     return lane_result(TaskOutcome.NO_OP, f"Impact report beat: {result.get('action')}")
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})
+def auto_poll_calendly_bookings(self):
+    """Poll Calendly hourly and move leads to `meeting_booked` or back (#2658).
+
+    Labels and counts only, sends nothing; a no-op unless `BOOKING_HOOK_ENABLED` is set.
+    """
+    from cqc_lem.utilities.booking_hook import poll_all_bookings
+
+    return lane_result(TaskOutcome.NO_OP, poll_all_bookings())
 
 
 if __name__ == "__main__":

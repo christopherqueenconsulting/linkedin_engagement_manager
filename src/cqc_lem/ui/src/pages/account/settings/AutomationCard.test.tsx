@@ -37,7 +37,7 @@ describe('AutomationCard', () => {
   it.each(AUTOMATION_LANES)('round-trips $key through a named confirm step', (lane) => {
     state.eng = {
       nurture_dm_mode: 'pre_review', artifact_dm_mode: 'pre_review', group_post_mode: 'pre_review',
-      followup_step_mode: 'pre_review', appreciation_dm_mode: 'pre_review',
+      followup_step_mode: 'pre_review', appreciation_dm_mode: 'pre_review', funnel_stage_mode: 'pre_review',
     }
     render(<AutomationCard />)
     const row = screen.getByTestId(`automation-${lane.key}`)

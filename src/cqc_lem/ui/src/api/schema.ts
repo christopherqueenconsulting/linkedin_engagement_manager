@@ -1501,6 +1501,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/review/bulk": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Review Bulk Endpoint
+         * @description Approve or cancel several queue items; the answer is one `{lane,id,ok,error}` per item.
+         *
+         *     Approving releases live sends, so the caller-level guard runs first (an agent session is a 403
+         *     for the whole request) and each item then goes through the same guards as its single-item
+         *     endpoint. A funnel-target cancel aborts that target's WHOLE funnel. A fault on one item is that
+         *     item's error and never stops the rest.
+         */
+        post: operations["review_bulk_endpoint_api_review_bulk_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/review/comment-posted": {
         parameters: {
             query?: never;
@@ -1518,6 +1543,46 @@ export interface paths {
          *     already-reported candidate is a 409 and writes nothing.
          */
         post: operations["comment_posted_api_review_comment_posted_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/review/queue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Review Queue Endpoint
+         * @description Every approval waiting on the caller, oldest first; `lane` narrows to one.
+         */
+        get: operations["review_queue_endpoint_api_review_queue_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/review/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Review Summary Endpoint
+         * @description `{total, stale_48h, oldest_age_hours, by_lane}` for the nav badge.
+         */
+        get: operations["review_summary_endpoint_api_review_summary_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2332,6 +2397,30 @@ export interface paths {
          * @description Save the per-group commenting/posting toggles.
          */
         put: operations["update_user_groups_endpoint_api_user_groups_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/user/icp-definition": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Icp Definition Endpoint
+         * @description The caller's ICP definition, builder flag and a roster/leads pre-fill draft (issue #2655).
+         */
+        get: operations["get_icp_definition_endpoint_api_user_icp_definition_get"];
+        /**
+         * Update Icp Definition Endpoint
+         * @description Save the caller's ICP definition and/or builder flag; omitted fields are left as stored.
+         */
+        put: operations["update_icp_definition_endpoint_api_user_icp_definition_put"];
         post?: never;
         delete?: never;
         options?: never;
@@ -3973,6 +4062,28 @@ export interface components {
             session_token?: string | null;
         };
         /**
+         * BulkItem
+         * @description One queue item named by lane and row id.
+         */
+        BulkItem: {
+            /** Id */
+            id: number;
+            /** Lane */
+            lane: string;
+        };
+        /**
+         * BulkReviewRequest
+         * @description Body of `POST /api/review/bulk` — at most `BULK_CAP` items, one action for all.
+         */
+        BulkReviewRequest: {
+            /** Action */
+            action: string;
+            /** Items */
+            items: components["schemas"]["BulkItem"][];
+            /** Session Token */
+            session_token: string;
+        };
+        /**
          * BulkUpdateRequest
          * @description Body of `POST /posts/bulk_update/`.
          *
@@ -4330,6 +4441,8 @@ export interface components {
             followup_step_mode: string | null;
             /** Forbidden Claim Terms */
             forbidden_claim_terms: string[] | null;
+            /** Funnel Stage Mode */
+            funnel_stage_mode: string | null;
             gate_defaults: components["schemas"]["GateDefaults"];
             gmail_forward_confirmation: components["schemas"]["GmailForwardConfirmation"] | null;
             /** Group Post Mode */
@@ -4517,6 +4630,8 @@ export interface components {
             followup_step_mode?: string | null;
             /** Forbidden Claim Terms */
             forbidden_claim_terms?: string[] | null;
+            /** Funnel Stage Mode */
+            funnel_stage_mode?: string | null;
             /** Group Post Mode */
             group_post_mode?: string | null;
             /**
@@ -5150,6 +5265,44 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * IcpDefinitionDetail
+         * @description `detail` of `GET`/`PUT /user/icp-definition` (#2655).
+         *
+         *     `draft` is a suggestion built from the roster and best leads, present only while no definition
+         *     is saved; it is never stored until the user confirms it.
+         */
+        IcpDefinitionDetail: {
+            /** Draft */
+            draft: {
+                [key: string]: unknown;
+            } | null;
+            /** Draft Sample Size */
+            draft_sample_size: number;
+            /** Icp Builder Enabled */
+            icp_builder_enabled: boolean;
+            /** Icp Definition */
+            icp_definition: {
+                [key: string]: unknown;
+            } | null;
+        };
+        /**
+         * IcpDefinitionRequest
+         * @description Body of `PUT /user/icp-definition` (#2655). Omitted fields keep what is stored.
+         *
+         *     A definition is checked against the rubric's own model, so what saves is what the scan reads:
+         *     `{}` clears it, anything else must parse and carry at least one segment with a unique id.
+         */
+        IcpDefinitionRequest: {
+            /** Icp Builder Enabled */
+            icp_builder_enabled?: boolean | null;
+            /** Icp Definition */
+            icp_definition?: {
+                [key: string]: unknown;
+            } | null;
+            /** Session Token */
+            session_token: string;
         };
         /**
          * LeadMagnetDetail
@@ -6041,6 +6194,12 @@ export interface components {
         /** ResponseModel[EngagementTargetsDetail] */
         ResponseModel_EngagementTargetsDetail_: {
             detail: components["schemas"]["EngagementTargetsDetail"];
+            /** Status Code */
+            status_code: number;
+        };
+        /** ResponseModel[IcpDefinitionDetail] */
+        ResponseModel_IcpDefinitionDetail_: {
+            detail: components["schemas"]["IcpDefinitionDetail"];
             /** Status Code */
             status_code: number;
         };
@@ -9381,6 +9540,39 @@ export interface operations {
             };
         };
     };
+    review_bulk_endpoint_api_review_bulk_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BulkReviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_list_dict_str__Any___"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     comment_posted_api_review_comment_posted_post: {
         parameters: {
             query?: never;
@@ -9393,6 +9585,69 @@ export interface operations {
                 "application/json": components["schemas"]["CommentPostedRequest"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    review_queue_endpoint_api_review_queue_get: {
+        parameters: {
+            query: {
+                session_token: string;
+                lane?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_list_dict_str__Any___"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    review_summary_endpoint_api_review_summary_get: {
+        parameters: {
+            query: {
+                session_token: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {
@@ -10818,6 +11073,70 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ResponseModel_str_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_icp_definition_endpoint_api_user_icp_definition_get: {
+        parameters: {
+            query: {
+                session_token: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_IcpDefinitionDetail_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_icp_definition_endpoint_api_user_icp_definition_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IcpDefinitionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_IcpDefinitionDetail_"];
                 };
             };
             /** @description Validation Error */

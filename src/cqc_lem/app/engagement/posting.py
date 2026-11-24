@@ -94,9 +94,9 @@ from cqc_lem.utilities.db import (
     count_scheduled_dms_created_today,
     get_carousel_slides,
     get_comment_followup,
+    get_comment_outcome_backfill_targets,
     get_comment_outcome_targets,
     get_engagement_preferences,
-    get_latest_post_stats,
     get_lead_magnet_settings,
     get_linkedin_profile_url_by_user_id,
     get_post_archetype,
@@ -110,6 +110,7 @@ from cqc_lem.utilities.db import (
     get_post_url_from_log_for_user,
     get_post_user_id,
     get_post_video_url,
+    get_reader_disagreements,
     get_recent_commented_rows_with_text,
     get_recent_navigable_commented_posts,
     get_recent_posted_post_ids,
@@ -126,6 +127,7 @@ from cqc_lem.utilities.db import (
     own_comment_count_or_none,
     record_comment_followup,
     record_comment_outcome,
+    record_connection_accepted,
     record_follower_stat,
     record_lead_magnet_sent,
     record_post_stats,
@@ -191,11 +193,12 @@ from cqc_lem.utilities.linkedin.composer import (
     _type_and_submit_reply,
     comment_author_identity,
 )
-from cqc_lem.utilities.linkedin.helper import can_open_dm_thread
+from cqc_lem.utilities.linkedin.helper import can_open_dm_thread, is_first_degree
 from cqc_lem.utilities.linkedin.member_post_analytics import (
     fetch_member_post_analytics,
     get_member_post_analytics_access_token,
     log_member_post_analytics_failure,
+    log_member_post_analytics_summary,
     member_post_analytics_enabled_for_user,
     member_post_analytics_max_posts_per_sweep,
 )
@@ -225,6 +228,7 @@ from cqc_lem.utilities.observability import (
     llm_attribution,
     track_audience_snapshot,
     track_comment_outcome,
+    track_outcome_reader_disagreement,
     track_post_outcome,
     track_selector_evidence,
 )
@@ -252,6 +256,7 @@ __all__ = [
     "reconcile_recent_comment_urns",
     "sweep_comment_followups",
     "sweep_comment_outcomes",
+    "check_outcome_reader_disagreement",
     "sweep_reply_comments",
     "update_stale_profile",
     # The reply amplifier's vocabulary. Nothing INSIDE this module reads these three — they are the
@@ -456,9 +461,7 @@ def _swap_post_stats_session(user_id: int, old_driver) -> Tuple[Optional[object]
 
 
 def _scrape_one_post_stats(driver: WebDriver, user_id: int, pid: int, url: str,
-                           post_types: dict[int, Any], shipped_variants: dict[int, Any],
-                           api_access_token: Optional[str] = None,
-                           api_state: Optional[dict[str, Any]] = None) -> bool:
+                           post_types: dict[int, Any], shipped_variants: dict[int, Any]) -> bool:
     """Read one post's detail + analytics pages and record its stats. True when a row was written.
 
     A crashed tab raises out of here (from either navigation) so the sweep can reopen the session
@@ -477,16 +480,6 @@ def _scrape_one_post_stats(driver: WebDriver, user_id: int, pid: int, url: str,
     # the analytics view doesn't render can't zero out one the detail page did.
     for key, val in _post_analytics_counts(driver, url).items():
         counts[key] = max(counts.get(key) or 0, val)
-    api_counts = {}
-    if api_access_token and not (api_state or {}).get("disabled", False):
-        api_counts, api_failure = fetch_member_post_analytics(
-            url, api_access_token, LI_API_VERSION)
-        for key, val in api_counts.items():
-            counts[key] = max(counts.get(key) or 0, val)
-        if api_failure:
-            log_member_post_analytics_failure(api_failure, user_id, pid)
-            if api_state is not None:
-                api_state["disabled"] = True
     # WHICH signals the two pages put a number against, as opposed to what those numbers
     # were (issue #2023). `_post_social_counts` flattens a label it never found to 0, which
     # is right for scoring and wrong for a stored reading: "the analytics page rendered no
@@ -495,8 +488,7 @@ def _scrape_one_post_stats(driver: WebDriver, user_id: int, pid: int, url: str,
     # text is readable here without navigating again — the same thing the zero-walk
     # cross-check below already relies on.
     seen = (_rendered_signal_labels(detail_text)
-            | _rendered_signal_labels(_main_text(driver))
-            | set(api_counts))
+            | _rendered_signal_labels(_main_text(driver)))
     # NOTHING parsed (a readable page always yields the full zero-filled dict) means the page
     # never rendered — auth wall, 429, dead permalink — not that the post earned nothing.
     # Recording those zeros publishes a fabricated row to the analytics panel, and for a
@@ -510,7 +502,7 @@ def _scrape_one_post_stats(driver: WebDriver, user_id: int, pid: int, url: str,
     # layout score identically. Ask the page — the analytics view is the one on screen now,
     # so both texts are cross-checked — and leave a drifted read uncaptured for the same
     # reason an unreadable one is left: a written zero is permanent for a backfilled post.
-    if not any(counts.values()) and not api_counts:
+    if not any(counts.values()):
         texts = [text for text in (detail_text, _main_text(driver)) if text is not None]
         native = sum(_rendered_count_signals(text) for text in texts) if texts else None
         if _grade_zero_walk(native, "Post social-count parse", user_id=user_id,
@@ -542,7 +534,6 @@ def _record_member_api_post_stats(user_id: int, post_id: int, post_url: str,
                                   post_types: dict[int, Any], shipped_variants: dict[int, Any],
                                   api_counts: dict[str, Optional[int]]) -> bool:
     """Persist complete API totals; reject partial reads because missing is not zero."""
-    previous = get_latest_post_stats(user_id, post_id) or {}
     counts = {}
     # API totals must be complete before one snapshot is written; Selenium reads visible card
     # values and preserves absent metrics as NULL, so its capture path has different semantics.
@@ -550,23 +541,16 @@ def _record_member_api_post_stats(user_id: int, post_id: int, post_url: str,
         current = api_counts.get(name)
         if current is None:
             return False
-        prior = previous.get(name)
-        counts[name] = max(current, prior if isinstance(prior, int) else 0)
+        counts[name] = current
 
     # This helper reads the saved post comments from MySQL; it never opens Selenium.
     own_comments = own_comment_count_or_none(user_id, post_url)
-    recorded = record_post_stats(
+    # Its own `source='api'` row, never merged with a scraped one and never sent to PostHog (#2702,
+    # LinkedIn's API terms).
+    return record_post_stats(
         user_id, post_id, counts["reactions"], counts["comments"],
         reposts=counts["reposts"], impressions=counts["impressions"],
-        saves=counts["saves"], own_comments=own_comments)
-    if not recorded:
-        return False
-    track_post_outcome(
-        post_id=post_id, reactions=counts["reactions"], comments=counts["comments"],
-        reposts=counts["reposts"], impressions=counts["impressions"] or None,
-        saves=counts["saves"], own_comments=own_comments, user_id=user_id,
-        post_type=post_types.get(post_id), variant_key=shipped_variants.get(post_id))
-    return True
+        saves=counts["saves"], own_comments=own_comments, source="api")
 
 
 def _post_stats_capture_summary(total_captured: int, api_captured: int) -> str:
@@ -607,7 +591,6 @@ def auto_scrape_post_stats(self, user_id: int) -> str:
     # (issue #1513), so reach and saves are readable per format instead of pooled.
     post_types = get_post_types_for_user(user_id)
     api_access_token = None
-    api_state = {"disabled": False}
     api_max_posts = 0
     api_posts_attempted = 0
     api_captured = 0
@@ -619,6 +602,8 @@ def auto_scrape_post_stats(self, user_id: int) -> str:
             api_access_token = get_member_post_analytics_access_token(user_id)
     if api_access_token and api_max_posts:
         api_only_ids = set()
+        api_metrics_read = 0
+        api_failures = 0
         for pid in post_ids:
             if api_posts_attempted >= api_max_posts:
                 break
@@ -628,14 +613,17 @@ def auto_scrape_post_stats(self, user_id: int) -> str:
             api_posts_attempted += 1
             api_counts, api_failure = fetch_member_post_analytics(
                 url, api_access_token, LI_API_VERSION)
+            api_metrics_read += len(api_counts)
             if api_failure:
                 log_member_post_analytics_failure(api_failure, user_id, pid)
-                api_state["disabled"] = True
+                api_failures += 1
                 break
             if _record_member_api_post_stats(
                     user_id, pid, url, post_types, shipped_variants, api_counts):
                 api_only_ids.add(pid)
                 api_captured += 1
+        log_member_post_analytics_summary(user_id, api_posts_attempted, api_captured,
+                                          api_metrics_read, api_failures)
         if api_only_ids:
             post_ids = [pid for pid in post_ids if pid not in api_only_ids]
     if not post_ids:
@@ -697,13 +685,8 @@ def auto_scrape_post_stats(self, user_id: int) -> str:
                                        f"not be reopened")
                 read_on_session = 0
             try:
-                post_api_token = (api_access_token if api_access_token
-                                  and api_posts_attempted < api_max_posts else None)
-                if post_api_token:
-                    api_posts_attempted += 1
                 recorded = _scrape_one_post_stats(
-                    driver, user_id, pid, url, post_types, shipped_variants,
-                    api_access_token=post_api_token, api_state=api_state)
+                    driver, user_id, pid, url, post_types, shipped_variants)
             except Exception as e:
                 if is_proxy_tunnel_failure(e):
                     log_warning(f"Post stats scrape ended after {scraped} of {len(post_ids)} post(s) — "
@@ -1292,6 +1275,10 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
                           user_id=user_id, post_id=post_id, comment_text=short_comment_text)
             elif _ename.lower() != (my_profile.full_name or "").lower():
                 upsert_engager(user_id, _ename, _eprofile, connection_degree=_edegree)
+                if _eprofile and is_first_degree(_edegree or ""):
+                    # Opportunistic acceptance (#2658): the badge was already on this card, so a
+                    # sent invite to this person is accepted. No navigation is added for it.
+                    record_connection_accepted(user_id, _eprofile)
                 # Inbound intent (#483): this commenter may be raising their hand — flag + draft.
                 if leads_flagged < _MAX_LEAD_FLAGS_PER_SWEEP and _flag_lead_signal(
                         user_id, comment_text, LeadSignalSource.POST_COMMENT, f"post:{post_id}",
@@ -2420,6 +2407,10 @@ def _read_comment_outcome(driver, wait, user_id: int, post_url: str, our_slug: s
     outcome = {"status": "checked", "skip_reason": None, "author_replied": False,
                "reply_count": 0, "like_count": 0, "visible_most_relevant": None,
                "our_reply_sent": False}
+    # Stamped up front so a SKIPPED v2 attempt is a v2 row, not an unread v1 one the backfill would
+    # select again forever (#2663).
+    if comment_outcome_reader_v2():
+        outcome["reader_version"] = 2
     driver.get(post_url)
     time.sleep(random.uniform(2.5, 4))
     _load_comment_thread(driver)
@@ -2506,6 +2497,24 @@ def sweep_comment_outcomes(self, user_id: int):
     return _run_comment_outcomes_sweep(user_id)
 
 
+def check_outcome_reader_disagreement(user_id: int) -> int:
+    """Daily tripwire (#2663): the follow-up sweep saw replies on a post whose latest v2 outcome says 0.
+
+    DB-only, no browser. A no-op while `COMMENT_OUTCOME_READER_V2` is off (v1 zeros are unscored).
+    Logs ONE warning per user and emits `outcome_reader_disagreement`; returns the disagreement count.
+    """
+    if not comment_outcome_reader_v2():
+        return 0
+    found = get_reader_disagreements(user_id)
+    bad = int(found.get("disagreeing_posts") or 0)
+    if bad <= 0:
+        return 0
+    log_warning("Comment outcome reader disagrees with the follow-up sweep: replies seen, reader read none",
+                user_id=user_id, task_name="check_outcome_reader_disagreement")
+    track_outcome_reader_disagreement(user_id, bad, int(found.get("followup_posts") or 0))
+    return bad
+
+
 def _run_comment_outcomes_sweep(user_id: int) -> str:
     """Body of sweep_comment_outcomes, extracted so it is unit-testable without the QueueOnce/Redis
     task wrapper.
@@ -2513,6 +2522,13 @@ def _run_comment_outcomes_sweep(user_id: int) -> str:
     targets = get_comment_outcome_targets(user_id, min_age_hours=_OUTCOME_MIN_AGE_HOURS,
                                           max_age_hours=_OUTCOME_MAX_AGE_HOURS,
                                           limit=_MAX_OUTCOME_CHECKS_PER_RUN)
+    # v2 backfill (#2663): spare capacity in this run's cap re-reads v1-only comments, known
+    # positives first. New comments always take the slots first; the cap is shared, never exceeded.
+    spare = _MAX_OUTCOME_CHECKS_PER_RUN - len(targets)
+    if spare > 0 and comment_outcome_reader_v2():
+        targets = targets + get_comment_outcome_backfill_targets(
+            user_id, min_age_hours=_OUTCOME_MIN_AGE_HOURS,
+            max_age_hours=_OUTCOME_MAX_AGE_HOURS, limit=spare)
     if not targets:
         return "No comments due an outcome check"
     lock_name = f"sweep_comment_outcomes:{user_id}"

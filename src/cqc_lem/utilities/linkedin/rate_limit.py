@@ -22,6 +22,8 @@ from cqc_lem.utilities.logger import log_info, log_warning
 _COOLDOWN_KEY = "linkedin:429_cooldown"
 _TRIP_COUNT_KEY = "linkedin:429_trip_count"   # consecutive trips → escalating cooldown
 _PAUSE_KEY = "linkedin:automation_paused"     # manual global Selenium pause
+_LAST_TRIP_KEY = "linkedin:429_last_trip"   # unix time of the latest trip, for the comment ramp
+_LAST_TRIP_TTL_SECONDS = 14 * 24 * 3600
 _DEFAULT_COOLDOWN_SECONDS = 1800  # 30 min
 _DEFAULT_MAX_COOLDOWN_SECONDS = 6 * 60 * 60  # cap the escalation at 6h
 # Grace window added to the cooldown when setting the consecutive-trip counter's TTL. The counter is
@@ -198,6 +200,10 @@ def mark_rate_limited(reason: str = "") -> None:
             # just means slightly less-precise self-reset timing, not a broken breaker. Swallow it.
             pass
         client.set(_COOLDOWN_KEY, reason or "429", ex=seconds)
+        try:
+            client.setex(_LAST_TRIP_KEY, _LAST_TRIP_TTL_SECONDS, str(int(time.time())))
+        except Exception:
+            pass  # the ramp reads a missing stamp as unknown and holds, so a lost write is safe
         log_warning(f"LinkedIn 429 circuit breaker OPEN for {seconds}s (consecutive trip #{trips}) "
                     "— Selenium engagement paused", action_type="rate_limit", http_status=429)
         # The warning above stops at the log; PostHog only forwards ERROR and up by default. Emit
@@ -214,6 +220,26 @@ def mark_rate_limited(reason: str = "") -> None:
                         action_type="rate_limit")
     except Exception as e:
         log_warning("Failed to set LinkedIn 429 circuit breaker", exc=e, action_type="rate_limit")
+
+
+def seconds_since_last_rate_limit() -> "int | None":
+    """Seconds since the breaker last tripped, within the 14-day memory.
+
+    Returns:
+        0+ when a trip is remembered; None when none is remembered OR Redis is unreadable. The two
+        are indistinguishable here on purpose — the comment ramp treats None as unknown and holds.
+    """
+    client = _redis_client()
+    if client is None:
+        return None
+    try:
+        raw = client.get(_LAST_TRIP_KEY)
+        if raw is None:
+            return None
+        text = raw.decode("utf-8", "ignore") if isinstance(raw, bytes) else str(raw)
+        return max(0, int(time.time()) - int(text))
+    except Exception:
+        return None
 
 
 def rate_limit_cooldown_remaining() -> int:
