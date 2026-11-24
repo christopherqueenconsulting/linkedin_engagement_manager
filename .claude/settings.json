@@ -78,7 +78,7 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PROJECT_DIR:-.}/.claude/helpers/graft-hooks.cjs\" post-edit",
-            "timeout": 10000
+            "timeout": 10
           }
         ]
       },
@@ -88,7 +88,7 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PROJECT_DIR:-.}/.claude/helpers/graft-hooks.cjs\" tool-savings",
-            "timeout": 8000
+            "timeout": 8
           }
         ]
       }
@@ -99,7 +99,7 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PROJECT_DIR:-.}/.claude/helpers/graft-hooks.cjs\" prompt",
-            "timeout": 15000
+            "timeout": 15
           }
         ]
       }
@@ -110,7 +110,7 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PROJECT_DIR:-.}/.claude/helpers/graft-hooks.cjs\" session-start",
-            "timeout": 8000
+            "timeout": 8
           }
         ]
       }
@@ -121,7 +121,7 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PROJECT_DIR:-.}/.claude/helpers/graft-hooks.cjs\" stop",
-            "timeout": 8000
+            "timeout": 8
           }
         ]
       }
