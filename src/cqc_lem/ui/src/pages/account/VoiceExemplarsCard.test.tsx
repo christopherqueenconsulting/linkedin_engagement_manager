@@ -2,7 +2,8 @@ import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest'
 import type { ReactNode } from 'react'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import VoiceExemplarsCard, { MAX_EXPORT_BYTES, summarize } from './VoiceExemplarsCard'
+import VoiceExemplarsCard, { MAX_EXPORT_BYTES } from './VoiceExemplarsCard'
+import { summarize } from './voiceExemplarsSummary'
 
 const post = vi.fn()
 vi.mock('../../api/client', () => ({ default: { post: (...args: unknown[]) => post(...args) } }))

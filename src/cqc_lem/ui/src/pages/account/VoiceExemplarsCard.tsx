@@ -4,6 +4,7 @@ import { useMutation } from '@tanstack/react-query'
 import api from '../../api/client'
 import { useAuth } from '../../contexts/useAuth'
 import SettingsCard from '../../components/SettingsCard'
+import { summarize, type IngestResult } from './voiceExemplarsSummary'
 
 // Mirrors `voice_exemplars.MAX_UPLOAD_BYTES`; the server is the authority, this only saves a round trip.
 export const MAX_EXPORT_BYTES = 5 * 1024 * 1024
@@ -12,27 +13,6 @@ const KINDS = [
   { key: 'comments', label: 'Comments.csv', hint: 'Your comments on other people’s posts' },
   { key: 'shares', label: 'Shares.csv', hint: 'Posts you wrote yourself' },
 ] as const
-
-interface IngestResult {
-  received: number
-  stored: number
-  duplicate: number
-  too_short_or_long: number
-  over_cap: number
-  embed_failed: number
-  unavailable?: boolean
-}
-
-export const summarize = (r: IngestResult): string => {
-  if (r.unavailable) return 'Could not read your saved examples right now — try again in a minute.'
-  const skipped: string[] = []
-  if (r.duplicate) skipped.push(`${r.duplicate} already saved`)
-  if (r.too_short_or_long) skipped.push(`${r.too_short_or_long} too short or too long`)
-  if (r.over_cap) skipped.push(`${r.over_cap} over the upload limit`)
-  if (r.embed_failed) skipped.push(`${r.embed_failed} could not be processed — upload again to retry`)
-  const head = `Saved ${r.stored} of ${r.received} rows.`
-  return skipped.length ? `${head} Skipped: ${skipped.join(', ')}.` : head
-}
 
 const errorText = (err: unknown): string => {
   if (isAxiosError(err)) {
