@@ -19,7 +19,7 @@ import hashlib
 import math
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Iterable, Optional
 
 from cqc_lem.utilities.ai.ai_helper import generate_lead_response
@@ -355,6 +355,37 @@ def group_activity(rows: Iterable[dict]) -> dict:
                                                  occurred_at=row.get("occurred_at"),
                                                  detail=str(row.get("detail") or "")))
     return people
+
+
+ATTRIBUTION_WINDOW_DAYS = 30
+# Kinds that are a LEM-side or lead-side touch worth crediting. FUNNEL is a state, not an event.
+TOUCH_KINDS = (LeadSignalKind.PROFILE_VIEW, LeadSignalKind.CONNECT, LeadSignalKind.DM,
+               LeadSignalKind.ENGAGED, LeadSignalKind.INTENT, "reply")
+ATTRIBUTED = "attributed"
+UNATTRIBUTED = "unattributed"
+
+
+def _touch_label(a: LeadActivity) -> str:
+    """`<kind>@<UTC ISO time>`, the stored form of a touch."""
+    return f"{a.kind}@{a.occurred_at.replace(microsecond=0).isoformat()}"
+
+
+def attribute_touches(activities: Iterable[LeadActivity], booked_at: datetime,
+                      window_days: int = ATTRIBUTION_WINDOW_DAYS) -> dict:
+    """First and last touch inside `window_days` before a booked call.
+
+    Only dated touches at or before `booked_at` count. No touch means `unattributed` with both
+    touches None: never a guess.
+    """
+    start = booked_at - timedelta(days=window_days)
+    touches = sorted((a for a in activities or []
+                      if a.kind in TOUCH_KINDS and a.occurred_at is not None
+                      and start <= a.occurred_at <= booked_at),
+                     key=lambda a: a.occurred_at)
+    if not touches:
+        return {"attribution": UNATTRIBUTED, "first_touch": None, "last_touch": None}
+    return {"attribution": ATTRIBUTED, "first_touch": _touch_label(touches[0]),
+            "last_touch": _touch_label(touches[-1])}
 
 
 def score_leads(rows: Iterable[dict], now: datetime, facts_by_url: dict = None,

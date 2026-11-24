@@ -22,6 +22,7 @@ from cqc_lem.utilities.db import (
     get_comment_log_times,
     get_comment_outcomes,
     get_follower_stats,
+    get_weekly_conversion_counts,
     get_weekly_engager_icp_scores,
     get_weekly_post_rows,
 )
@@ -46,8 +47,7 @@ NOT_MEASURED_LABELS = {
     "icp_share_delta": "ICP share week over week (engager history is not kept)",
     "saves": "saves (official analytics read not enabled)",
     "sends": "sends (official analytics read not enabled)",
-    "new_conversations": "new conversations (reply detection not trustworthy yet)",
-    "calls_booked": "calls booked (no meeting stage yet)",
+    "new_conversations": "new conversations and calls booked (lead events could not be read)",
     "comment_volume": "comments per day by mode (comment or Assist records unreadable)",
     "review_seconds": "seconds per review decision (too few approvals in one sitting)",
     "comment_outcomes": "comment outcome rates (no checked comments)",
@@ -56,7 +56,7 @@ NOT_MEASURED_LABELS = {
 REVIEW_SITTING_GAP_S = 300
 REVIEW_MIN_GAPS = 3
 # Always unmeasured in phase 1: named every week so a silence is never read as a zero.
-_ALWAYS_NOT_MEASURED = ("icp_share_delta", "saves", "sends", "new_conversations", "calls_booked")
+_ALWAYS_NOT_MEASURED = ("icp_share_delta", "saves", "sends")
 
 
 def _week_numbers(rows: Optional[Sequence[Mapping[str, Any]]]) -> dict:
@@ -205,6 +205,7 @@ def build_weekly_report(
     comment_log_times: Optional[Sequence[datetime]] = None,
     assist_activity: Optional[Mapping[str, Sequence[datetime]]] = None,
     outcome_rows: Optional[Sequence[Mapping[str, Any]]] = None,
+    conversions: Optional[Mapping[str, int]] = None,
 ) -> dict:
     """The report payload. Pure: no I/O, every unreadable input is None and listed in `not_measured`."""
     this_week = _week_numbers(this_week_rows)
@@ -226,9 +227,12 @@ def build_weekly_report(
         missing.append("review_seconds")
     if volume["outcomes"] is None:
         missing.append("comment_outcomes")
+    if conversions is None:
+        missing.append("new_conversations")
     missing.extend(_ALWAYS_NOT_MEASURED)
 
     return {
+        "conversions": dict(conversions) if conversions is not None else None,
         "comment_volume": volume,
         "week_start": week_start.isoformat(),
         "week_end": week_end.isoformat(),
@@ -327,4 +331,5 @@ def load_weekly_report(user_id: int, now: Optional[datetime] = None) -> dict:
         assist_activity=get_assist_activity(user_id, start, end),
         # get_comment_outcomes returns [] on a fault, so an empty list reads as unknown here.
         outcome_rows=get_comment_outcomes(user_id, days=7),
+        conversions=get_weekly_conversion_counts(user_id, start, end),
     )
