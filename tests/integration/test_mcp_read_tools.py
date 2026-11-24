@@ -129,6 +129,10 @@ async def _session(token: str) -> AsyncIterator[ClientSession]:
                 yield session
 
 
+# Quarantined (non-strict xfail): intermittently reads `[]` for a just-committed post under
+# `-n 4 --dist loadfile`, even after the fixture's reset_connection_pool(). Root cause is open in
+# #2732; until then it must not fail unrelated PRs. It still runs, and an XPASS is reported.
+@pytest.mark.xfail(reason="intermittent stale/empty read of a committed row, #2732", strict=False)
 async def test_initialize_list_and_call_with_the_real_client(users: Any) -> None:
     token = _token(users["a"])
     async with _session(token) as session:
