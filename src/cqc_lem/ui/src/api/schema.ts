@@ -1501,6 +1501,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/review/bulk": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Review Bulk Endpoint
+         * @description Approve or cancel several queue items; the answer is one `{lane,id,ok,error}` per item.
+         *
+         *     Approving releases live sends, so the caller-level guard runs first (an agent session is a 403
+         *     for the whole request) and each item then goes through the same guards as its single-item
+         *     endpoint. A funnel-target cancel aborts that target's WHOLE funnel. A fault on one item is that
+         *     item's error and never stops the rest.
+         */
+        post: operations["review_bulk_endpoint_api_review_bulk_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/review/comment-posted": {
         parameters: {
             query?: never;
@@ -4035,6 +4060,28 @@ export interface components {
             rejection_reason?: string | null;
             /** Session Token */
             session_token?: string | null;
+        };
+        /**
+         * BulkItem
+         * @description One queue item named by lane and row id.
+         */
+        BulkItem: {
+            /** Id */
+            id: number;
+            /** Lane */
+            lane: string;
+        };
+        /**
+         * BulkReviewRequest
+         * @description Body of `POST /api/review/bulk` — at most `BULK_CAP` items, one action for all.
+         */
+        BulkReviewRequest: {
+            /** Action */
+            action: string;
+            /** Items */
+            items: components["schemas"]["BulkItem"][];
+            /** Session Token */
+            session_token: string;
         };
         /**
          * BulkUpdateRequest
@@ -9481,6 +9528,39 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    review_bulk_endpoint_api_review_bulk_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BulkReviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_list_dict_str__Any___"];
+                };
             };
             /** @description Validation Error */
             422: {

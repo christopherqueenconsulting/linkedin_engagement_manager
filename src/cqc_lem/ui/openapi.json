@@ -625,6 +625,52 @@
         "title": "BulkDeleteRequest",
         "type": "object"
       },
+      "BulkItem": {
+        "description": "One queue item named by lane and row id.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "lane": {
+            "title": "Lane",
+            "type": "string"
+          }
+        },
+        "required": [
+          "lane",
+          "id"
+        ],
+        "title": "BulkItem",
+        "type": "object"
+      },
+      "BulkReviewRequest": {
+        "description": "Body of `POST /api/review/bulk` \u2014 at most `BULK_CAP` items, one action for all.",
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/BulkItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "session_token": {
+            "title": "Session Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_token",
+          "items",
+          "action"
+        ],
+        "title": "BulkReviewRequest",
+        "type": "object"
+      },
       "BulkUpdateRequest": {
         "description": "Body of `POST /posts/bulk_update/`.\n\nEvery id in `post_ids` is a target the handler proves the session owns (`_require_own_posts`, fails closed)\nbefore any of them is touched.",
         "properties": {
@@ -11079,6 +11125,45 @@
           }
         },
         "summary": "Bulk Update Posts Endpoint"
+      }
+    },
+    "/api/review/bulk": {
+      "post": {
+        "description": "Approve or cancel several queue items; the answer is one `{lane,id,ok,error}` per item.\n\nApproving releases live sends, so the caller-level guard runs first (an agent session is a 403\nfor the whole request) and each item then goes through the same guards as its single-item\nendpoint. A funnel-target cancel aborts that target's WHOLE funnel. A fault on one item is that\nitem's error and never stops the rest.",
+        "operationId": "review_bulk_endpoint_api_review_bulk_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkReviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_list_dict_str__Any___"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Review Bulk Endpoint"
       }
     },
     "/api/review/comment-posted": {
