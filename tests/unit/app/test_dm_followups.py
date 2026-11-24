@@ -180,6 +180,27 @@ class TestProcessUserFollowups:
         mark.assert_called_once_with(1, "stopped")
         dm.apply_async.assert_not_called()
 
+    @pytest.mark.parametrize("message", ["thanks!", None])
+    def test_reply_writes_one_dm_reply_event_keyed_on_the_message(self, message):
+        from cqc_lem.app.engagement.outreach import process_user_followups
+        with patch(f"{_OUT}.get_due_followups", return_value=[_due()]), \
+             patch(f"{_OUT}.get_current_profile", return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_OUT}.quit_gracefully"), patch(f"{_OUT}.time.sleep"), patch(f"{_OUT}.insert_new_log"), \
+             patch(f"{_OUT}.resolve_self_name", return_value="Christopher Queen"), \
+             patch(f"{_OUT}.check_dm_replied", return_value=ThreadState.REPLIED), \
+             patch(f"{_OUT}.get_engagement_preferences", return_value={}), \
+             patch(f"{_OUT}.get_or_create_profile_synthesis", return_value="synth"), \
+             patch(f"{_OUT}._last_inbound_message", return_value=message), \
+             patch(f"{_OUT}._flag_lead_signal", return_value=None), \
+             patch(f"{_OUT}.stop_followups_for_profile"), \
+             patch(f"{_OUT}.mark_followup"), \
+             patch(f"{_OUT}.record_lead_reply_event") as ev:
+            process_user_followups.run(user_id=1)
+        ev.assert_called_once()
+        args = ev.call_args.args
+        assert args[:2] == (1, "dm") and args[2].startswith("dm:") and len(args[2]) == 23
+        assert ev.call_args.kwargs["person_profile_url"] == "https://x/in/jane"
+
     def test_tab_crashed_getting_profile_logs_debug_not_error_or_warning(self):
         # Issue #1749: a crashed browser tab while acquiring the session is a known-transient
         # Selenium fault (no follow-up was even attempted, due rows stay untouched for the next

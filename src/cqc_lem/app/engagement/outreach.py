@@ -45,6 +45,7 @@ A DM is sent only once it is visible in the thread. The cost of getting this wro
 metric — it is the account.
 """
 
+import hashlib
 import inspect
 import json
 import os
@@ -195,6 +196,7 @@ from cqc_lem.utilities.db import (
     last_catchup_sent_at,
     mark_followup,
     max_catchup_touches_allowed,
+    record_lead_reply_event,
     record_unreadable_read,
     release_catchup_send_attempt,
     reset_unreadable_reads,
@@ -1778,6 +1780,12 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
                     lead_ctx = {"prefs": get_engagement_preferences(user_id),
                                 "synthesis": get_or_create_profile_synthesis(user_id, my_profile)}
                 their_message = _last_inbound_message(driver)
+                # Outcome tracking (#2658 P4): one event per distinct reply, off the read we already
+                # made. Nothing is navigated or sent; a failed write never blocks the follow-up.
+                reply_basis = their_message or f"followup:{f['id']}"
+                record_lead_reply_event(
+                    user_id, "dm", "dm:" + hashlib.sha1(reply_basis.encode()).hexdigest()[:20],
+                    person_name=f.get("first_name"), person_profile_url=f["profile_url"])
                 _flag_lead_signal(user_id, their_message, LeadSignalSource.DM,
                                   "thread", person_name=f.get("first_name"),
                                   person_profile_url=f["profile_url"], channel=LeadSignalChannel.DM,
@@ -3345,7 +3353,8 @@ def _adjacent_author_signals(driver, user_id: int, authors: list, my_name: str,
     for author_url in authors[:_MAX_ADJACENT_AUTHORS_PER_SCAN]:
         author_name = _author_display_name(author_url)
         try:
-            activity = get_profile_recent_activity(driver, author_url) or []
+            activity = get_profile_recent_activity(
+                driver, author_url, lane="adjacent_authors") or []
         except Exception as e:
             log_warning("Could not read adjacent author's recent activity", exc=e, user_id=user_id,
                         action_type="connection_targeting")
@@ -3850,7 +3859,8 @@ def _funnel_prospects_from_roster(driver, user_id: int, roster: list, my_name: s
             continue
         authors_walked += 1
         try:
-            activity = get_profile_recent_activity(driver, author_url) or []
+            activity = get_profile_recent_activity(
+                driver, author_url, lane="outreach_roster") or []
         except Exception as e:
             if is_tab_crashed(e):
                 driver = _recover(e)

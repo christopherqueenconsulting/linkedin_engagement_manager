@@ -153,6 +153,86 @@ def fetch_member_post_analytics(post_url: str, access_token: str, version: str,
     return counts, None
 
 
+FOLLOWERS_API_URL = "https://api.linkedin.com/rest/memberFollowersCount?q=me"
+CONNECTIONS_API_URL = "https://api.linkedin.com/rest/connectionsSize"
+FOLLOWERS_SCOPE = "r_member_profileAnalytics"
+CONNECTIONS_SCOPE = "r_1st_connections_size"
+
+
+def _api_get_json(url: str, access_token: str, version: str, timeout: int) -> Optional[dict]:
+    """GET one LinkedIn REST resource; None on any non-200, transport or parse failure."""
+    try:
+        guard_linkedin("member_post_analytics.audience")
+    except DemoModeError:
+        return None
+    try:
+        response = requests.get(
+            url,
+            headers={"Authorization": f"Bearer {access_token}", "LinkedIn-Version": version,
+                     "X-Restli-Protocol-Version": "2.0.0"},
+            timeout=timeout,
+        )
+        if response.status_code != 200:
+            return None
+        payload = response.json()
+    except (requests.RequestException, ValueError, TypeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _int_or_none(value: object) -> Optional[int]:
+    """A real non-negative int, else None (a bool or a missing field is never a count)."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def fetch_member_follower_count(access_token: str, version: str, timeout: int = 20) -> Optional[int]:
+    """The member's follower count (`memberFollowersCount?q=me`); None when unreadable."""
+    payload = _api_get_json(FOLLOWERS_API_URL, access_token, version, timeout)
+    elements = payload.get("elements") if payload else None
+    if not isinstance(elements, list) or not elements or not isinstance(elements[0], dict):
+        return None
+    return _int_or_none(elements[0].get("memberFollowersCount"))
+
+
+def fetch_member_connection_count(person_id: str, access_token: str, version: str,
+                                  timeout: int = 20) -> Optional[int]:
+    """The member's first-degree connection count; None when unreadable."""
+    if not person_id:
+        return None
+    urn = quote(f"urn:li:person:{person_id}", safe="")
+    payload = _api_get_json(f"{CONNECTIONS_API_URL}/{urn}?edgeType=FIRST_DEGREE_CONNECTION",
+                            access_token, version, timeout)
+    return _int_or_none(payload.get("firstDegreeSize")) if payload else None
+
+
+def member_audience_counts(user_id: int) -> dict:
+    """API follower/connection counts for the daily snapshot (#2702 Phase 2).
+
+    Returns `{"follower_count": int|None, "connection_count": int|None}`. Every unmet condition —
+    flag off, user not allowlisted, no token, or a count's scope absent from the stored granted
+    scope — leaves that count None, so the caller silently keeps the scraped value.
+    """
+    from cqc_lem.utilities.env_constants import LI_API_VERSION, LI_MEMBER_AUDIENCE_API_ENABLED
+    counts: dict = {"follower_count": None, "connection_count": None}
+    if not (LI_MEMBER_AUDIENCE_API_ENABLED and member_post_analytics_enabled_for_user(user_id)
+            and member_post_analytics_separate_app_enabled()):
+        return counts
+    from cqc_lem.utilities.db import get_member_analytics_token_info
+    token = get_member_post_analytics_access_token(user_id)
+    info = get_member_analytics_token_info(user_id) or {}
+    granted = set((info.get("granted_scope") or "").replace(",", " ").split())
+    if not token or not granted:
+        return counts
+    if FOLLOWERS_SCOPE in granted:
+        counts["follower_count"] = fetch_member_follower_count(token, LI_API_VERSION)
+    if CONNECTIONS_SCOPE in granted:
+        counts["connection_count"] = fetch_member_connection_count(
+            info.get("linked_sub_id") or "", token, LI_API_VERSION)
+    return counts
+
+
 def log_member_post_analytics_summary(user_id: int, posts_read: int, posts_captured: int,
                                       metrics_read: int, failures: int) -> None:
     """One INFO line per CMA post-stats sweep, so a working API read leaves evidence.

@@ -514,7 +514,7 @@ class TestTabCrashEndsTheRosterWalk:
         first, second = MagicMock(name="first"), MagicMock(name="second")
         drivers_read = []
 
-        def activity(driver, _url):
+        def activity(driver, _url, **_kw):
             drivers_read.append(driver)
             if len(drivers_read) == 1:
                 raise WebDriverException(self._CRASH)
