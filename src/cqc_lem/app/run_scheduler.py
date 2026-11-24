@@ -1596,6 +1596,20 @@ def auto_weekly_report():
 
 
 @shared_task.task
+def auto_profile_audit_weekly():
+    """Monday: rubric-only profile audit per flag-enabled user, once per ISO week (issue #2631)."""
+    from cqc_lem.utilities.profile_audit_job import run_profile_audits
+    return f"Weekly profile audit: {run_profile_audits('weekly')}"
+
+
+@shared_task.task
+def auto_profile_audit_monthly():
+    """1st of the month: profile audit per flag-enabled user, once per month (issue #2631)."""
+    from cqc_lem.utilities.profile_audit_job import run_profile_audits
+    return f"Monthly profile audit: {run_profile_audits('monthly')}"
+
+
+@shared_task.task
 def regenerate_newsletter_edition(edition_id: int, guidance: str = None):
     """Regenerate ONE queued newsletter edition in place. Generation is a slow lem-complex call, so
     it runs as a task (not inline in the API request). Honors free-text `guidance` when provided

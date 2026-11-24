@@ -87,6 +87,7 @@ WEEKLY_REPORT = "weekly-report-enabled"
 COMMENT_CANDIDATE_CRAWL = "comment-candidate-crawl-enabled"
 IMPACT_REPORT = "impact-report-enabled"
 COMMENT_RAMP = "comment-ramp-enabled"
+PROFILE_AUDIT = "profile-audit-enabled"
 MCP_SERVER = "mcp-server-enabled"
 MCP_SERVER_WRITES = "mcp-server-writes"
 COMMENT_CANDIDATE_DRAFTS = "comment-candidate-drafts-enabled"
@@ -287,6 +288,16 @@ FLAGS: Dict[str, FlagSpec] = {
                          "emails the owner a before/after report 14 days after each release and "
                          "a monthly baseline, and posts a one-line metric-free note on the "
                          "tracker issue. OFF by default; the admin route is not gated by it."),
+        ),
+        FlagSpec(
+            key=PROFILE_AUDIT,
+            env_var="PROFILE_AUDIT_ENABLED",
+            default=False,
+            owner="analytics",
+            description=("The weekly and monthly profile audit beats (utilities/profile_audit_job.py, "
+                         "issue #2631, Phase 1): grade the cached own-profile JSON against a "
+                         "deterministic rubric and store the history. Browser-free, read-only; LEM "
+                         "never edits the LinkedIn profile. OFF by default."),
         ),
         FlagSpec(
             key=MCP_SERVER,

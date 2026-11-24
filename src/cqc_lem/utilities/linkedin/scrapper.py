@@ -188,8 +188,68 @@ def _degree_from_source(source) -> str:
     return ""
 
 
-def parse_profile_header(source, profile_url, company_name=None) -> dict:
+def _section_by_heading(source, heading: str):
+    """The <section> whose own heading reads exactly `heading` ("About", "Featured"), or None."""
+    wanted = heading.lower()
+    for section in source.find_all('section'):
+        head = section.find(['h2', 'h3'])
+        if head is not None and head.get_text(" ", strip=True).lower() == wanted:
+            return section
+        title = section.select_one('.pvs-header__title, [class*="header__title"]')
+        if title is not None and title.get_text(" ", strip=True).lower() == wanted:
+            return section
+    return None
+
+
+def _about_from_source(source) -> Optional[str]:
+    """The About text, or None when the section did not render (unreadable, not empty)."""
+    section = _section_by_heading(source, "About")
+    if section is None:
+        return None
+    spans = [s.get_text(" ", strip=True) for s in section.select('span[aria-hidden="true"]')]
+    spans = [t for t in spans if t and t.lower() != "about"]
+    if spans:
+        return max(spans, key=len)
+    text = section.get_text(" ", strip=True)
+    return text[len("About"):].strip() if text.lower().startswith("about") else (text or None)
+
+
+def _featured_count_from_source(source) -> Optional[int]:
+    """How many items sit under Featured.
+
+    No Featured section counts as 0 only when the page rendered its About section; a bare page
+    answers None (unknown).
+    """
+    section = _section_by_heading(source, "Featured")
+    if section is not None:
+        return len(section.find_all('li'))
+    return 0 if _section_by_heading(source, "About") is not None else None
+
+
+def _banner_state_from_source(source) -> str:
+    """"custom" / "default" / "unknown" for the cover image."""
+    for element in source.select('[class*="background-image"], [class*="cover-photo"]'):
+        classes = " ".join(element.get('class') or [])
+        if "default" in classes:
+            return "default"
+        img = element if element.name == 'img' else element.find('img')
+        if img is not None and (img.get('src') or "").strip():
+            return "custom"
+    return "unknown"
+
+
+def _custom_url_from_source(profile_url) -> Optional[str]:
+    """The /in/<slug> part of the profile URL, or None when it is not a member URL."""
+    match = re.search(r"/in/([^/?#]+)", str(profile_url or ""))
+    return match.group(1) if match else None
+
+
+def parse_profile_header(source, profile_url, company_name=None, is_main_user=False) -> dict:
     """Extract name/title/connection from a parsed profile page (pure, no Selenium).
+
+    With `is_main_user` it also reads the profile-audit fields (headline, about, featured count,
+    banner state, custom URL) off the same page. Never for a third party: their About, banner and
+    featured items are not stored (#2631).
 
     Raises ProfileUnavailableError on rate-limit / auth-wall / error pages or when the
     name can't be located, so callers handle it instead of crashing on a None element.
@@ -229,6 +289,12 @@ def parse_profile_header(source, profile_url, company_name=None) -> dict:
     if connection:
         profile['connection'] = connection
     profile['profile_url'] = profile_url
+    if is_main_user:
+        profile['headline'] = (title_el.get_text(" ", strip=True) or None) if title_el else None
+        profile['about'] = _about_from_source(source)
+        profile['featured_count'] = _featured_count_from_source(source)
+        profile['banner_state'] = _banner_state_from_source(source)
+        profile['custom_url'] = _custom_url_from_source(profile_url)
     return profile
 
 
@@ -252,7 +318,7 @@ def returnProfileInfo(driver: webdriver, profile_url, company_name=None, is_main
 
     # Bail out clearly on rate-limit / auth-wall / error pages — parsing these used to
     # crash with "'NoneType' object has no attribute 'find'" and take down auto-commenting.
-    profile = parse_profile_header(source, profile_url, company_name)
+    profile = parse_profile_header(source, profile_url, company_name, is_main_user=is_main_user)
 
     # profile_li = source.find_all('li', class_='artdeco-list__item')
 
