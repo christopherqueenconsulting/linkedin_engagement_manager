@@ -1,8 +1,8 @@
 {
   "prompt_id": "dm.nurture",
   "target": "cqc_lem.utilities.ai.ai_helper.generate_nurture_dm",
-  "tier": "lem-medium",
-  "content_hash": "sha256:466dbad6d63ffc4546cd9597855f786ecdb6b82ca6376b6a66eb7fb71ca1df89",
+  "tier": "lem-voice",
+  "content_hash": "sha256:950b3fc49eec9a576bee28b3fc74c8727c1bc76ddb58e3c01eb090639bcea199",
   "messages": [
     {
       "role": "system",
@@ -20,7 +20,7 @@
         "user_id": "system"
       }
     },
-    "model": "lem-medium",
+    "model": "lem-voice",
     "temperature": 0.6
   }
 }

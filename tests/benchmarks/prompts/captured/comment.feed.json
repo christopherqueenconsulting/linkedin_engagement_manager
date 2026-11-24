@@ -1,8 +1,8 @@
 {
   "prompt_id": "comment.feed",
   "target": "cqc_lem.utilities.ai.ai_helper.generate_ai_response",
-  "tier": "lem-medium",
-  "content_hash": "sha256:711fcc01e64664d272d6f1530c6977b1a970e53b0f6074ebaa454cfe210fa973",
+  "tier": "lem-voice",
+  "content_hash": "sha256:ca7d7a15be1125367e05e6ebe2b0092d0dd7b0a9a60dd86a51e44b2f965287d2",
   "messages": [
     {
       "role": "system",
@@ -26,7 +26,7 @@
       }
     },
     "frequency_penalty": 0.29,
-    "model": "lem-medium",
+    "model": "lem-voice",
     "presence_penalty": 0.43,
     "temperature": 0.58,
     "top_p": 0.84

@@ -35,6 +35,10 @@ from cqc_lem.utilities.ai import (
     voice_exemplars as _voice_exemplars,
 )
 from cqc_lem.utilities.ai.client import attribution_metadata, client
+from cqc_lem.utilities.ai.sensitive_info import redact_messages
+
+# Ordered writer tier for third-party-facing text: comments and DMs (#2750). Not latency-routed.
+VOICE_TIER = "lem-voice"
 
 # The ONE alignment core (voice + prefs + LEM purpose + promo policy) shared by newsletters,
 # posts, and comments. The underscore aliases keep this module's long-standing internal API
@@ -196,6 +200,10 @@ def _call_llm(**kwargs):
     track_user_id = kwargs.pop("_track_user_id", None)
     track_feature = kwargs.pop("_track_feature", None)
     model = kwargs.get("model", "unknown")
+    if "messages" in kwargs:
+        # Deterministic sensitive-info check (#2750): SSNs and Luhn-valid card numbers never leave
+        # the process, whichever provider the tier routes to.
+        kwargs["messages"] = redact_messages(kwargs["messages"])
     start = time.time()
     log_debug("LLM call starting", ai_model=model)
 
@@ -711,7 +719,7 @@ def generate_ai_response(post_content: Any, profile: LinkedInProfile,
 
     def _draft(fix_directive: str = "") -> "str | None":
         response = _call_llm(
-            model="lem-medium",
+            model=VOICE_TIER,
             messages=[{"role": "system", "content": system_prompt["content"] + fix_directive},
                       user_message],
             temperature=round(random.uniform(0.4, 0.6), 2),  # Rand temp between .5 and .7
@@ -1722,7 +1730,7 @@ def generate_seed_comment(post_content, profile: "LinkedInProfile", prefs: dict 
     temperature = round(random.uniform(0.5, 0.7), 2)
 
     def _draft(fix: str = "") -> "str | None":
-        response = _call_llm(model="lem-medium",
+        response = _call_llm(model=VOICE_TIER,
                              messages=[{"role": "system", "content": system_prompt["content"] + fix},
                                        user_prompt],
                              temperature=temperature)
@@ -1787,7 +1795,7 @@ def generate_second_wave_comment(post_content, profile: "LinkedInProfile", prefs
     temperature = round(random.uniform(0.5, 0.7), 2)
 
     def _draft(fix: str = "") -> "str | None":
-        response = _call_llm(model="lem-medium",
+        response = _call_llm(model=VOICE_TIER,
                              messages=[{"role": "system", "content": system_prompt["content"] + fix},
                                        user_prompt],
                              temperature=temperature)
@@ -1831,7 +1839,7 @@ def generate_thread_reply(post_content: str, comment_text: str, profile: "Linked
     temperature = round(random.uniform(0.5, 0.7), 2)
 
     def _draft(fix: str = "") -> "str | None":
-        response = _call_llm(model="lem-medium",
+        response = _call_llm(model=VOICE_TIER,
                              messages=[{"role": "system", "content": system_prompt["content"] + fix},
                                        user_prompt],
                              temperature=temperature)
@@ -1877,7 +1885,7 @@ def generate_comment_reply_followup(their_reply: str, profile: "LinkedInProfile"
     temperature = round(random.uniform(0.5, 0.7), 2)
 
     def _draft(fix: str = "") -> "str | None":
-        response = _call_llm(model="lem-medium",
+        response = _call_llm(model=VOICE_TIER,
                              messages=[{"role": "system", "content": system_prompt["content"] + fix},
                                        user_prompt],
                              temperature=temperature)
@@ -1925,7 +1933,7 @@ def generate_lead_response(their_message: str, profile: "LinkedInProfile", chann
     surface = "dm" if is_dm else "comment"
 
     def _draft(fix: str = "") -> "str | None":
-        response = _call_llm(model="lem-medium",
+        response = _call_llm(model=VOICE_TIER,
                              messages=[{"role": "system", "content": system_prompt["content"] + fix},
                                        user_prompt],
                              temperature=temperature)
@@ -2002,7 +2010,7 @@ def generate_nurture_dm(their_message: str, intent: str, profile: "LinkedInProfi
     temperature = round(random.uniform(0.4, 0.6), 2)
 
     def _draft(fix: str = "") -> "str | None":
-        response = _call_llm(model="lem-medium",
+        response = _call_llm(model=VOICE_TIER,
                              messages=[{"role": "system", "content": system_prompt["content"] + fix},
                                        user_prompt],
                              temperature=temperature)
