@@ -94,6 +94,9 @@ def test_auto_approve_files_an_approved_draft_the_scanner_dispatches(user_id, mo
     assert db.update_engagement_preferences(user_id, {"nurture_dm_mode": "auto_approve"})
     dm_id = _draft_nurture(user_id, monkeypatch)
     assert _status(dm_id) == "approved"
+    # The draft is filed with a future slot (nurture_delay_hours); make it due so the scanner sees it.
+    _exec("UPDATE scheduled_dms SET scheduled_time = UTC_TIMESTAMP() - INTERVAL 1 MINUTE WHERE id=%s",
+          (dm_id,))
 
     with patch.object(run_scheduler, "get_active_user_ids", return_value=[user_id]), \
          patch.object(run_scheduler, "skip_browser_lane", return_value=False), \
