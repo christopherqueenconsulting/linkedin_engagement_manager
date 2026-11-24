@@ -238,3 +238,67 @@ def purge_all_call_data(user_id: int) -> bool:
     except mysql.connector.Error as err:
         log_error("Could not purge call data", exc=err, user_id=user_id)
         return False
+
+
+def set_call_ingest_status(user_id: int, ingest_id: int, status: str) -> bool:
+    """Move the user's own ingest to `extracted` or `failed`. A purged row never comes back."""
+    if status not in ("extracted", "failed"):
+        return False
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE call_ingest SET status=%s WHERE id=%s AND user_id=%s AND status<>'purged'",
+                (status, int(ingest_id), user_id))
+            return bool(cursor.rowcount)
+    except mysql.connector.Error as err:
+        log_error("Could not update call ingest status", exc=err, user_id=user_id)
+        return False
+
+
+def list_call_ingests(user_id: int, limit: int = 50) -> list:
+    """The user's calls, newest first, each with its count of candidates still awaiting review."""
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT ci.id, ci.title, ci.status, ci.turn_count, ci.purge_after, ci.created_at, "
+                "(SELECT COUNT(*) FROM extract_candidate ec "
+                "WHERE ec.ingest_id=ci.id AND ec.status='pending') AS pending_count "
+                "FROM call_ingest ci WHERE ci.user_id=%s ORDER BY ci.id DESC LIMIT %s",
+                (user_id, int(limit)))
+            return list(cursor.fetchall() or [])
+    except mysql.connector.Error as err:
+        log_error("Could not list call ingests", exc=err, user_id=user_id)
+        return []
+
+
+def get_candidates_for_call(user_id: int, ingest_id: int) -> list:
+    """The pending candidates of ONE call (the user's own only), in transcript order."""
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT id, ingest_id, kind, title, body, source_quote, t0, confidence, status "
+                "FROM extract_candidate WHERE user_id=%s AND ingest_id=%s AND status='pending' "
+                "ORDER BY id ASC", (user_id, int(ingest_id)))
+            return list(cursor.fetchall() or [])
+    except mysql.connector.Error as err:
+        log_error("Could not list call candidates", exc=err, user_id=user_id)
+        return []
+
+
+def accept_candidates_above(user_id: int, min_confidence: float,
+                            ingest_id: Optional[int] = None) -> int:
+    """Bulk-accept the user's pending candidates at or above `min_confidence`. Returns the count."""
+    sql = ("SELECT id FROM extract_candidate WHERE user_id=%s AND status='pending' "
+           "AND confidence>=%s")
+    params: list = [user_id, float(min_confidence)]
+    if ingest_id is not None:
+        sql += " AND ingest_id=%s"
+        params.append(int(ingest_id))
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(sql + " ORDER BY id ASC", tuple(params))
+            ids = [int(r[0]) for r in (cursor.fetchall() or [])]
+    except mysql.connector.Error as err:
+        log_error("Could not list candidates to accept", exc=err, user_id=user_id)
+        return 0
+    return sum(1 for cid in ids if review_candidate(user_id, cid, "accepted"))

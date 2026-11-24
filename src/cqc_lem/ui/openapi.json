@@ -512,6 +512,57 @@
         "title": "Body_start_avatar_training_endpoint_api_avatar_training_post",
         "type": "object"
       },
+      "Body_upload_call_transcript_endpoint_api_user_call_ingest_upload_post": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          },
+          "own_speaker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Own Speaker"
+          },
+          "session_token": {
+            "title": "Session Token",
+            "type": "string"
+          },
+          "source_id": {
+            "title": "Source Id",
+            "type": "integer"
+          },
+          "source_type": {
+            "title": "Source Type",
+            "type": "string"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "required": [
+          "session_token",
+          "source_id",
+          "source_type",
+          "file"
+        ],
+        "title": "Body_upload_call_transcript_endpoint_api_user_call_ingest_upload_post",
+        "type": "object"
+      },
       "Body_upload_newsletter_cover_endpoint_api_user_newsletter_draft_cover_post": {
         "properties": {
           "edition_id": {
@@ -719,6 +770,124 @@
           "post_ids"
         ],
         "title": "BulkUpdateRequest",
+        "type": "object"
+      },
+      "CallBulkAcceptRequest": {
+        "description": "Body of `POST /user/call-ingest/accept-bulk`.",
+        "properties": {
+          "ingest_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ingest Id"
+          },
+          "min_confidence": {
+            "default": 0.8,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Min Confidence",
+            "type": "number"
+          },
+          "session_token": {
+            "title": "Session Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_token"
+        ],
+        "title": "CallBulkAcceptRequest",
+        "type": "object"
+      },
+      "CallPurgeRequest": {
+        "description": "Body of `DELETE /user/call-ingest`.",
+        "properties": {
+          "session_token": {
+            "title": "Session Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_token"
+        ],
+        "title": "CallPurgeRequest",
+        "type": "object"
+      },
+      "CallReviewRequest": {
+        "description": "Body of `POST /user/call-ingest/review`.",
+        "properties": {
+          "candidate_id": {
+            "title": "Candidate Id",
+            "type": "integer"
+          },
+          "decision": {
+            "title": "Decision",
+            "type": "string"
+          },
+          "edited_body": {
+            "anyOf": [
+              {
+                "maxLength": 5000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Edited Body"
+          },
+          "session_token": {
+            "title": "Session Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_token",
+          "candidate_id",
+          "decision"
+        ],
+        "title": "CallReviewRequest",
+        "type": "object"
+      },
+      "CallSourceRequest": {
+        "description": "Body of `POST /user/call-ingest/source`.",
+        "properties": {
+          "consent_attested": {
+            "default": false,
+            "title": "Consent Attested",
+            "type": "boolean"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "session_token": {
+            "title": "Session Token",
+            "type": "string"
+          },
+          "source_type": {
+            "title": "Source Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_token",
+          "source_type"
+        ],
+        "title": "CallSourceRequest",
         "type": "object"
       },
       "CatchupContactIntervalBounds": {
@@ -12351,6 +12520,297 @@
           }
         },
         "summary": "Get Automation Status Endpoint"
+      }
+    },
+    "/api/user/call-ingest": {
+      "delete": {
+        "description": "Delete every call row the user has \u2014 transcripts, candidates, sources and promoted facts.",
+        "operationId": "purge_all_call_data_endpoint_api_user_call_ingest_delete",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CallPurgeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_str_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Purge All Call Data Endpoint"
+      }
+    },
+    "/api/user/call-ingest/accept-bulk": {
+      "post": {
+        "description": "Accept every pending candidate at or above `min_confidence` (default 0.8).",
+        "operationId": "accept_call_candidates_bulk_endpoint_api_user_call_ingest_accept_bulk_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CallBulkAcceptRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Accept Call Candidates Bulk Endpoint"
+      }
+    },
+    "/api/user/call-ingest/calls": {
+      "get": {
+        "description": "The user's calls with how many candidates each still has pending.",
+        "operationId": "list_call_ingests_endpoint_api_user_call_ingest_calls_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "session_token",
+            "required": true,
+            "schema": {
+              "title": "Session Token",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Call Ingests Endpoint"
+      }
+    },
+    "/api/user/call-ingest/candidates": {
+      "get": {
+        "description": "Pending candidates, for one call or the whole queue.",
+        "operationId": "list_call_candidates_endpoint_api_user_call_ingest_candidates_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "session_token",
+            "required": true,
+            "schema": {
+              "title": "Session Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ingest_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ingest Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Call Candidates Endpoint"
+      }
+    },
+    "/api/user/call-ingest/review": {
+      "post": {
+        "description": "Accept, edit or reject one candidate. Promotion writes `origin` and `source_quote`.",
+        "operationId": "review_call_candidate_endpoint_api_user_call_ingest_review_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CallReviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Review Call Candidate Endpoint"
+      }
+    },
+    "/api/user/call-ingest/source": {
+      "post": {
+        "description": "Register a transcript source. It stays disabled until the consent attestation is given.",
+        "operationId": "create_call_source_endpoint_api_user_call_ingest_source_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CallSourceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Call Source Endpoint"
+      }
+    },
+    "/api/user/call-ingest/upload": {
+      "post": {
+        "description": "Take a VTT, SRT or TXT transcript (Otter export or Wispr Flow text) and queue extraction.\n\nOnly the user's OWN redacted turns are stored. When the user's speaker label is missing or\nmatches nobody the answer is 409 with the speaker list \u2014 never a guess.",
+        "operationId": "upload_call_transcript_endpoint_api_user_call_ingest_upload_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_call_transcript_endpoint_api_user_call_ingest_upload_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Call Transcript Endpoint"
       }
     },
     "/api/user/company-page": {

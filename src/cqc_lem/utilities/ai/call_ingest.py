@@ -14,6 +14,7 @@ Three rules shape everything here:
 """
 
 import difflib
+import json
 import os
 import re
 from typing import Optional
@@ -291,3 +292,56 @@ def filter_verified(candidates: list, transcript: str,
 def transcript_text(turns: list) -> str:
     """The plain text of a turn list, one line per turn — what a quote is verified against."""
     return "\n".join(t.get("text") or "" for t in turns)
+
+
+def prepare_upload(raw: str, source_type: str, own_speaker: Optional[str] = None) -> dict:
+    """Parse, redact and own-turn-filter an uploaded transcript — nothing else is ever stored.
+
+    Returns ``{"state": OWN_KNOWN, "text", "turn_count", "own_speaker"}`` or
+    ``{"state": OWN_UNKNOWN, "speakers": [...]}`` when the user's label is missing or matches no
+    speaker (the caller asks, this never guesses). Wispr notes are the user alone, so they are
+    always known. Only the user's OWN redacted turns are returned: another speaker's words never
+    reach storage or an LLM.
+    """
+    turns = parse_transcript(raw, source_type)
+    if source_type == SOURCE_WISPR:
+        own_speaker = turns[0].get("speaker") if turns else "me"
+    redacted = redact_turns(turns, own_speaker)
+    own, state = select_own_turns(redacted, own_speaker)
+    if state != OWN_KNOWN:
+        return {"state": OWN_UNKNOWN, "speakers": speakers(turns)}
+    return {"state": OWN_KNOWN, "text": transcript_text(own), "turn_count": len(own),
+            "own_speaker": own_speaker}
+
+
+_EXTRACT_KINDS = "anecdote, number, opinion, client_win, mistake, artifact"
+EXTRACT_SYSTEM_PROMPT = (
+    "You extract citable personal facts from the author's own spoken words. "
+    "Return JSON: {\"items\": [{\"kind\": one of [" + _EXTRACT_KINDS + "], \"title\": short, "
+    "\"body\": one or two sentences restating the fact, \"source_quote\": an EXACT verbatim "
+    "excerpt from the text, \"confidence\": 0 to 1}]}. Only facts the text states. Never add, "
+    "infer or invent names, numbers or outcomes. Tokens like [PERSON_1] are redactions: keep them "
+    "as written. If nothing qualifies return {\"items\": []}."
+)
+
+
+def parse_extraction(raw_json: str) -> list:
+    """Items from the model's JSON reply. Unparseable or wrong-shaped output is an empty list."""
+    try:
+        data = json.loads(raw_json or "")
+    except (TypeError, ValueError):
+        return []
+    items = data.get("items") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return []
+    out = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        try:
+            conf = max(0.0, min(1.0, float(it.get("confidence") or 0)))
+        except (TypeError, ValueError):
+            conf = 0.0
+        out.append({"kind": it.get("kind"), "title": it.get("title"), "body": it.get("body"),
+                    "source_quote": it.get("source_quote"), "confidence": conf})
+    return out

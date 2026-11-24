@@ -202,3 +202,38 @@ def test_selectors_read_only_accepted_active_story_bank_rows():
     with patch(_FB_CUR, return_value=ctx):
         feedback.count_story_bank_entries(1, active_only=True)
     assert "review_status='accepted'" in cur.execute.call_args[0][0]
+
+
+def test_set_status_only_extracted_or_failed_and_never_resurrects_purged():
+    assert repo.set_call_ingest_status(1, 2, "purged") is False
+    cur, ctx = _cursor(rowcount=1)
+    with patch(_CUR, return_value=ctx):
+        assert repo.set_call_ingest_status(1, 2, "extracted") is True
+    assert "status<>'purged'" in _sql(cur)
+    with patch(_CUR, side_effect=_ERR):
+        assert repo.set_call_ingest_status(1, 2, "failed") is False
+
+
+def test_list_calls_and_candidates_scope_to_the_user_and_fail_soft():
+    cur, ctx = _cursor(rows=[{"id": 1}])
+    with patch(_CUR, return_value=ctx):
+        assert repo.list_call_ingests(5) == [{"id": 1}]
+        assert repo.get_candidates_for_call(5, 3) == [{"id": 1}]
+    assert "user_id=%s" in _sql(cur) and "status='pending'" in _sql(cur)
+    with patch(_CUR, side_effect=_ERR):
+        assert repo.list_call_ingests(5) == []
+        assert repo.get_candidates_for_call(5, 3) == []
+
+
+def test_bulk_accept_promotes_each_pending_candidate_above_threshold():
+    cur, ctx = _cursor(rows=[(4,), (9,)])
+    with patch(_CUR, return_value=ctx), \
+         patch.object(repo, "review_candidate", side_effect=[11, None]) as rv:
+        assert repo.accept_candidates_above(5, 0.8, ingest_id=3) == 1
+    assert "confidence>=%s" in _sql(cur) and "ingest_id=%s" in _sql(cur)
+    assert [c.args for c in rv.call_args_list] == [(5, 4, "accepted"), (5, 9, "accepted")]
+
+
+def test_bulk_accept_fault_accepts_nothing():
+    with patch(_CUR, side_effect=_ERR):
+        assert repo.accept_candidates_above(5, 0.5) == 0
