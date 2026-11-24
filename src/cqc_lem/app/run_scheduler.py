@@ -833,6 +833,19 @@ def dispatch_comment_candidate_crawls():
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})
+def auto_comment_ramp(self):
+    """Daily comment-volume ramp evaluation for the brand account (#2647, Phase 5).
+
+    Moves the brand's comment ceiling 20 -> 40 -> 70 -> 100 when every gate is clear and back down
+    on a breach. A no-op with `COMMENT_RAMP_ENABLED` off; an unreadable gate holds the step.
+    """
+    from cqc_lem.utilities.brand_account import brand_user_id
+    from cqc_lem.utilities.comment_ramp import evaluate_ramp
+    result = evaluate_ramp(brand_user_id())
+    return f"Comment ramp: {result['move']} at {result['step']}/day ({result['reason']})"
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})
 def auto_weekly_comment_quality(self, days: int = 7):
     """Weekly comment-quality scorecard per user (issue #628): author-reply rate, like rate and the
     'Most relevant' demotion rate over the last `days` of outcome readings → PostHog, and the G2

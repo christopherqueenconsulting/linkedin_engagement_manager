@@ -98,6 +98,7 @@ from cqc_lem.utilities.comment_candidates import (
     record_comment_candidate,
     report_candidate_pool,
 )
+from cqc_lem.utilities.comment_ramp import HARD_MAX_COMMENTS_PER_DAY
 from cqc_lem.utilities.comment_rotation import recent_comment_shapes, record_comment_shape
 from cqc_lem.utilities.connection_targeting import (
     SOURCE_ROSTER,
@@ -3220,7 +3221,7 @@ def _comment_daily_cap(prefs: dict) -> int:
     if raw is None:
         return _COMMENT_CAP_FALLBACK
     try:
-        return max(0, int(raw))
+        return min(HARD_MAX_COMMENTS_PER_DAY, max(0, int(raw)))
     except (TypeError, ValueError):
         return _COMMENT_CAP_FALLBACK
 
