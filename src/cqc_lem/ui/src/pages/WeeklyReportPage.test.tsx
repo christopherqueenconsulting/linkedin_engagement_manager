@@ -89,9 +89,9 @@ describe('WeeklyReportPage', () => {
       not_measured: [{ key: 'titles', label: 'engager job titles (not stored for engagers)' }],
     })
     mount()
-    await screen.findByText('Weekly report')
+    const run = await screen.findByText('Run the ICP audience report')
     expect(get.mock.calls.some(([u]) => String(u).startsWith('/user/icp-audience-report'))).toBe(false)
-    fireEvent.click(screen.getByText('Run the ICP audience report'))
+    fireEvent.click(run)
     expect(await screen.findByText(/Insufficient data: n=3, at least 5 needed/)).toBeTruthy()
     expect(screen.getByText(/CTOs: n=2 \(insufficient data\)/)).toBeTruthy()
     expect(screen.getByText(/2026-11: n=3 \(insufficient data\)/)).toBeTruthy()
