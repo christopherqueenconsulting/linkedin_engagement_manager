@@ -281,7 +281,7 @@ class TestSessionManagement:
         events = [{"event": "login_success", "success": 1, "user_agent": "UA", "created_at": None}]
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_USER}.list_user_sessions", return_value=rows), \
-             patch(f"{_USER}.get_auth_audit_events", return_value=events), \
+             patch(f"{_USER}.list_auth_audit_events", return_value=events), \
              patch(f"{_USER}.get_user_public_uid", return_value="pub-1"), \
              patch(f"{_USER}.get_user_email", return_value="me@example.com"):
             resp = api_client.get("/api/user/security", params={"session_token": "tok"})
@@ -297,7 +297,7 @@ class TestSessionManagement:
                  "expires_at": None, "is_current": True}]
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_USER}.list_user_sessions", return_value=rows), \
-             patch(f"{_USER}.get_auth_audit_events", return_value=[]), \
+             patch(f"{_USER}.list_auth_audit_events", return_value=[]), \
              patch(f"{_USER}.get_user_public_uid", return_value="pub-1"), \
              patch(f"{_USER}.get_user_email", return_value="me@example.com"):
             resp = api_client.get("/api/user/security", params={"session_token": "tok"})
@@ -308,7 +308,7 @@ class TestSessionManagement:
                  "expires_at": None, "is_current": False, "scope": "agent"}]
         with patch(f"{_M}.get_session_user_id", return_value=_UID), \
              patch(f"{_USER}.list_user_sessions", return_value=rows), \
-             patch(f"{_USER}.get_auth_audit_events", return_value=[]), \
+             patch(f"{_USER}.list_auth_audit_events", return_value=[]), \
              patch(f"{_USER}.get_user_public_uid", return_value="pub-1"), \
              patch(f"{_USER}.get_user_email", return_value="me@example.com"):
             resp = api_client.get("/api/user/security", params={"session_token": "tok"})

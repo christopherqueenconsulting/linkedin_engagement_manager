@@ -12,7 +12,9 @@ The ceremony mirrors `mint_agent_token`, tightened:
 - A human session only (no machine seat reaches these paths), then a STRONG FACTOR (403
   `mcp_needs_strong_factor`, owner ruling O3), then step-up with `extension_scope_ok` NOT passed.
 - A fixed TTL, 1-90 days, default 30 (O2). At most 10 live MCP tokens per account (409
-  `mcp_token_limit`) and 10 mints an hour (429 `mcp_mint_rate_limited`).
+  `mcp_token_limit`), counted and inserted in one transaction under the user's row lock, so
+  concurrent mints cannot overshoot it. And 10 mints an hour (429 `mcp_mint_rate_limited`), a Redis
+  limiter that fails open.
 - Audited (`mcp_token_minted` / `mcp_token_rotated`) and emailed to the account owner on every
   mint and rotate. A failed email never fails the mint.
 
@@ -37,11 +39,10 @@ from cqc_lem.utilities.db import (
     SESSION_SCOPE_MCP,
     SESSION_SCOPE_MCP_OUTREACH,
     AuthAuditEvent,
+    SessionCapReached,
     SessionStoreUnavailable,
-    count_active_sessions,
-    create_session,
+    create_session_within_cap,
     get_owned_session,
-    get_session_id,
     list_sessions_by_scope,
     record_auth_event,
     revoke_session,
@@ -123,14 +124,25 @@ def _require_mint_ceremony(user_id: int, session_token: Optional[str], action: s
 
 def _mint(user_id: int, label: str, scope: str, ttl_days: int,
           http_request: Optional[Request]) -> dict[str, Any]:
-    """Create the session row and return the response body. The token appears ONLY in the body."""
-    token = create_session(user_id, user_agent=_main._user_agent(http_request),
-                           ip=_main._client_ip(http_request), label=label, scope=scope,
-                           ttl_hours=ttl_days * 24, token_prefix=MCP_TOKEN_PREFIX)
+    """Create the session row and return the response body. The token appears ONLY in the body.
+
+    The 10-live-token cap is checked by `create_session_within_cap`, in the same transaction as
+    the insert and under the user's row lock, so two concurrent mints cannot both pass it.
+    """
+    try:
+        token, session_id = create_session_within_cap(
+            user_id, MCP_SESSION_SCOPES, MCP_MAX_ACTIVE_TOKENS, scope,
+            user_agent=_main._user_agent(http_request), ip=_main._client_ip(http_request),
+            label=label, ttl_hours=ttl_days * 24, token_prefix=MCP_TOKEN_PREFIX)
+    except SessionCapReached:
+        raise HTTPException(status_code=409, detail={
+            "code": "mcp_token_limit",
+            "message": f"You already have {MCP_MAX_ACTIVE_TOKENS} agent tokens. Revoke one first.",
+        })
     if not token:
-        raise HTTPException(status_code=500, detail="Could not create the agent token")
+        raise HTTPException(status_code=503, detail="Could not create the agent token. Try again.")
     expires_at = datetime.now(timezone.utc) + timedelta(days=ttl_days)
-    return {"session_token": token, "session_id": get_session_id(token), "mcp_url": _mcp_url(),
+    return {"session_token": token, "session_id": session_id, "mcp_url": _mcp_url(),
             "expires_at": _main._utc_iso(expires_at), "label": label, "scope": scope,
             "ttl_days": ttl_days}
 
@@ -142,7 +154,7 @@ def _mint(user_id: int, label: str, scope: str, ttl_days: int,
     404: {"description": "The MCP server is not enabled for this account"},
     409: {"description": "Already at the active-token limit"},
     429: {"description": "Too many mints this hour"},
-    503: {"description": "The active-token count could not be read"},
+    503: {"description": "The token could not be created; nothing was stored"},
 })
 def mint_mcp_token(request: McpTokenRequest,
                    http_request: Request = None) -> ResponseModel[dict[str, Any]]:  # type: ignore[assignment]
@@ -155,15 +167,6 @@ def mint_mcp_token(request: McpTokenRequest,
     user_id = _caller(request.session_token)
     _require_enabled(user_id)
     _require_mint_ceremony(user_id, request.session_token, "mint_mcp_token", http_request)
-
-    active = count_active_sessions(user_id, MCP_SESSION_SCOPES)
-    if active is None:
-        raise HTTPException(status_code=503, detail="Could not check your agent tokens. Try again.")
-    if active >= MCP_MAX_ACTIVE_TOKENS:
-        raise HTTPException(status_code=409, detail={
-            "code": "mcp_token_limit",
-            "message": f"You already have {MCP_MAX_ACTIVE_TOKENS} agent tokens. Revoke one first.",
-        })
 
     scope = SESSION_SCOPE_MCP_OUTREACH if request.outreach else SESSION_SCOPE_MCP
     label = request.label or MCP_DEFAULT_LABEL

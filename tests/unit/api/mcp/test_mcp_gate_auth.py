@@ -4,6 +4,7 @@ The P1 file (`test_mcp_gate.py`) pins steps 1-6 with a resolver that finds nothi
 the resolver rows, and follows an admitted request all the way to the SDK.
 """
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timedelta, timezone
@@ -154,7 +155,7 @@ class TestFailureBucket:
             self, api_client: Any, fake_redis: FakeRedis, resolver: MagicMock, enabled: None,
             sdk: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(limits.ENV_FAILURES_PER_MIN, "2")
-        resolver.side_effect = lambda t: _row() if t == _TOKEN else None
+        resolver.side_effect = lambda t, **_: _row() if t == _TOKEN else None
         ip = {"CF-Connecting-IP": "203.0.113.7"}
         assert [_post(api_client, token=_OTHER, **ip).status_code for _ in range(3)] == [
             401, 401, 429]
@@ -186,6 +187,7 @@ class TestConcurrencyAndBudgets:
         assert resp.status_code == 429 and _reason(resp) == "concurrency_limited"
         assert resp.headers["retry-after"] == "1"
         assert fake_redis.store["mcp:inflight:42"] == 2, "the refused slot is handed back"
+        assert "mcp:inflight:42" not in fake_redis.ttl_writes, "a refusal never touches the TTL"
         assert limits.worker_slots.in_flight == 0
 
     def test_a_full_worker_gets_429_without_touching_redis_slots(
@@ -381,6 +383,246 @@ class TestTheRealSdk:
         payload = resp.json()
         assert payload["id"] == 1 and payload["result"]["serverInfo"]["name"] == "lem"
         assert "no-store" in resp.headers["cache-control"]
+
+
+class TestTheGateWritesNothingForANonMcpSession:
+    def test_the_lookup_may_write_only_for_the_mcp_scopes(self, api_client: Any,
+                                                          fake_redis: FakeRedis,
+                                                          resolver: MagicMock) -> None:
+        resolver.return_value = _row("full")
+        assert _post(api_client).status_code == 401
+        assert resolver.call_args.args == (_TOKEN,)
+        assert resolver.call_args.kwargs == {"mutate_scopes": frozenset({"mcp", "mcp_outreach"})}
+
+
+class TestThePerAddressBucket:
+    def test_a_random_token_flood_is_refused_before_the_database(
+            self, api_client: Any, fake_redis: FakeRedis, resolver: MagicMock,
+            monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(limits.ENV_ADDRESS_FAILURES_PER_MIN, "3")
+        ip = {"CF-Connecting-IP": "198.51.100.4"}
+        codes = [_post(api_client, token=f"lem_mcp_random{i}", **ip).status_code for i in range(6)]
+        assert codes == [401, 401, 401, 429, 429, 429]
+        assert resolver.call_count == 3, "the flood stopped reaching the session lookup"
+
+    def test_another_address_is_not_held_by_the_flood(
+            self, api_client: Any, fake_redis: FakeRedis, resolver: MagicMock, enabled: None,
+            sdk: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(limits.ENV_ADDRESS_FAILURES_PER_MIN, "1")
+        resolver.side_effect = lambda t, **_: _row() if t == _TOKEN else None
+        _post(api_client, token=_OTHER, **{"CF-Connecting-IP": "198.51.100.4"})
+        assert _post(api_client, token=_OTHER,
+                     **{"CF-Connecting-IP": "198.51.100.4"}).status_code == 429
+        assert _post(api_client, **{"CF-Connecting-IP": "203.0.113.50"}).status_code == 200
+
+    def test_query_token_lookups_run_under_the_address_bucket(
+            self, api_client: Any, fake_redis: FakeRedis, exposure: MagicMock,
+            monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(limits.ENV_ADDRESS_FAILURES_PER_MIN, "5")
+        codes = [api_client.post("/api/mcp?" + "&".join(f"token=v{r}{i}" for i in range(4)),
+                                 content=b"{}", headers=_JSON).status_code for r in range(3)]
+        assert codes == [400, 400, 429]
+        assert exposure.call_count == 8, "four lookups each for two requests, none for the third"
+
+    @pytest.mark.parametrize("path", ["/api/mcp", "/api/mcp?token=x"])
+    def test_an_unreadable_address_bucket_is_503(self, api_client: Any, fake_redis: FakeRedis,
+                                                 exposure: MagicMock, path: str) -> None:
+        with patch.object(gate_mod, "address_failures_exceeded",
+                          side_effect=limits.LimitsUnavailable()):
+            resp = _post(api_client, path=path)
+        assert resp.status_code == 503 and _reason(resp) == "mcp_unavailable"
+        exposure.assert_not_called()
+
+
+class TestSlotsAreReturnedOnEveryExit:
+    @pytest.fixture(autouse=True)
+    def _admitted(self, resolver: MagicMock, enabled: None) -> None:
+        resolver.return_value = _row()
+
+    @pytest.mark.parametrize("target", ["acquire_user_slot", "consume_budgets", "_record_access"])
+    def test_any_exception_after_the_worker_slot_returns_it(
+            self, api_client: Any, fake_redis: FakeRedis, sdk: MagicMock, target: str) -> None:
+        with patch.object(gate_mod, target, side_effect=RuntimeError("boom")):
+            assert _post(api_client, _CALL).status_code == 500
+        assert limits.worker_slots.in_flight == 0
+        assert int(fake_redis.store.get("mcp:inflight:42") or 0) == 0
+        assert "body" not in sdk.seen
+
+    def _scope(self) -> dict:
+        return {"type": "http", "method": "POST", "path": "/api/mcp", "query_string": b"",
+                "headers": [(b"host", b"testserver"), (b"content-type", b"application/json"),
+                            (b"authorization", f"Bearer {_TOKEN}".encode())]}
+
+    @pytest.fixture
+    def gate_up(self, fake_redis: FakeRedis) -> Iterator[None]:
+        from cqc_lem.api.mcp.lifespan import mcp_state
+
+        saved = (mcp_state.unavailable, mcp_state.host, mcp_state.origin, mcp_state.dev_loopback)
+        mcp_state.unavailable, mcp_state.host, mcp_state.origin, mcp_state.dev_loopback = (
+            False, "testserver", "http://testserver", False)
+        yield
+        (mcp_state.unavailable, mcp_state.host, mcp_state.origin,
+         mcp_state.dev_loopback) = saved
+
+    def test_a_cancelled_request_returns_both_slots(self, fake_redis: FakeRedis,
+                                                    gate_up: None) -> None:
+        """Cancelled mid-SDK the way Starlette cancels a request: an anyio cancel scope."""
+        import anyio
+
+        held: dict[str, Any] = {}
+
+        async def _drive() -> None:
+            started = anyio.Event()
+
+            async def _hang(scope: Any, receive: Any, send: Any) -> None:
+                held["in_flight"] = limits.worker_slots.in_flight
+                held["user"] = fake_redis.store.get("mcp:inflight:42")
+                started.set()
+                await anyio.sleep_forever()
+
+            async def _receive() -> dict:
+                return {"type": "http.request", "body": json.dumps(_LIST).encode()}
+
+            async def _send(message: dict) -> None:
+                return None
+
+            fake = MagicMock()
+            fake.session_manager.handle_request = _hang
+            with patch.object(gate_mod, "mcp_server", fake):
+                async with anyio.create_task_group() as tg:
+                    tg.start_soon(gate_mod.McpGate(self._scope(), _receive, _send).dispatch)
+                    await started.wait()
+                    tg.cancel_scope.cancel()
+
+        anyio.run(_drive)
+        assert held == {"in_flight": 1, "user": 1}, "both slots were held while the SDK ran"
+        assert limits.worker_slots.in_flight == 0
+        assert fake_redis.store["mcp:inflight:42"] == 0
+
+    def test_a_natively_cancelled_task_returns_both_slots(self, fake_redis: FakeRedis,
+                                                          gate_up: None) -> None:
+        held: dict[str, Any] = {}
+
+        async def _drive() -> None:
+            started = asyncio.Event()
+
+            async def _hang(scope: Any, receive: Any, send: Any) -> None:
+                held["in_flight"] = limits.worker_slots.in_flight
+                started.set()
+                await asyncio.Event().wait()
+
+            async def _receive() -> dict:
+                return {"type": "http.request", "body": json.dumps(_LIST).encode()}
+
+            async def _send(message: dict) -> None:
+                return None
+
+            fake = MagicMock()
+            fake.session_manager.handle_request = _hang
+            with patch.object(gate_mod, "mcp_server", fake):
+                task = asyncio.ensure_future(
+                    gate_mod.McpGate(self._scope(), _receive, _send).dispatch())
+                await started.wait()
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+
+        asyncio.run(_drive())
+        assert held == {"in_flight": 1}
+        assert limits.worker_slots.in_flight == 0
+        assert fake_redis.store["mcp:inflight:42"] == 0
+
+
+    def test_a_request_cancelled_while_taking_its_slots_returns_them(
+            self, fake_redis: FakeRedis, gate_up: None) -> None:
+        """The window the old code leaked in: worker slot taken, budget still being spent."""
+        import threading
+
+        import anyio
+
+        in_budget = threading.Event()
+        let_go = threading.Event()
+        held: dict[str, Any] = {}
+
+        def _slow_budget(user_id: int, budgets: Any) -> None:
+            held["in_flight"] = limits.worker_slots.in_flight
+            in_budget.set()
+            let_go.wait(5)
+            return None
+
+        async def _drive() -> None:
+            async def _receive() -> dict:
+                return {"type": "http.request", "body": json.dumps(_CALL).encode()}
+
+            async def _send(message: dict) -> None:
+                return None
+
+            sdk_called = MagicMock()
+            fake = MagicMock()
+            fake.session_manager.handle_request = sdk_called
+            with patch.object(gate_mod, "mcp_server", fake), \
+                 patch.object(gate_mod, "consume_budgets", _slow_budget):
+                async with anyio.create_task_group() as tg:
+                    tg.start_soon(gate_mod.McpGate(self._scope(), _receive, _send).dispatch)
+                    await anyio.to_thread.run_sync(in_budget.wait, 5)
+                    tg.cancel_scope.cancel()
+                    let_go.set()
+            held["sdk_called"] = sdk_called.called
+
+        anyio.run(_drive)
+        assert held == {"in_flight": 1, "sdk_called": False}
+        assert limits.worker_slots.in_flight == 0
+        assert fake_redis.store["mcp:inflight:42"] == 0
+
+class TestCountersCarryTheirTtlFromCreation:
+    KEY = "mcp:inflight:7"
+
+    def test_the_ttl_is_set_once_and_never_by_a_refused_attempt(
+            self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(limits.ENV_INFLIGHT_PER_USER, "2")
+        fake = FakeRedis()
+        with patch.object(limits, "_redis", return_value=fake):
+            assert [limits.acquire_user_slot(7) for _ in range(4)] == [True, True, False, False]
+        assert fake.ttl_writes == [self.KEY], "only the creating call set a TTL"
+        assert fake.expiries[self.KEY] == limits._INFLIGHT_TTL_SECONDS
+        assert fake.store[self.KEY] == 2
+
+    def test_a_failed_increment_leaves_a_counter_that_still_has_its_ttl(self) -> None:
+        fake = FakeRedis()
+        fake.fail_on = {"incr"}
+        with patch.object(limits, "_redis", return_value=fake), \
+             pytest.raises(limits.LimitsUnavailable):
+            limits.acquire_user_slot(7)
+        assert fake.store[self.KEY] == 0 and self.KEY in fake.expiries
+
+    def test_a_failed_create_leaves_no_counter(self) -> None:
+        fake = FakeRedis()
+        fake.fail_on = {"set"}
+        with patch.object(limits, "_redis", return_value=fake), \
+             pytest.raises(limits.LimitsUnavailable):
+            limits.acquire_user_slot(7)
+        assert self.KEY not in fake.store
+
+    def test_an_existing_counter_is_never_given_a_new_ttl(self) -> None:
+        fake = FakeRedis()
+        fake.store["k"] = 5
+        assert limits._incr_with_ttl(fake, "k", 30) == 6
+        assert fake.ttl_writes == []
+
+    def test_every_counter_goes_through_the_helper(self) -> None:
+        import inspect
+
+        source = inspect.getsource(limits)
+        assert source.count(".incr(") == 1, "a bare INCR elsewhere could create a TTL-less key"
+        assert ".expire(" not in source
+
+    def test_a_failure_counts_against_both_buckets(self) -> None:
+        fake = FakeRedis()
+        with patch.object(limits, "_redis", return_value=fake):
+            limits.record_auth_failure("ip", "tok")
+            limits.record_auth_failure("ip", None)
+        assert fake.store[limits._address_failure_key("ip")] == 2
+        assert fake.store[limits._failure_key("ip", "tok")] == 1
 
 
 class TestLimitsUnit:

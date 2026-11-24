@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from cqc_lem.platform.db.repositories.auth import SessionStoreUnavailable
+from cqc_lem.platform.db.repositories.auth import SessionCapReached, SessionStoreUnavailable
 
 from .conftest import BASE_URL
 
@@ -45,9 +45,7 @@ def state(monkeypatch: pytest.MonkeyPatch) -> Iterator[_State]:
         s.step_up = s.patch(f"{_USER}.step_up_satisfied", return_value=True)
         s.patch(f"{_USER}.available_methods", return_value=["passkey"])
         s.denied = s.patch(f"{_USER}.record_auth_event", return_value=True)
-        s.create = s.patch(f"{_R}.create_session", return_value=_MINTED)
-        s.sid = s.patch(f"{_R}.get_session_id", return_value=77)
-        s.count = s.patch(f"{_R}.count_active_sessions", return_value=0)
+        s.create = s.patch(f"{_R}.create_session_within_cap", return_value=(_MINTED, 77))
         s.audit = s.patch(f"{_R}.record_auth_event", return_value=True)
         s.notify = s.patch(f"{_R}.notify_token_event", return_value=True)
         s.mint_rate = s.patch(f"{_R}.claim_mint", return_value=True)
@@ -71,16 +69,16 @@ class TestMint:
         expires = datetime.fromisoformat(detail["expires_at"].replace("Z", "+00:00"))
         assert abs(expires - (datetime.now(timezone.utc) + timedelta(days=30))) < timedelta(
             minutes=1)
-        kwargs = state.create.call_args.kwargs
-        assert kwargs["scope"] == "mcp" and kwargs["ttl_hours"] == 30 * 24
-        assert kwargs["token_prefix"] == "lem_mcp_"
+        args, kwargs = state.create.call_args.args, state.create.call_args.kwargs
+        assert args == (_UID, frozenset({"mcp", "mcp_outreach"}), 10, "mcp")
+        assert kwargs["ttl_hours"] == 30 * 24 and kwargs["token_prefix"] == "lem_mcp_"
 
     def test_outreach_is_an_opt_in_that_mints_mcp_outreach(self, api_client: Any,
                                                            state: _State) -> None:
         resp = _mint(api_client, outreach=True, ttl_days=90, label="Claude Code - laptop")
         assert resp.status_code == 200, resp.text
         assert resp.json()["detail"]["scope"] == "mcp_outreach"
-        assert state.create.call_args.kwargs["scope"] == "mcp_outreach"
+        assert state.create.call_args.args[3] == "mcp_outreach"
         assert state.create.call_args.kwargs["ttl_hours"] == 90 * 24
 
     def test_it_is_audited_and_emailed_without_the_token(self, api_client: Any,
@@ -105,18 +103,18 @@ class TestMint:
         state.create.assert_not_called()
 
     def test_ten_live_tokens_is_the_cap(self, api_client: Any, state: _State) -> None:
-        state.count.return_value = 10
+        state.create.side_effect = SessionCapReached()
         resp = _mint(api_client)
         assert resp.status_code == 409
         assert resp.json()["detail"]["code"] == "mcp_token_limit"
-        state.create.assert_not_called()
-        assert state.count.call_args.args == (_UID, frozenset({"mcp", "mcp_outreach"}))
+        state.audit.assert_not_called()
+        state.notify.assert_not_called()
 
-    def test_an_unreadable_count_is_503_never_a_mint(self, api_client: Any,
-                                                     state: _State) -> None:
-        state.count.return_value = None
+    def test_a_failed_transaction_is_503_and_unaudited(self, api_client: Any,
+                                                       state: _State) -> None:
+        state.create.return_value = (None, None)
         assert _mint(api_client).status_code == 503
-        state.create.assert_not_called()
+        state.audit.assert_not_called()
 
     def test_the_hourly_mint_rate(self, api_client: Any, state: _State) -> None:
         state.mint_rate.return_value = False
@@ -124,11 +122,6 @@ class TestMint:
         assert resp.status_code == 429
         assert resp.json()["detail"]["code"] == "mcp_mint_rate_limited"
         state.create.assert_not_called()
-
-    def test_a_failed_insert_is_500(self, api_client: Any, state: _State) -> None:
-        state.create.return_value = None
-        assert _mint(api_client).status_code == 500
-        state.audit.assert_not_called()
 
     def test_the_token_is_never_logged(self, api_client: Any, state: _State,
                                        caplog: pytest.LogCaptureFixture) -> None:
@@ -195,7 +188,7 @@ class TestRotate:
         assert [c[0] for c in order.mock_calls] == ["revoke", "create"]
         revoke.assert_called_once_with(_UID, 5)
         kwargs = state.create.call_args.kwargs
-        assert (kwargs["label"], kwargs["scope"], kwargs["ttl_hours"]) == (
+        assert (kwargs["label"], state.create.call_args.args[3], kwargs["ttl_hours"]) == (
             "Cursor - desk", "mcp_outreach", 7 * 24)
         assert resp.json()["detail"]["session_token"] == _MINTED
         event = state.audit.call_args
@@ -300,15 +293,30 @@ class TestInfo:
 
 
 class TestNotify:
-    def test_no_address_warns_and_sends_nothing(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_no_address_sends_nothing_and_logs_debug(self,
+                                                    caplog: pytest.LogCaptureFixture) -> None:
         from cqc_lem.api.mcp.notify import notify_token_event
 
         with patch("cqc_lem.utilities.db.get_user_email", return_value=None), \
              patch("cqc_lem.utilities.email.send_mcp_token_email") as send, \
-             caplog.at_level(logging.WARNING, logger="cqc-lem"):
+             caplog.at_level(logging.DEBUG, logger="cqc-lem"):
             assert notify_token_event(1, "minted") is False
         send.assert_not_called()
-        assert any("not sent" in r.getMessage() for r in caplog.records)
+        assert [r.levelno for r in caplog.records if "not sent" in r.getMessage()] == [
+            logging.DEBUG]
+
+    def test_a_refused_send_warns_once_from_the_sender_not_twice(
+            self, caplog: pytest.LogCaptureFixture) -> None:
+        """`_dispatch_email` already warns when no provider takes it; the helper adds no second one."""
+        from cqc_lem.api.mcp.notify import notify_token_event
+
+        with patch("cqc_lem.utilities.db.get_user_email", return_value="a@example.com"), \
+             patch("cqc_lem.utilities.email.SENDGRID_API_KEY", ""), \
+             patch("cqc_lem.utilities.email.SMTP_USER", ""), \
+             caplog.at_level(logging.DEBUG, logger="cqc-lem"):
+            assert notify_token_event(1, "minted", label="L", scope="mcp") is False
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(warnings) == 1 and "No email provider" in warnings[0].getMessage()
 
     def test_a_raising_sender_never_escapes(self, caplog: pytest.LogCaptureFixture) -> None:
         from cqc_lem.api.mcp.notify import notify_token_event

@@ -947,8 +947,8 @@ there is no new login and no new credential store. Full plan: `docs/agent-mcp-pl
 
 | Scope | Reaches | Verbs |
 |---|---|---|
-| `mcp` | `_MCP_READ_PATHS`: the user's own settings, automation state, dashboard, posts, plan, generation status, performance, engagement settings, voice kit and newsletter settings/draft | `GET` only, per path (`_SCOPE_PATH_METHODS`) |
-| `mcp_outreach` | `mcp` plus `_MCP_OUTREACH_EXTRA_READ_PATHS`: DMs, connection requests, leads, lead signals, catch-up touches, outreach targets, newsletter subscribers | `GET` only |
+| `mcp` | `_MCP_READ_PATHS`: the user's own settings, automation state, dashboard, posts, plan, generation status, performance, engagement preferences and DM templates, voice kit and newsletter settings/draft. `/user/settings` returns `subscription: null` to any seat outside the human scopes, and the billing row is not read | `GET` only, per path (`_SCOPE_PATH_METHODS`) |
+| `mcp_outreach` | `mcp` plus `_MCP_OUTREACH_EXTRA_READ_PATHS`: DMs, connection requests, leads, lead signals, catch-up touches, outreach targets, newsletter subscribers, engagement targets (named people) and engagement suggestions (drafts written from strangers' posts) | `GET` only |
 
 `mcp_outreach` is opted into at mint (owner ruling O11), because those lists hold other people's
 data; its rows are cut to `_OBSERVER_ROW_FIELDS` exactly as an observer's are (`_FIELD_FILTERED_SCOPES`).
@@ -985,17 +985,24 @@ the only path in `api/` other than `get_session_user_id` that calls a session re
 
 `resolve_session_checked` exists because `resolve_session` answers None for a database fault, which
 for the gate would read as "invalid token, create a new one". It raises `SessionStoreUnavailable`
-instead, and the gate answers **503 `mcp_unavailable`**. It also returns the row id and expiry for
+instead, and the gate answers **503 `mcp_unavailable`**. The gate calls it with
+`mutate_scopes=MCP_SESSION_SCOPES`, so a session of any other scope presented there is only READ: its
+idle window is not slid and `last_seen_at` is not touched. It also returns the row id and expiry for
 the request's `McpPrincipal`. For the mcp scopes only, `last_seen_at` is written at most once every
 60 seconds (`MCP_LAST_SEEN_THROTTLE_SECONDS`), because one tool call resolves its token at the gate
 and again on every inner call; every other seat is unchanged.
 
 The gate's order after the HTTP checks (`api/mcp/gate.py`): a token in the query string is 400, and
 one that resolves to **any** session is revoked on the spot, audited `mcp_token_exposed` and its owner
-emailed (WARNING, never the value); then a per-(address, token digest) failure bucket (30 a minute);
-resolve; the `mcp-server-enabled` flag (403 `mcp_disabled`); concurrency (2 per user, 8 per worker);
-the per-user tool-call budget; the principal; and the once-a-day `mcp_access` row. Every Redis-backed
-limit fails CLOSED (503); `MCP_RATE_*` set to 0 refuses all.
+emailed (WARNING, never the value); then two failure buckets, per client address (60 a minute) and
+per (address, token digest) (30 a minute), checked BEFORE the session lookup so a flood of random
+tokens never reaches the database (query-string lookups run under the per-address one too, at most 4
+values a request); resolve; the `mcp-server-enabled` flag (403 `mcp_disabled`); concurrency (2 per
+user, 8 per worker); the per-user tool-call budget; the principal; and the once-a-day `mcp_access`
+row. Every Redis-backed limit fails CLOSED (503); `MCP_RATE_*` set to 0 refuses all. Every counter is
+created with its TTL (`SET NX EX`, then `INCR`), so a refused attempt never refreshes it and none can
+exist without one. Everything from the first concurrency slot to the SDK's last byte runs inside ONE
+try/finally that returns both slots on every exit, cancellation included.
 
 ### Minting, rotating, revoking
 
@@ -1003,13 +1010,18 @@ limit fails CLOSED (503); `MCP_RATE_*` set to 0 refuses all.
 mint tightened: 404 while the rollout flag is off for the account; a human session; **a strong factor
 first** (403 `mcp_needs_strong_factor`, owner ruling O3 — the check runs before the ceremony); then
 `_require_step_up` with `extension_scope_ok` **not** passed; `ttl_days` 1–90, default 30, fixed at
-mint (O2); at most 10 live MCP tokens (409 `mcp_token_limit`) and 10 mints an hour (429). The token
+mint (O2); at most 10 live MCP tokens (409 `mcp_token_limit`), counted and inserted in one
+transaction that holds the user's row lock (`create_session_within_cap`), so concurrent mints cannot
+overshoot it; and 10 mints an hour (429, a Redis limiter that fails open). The token
 is `lem_mcp_` + 64 hex, so a leaked one is recognisable; the stored hash covers the whole string.
 Every mint is audited `mcp_token_minted` and emailed to the owner; a failed email never fails the
 mint. `POST /api/user/mcp-token/rotate {session_id}` runs the same ceremony, checks ownership and
 scope in SQL (`get_owned_session`), **revokes the old token first**, then mints one with the same
 label, scope and TTL (`mcp_token_rotated`, emailed). `GET /api/user/mcp-token/info` lists the account's MCP
-tokens with no token or hash, plus Redis activity counts that are null, never 0, when unreadable.
+tokens with no token or hash, live ones first so a live token never drops off the list, plus
+Redis activity counts that are null, never 0, when unreadable. The Security card's recent events
+leave out every `mcp_*` row (`list_auth_audit_events(exclude_prefix="mcp_")`), so an agent's access
+and mint rows cannot push the account's human sign-ins out of its window.
 Revoking one is `POST /user/sessions/revoke`, as for every session.
 
 Fleet-wide controls are owner-run: `POST /api/admin/mcp-kill {on}` (admin human session, step-up,

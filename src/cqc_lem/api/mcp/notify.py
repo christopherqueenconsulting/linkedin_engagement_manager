@@ -1,13 +1,15 @@
 """The owner email for an MCP token event: minted, rotated, or exposed and revoked.
 
 One helper for the mint router and the gate, so every path sends the same notice and fails the
-same way: an email that does not go out is logged as a WARNING and never fails the action it is
-about (plan §3.5: "if the email fails, the mint still succeeds").
+same way: an email that does not go out never fails the action it is about (plan §3.5: "if the
+email fails, the mint still succeeds"). It warns ONCE, where the failure is detected: a provider
+that refused the message has already warned inside `_dispatch_email`, so "not sent" here is DEBUG,
+and only an exception escaping the sender (which nothing else logged) warns here.
 """
 
 from typing import Optional
 
-from cqc_lem.utilities.logger import log_warning
+from cqc_lem.utilities.logger import log_debug, log_warning
 
 
 def notify_token_event(user_id: int, kind: str, label: Optional[str] = None,
@@ -34,5 +36,5 @@ def notify_token_event(user_id: int, kind: str, label: Optional[str] = None,
         log_warning("MCP token notification email failed", exc=exc, user_id=user_id, kind=kind)
         return False
     if not sent:
-        log_warning("MCP token notification email not sent", user_id=user_id, kind=kind)
+        log_debug("MCP token notification email not sent", user_id=user_id, kind=kind)
     return sent
