@@ -74,8 +74,8 @@ _LEAD_SIGNALS = {"id", "user_id", "source", "channel", "person_name", "person_pr
                  "status", "delivery_attempts", "created_at", "updated_at"}
 _LEADS = {"id", "user_id", "person_key", "person_name", "person_profile_url", "score", "icp_score",
           "engagement_score", "stage", "signals", "signal_count", "reasons", "next_action",
-          "first_signal_at", "last_signal_at", "manual_stage", "notes", "dismissed", "created_at",
-          "updated_at"}
+          "first_signal_at", "last_signal_at", "manual_stage", "notes", "deal_value", "dismissed",
+          "created_at", "updated_at"}
 
 
 def _row(fields: set[str]) -> dict[str, Any]:

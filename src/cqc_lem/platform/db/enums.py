@@ -219,6 +219,19 @@ class LeadStage(StrEnum):
     HOT = 'hot'                          # strong ICP fit + heavy engagement, or an unanswered buying question
     IN_CONVERSATION = 'in_conversation'  # a live DM thread with someone who also engages with us
     OPPORTUNITY = 'opportunity'          # they asked a buying question and we are answering it
+    # Outcome stages (#2633): an OPERATOR call stored in `manual_stage` only — derive_stage never
+    # returns one, so a re-score cannot overwrite it.
+    MEETING_BOOKED = 'meeting_booked'
+    MEETING_HELD = 'meeting_held'
+    WON = 'won'
+    LOST = 'lost'
+
+
+class LeadStageSource(StrEnum):
+    """What moved a lead between stages, as recorded in `lead_stage_events` (#2633)."""
+    MANUAL = 'manual'    # the operator's button
+    DERIVED = 'derived'  # the nightly re-score changed the computed stage
+    BOOKING = 'booking'  # reserved for the booking hook (a later phase)
 
 
 class LeadSignalKind(StrEnum):

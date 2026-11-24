@@ -3203,7 +3203,11 @@ def get_engagement_analytics_endpoint(session_token: str, days: int = 90) -> Res
     from cqc_lem.utilities.content_quality import quality_rollup, rollup_days
     from cqc_lem.utilities.db import get_content_quality_scores
     from cqc_lem.utilities.linkedin.rate_limit import commenting_hold_reason, commenting_hold_remaining
-    from cqc_lem.utilities.post_stats import build_engagement_trend, build_performance_table
+    from cqc_lem.utilities.post_stats import (
+        build_engagement_trend,
+        build_performance_table,
+        organic_engagement_summary,
+    )
     user_id = _main.get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -3227,6 +3231,7 @@ def get_engagement_analytics_endpoint(session_token: str, days: int = 90) -> Res
     return ResponseModel(status_code=200, detail={
         "per_post": build_performance_table(rows),
         "trend": build_engagement_trend(rows),
+        "organic": organic_engagement_summary(rows),
         "sample_size": len(rows),
         "days": days,
         "coverage": coverage,

@@ -15,7 +15,7 @@ class TestGetPostPerformanceRows:
         cursor = mock_database_connection["cursor"]
         cursor.fetchall.return_value = [
             (9, datetime(2026, 7, 20, 14, 0), 42, 7, 3, 900, 5,
-             "case_study", "bold_claim", "carousel", "AI onboarding", "consideration"),
+             "case_study", "bold_claim", "carousel", "AI onboarding", "consideration", 4),
         ]
         from cqc_lem.utilities.db import get_post_performance_rows
         rows = get_post_performance_rows(1)
@@ -23,7 +23,8 @@ class TestGetPostPerformanceRows:
             "post_id": 9, "scheduled_time": datetime(2026, 7, 20, 14, 0),
             "reactions": 42, "comments": 7, "reposts": 3, "impressions": 900, "saves": 5,
             "archetype": "case_study", "hook_style": "bold_claim", "format": "carousel",
-            "topic": "AI onboarding", "buyer_stage": "consideration"}]
+            "topic": "AI onboarding", "buyer_stage": "consideration",
+            "own_comments": 4}]
 
     def test_no_window_filter_by_default(self, mock_database_connection):
         cursor = mock_database_connection["cursor"]

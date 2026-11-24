@@ -128,6 +128,7 @@ from cqc_lem.utilities.db import (
     get_latest_post_stats,
     get_latest_review_feedback_id,
     get_lead,
+    get_lead_funnel_counts,
     get_lead_signal,
     get_lead_signals,
     get_leads,
@@ -976,8 +977,8 @@ _OBSERVER_ROW_FIELDS: Dict[str, frozenset] = {
     "leads": frozenset({
         "id", "user_id", "person_key", "person_name", "person_profile_url", "score", "icp_score",
         "engagement_score", "stage", "signals", "signal_count", "reasons", "next_action",
-        "first_signal_at", "last_signal_at", "manual_stage", "notes", "dismissed", "created_at",
-        "updated_at"}),
+        "first_signal_at", "last_signal_at", "manual_stage", "notes", "deal_value", "dismissed",
+        "created_at", "updated_at"}),
 }
 
 
@@ -3774,6 +3775,7 @@ class LeadUpdate(BaseModel):
     notes: Optional[str] = Field(default=None, max_length=_LEN_LEAD_NOTES)
     stage: Optional[str] = None   # manual stage override; '' clears it back to the computed stage
     action: Optional[str] = None  # 'dismiss' | 'restore' | None
+    deal_value: Optional[float] = Field(default=None, ge=0, le=9_999_999_999)  # optional, with an outcome stage
 
 
 class LeadRefreshRequest(BaseModel):
@@ -3802,6 +3804,23 @@ def list_leads_endpoint(session_token: str, stage_filter: Optional[str] = None,
     return ResponseModel(status_code=200, detail=result)
 
 
+@router.get("/leads/funnel")
+def lead_funnel_endpoint(session_token: str, months: int = Query(default=12, ge=1, le=36)
+                         ) -> ResponseModel[dict[str, Any]]:
+    """Conversation to meeting to won, counted per month from the stage history (#2633).
+
+    A failed read is 503, never an empty funnel.
+    """
+    from cqc_lem.utilities.lead_scoring import build_lead_funnel
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    counts = get_lead_funnel_counts(user_id, months=months)
+    if counts is None:
+        raise HTTPException(status_code=503, detail="Could not read the lead funnel")
+    return ResponseModel(status_code=200, detail=build_lead_funnel(counts))
+
+
 @router.put("/lead")
 def update_lead_endpoint(request: LeadUpdate) -> ResponseModel[str]:
     """Operator edits: move a lead's stage by hand, keep a note, or dismiss/restore it. The nightly
@@ -3818,11 +3837,12 @@ def update_lead_endpoint(request: LeadUpdate) -> ResponseModel[str]:
                             detail=f"Unknown action '{request.action}' — expected 'dismiss' or 'restore'")
     if request.stage and request.stage not in _LEAD_STAGES:
         raise HTTPException(status_code=422, detail=f"Unknown stage '{request.stage}'")
-    if request.notes is None and request.stage is None and request.action is None:
+    if (request.notes is None and request.stage is None and request.action is None
+            and request.deal_value is None):
         raise HTTPException(status_code=422, detail="Nothing to update")
     dismissed = {"dismiss": True, "restore": False}.get(request.action)
     if not update_lead(request.lead_id, notes=request.notes, manual_stage=request.stage,
-                       dismissed=dismissed):
+                       dismissed=dismissed, deal_value=request.deal_value):
         raise HTTPException(status_code=500, detail="Could not update lead")
     return ResponseModel(status_code=200, detail="Lead updated")
 

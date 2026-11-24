@@ -23,13 +23,28 @@ interface Lead {
   reasons: string | null
   next_action: string | null
   notes: string | null
+  deal_value: number | null
   dismissed: boolean
   last_signal_at: string | null
 }
 
-const STAGES = ['opportunity', 'in_conversation', 'hot', 'warm', 'cold'] as const
+const STAGES = [
+  'won', 'meeting_held', 'meeting_booked', 'opportunity', 'in_conversation', 'hot', 'warm', 'cold', 'lost',
+] as const
+
+// One-click outcome buttons (#2633): an operator call, stored as the manual stage so a re-score never undoes it.
+const OUTCOME_BUTTONS = [
+  { stage: 'meeting_booked', label: 'Booked' },
+  { stage: 'meeting_held', label: 'Held' },
+  { stage: 'won', label: 'Won' },
+  { stage: 'lost', label: 'Lost' },
+] as const
 
 const STAGE_LABELS: Record<string, string> = {
+  meeting_booked: 'Meeting booked',
+  meeting_held: 'Meeting held',
+  won: 'Won',
+  lost: 'Lost',
   opportunity: 'Opportunity',
   in_conversation: 'In conversation',
   hot: 'Hot',
@@ -38,6 +53,10 @@ const STAGE_LABELS: Record<string, string> = {
 }
 
 const STAGE_COLORS: Record<string, string> = {
+  meeting_booked: 'bg-accent/10 text-accent',
+  meeting_held: 'bg-accent/10 text-accent',
+  won: 'bg-success/10 text-success',
+  lost: 'bg-page text-fg-muted',
   opportunity: 'bg-accent/10 text-accent',
   in_conversation: 'bg-accent/10 text-accent',
   hot: 'bg-warning/10 text-warning',
@@ -72,13 +91,14 @@ export default function LeadsPipeline({ userTimezone }: { userTimezone: string }
   const flash = (ok: boolean, text: string) => { setMsg({ ok, text }); setTimeout(() => setMsg(null), 4000) }
 
   const updateMutation = useMutation({
-    mutationFn: (v: { id: number; stage?: string; notes?: string; action?: 'dismiss' | 'restore' }) =>
+    mutationFn: (v: { id: number; stage?: string; notes?: string; action?: 'dismiss' | 'restore'; dealValue?: number }) =>
       api.put('/lead', {
         session_token: sessionToken,
         lead_id: v.id,
         stage: v.stage ?? null,
         notes: v.notes ?? null,
         action: v.action ?? null,
+        deal_value: v.dealValue ?? null,
       }),
     onSuccess: (_r, v) => {
       qc.invalidateQueries({ queryKey: ['leads'] })
@@ -182,6 +202,24 @@ export default function LeadsPipeline({ userTimezone }: { userTimezone: string }
                       <span>{formatInTimezone(l.last_signal_at, userTimezone)}</span>
                     </>
                   )}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  {OUTCOME_BUTTONS.map((b) => (
+                    <button key={b.stage}
+                      onClick={() => updateMutation.mutate({ id: l.id, stage: b.stage })}
+                      disabled={updateMutation.isPending || stageOf(l) === b.stage}
+                      className="px-2 py-1 border border-field text-fg rounded-control text-xs font-semibold hover:bg-page disabled:opacity-50">
+                      {b.label}
+                    </button>
+                  ))}
+                  <input type="number" min={0} step="any" aria-label="Deal value"
+                    defaultValue={l.deal_value ?? ''} placeholder="Deal value"
+                    onBlur={(e) => {
+                      const v = parseFloat(e.target.value)
+                      if (!Number.isNaN(v) && v >= 0 && v !== l.deal_value) updateMutation.mutate({ id: l.id, dealValue: v })
+                    }}
+                    className="w-24 border border-field rounded-control px-2 py-1 text-xs" />
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2">

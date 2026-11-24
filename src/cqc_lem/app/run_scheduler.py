@@ -1906,12 +1906,24 @@ def _rebuild_leads_for_user(user_id: int, days: int = LEAD_ACTIVITY_WINDOW_DAYS)
     """Re-score one user's whole pipeline from existing engagement data. The reset runs first (and
     even when there's no activity at all) so people who went quiet decay out of 'hot'.
     """
-    from cqc_lem.utilities.db import get_lead_activity, get_profile_facts, reset_lead_scores, upsert_lead
+    from cqc_lem.utilities.db import (
+        get_lead_activity,
+        get_lead_stage_map,
+        get_profile_facts,
+        record_derived_stage_changes,
+        reset_lead_scores,
+        upsert_lead,
+    )
     from cqc_lem.utilities.lead_scoring import score_leads
 
+    # Snapshot BEFORE the reset: it sets every stage to cold, so a diff taken afterwards would
+    # read every lead as having moved. Derived history records only real changes (#2633).
+    stages_before = get_lead_stage_map(user_id)
     reset_lead_scores(user_id)
     rows = get_lead_activity(user_id, days=days)
     if not rows:
+        if stages_before is not None:
+            record_derived_stage_changes(user_id, stages_before)
         return 0
     prefs = get_engagement_preferences(user_id) or {}
     urls = sorted({r.get("person_profile_url") for r in rows if r.get("person_profile_url")})
@@ -1928,6 +1940,8 @@ def _rebuild_leads_for_user(user_id: int, days: int = LEAD_ACTIVITY_WINDOW_DAYS)
                        next_action=lead.next_action, first_signal_at=lead.first_signal_at,
                        last_signal_at=lead.last_signal_at):
             saved += 1
+    if stages_before is not None:
+        record_derived_stage_changes(user_id, stages_before)
     log_info(f"Rebuilt {saved} lead(s) for user {user_id}", user_id=user_id,
              task_name="rebuild_leads_for_user")
     return saved
