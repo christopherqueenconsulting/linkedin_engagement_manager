@@ -102,6 +102,7 @@ _FEEDBACK_COLUMNS = ("id, user_id, source, type_hint, body, context_json, embedd
 # file from 21 open alerts to 0. A per-line ruff directive would be invisible to CodeQL.
 
 __all__ = [
+    "AGENT_POST_PLACEHOLDER",
     "AUTH_FACTOR_PASSKEY",
     "AVATAR_APPROVAL_PENDING",
     "BlockedVisit",
