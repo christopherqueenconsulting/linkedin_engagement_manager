@@ -37,6 +37,7 @@ index and the `CLAUDE.md` row that points at it, or the pointer becomes a dead e
 - [Animated loop posts](animated-posts.md) — opt-in GIF cinemagraph of a text post's gated still via the Images API (`ANIMATED_POST_ENABLED`, OFF); needs a live grounding pass first
 - [Motion design](motion-design.md) — the $0 kinetic title card and GIF loop: six rotated styles (counter, chart draw-in, checklist tick, before/after wipe, two kinetic-type), frame 0 = the complete piece (headline + final figure), hold-reset-build-hold, seamless GIFs, only traceable figures move
 - [Curated outside sources](curated-sources.md) — reshare / re-chart / link posts that credit someone else's content (`CURATED_SOURCES_ENABLED`, OFF): guardrails, the 1-in-3 ceiling, owner-only approval, and the live reshare test still owed
+- [Call ingest — audio](call-ingest-audio.md) — recordings to story-bank facts (`CALL_INGEST_ENABLED`, OFF): Whisper via `lem-transcribe`, own-voice enrollment, UNKNOWN never guessed, audio deleted on every path
 - [Curated sources research](curated-sources-research.md) — the 2026-10-07 research behind it: LinkedIn reshare API, fair use and screenshots, licences, 19 source platforms ranked, the phased design
 - [Weekly group post](group-posts.md) — statuses, media, and what actually works inside a LinkedIn group
 - [Timezone contract](timezone-contract.md) — what is stored in UTC, what is rendered local, and where the boundary is

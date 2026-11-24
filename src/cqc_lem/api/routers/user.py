@@ -64,7 +64,7 @@ from cqc_lem.api.response_schemas import (
 )
 from cqc_lem.app.engagement.posting import update_stale_profile
 from cqc_lem.utilities import db as _call_db
-from cqc_lem.utilities.ai import call_ingest as _call_ingest
+from cqc_lem.utilities.ai import call_audio as _call_audio, call_ingest as _call_ingest
 from cqc_lem.utilities.ai.audience_mix import parse_audience_mix
 from cqc_lem.utilities.ai.content_alignment import profile_niche_anchors
 from cqc_lem.utilities.ai.content_framework import GROUP_POST_BEST_PRACTICES
@@ -4077,6 +4077,91 @@ def create_call_source_endpoint(request: CallSourceRequest) -> ResponseModel[dic
     return ResponseModel(status_code=200, detail={"source_id": source_id})
 
 
+def _call_audio_dir() -> str:
+    from cqc_lem import assets_dir
+    path = os.path.join(assets_dir, "call_audio")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+async def _accept_call_audio(user_id: int, source_id: int, title: Optional[str],
+                             file: UploadFile, filename: str) -> ResponseModel[dict[str, Any]]:
+    """Spool a recording under the audio dir, register it, and queue transcription.
+
+    Needs an enrolled voice first (409 `needs_enrollment`): without one every turn would be
+    UNKNOWN and the upload would only spend money. The size cap is enforced while streaming; the
+    duration cap is the worker's, before any transcription spend. The file is the worker's to delete.
+    """
+    import hashlib
+
+    if not _call_db.get_voice_enrollment(user_id):
+        raise HTTPException(status_code=409, detail={"needs_enrollment": True})
+    spooled = None
+    try:
+        spooled, size = await _spool_upload(file, _call_audio.MAX_AUDIO_BYTES)
+        if size > _call_audio.MAX_AUDIO_BYTES:
+            raise HTTPException(status_code=400, detail="Recording is larger than 60 MB")
+        if size == 0:
+            raise HTTPException(status_code=400, detail="The recording is empty")
+        with open(spooled, "rb") as fh:
+            digest = hashlib.sha256(fh.read()).hexdigest()
+        dest = os.path.join(_call_audio_dir(),
+                            f"{user_id}_{digest[:24]}{os.path.splitext(filename)[1]}")
+        os.replace(spooled, dest)
+        spooled = None
+    finally:
+        _drop_temp_upload(spooled)
+    ingest_id = _call_db.insert_call_audio_ingest(user_id, digest, dest, source_id=source_id,
+                                                  title=(title or None))
+    if not ingest_id:
+        _drop_temp_upload(dest)
+        raise HTTPException(status_code=500, detail="Could not store the recording")
+    if _call_db.get_call_audio_path(user_id, ingest_id) != dest:
+        # The same recording was already processed: nothing to transcribe, nothing to keep.
+        _drop_temp_upload(dest)
+        return ResponseModel(status_code=200, detail={"ingest_id": ingest_id, "duplicate": True})
+    from cqc_lem.app.run_call_ingest import transcribe_call_audio
+    transcribe_call_audio.apply_async(kwargs={"user_id": user_id, "ingest_id": ingest_id})
+    return ResponseModel(status_code=200, detail={"ingest_id": ingest_id})
+
+
+@router.post("/call-ingest/enroll")
+async def enroll_call_voice_endpoint(
+    session_token: str = Form(...),
+    file: UploadFile = File(...),
+) -> ResponseModel[dict[str, Any]]:
+    """Enrol the user's own voice from a short sample (5 s to 2 min of just them speaking).
+
+    Stores one sealed embedding and nothing else — the sample itself is deleted before returning.
+    Replaces any earlier enrollment. Speaker ID not being installed is a 503, never a silent pass.
+    """
+    _require_call_ingest()
+    user_id = _call_user(session_token)
+    if not (file.filename or "").lower().endswith(_call_audio.AUDIO_SUFFIXES):
+        raise HTTPException(status_code=400, detail="Upload an .m4a, .mp3, .wav or .webm sample")
+    spooled = None
+    try:
+        spooled, size = await _spool_upload(file, _call_audio.ENROLL_MAX_BYTES)
+        if size > _call_audio.ENROLL_MAX_BYTES:
+            raise HTTPException(status_code=400, detail="Sample is larger than 8 MB")
+        try:
+            samples = _call_audio.decode_audio(spooled, _call_audio.ENROLL_MAX_SECONDS)
+            seconds = _call_audio.duration_seconds(samples)
+            if seconds < _call_audio.ENROLL_MIN_SECONDS:
+                raise _call_audio.AudioError("The sample is shorter than 5 seconds")
+            embedding = _call_audio.embed_voice(samples, _call_audio.speaker_engine())
+        except _call_audio.AudioError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except _call_audio.SpeakerSetupError as e:
+            log_error("Call speaker ID is not set up", exc=e, user_id=user_id)
+            raise HTTPException(status_code=503, detail="Speaker ID is not available")
+    finally:
+        _drop_temp_upload(spooled)
+    if not _call_db.save_voice_enrollment(user_id, embedding):
+        raise HTTPException(status_code=500, detail="Could not store the voice enrollment")
+    return ResponseModel(status_code=200, detail={"enrolled": True})
+
+
 @router.post("/call-ingest/upload")
 async def upload_call_transcript_endpoint(
     session_token: str = Form(...),
@@ -4093,10 +4178,17 @@ async def upload_call_transcript_endpoint(
     """
     _require_call_ingest()
     user_id = _call_user(session_token)
-    if not (file.filename or "").lower().endswith(_CALL_UPLOAD_SUFFIXES):
-        raise HTTPException(status_code=400, detail="Upload a .vtt, .srt or .txt transcript")
+    filename = (file.filename or "").lower()
+    is_audio = filename.endswith(_call_audio.AUDIO_SUFFIXES)
+    if not is_audio and not filename.endswith(_CALL_UPLOAD_SUFFIXES):
+        raise HTTPException(status_code=400, detail="Upload a .vtt, .srt or .txt transcript, "
+                                                    "or an .m4a, .mp3, .wav or .webm recording")
     if not _call_db.is_call_source_enabled(user_id, source_id):
         raise HTTPException(status_code=403, detail="Source is not enabled for this account")
+    if is_audio:
+        if source_type != "audio":
+            raise HTTPException(status_code=400, detail="A recording needs the audio source type")
+        return await _accept_call_audio(user_id, source_id, title, file, filename)
     spooled = None
     try:
         spooled, size = await _spool_upload(file, _CALL_UPLOAD_MAX_BYTES)
@@ -4174,8 +4266,11 @@ def accept_call_candidates_bulk_endpoint(
 def purge_all_call_data_endpoint(request: CallPurgeRequest) -> ResponseModel[str]:
     """Delete every call row the user has — transcripts, candidates, sources and promoted facts."""
     user_id = _call_user(request.session_token)
+    audio_paths = _call_db.list_call_audio_paths(user_id)
     if not _call_db.purge_all_call_data(user_id):
         raise HTTPException(status_code=500, detail="Could not purge call data")
+    for audio_path in audio_paths:
+        _drop_temp_upload(audio_path)
     return ResponseModel(status_code=200, detail="Call data purged")
 
 
