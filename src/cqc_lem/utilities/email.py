@@ -690,6 +690,15 @@ def send_shipped_fix_email(to_email: str, changelog_line: str, issue_number: int
     return _dispatch_email(to_email, f"✅ You asked, we shipped (#{int(issue_number)})", html)
 
 
+def send_impact_report_email(to_email: str, subject: str, text: str) -> bool:
+    """Email the owner an impact report (issue #2643). `text` is numbers only; it is escaped into
+    a preformatted block so nothing in it can inject markup.
+    """
+    html = ('<html><body style="font-family:Arial,Helvetica,sans-serif;color:#222;">'
+            f'<pre style="font-size:13px;">{html_escape(text)}</pre></body></html>')
+    return _dispatch_email(to_email, subject, html, text)
+
+
 def send_faq_answer_email(to_email: str, question: str, answer: str,
                           cta_path: str = "/#faq") -> bool:
     """Answer someone who asked a support question (issue #507). Both halves are generated/derived

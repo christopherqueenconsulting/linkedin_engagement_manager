@@ -85,6 +85,7 @@ CURATED_SOURCES = "curated-sources-enabled"
 COMMENT_CANDIDATE_POOL = "comment-candidate-pool-enabled"
 WEEKLY_REPORT = "weekly-report-enabled"
 COMMENT_CANDIDATE_CRAWL = "comment-candidate-crawl-enabled"
+IMPACT_REPORT = "impact-report-enabled"
 
 FLAGS: Dict[str, FlagSpec] = {
     spec.key: spec for spec in (
@@ -240,6 +241,16 @@ FLAGS: Dict[str, FlagSpec] = {
                          "`GET /api/user/weekly-report` answers 404 while it is off. OFF by "
                          "default and rolled out to user 1 first. Read-only: it never sends "
                          "or writes anything."),
+        ),
+        FlagSpec(
+            key=IMPACT_REPORT,
+            env_var="IMPACT_REPORT_ENABLED",
+            default=False,
+            owner="analytics",
+            description=("The impact-report beat (utilities/impact_report_job.py, issue #2643): "
+                         "emails the owner a before/after report 14 days after each release and "
+                         "a monthly baseline, and posts a one-line metric-free note on the "
+                         "tracker issue. OFF by default; the admin route is not gated by it."),
         ),
     )
 }

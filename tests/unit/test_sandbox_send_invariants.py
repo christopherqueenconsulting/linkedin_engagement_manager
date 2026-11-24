@@ -575,6 +575,7 @@ _NO_LINKEDIN_ACTION = {
     "auto_weekly_margin_report": "internal report",
     "auto_daily_cost_alerts": "internal alert",
     "auto_capacity_watch": "internal monitor",
+    "auto_impact_report": "owner email report and a metric-free GitHub note",
     "auto_file_feedback_issues": "files GitHub issues for feedback",
     "auto_recluster_feedback": "analytics over stored feedback",
     "auto_changelog_notify": "email to account owners",
