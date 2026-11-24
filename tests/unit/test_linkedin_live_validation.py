@@ -4542,16 +4542,57 @@ class TestProfileAuditFieldsProbe:
         assert "did not render" in reading["verdict"]
 
     def test_the_snippet_is_sanitised(self):
-        body = ("<main><div class='mt2 relative'><h1>Me Myself</h1></div>"
-                "<div class='cover-photo'><script>secret()</script>"
-                "<a href='https://x/private' id='abc'>link</a><svg><path/></svg>"
-                f"<p>{'x' * 200}</p></div></main>")
+        from bs4 import BeautifulSoup
 
-        reading = llv.probe_profile_audit_fields(self._driver(body), 1, sleep=lambda s: None)
+        node = BeautifulSoup(
+            "<div class='cover-photo'><script>secret()</script>"
+            "<a href='https://x/private' id='abc'>link</a><svg><path/></svg>"
+            f"<p>{'x' * 200}</p></div>", "html.parser")
 
-        html = reading["dom_readings"]["banner_state"]["html"]
+        html = llv._audit_sanitised_snippet(node)
+
         assert "secret()" not in html and "href" not in html and "id=" not in html
         assert "<svg" not in html and "x" * 100 not in html
+
+    def test_headline_capture_is_targeted_with_ancestor_chain(self):
+        body = ("<main><section class='dr0a'><div class='dr0b'><p>Me Myself</p>"
+                "<p class='dr0c' data-x='1'>Builds things</p></div></section></main>")
+        driver = self._driver(body)
+        driver.page_source = f"<html><head><title>Me Myself | LinkedIn</title></head><body>{body}</body></html>"
+
+        reading = llv.probe_profile_audit_fields(driver, 1, sleep=lambda s: None)
+
+        cap = reading["dom_readings"].get("headline")
+        if cap is None:  # parser resolved it via the chain: nothing to capture
+            assert reading["fields"]["headline"] == "Builds things"
+            return
+        assert cap["text"] == "Builds things" and 'dr0c' in cap["html"]
+        assert cap["ancestors"][0]["classes"] == ["dr0b"]
+
+    def test_banner_capture_lists_images_and_default_marker(self):
+        from bs4 import BeautifulSoup
+
+        source = BeautifulSoup(
+            "<main><section><img src='https://x.test/default-cover.png?token=abc' alt='b'>"
+            "<div style='background-image: url(https://x.test/z.jpg)'></div>"
+            "<svg><path d='M0 0 L9 9'/></svg><h1>Me Myself</h1></section></main>", "html.parser")
+
+        reading = llv._audit_banner_reading(source)
+
+        assert reading["found"] and len(reading["elements"]) == 2
+        assert reading["default_marker"] is True
+        assert "token=" not in " ".join(reading["elements"])
+        assert llv._audit_banner_reading(BeautifulSoup("<p>x</p>", "html.parser"))["found"] is False
+
+    def test_targeted_html_strips_path_data_and_caps_length(self):
+        from bs4 import BeautifulSoup
+
+        node = BeautifulSoup("<div><svg><path d='M0 0 L9 9' fill='red'/></svg>"
+                             f"<p>{'y' * 9000}</p></div>", "html.parser")
+
+        html = llv._audit_targeted_html(node)
+
+        assert "M0 0" not in html and "fill=" in html and len(html) <= 6000
 
     def test_state_grading_directly(self):
         assert llv.profile_audit_fields_state({}) == llv.STATE_UNKNOWN
