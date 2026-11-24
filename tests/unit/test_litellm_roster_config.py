@@ -258,6 +258,29 @@ class TestVoiceTier:
         assert re.search(r"(?m)^    - lem-voice:\s*\n\s+- lem-medium\s*$", CONFIG_TEXT)
 
 
+class TestJudgeTier:
+    """#2751: the comment judge is a different model family from the writer tier."""
+
+    @staticmethod
+    def _models(group: str) -> list:
+        blocks = re.split(r"(?m)^  - model_name:\s*", CONFIG_TEXT)[1:]
+        return [re.search(r"(?m)^\s+model:\s*(\S+)", b).group(1).split("/", 1)[1]
+                for b in blocks if b.splitlines()[0].strip() == group]
+
+    @staticmethod
+    def _family(model: str) -> str:
+        return "openai" if model.startswith(("gpt", "o1", "o3", "o4")) else model.split(":")[0]
+
+    def test_judge_and_writer_are_different_families(self):
+        judges, writers = self._models("lem-judge"), self._models("lem-voice")
+        assert judges and writers
+        assert {self._family(m) for m in judges}.isdisjoint({self._family(m) for m in writers})
+
+    def test_judge_alias_matches_the_code(self):
+        from cqc_lem.utilities.ai.comment_candidates import JUDGE_TIER
+        assert JUDGE_TIER == "lem-judge"
+
+
 class TestBenchmarkChampions:
     def test_the_champions_are_still_the_incumbents(self):
         """scripts/benchmark_models.py reads the FIRST Ollama deployment of a tier as the champion

@@ -92,9 +92,20 @@ MCP_SERVER = "mcp-server-enabled"
 MCP_SERVER_WRITES = "mcp-server-writes"
 COMMENT_CANDIDATE_DRAFTS = "comment-candidate-drafts-enabled"
 VOICE_EXEMPLARS = "voice-exemplars-enabled"
+COMMENT_MULTI_CANDIDATE = "comment-multi-candidate-enabled"
 
 FLAGS: Dict[str, FlagSpec] = {
     spec.key: spec for spec in (
+        FlagSpec(
+            key=COMMENT_MULTI_CANDIDATE,
+            env_var="COMMENT_MULTI_CANDIDATE",
+            default=False,
+            owner="content-quality",
+            description=("Draw 3 feed-comment candidates, run the deterministic gates on each and "
+                         "let a cross-family judge (`lem-judge`) pick the one a busy practitioner "
+                         "would plausibly type (issue #2627, Phase 3). OFF by default: one draft "
+                         "per attempt, unchanged."),
+        ),
         FlagSpec(
             key=VOICE_EXEMPLARS,
             env_var="VOICE_EXEMPLARS",

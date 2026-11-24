@@ -288,6 +288,18 @@ model_list:
       rpm: 50
       order: 2
 
+  # Cross-family judge for the multi-candidate comment writer (#2751). The writer tier above is
+  # OpenAI-family (gpt-5.4-mini, gpt-oss), so the judge is Google-family open-weight and never
+  # grades its own style. Default is benchmark-gated against owner ratings (owner-run).
+  - model_name: lem-judge
+    litellm_params:
+      model: openai/gemma4:31b
+      api_base: os.environ/OLLAMA_CLOUD_URL
+      api_key: os.environ/OLLAMA_CLOUD_API_KEY
+      max_parallel_requests: 4
+      request_timeout: 120
+      rpm: 50
+
   # ── TTS: tutorial voice-over (issue #505). tts-1 is the cheapest useful option
   # ($15 / 1M characters) and streams straight back as mp3 bytes.
   # tts-1 shuts down 2027-01-06 and its named successor is realtime-only, so this is NOT a

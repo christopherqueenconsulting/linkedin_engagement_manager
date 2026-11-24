@@ -29,6 +29,7 @@ from dotenv import load_dotenv
 
 from cqc_lem import assets_dir
 from cqc_lem.utilities.ai import (
+    comment_candidates as _comment_candidates,
     content_framework as _framework,
     slop_lint as _slop,
     story_bank as _story_bank,
@@ -745,7 +746,7 @@ def generate_ai_response(post_content: Any, profile: LinkedInProfile,
 
     return _gated_comment(_draft, post_content, recent_comments=recent_comments, user_id=user_id,
                           ground_specifics=True, prefs=prefs, post_body=POST_BODY_READABLE,
-                          exemplars=exemplars)
+                          exemplars=exemplars, multi_candidate=True)
 
 
 # Research material ACTUALLY handed to a post's writer, keyed by post id (issue #1971). The post
@@ -961,7 +962,7 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
                    user_id: int = None, ground_specifics: bool = False,
                    surface: str = "comment", prefs: dict = None,
                    post_body: str = POST_BODY_UNCHECKED,
-                   exemplars: list = None) -> "str | None":
+                   exemplars: list = None, multi_candidate: bool = False) -> "str | None":
     """Run a comment `draft(fix_directive)` callable through the quality contract, the similarity
     gate, the slop lint and (opt-in) the fact-grounding check until it passes, and return None when
     it never does.
@@ -1001,6 +1002,8 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
         post_body: The caller's #1833 body-check verdict, carried onto the `comment_gate` event.
         exemplars: The user's own example comments the writer was shown (#2627); a draft within the
             comment cosine bar of one is a near-copy and joins the fix-list.
+        multi_candidate: Opt in to 3 drafts per attempt and a cross-family judge (#2751), still
+            behind `COMMENT_MULTI_CANDIDATE`. Only the feed-comment writer passes it.
 
     Returns:
         The first candidate that clears every gate, or None when none of them does.
@@ -1118,8 +1121,16 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
             "ungrounded_attempts": ungrounded_attempts, "attempts": attempt,
             "max_attempts": attempts, "failed_checks": last["checks"]})
 
+    multi = multi_candidate and _comment_candidates.enabled(user_id)
+
     for attempt in range(1, attempts + 1):
-        candidate = draft(fix_directive)
+        if multi:
+            candidate = _comment_candidates.select_candidate(
+                lambda: draft(fix_directive), lambda c: not _grade(c)[0],
+                lambda clean: _comment_candidates.judge_pick(clean, str(post_content or ""),
+                                                             _call_llm, user_id))
+        else:
+            candidate = draft(fix_directive)
         if candidate is None:
             if lint_fallback:
                 _track(GATE_SHIPPED, attempt - 1)
