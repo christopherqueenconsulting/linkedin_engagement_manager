@@ -13,6 +13,7 @@ import YouTubePublishingCard from '../YouTubePublishingCard'
 import CompanyPageCard from '../CompanyPageCard'
 import ContentProfileCard from '../ContentProfileCard'
 import StoryBankCard from '../StoryBankCard'
+import VoiceExemplarsCard from '../VoiceExemplarsCard'
 import NewsletterCard from '../NewsletterCard'
 import GroupsCard from '../GroupsCard'
 import DmTemplatesCard from '../DmTemplatesCard'
@@ -40,7 +41,7 @@ function SectionBody({ section }: { section: SectionKey }) {
     case 'setup':
       return <><LinkedInLoginCard /><LinkedInDisplayNameCard /><LinkedInProfileRefreshCard /><CompanyPageCard /><TimezoneCard /><LoginLocationCard /><YouTubePublishingCard /><SafetyCard /></>
     case 'voice':
-      return <VoiceSection />
+      return <><VoiceSection /><VoiceExemplarsCard /></>
     case 'content':
       return <><ContentProfileCard /><ContentSection /><StoryBankCard /></>
     case 'targeting':

@@ -4623,7 +4623,7 @@ def auto_draft_group_post(self, user_id: int, group_id: str, group_name: str = N
         # blind: it also runs over comments and invite notes written about someone ELSE's content.
         text = strip_non_bmp(normalize_currency_symbols(generate_group_post(
             my_profile, group_name=group_name, prefs=prefs,
-            profile_synthesis=synthesis) or ""))
+            profile_synthesis=synthesis, user_id=user_id) or ""))
     if not text.strip():
         return "No group post generated"
     # Silence ships a READY draft, so a draft stating a first-person number the author never gave

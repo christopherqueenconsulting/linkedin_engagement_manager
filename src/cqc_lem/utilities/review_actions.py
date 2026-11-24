@@ -47,6 +47,13 @@ EMPTY_MESSAGE = "empty_message"
 WRITE_FAILED = "write_failed"
 
 
+def _label_edited_approval(user_id: int, lane: str, item_id: int, final: Optional[str]) -> None:
+    """A draft edited earlier and approved here becomes a voice label (#2627 1b); never raises."""
+    from cqc_lem.utilities.ai import voice_exemplars
+
+    voice_exemplars.record_approved_edit(user_id, lane, item_id, final)
+
+
 def approve_scheduled_dm(user_id: int, item_id: int) -> Optional[str]:
     """Approve a queued DM; a slot already past its window moves to now (else the scanner bounces it)."""
     if get_scheduled_dm_user_id(item_id) != user_id:
@@ -54,8 +61,10 @@ def approve_scheduled_dm(user_id: int, item_id: int) -> Optional[str]:
     from cqc_lem.app.engagement.outreach import scheduled_dm_is_stale
     dm = get_scheduled_dm(item_id)
     slot = datetime.now(timezone.utc) if dm and scheduled_dm_is_stale(dm.get("scheduled_time")) else None
-    return None if update_scheduled_dm(item_id, scheduled_time=slot,
-                                       status=ScheduledDmStatus.APPROVED) else WRITE_FAILED
+    if not update_scheduled_dm(item_id, scheduled_time=slot, status=ScheduledDmStatus.APPROVED):
+        return WRITE_FAILED
+    _label_edited_approval(user_id, "scheduled_dm", item_id, (dm or {}).get("message"))
+    return None
 
 
 def cancel_scheduled_dm(user_id: int, item_id: int) -> Optional[str]:
@@ -113,7 +122,10 @@ def approve_catchup_touch(user_id: int, item_id: int) -> Optional[str]:
         return NOT_FOUND
     if not (touch.get("message") or "").strip():
         return EMPTY_MESSAGE
-    return None if update_catchup_touch(item_id, status=CatchupTouchStatus.APPROVED) else WRITE_FAILED
+    if not update_catchup_touch(item_id, status=CatchupTouchStatus.APPROVED):
+        return WRITE_FAILED
+    _label_edited_approval(user_id, "catchup_touch", item_id, touch.get("message"))
+    return None
 
 
 def cancel_catchup_touch(user_id: int, item_id: int) -> Optional[str]:
