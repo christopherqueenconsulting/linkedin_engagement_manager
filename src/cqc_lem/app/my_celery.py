@@ -297,9 +297,10 @@ app.conf.update(
         },
         'scrape-held-icp-candidates': {
             'task': 'cqc_lem.app.run_scheduler.auto_scrape_held_icp_candidates',
-            # Weekday 11:00 UTC, a fixed daytime hour until #2628's session windows land; each task
-            # re-checks the user's own local 09:00-17:00 weekday window and a per-day cap.
-            'schedule': crontab(hour='11', minute='0', day_of_week='mon-fri')
+            # Hourly, every day: one fixed UTC hour misses most timezones' 09:00-17:00 (11:00 UTC is
+            # 06:00-07:00 US Eastern, so a US user would never be scraped). Each task re-checks the
+            # user's own local weekday window and the per-day cap, so off-window ticks are no-ops.
+            'schedule': crontab(minute='0')
         },
         'scan-outreach-funnel-targets': {
             'task': 'cqc_lem.app.run_scheduler.auto_scan_outreach_funnel_targets',
