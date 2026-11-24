@@ -44,7 +44,10 @@ def lanes():
              {"id": 10, "profile_url": "p", "first_name": "Di", "event_type": "manual",
               "next_step": 1, "updated_at": _ago(4)}]), \
          patch(DB + "get_open_group_post_draft", return_value={
-             "id": 9, "group_name": "G", "content": "c", "created_at": _ago(30)}):
+             "id": 9, "group_name": "G", "content": "c", "created_at": _ago(30)}), \
+         patch("cqc_lem.utilities.comment_candidate_drafts.get_drafted_comment_candidates",
+               return_value=[{"id": 10, "author": "Di", "score": 0.8, "draft_text": "nice",
+                              "scanned_at": NOW}]):
         yield
 
 
@@ -95,8 +98,8 @@ def test_empty_group_draft_is_no_item():
 
 def test_summary_counts_stale_and_ignores_unmeasured(lanes):
     s = rq.summarize(rq.get_review_queue(1, now=NOW))
-    assert s["total"] == 9 and s["stale_48h"] == 1 and s["oldest_age_hours"] == 72.0
-    assert s["by_lane"]["posts"] == 2
+    assert s["total"] == 10 and s["stale_48h"] == 1 and s["oldest_age_hours"] == 72.0
+    assert s["by_lane"]["posts"] == 2 and s["by_lane"]["comment_candidates"] == 1
     assert rq.summarize([])["oldest_age_hours"] is None
 
 
