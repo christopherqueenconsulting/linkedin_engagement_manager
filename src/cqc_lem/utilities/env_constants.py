@@ -80,7 +80,7 @@ except ValueError:
 # app with the new scopes; a missing granted scope also falls back silently to scraping.
 LI_MEMBER_AUDIENCE_API_ENABLED = isTrue(
     get_constant_from_env('LI_MEMBER_AUDIENCE_API_ENABLED', default_value='False'))
-PEXELS_API_KEY =get_constant_from_env('PEXELS_API_KEY')
+PEXELS_API_KEY = get_constant_from_env('PEXELS_API_KEY')
 PERPLEXITY_API_KEY = get_constant_from_env('PERPLEXITY_API_KEY')
 HF_TOKEN = get_constant_from_env('HF_TOKEN')
 REPLICATE_API_TOKEN = get_constant_from_env('REPLICATE_API_TOKEN')
