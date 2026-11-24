@@ -218,11 +218,39 @@ class TestKillSwitch:
         with patch("cqc_lem.api.mcp.limits._redis", return_value=None):
             _assert_refusal(_post(api_client), 503, "mcp_unavailable")
 
-    def test_the_kill_switch_wins_over_every_later_check(
-            self, api_client: Any, fake_redis: FakeRedis) -> None:
-        fake_redis.kill_value = b"1"
+    def test_the_env_switch_wins_over_every_check(
+            self, api_client: Any, fake_redis: FakeRedis, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MCP_SERVER_KILL", "1")
         resp = api_client.get("/api/mcp", headers={"Host": "evil.example"})
         _assert_refusal(resp, 503, "mcp_disabled_by_operator")
+
+    def test_the_redis_key_refuses_everything_past_the_header_checks(
+            self, api_client: Any, fake_redis: FakeRedis) -> None:
+        """Before the body, the query-token check and auth: nothing it refuses gets further."""
+        fake_redis.kill_value = b"1"
+
+        def _chunks() -> Iterator[bytes]:
+            for _ in range(5):
+                yield b"x" * (64 * 1024)
+
+        resp = api_client.post(f"/api/mcp?token={_TOKEN}", content=_chunks(),
+                               headers={**_JSON, "Authorization": f"Bearer {_TOKEN}"})
+        _assert_refusal(resp, 503, "mcp_disabled_by_operator")
+
+    @pytest.mark.parametrize("method,headers,content,status", [
+        ("GET", {}, None, 405),
+        ("POST", {**_JSON, "Host": "evil.example"}, b"{}", 421),
+        ("POST", {**_JSON, "Origin": "https://evil.example"}, b"{}", 403),
+        ("POST", {"Content-Type": "text/plain"}, b"{}", 415),
+        ("POST", _JSON, b"x" * (MAX_REQUEST_BODY_BYTES + 1), 413),
+    ])
+    def test_junk_traffic_is_refused_without_reading_redis(
+            self, api_client: Any, fake_redis: FakeRedis, method: str, headers: dict,
+            content: Any, status: int) -> None:
+        """The header-only checks run first, so junk never holds a threadpool thread on Redis."""
+        resp = api_client.request(method, "/api/mcp", headers=headers, content=content)
+        assert resp.status_code == status
+        assert fake_redis.keys_read == []
 
     def test_the_real_redis_lookup_uses_the_shared_handle(self) -> None:
         from cqc_lem.api.mcp import limits
@@ -315,6 +343,46 @@ class TestWellKnown:
         assert "no-store" in resp.headers["cache-control"]
 
 
+class TestDisconnectThroughTheFullStack:
+    """A client that hangs up mid-body must not become an `$exception` (review of #2695).
+
+    `TestClient` cannot disconnect mid-body (its `receive` waits for the response), so this drives
+    the REAL `cqc_lem.api.main.app` — every middleware included — as ASGI, while `api_client` holds
+    the lifespan up. Before the fix the gate returned without a response, `BaseHTTPMiddleware`
+    raised "No response returned." and `observability_middleware` filed it.
+    """
+
+    def test_a_mid_body_disconnect_files_no_exception(self, api_client: Any,
+                                                      fake_redis: FakeRedis) -> None:
+        from cqc_lem.api.main import app
+
+        scope = {
+            "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
+            "method": "POST", "scheme": "http", "path": "/api/mcp", "raw_path": b"/api/mcp",
+            "query_string": b"", "root_path": "", "client": ("203.0.113.9", 5555),
+            "server": ("testserver", 80),
+            "headers": [(b"host", b"testserver"), (b"content-type", b"application/json")],
+        }
+        inbox = [{"type": "http.request", "body": b"{", "more_body": True},
+                 {"type": "http.disconnect"}]
+        sent: list[dict] = []
+
+        async def _receive() -> dict[str, Any]:
+            return inbox.pop(0) if inbox else {"type": "http.disconnect"}
+
+        async def _send(message: dict[str, Any]) -> None:
+            sent.append(message)
+
+        async def _drive() -> None:
+            await app(scope, _receive, _send)
+
+        with patch("cqc_lem.api.main.capture_exception") as captured:
+            asyncio.run(_drive())
+        captured.assert_not_called()
+        starts = [m for m in sent if m["type"] == "http.response.start"]
+        assert [m["status"] for m in starts] == [400]
+
+
 class TestLogging:
     def test_refusals_log_at_debug_and_never_carry_the_token(
             self, api_client: Any, fake_redis: FakeRedis,
@@ -372,10 +440,11 @@ class TestGateDirect:
                                       (b"content-length", b"lots")]}, [])
         assert sent[0]["status"] == 400
 
-    def test_a_client_that_disconnects_mid_body_gets_no_response(self) -> None:
+    def test_a_client_that_disconnects_mid_body_still_gets_a_response(self) -> None:
         sent = _run_gate({}, [{"type": "http.request", "body": b"{", "more_body": True},
                               {"type": "http.disconnect"}])
-        assert sent == []
+        assert sent[0]["status"] == 400
+        assert b"client_disconnected" in sent[1]["body"]
 
     def test_no_lifespan_means_503(self) -> None:
         mcp_state.unavailable = True
@@ -394,6 +463,7 @@ class TestGateDirect:
         ("localhost:8000", "http://localhost:5173", 401),
         ("localhost:8000", "http://127.0.0.1", 401),
         ("evil.example", None, 421),
+        ("localhost:8000", "http://[::1]:5173", 401),
         ("localhost:8000", "https://evil.example", 403),
     ])
     def test_a_loopback_base_url_accepts_loopback(self, host: str, origin: Any,

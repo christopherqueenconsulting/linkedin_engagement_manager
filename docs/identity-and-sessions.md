@@ -166,6 +166,25 @@ everything else now — **there is one resolver, and a route that imports around
 `tests/unit/api/test_param_auth_scoping.py` is the standing proof: one 401 case and one 403 case per
 converted route, each asserting the db call behind it was never reached.
 
+### The one carve-out: `/api/mcp` authenticates itself (epic #2682)
+
+`POST /api/mcp`, the end-user MCP endpoint (`docs/agent-mcp-plan.md`), is the ONE public `/api`
+route that authenticates its own caller, and it does NOT go through `get_session_user_id()`. It is
+public at the edge by exact match only (`_PUBLIC_API_EXACT` in `api/main.py`, never a prefix, so
+`/api/mcp/x` stays gated), and its gate (`api/mcp/gate.py`) is the credential check:
+
+- **Bearer only.** It reads `Authorization: Bearer` and nothing else. A `lem_session` cookie is
+  ignored, and a cookie with no bearer is 401 `cookie_only`. A token in the query string is 400.
+- **`mcp` scopes only, from P2.** P2 resolves the bearer as an ordinary `sessions` row and accepts
+  only `mcp` / `mcp_outreach`. Any other scope, `full` included, is the same 401 as an unknown token.
+- **P1 is inert.** No `mcp`-scoped session can exist yet, so every bearer gets 401 `invalid_token`.
+
+The tools still call the real routes, so every other route keeps resolving through
+`get_session_user_id()`. The carve-out is the gate and nothing behind it. P2 extends this section:
+the in-process loopback, the per-worker dispatch secret that makes an `mcp` token useless against
+raw `/api`, and the test pinning the carve-out (`test_api_route_identity.py` skips public paths, so
+it cannot).
+
 ## The `/api` bearer token is a non-browser credential (issue #950)
 
 #914 made the session the identity everywhere, which left `API_ACCESS_TOKENS` **still checked and

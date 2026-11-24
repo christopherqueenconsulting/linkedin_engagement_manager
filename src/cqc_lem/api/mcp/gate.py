@@ -1,22 +1,26 @@
 """`McpGate`: the pure-ASGI front door of `POST /api/mcp` (`docs/agent-mcp-plan.md` §3.3).
 
 Every check is the gate's own and answers JSON, in a fixed order, BEFORE the SDK sees the
-request: the SDK's defaults answer plain text and are not what decides who gets in.
+request: the SDK's defaults answer plain text and are not what decides who gets in. The plan's
+steps 1-6, with the kill switch split so every check that needs no I/O runs before the Redis read:
 
-1. Kill switch: `MCP_SERVER_KILL` or the `mcp:kill` Redis key -> 503 `mcp_disabled_by_operator`;
-   an unreadable Redis, a failed lifespan or an empty `PUBLIC_BASE_URL` -> 503 `mcp_unavailable`.
+1. Kill switch, no-I/O half: `MCP_SERVER_KILL` -> 503 `mcp_disabled_by_operator`; a failed
+   lifespan or an empty/invalid `PUBLIC_BASE_URL` -> 503 `mcp_unavailable`.
 2. Method: anything but POST -> 405 with `Allow: POST`.
 3. Host must be `PUBLIC_BASE_URL`'s (plus loopback on a loopback base) -> else 421; an Origin, when
    present, must be its origin -> else 403.
-4. Content-Type must be `application/json` -> else 415; a body over 256 KB, declared or streamed,
-   -> 413.
-5. A token in the query string (`token`, `session_token`, `access_token`) -> 400
+4. Content-Type must be `application/json` -> else 415; a declared length over 256 KB -> 413.
+5. Kill switch, Redis half: the `mcp:kill` key -> 503 `mcp_disabled_by_operator`; an unreadable
+   Redis -> 503 `mcp_unavailable` (fails closed). Before the body and before any auth step.
+6. A streamed body over 256 KB -> 413; a client gone mid-body still gets a (400) response.
+7. A token in the query string (`token`, `session_token`, `access_token`) -> 400
    `token_in_url_refused`. The value is never logged.
-6. Only `Authorization: Bearer` is read; an outer `lem_session` cookie is ignored, and a cookie with
+8. Only `Authorization: Bearer` is read; an outer `lem_session` cookie is ignored, and a cookie with
    no bearer -> 401 `cookie_only`.
 
 Phase P1 stops there: no `mcp`-scoped session can exist yet, so every bearer that reaches the auth
-step gets 401 `invalid_token`. Resolve, scope, rollout flag and limits are steps 7+ and land in P2.
+step gets 401 `invalid_token`. Resolve, scope, rollout flag and limits are the plan's §3.3 steps 7+
+and land in P2.
 
 The token is never logged, put in a response or put in exception text.
 """
@@ -91,7 +95,7 @@ def _origin_allowed(origin: Optional[str], state: McpState) -> bool:
         return True
     if not state.dev_loopback:
         return False
-    for loopback in ("http://localhost", "http://127.0.0.1"):
+    for loopback in ("http://localhost", "http://127.0.0.1", "http://[::1]"):
         if origin == loopback or origin.startswith(loopback + ":"):
             return True
     return False
@@ -133,22 +137,37 @@ async def _read_body(receive: Receive) -> bytes:
             return b"".join(chunks)
 
 
-async def _kill_switch_refusal(state: McpState) -> Optional[JSONResponse]:
-    """Step 1. Env first (no I/O), then the Redis key, then whether the lifespan came up."""
+_KILLED_DETAIL = "The LEM MCP server is switched off by the operator."
+_UNAVAILABLE_DETAIL = "The LEM MCP server is unavailable right now. Try again shortly."
+
+
+def _local_kill_refusal(state: McpState) -> Optional[JSONResponse]:
+    """Step 1, the half with no I/O: the env kill switch, then whether the lifespan came up.
+
+    First of all, because the Host/Origin checks below need the base URL the lifespan read.
+    """
     if kill_env_set():
         log_debug("MCP request refused: kill switch on", source="env")
-        return _refusal(503, "mcp_disabled_by_operator",
-                        "The LEM MCP server is switched off by the operator.")
+        return _refusal(503, "mcp_disabled_by_operator", _KILLED_DETAIL)
+    if state.unavailable:
+        log_debug("MCP request refused: endpoint unavailable", cause=state.reason)
+        return _refusal(503, "mcp_unavailable", _UNAVAILABLE_DETAIL)
+    return None
+
+
+async def _redis_kill_refusal() -> Optional[JSONResponse]:
+    """Step 1, the Redis half: the `mcp:kill` key, failing closed when it cannot be read.
+
+    Runs AFTER the header-only checks, so junk traffic never holds a threadpool thread on Redis, and
+    BEFORE the body read and every auth step, so it still refuses everything that would get further.
+    """
     kill = await run_in_threadpool(read_kill_key)
     if kill is KillState.ON:
         log_debug("MCP request refused: kill switch on", source="redis")
-        return _refusal(503, "mcp_disabled_by_operator",
-                        "The LEM MCP server is switched off by the operator.")
-    if kill is KillState.UNREADABLE or state.unavailable:
-        log_debug("MCP request refused: endpoint unavailable",
-                  cause="kill_key_unreadable" if kill is KillState.UNREADABLE else state.reason)
-        return _refusal(503, "mcp_unavailable",
-                        "The LEM MCP server is unavailable right now. Try again shortly.")
+        return _refusal(503, "mcp_disabled_by_operator", _KILLED_DETAIL)
+    if kill is KillState.UNREADABLE:
+        log_debug("MCP request refused: endpoint unavailable", cause="kill_key_unreadable")
+        return _refusal(503, "mcp_unavailable", _UNAVAILABLE_DETAIL)
     return None
 
 
@@ -232,11 +251,17 @@ class McpGate:
         return self.dispatch().__await__()
 
     async def dispatch(self) -> None:
-        """Run the §3.3 checks in order and answer the first refusal as JSON."""
+        """Run the checks in order and answer the first refusal as JSON.
+
+        Every path SENDS a response, the disconnect included. Returning without one makes
+        `BaseHTTPMiddleware` raise "No response returned.", and `observability_middleware` would
+        file that as an `$exception` any unauthenticated caller could trigger at will.
+        """
         scope, receive, send = self.scope, self.receive, self.send
         state = mcp_state
         headers = Headers(scope=scope)
-        response = await _kill_switch_refusal(state) or _http_refusal(scope, headers, state)
+        response = (_local_kill_refusal(state) or _http_refusal(scope, headers, state)
+                    or await _redis_kill_refusal())
         if response is None:
             try:
                 await _read_body(receive)
@@ -244,7 +269,10 @@ class McpGate:
                 log_debug("MCP request refused: body too large", declared=False)
                 response = _refusal(413, "request_too_large", "The request body is over 256 KB.")
             except _ClientGone:
-                return
+                # Nobody will read this; it exists so the middleware stack sees a response.
+                log_debug("MCP request abandoned: client disconnected mid-body")
+                response = _refusal(400, "client_disconnected",
+                                    "The client disconnected before the request body arrived.")
         if response is None:
             response = _auth_refusal(scope, headers)
         await response(scope, receive, send)

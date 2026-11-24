@@ -8,6 +8,7 @@ unavailable, not that the switch is off. `docs/agent-mcp-plan.md` §3.3 step 1.
 
 import os
 from enum import Enum
+from typing import Any, Optional
 
 from cqc_lem.utilities.logger import log_debug
 
@@ -36,8 +37,12 @@ def kill_env_set() -> bool:
     return bool(raw) and raw not in _OFF_VALUES
 
 
-def _redis():
-    """The process's shared Redis handle, or None when Redis is unavailable."""
+def _redis() -> Optional[Any]:
+    """The process's shared Redis handle, or None when Redis is unavailable.
+
+    Typed `Any`: `redis` is imported lazily by the shared helper, so its client class is not
+    importable here without making this module load it too.
+    """
     from cqc_lem.utilities.linkedin.rate_limit import shared_redis_client
 
     return shared_redis_client()

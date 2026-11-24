@@ -16,9 +16,18 @@ map $http_upgrade $connection_upgrade {
 # query-string request to /api/mcp is therefore kept OUT of the access log, so a token a client
 # misplaced there is not written to disk. Every other request logs exactly as before (the stock
 # image's `main` format and file, which this server-level directive would otherwise replace).
-map $request_uri $lem_access_loggable {
-    ~^/api/mcp/?\?  0;
-    default         1;
+#
+# Matched on the NORMALISED `$uri` (percent-decoded, slashes merged), never the raw `$request_uri`,
+# so `/api/%6Dcp?token=…` and `//api/mcp?token=…` are excluded too. Two maps because one map reads
+# one source: the first marks the path, the second adds "the query string is non-empty".
+map $uri $lem_is_mcp_path {
+    ~^/api/mcp/?$  1;
+    default        0;
+}
+
+map "$lem_is_mcp_path:$args" $lem_access_loggable {
+    ~^1:.          0;
+    default        1;
 }
 
 server {

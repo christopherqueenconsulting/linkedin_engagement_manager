@@ -83,7 +83,15 @@ class TestStartsCleanly:
         settings, dev_loopback = asyncio.run(_start())
         assert dev_loopback is True
         assert "localhost:8000" in settings.allowed_hosts
-        assert "127.0.0.1:*" in settings.allowed_hosts
+        for pattern in ("127.0.0.1:*", "[::1]", "[::1]:*"):
+            assert pattern in settings.allowed_hosts
+        for pattern in ("http://[::1]", "http://[::1]:*", "http://127.0.0.1:*"):
+            assert pattern in settings.allowed_origins
+
+    def test_only_the_sdk_server_loggers_are_pinned(self) -> None:
+        """`mcp.client` belongs to content research's MCP calls and must keep its own level."""
+        assert logging.getLogger("mcp.server").level == logging.WARNING
+        assert logging.getLogger("mcp").level == logging.NOTSET
 
     def test_a_default_port_is_dropped_from_the_expected_host(
             self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -132,10 +140,11 @@ class TestFailsOpen:
         assert len(errors) == 1
         assert errors[0].exc_info is not None
 
-    def test_an_empty_base_url_gives_503_and_exactly_one_error(
+    def test_an_empty_base_url_with_the_flag_on_gives_503_and_exactly_one_error(
             self, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest,
             fake_redis: Any, caplog: pytest.LogCaptureFixture) -> None:
         monkeypatch.setenv("PUBLIC_BASE_URL", "")
+        monkeypatch.setenv("MCP_SERVER_ENABLED", "true")
         with caplog.at_level(logging.ERROR):
             client = request.getfixturevalue("api_client")
             first = client.post("/api/mcp", json={}, headers=_JSON)
@@ -147,15 +156,47 @@ class TestFailsOpen:
         assert client.get("/health").status_code == 200
         assert len(_error_records(caplog)) == 1
 
-    def test_a_base_url_with_no_host_is_unavailable_too(
-            self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("PUBLIC_BASE_URL", "not-a-url")
+    def test_an_empty_base_url_with_the_flag_off_is_info_not_error(
+            self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+        """A deploy that never meant to serve MCP is not a defect."""
+        monkeypatch.setenv("PUBLIC_BASE_URL", "")
+        monkeypatch.delenv("MCP_SERVER_ENABLED", raising=False)
+
+        async def _start() -> str:
+            async with mcp_lifespan(None):
+                return mcp_state.reason
+
+        with caplog.at_level(logging.INFO, logger="cqc-lem"):
+            reason = asyncio.run(_start())
+        lines = [r for r in caplog.records if "PUBLIC_BASE_URL is empty" in r.getMessage()]
+        assert [r.levelno for r in lines] == [logging.INFO]
+        assert reason == REASON_BASE_URL_EMPTY
+
+    @pytest.mark.parametrize("base_url", ["not-a-url", "ftp://lem.example.com", "https://x]",
+                                          "http://[::1", "http://lem.example.com:abc"])
+    def test_a_malformed_base_url_is_unavailable_never_a_raise(
+            self, monkeypatch: pytest.MonkeyPatch, base_url: str) -> None:
+        monkeypatch.setenv("PUBLIC_BASE_URL", base_url)
 
         async def _start() -> str:
             async with mcp_lifespan(None):
                 return mcp_state.reason
 
         assert asyncio.run(_start()) == REASON_BASE_URL_INVALID
+
+    @pytest.mark.parametrize("base_url", ["https://x]", "http://[::1"])
+    def test_a_malformed_ipv6_base_url_leaves_the_api_serving(
+            self, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest,
+            fake_redis: Any, base_url: str) -> None:
+        """`urlparse` raises on these; before the fix that stopped the whole API at startup."""
+        monkeypatch.setenv("PUBLIC_BASE_URL", base_url)
+        client = request.getfixturevalue("api_client")
+
+        assert client.get("/health").status_code == 200
+        resp = client.post("/api/mcp", json={}, headers=_JSON)
+        assert resp.status_code == 503
+        assert resp.json()["reason"] == "mcp_unavailable"
+        assert mcp_state.reason == REASON_BASE_URL_INVALID
 
     def test_a_shutdown_failure_is_logged_not_raised(
             self, caplog: pytest.LogCaptureFixture) -> None:
