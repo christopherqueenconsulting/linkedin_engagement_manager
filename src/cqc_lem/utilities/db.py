@@ -885,6 +885,7 @@ from cqc_lem.platform.db.repositories.users import (
 )
 from cqc_lem.platform.db.shared import (
     _FEEDBACK_COLUMNS,
+    AGENT_POST_PLACEHOLDER,
     AUTH_FACTOR_PASSKEY,
     AVATAR_APPROVAL_PENDING,
     DEFAULT_CONTENT_BUFFER_DAYS,
@@ -1551,6 +1552,7 @@ __all__ = [
     "insert_planned_post",
     "insert_post",
     "insert_post_returning_id",
+    "AGENT_POST_PLACEHOLDER",
     "attach_image_to_pending_post",
     "convert_pending_post_to_video",
     "fail_agent_post_placeholder",

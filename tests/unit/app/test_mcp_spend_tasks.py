@@ -47,6 +47,13 @@ class _Redis:
 
 
 @pytest.fixture(autouse=True)
+def writes_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every task re-reads the kill switch and `mcp-server-writes` at start: on, and not killed."""
+    monkeypatch.setenv("MCP_SERVER_WRITES_ENABLED", "true")
+    monkeypatch.delenv("MCP_SERVER_KILL", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def redis() -> Iterator[_Redis]:
     fake = _Redis()
     with patch("cqc_lem.api.mcp.limits._redis", return_value=fake):
@@ -76,6 +83,22 @@ def row() -> Iterator[dict]:
 
 def _run_held(kind: str, redis: _Redis, post_id: int = 5) -> bool:
     return f"mcp:spend:run:{kind}:{post_id}" in redis.store
+
+
+def _inflight_held(kind: str, redis: _Redis, post_id: int = 5) -> bool:
+    return f"mcp:spend:inflight:{kind}:{post_id}" in redis.store
+
+
+def _stop(stop: str, redis: _Redis, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Throw one of the four things that must stop a queued spend task."""
+    if stop == "env_kill":
+        monkeypatch.setenv("MCP_SERVER_KILL", "1")
+    elif stop == "key_kill":
+        redis.store["mcp:kill"] = b"1"
+    elif stop == "key_unreadable":
+        monkeypatch.setattr(redis, "get", MagicMock(side_effect=ConnectionError("down")))
+    else:
+        monkeypatch.setenv("MCP_SERVER_WRITES_ENABLED", "false")
 
 
 # --- text ----------------------------------------------------------------------------------------
@@ -160,16 +183,41 @@ class TestGenerateAgentPost:
         writer["fail"].assert_called_once()
         assert not _run_held("text", redis)
 
-    def test_a_redelivered_task_never_calls_the_writer_again(self, writer: dict,
-                                                            redis: _Redis) -> None:
+    def test_a_redelivery_on_a_placeholder_never_writes_again_and_ends_in_error(
+            self, writer: dict, redis: _Redis) -> None:
         assert spend.claim_run(5, spend.SPEND_TEXT) is True  # the first delivery's claim
         assert rcp.generate_agent_post(5, "t") is None
         writer["create"].assert_not_called()
+        writer["write"].assert_not_called()
+        # Guarded on PENDING + placeholder: only a row still holding it becomes `error`.
+        writer["fail"].assert_called_once_with(5, _UID, PLACEHOLDER_CONTENT)
 
-    def test_an_unreadable_claim_spends_nothing(self, writer: dict) -> None:
-        with patch("cqc_lem.api.mcp.limits._redis", return_value=None):
+    def test_a_redelivery_after_the_text_was_written_leaves_the_row_untouched(
+            self, writer: dict, row: dict) -> None:
+        spend.claim_run(5, spend.SPEND_TEXT)
+        row["content"] = "The draft the first run wrote."
+        assert rcp.generate_agent_post(5, "t") is None
+        writer["create"].assert_not_called()
+        writer["fail"].assert_not_called()
+        writer["write"].assert_not_called()
+
+    def test_an_unreadable_claim_spends_nothing_and_fails_the_placeholder(
+            self, writer: dict) -> None:
+        with patch.object(rcp, "_agent_spend_halted", return_value=False), \
+                patch("cqc_lem.api.mcp.limits._redis", return_value=None):
             assert rcp.generate_agent_post(5, "t") is None
         writer["create"].assert_not_called()
+        writer["fail"].assert_called_once_with(5, _UID, PLACEHOLDER_CONTENT)
+
+    @pytest.mark.parametrize("stop", ["env_kill", "key_kill", "key_unreadable", "writes_off"])
+    def test_a_kill_or_flag_off_after_queueing_stops_the_writer(
+            self, writer: dict, redis: _Redis, monkeypatch: pytest.MonkeyPatch,
+            stop: str) -> None:
+        _stop(stop, redis, monkeypatch)
+        assert rcp.generate_agent_post(5, "t") is None
+        writer["create"].assert_not_called()
+        writer["fail"].assert_called_once_with(5, _UID, PLACEHOLDER_CONTENT)
+        assert not _run_held("text", redis)
 
     def test_an_unreadable_row_spends_nothing(self, writer: dict) -> None:
         from cqc_lem.platform.db.shared import OwnershipUnprovable
@@ -217,6 +265,36 @@ class TestGenerateAgentPostImage:
         image_engine["render"].reset_mock()
         assert rcp.generate_agent_post_image(5) is None
         image_engine["render"].assert_not_called()
+
+    def test_an_unreadable_claim_frees_the_routes_in_flight_marker(
+            self, image_engine: dict, redis: _Redis) -> None:
+        spend.claim_inflight(5, spend.SPEND_IMAGE)
+        with patch.object(rcp, "_agent_spend_halted", return_value=False), \
+                patch.object(redis, "set", side_effect=ConnectionError("down")):
+            assert rcp.generate_agent_post_image(5) is None
+        image_engine["render"].assert_not_called()
+        assert not _inflight_held("image", redis)
+
+    def test_a_held_claim_keeps_the_marker_until_its_ttl(self, image_engine: dict,
+                                                        redis: _Redis) -> None:
+        """The first run may still be rendering, so a redelivery leaves the lock to expire (2h)."""
+        spend.claim_inflight(5, spend.SPEND_IMAGE)
+        spend.claim_run(5, spend.SPEND_IMAGE)
+        assert rcp.generate_agent_post_image(5) is None
+        image_engine["render"].assert_not_called()
+        assert _inflight_held("image", redis)
+        assert spend._CLAIM_TTL_SECONDS == {"text": 7200, "image": 7200, "video": 14400}
+
+    @pytest.mark.parametrize("stop", ["env_kill", "key_kill", "key_unreadable", "writes_off"])
+    def test_a_kill_or_flag_off_after_queueing_renders_nothing(
+            self, image_engine: dict, redis: _Redis, monkeypatch: pytest.MonkeyPatch,
+            stop: str) -> None:
+        spend.claim_inflight(5, spend.SPEND_IMAGE)
+        _stop(stop, redis, monkeypatch)
+        assert rcp.generate_agent_post_image(5) is None
+        image_engine["render"].assert_not_called()
+        assert not _inflight_held("image", redis)
+        assert not _run_held("image", redis)
 
     def test_a_post_that_already_has_an_image_is_not_rendered(self, image_engine: dict,
                                                               row: dict) -> None:
@@ -316,6 +394,28 @@ class TestGenerateAgentPostVideo:
         video_engine["src"].reset_mock()
         assert rcp.generate_agent_post_video(5) is None
         video_engine["src"].assert_not_called()  # `_generate_video_src` is where credits go
+
+    @pytest.mark.parametrize("stop", ["env_kill", "key_kill", "key_unreadable", "writes_off"])
+    def test_a_kill_or_flag_off_after_queueing_never_reaches_credits(
+            self, video_engine: dict, redis: _Redis, monkeypatch: pytest.MonkeyPatch,
+            stop: str) -> None:
+        spend.claim_inflight(5, spend.SPEND_VIDEO)
+        _stop(stop, redis, monkeypatch)
+        assert rcp.generate_agent_post_video(5) is None
+        video_engine["src"].assert_not_called()  # where premium credits are deducted
+        assert not _inflight_held("video", redis)
+
+    def test_an_unreadable_claim_frees_the_marker_and_a_held_one_keeps_it(
+            self, video_engine: dict, redis: _Redis) -> None:
+        spend.claim_inflight(5, spend.SPEND_VIDEO)
+        spend.claim_run(5, spend.SPEND_VIDEO)
+        assert rcp.generate_agent_post_video(5) is None
+        assert _inflight_held("video", redis)  # held: left for its 4h TTL
+        with patch.object(rcp, "_agent_spend_halted", return_value=False), \
+                patch.object(redis, "set", side_effect=ConnectionError("down")):
+            assert rcp.generate_agent_post_video(5) is None
+        assert not _inflight_held("video", redis)
+        video_engine["src"].assert_not_called()
 
     @pytest.mark.parametrize("change", [{"status": "approved"}, {"post_type": "video"},
                                         {"video_url": "/x.mp4"}, {"content": None}])
@@ -495,3 +595,43 @@ def test_no_spend_path_ever_sets_a_row_back_to_pending() -> None:
     for fn in (rcp.generate_agent_post, rcp.generate_agent_post_image,
                rcp.generate_agent_post_video):
         assert "update_db_post_status" not in inspect.getsource(fn), fn.__name__
+
+
+# --- a placeholder can never reach the posting lane -----------------------------------------------
+
+
+class TestPlaceholderNeverPublishes:
+    def test_the_ready_to_post_query_excludes_the_placeholder(self) -> None:
+        ctx, cur = _cursor()
+        cur.fetchall.return_value = []
+        with patch.object(repo, "db_cursor", return_value=ctx):
+            assert repo.get_ready_to_post_posts() == []
+        sql, params = cur.execute.call_args.args
+        assert "p.content <> %s" in sql and "status = 'approved'" in sql
+        assert params[-1] == PLACEHOLDER_CONTENT
+
+    @pytest.mark.parametrize("status", ["approved", "scheduled"])
+    def test_post_to_linkedin_refuses_it_before_anything_is_sent(self, status: str) -> None:
+        from cqc_lem.app.engagement import posting
+
+        with patch.object(posting, "get_post_status", return_value=status), \
+                patch.object(posting, "get_post_content", return_value=PLACEHOLDER_CONTENT), \
+                patch.object(posting, "update_db_post_status") as set_status, \
+                patch.object(posting, "sandbox_dry_run") as dry_run, \
+                patch.object(posting, "get_user_password_pair_by_id") as credentials:
+            result = posting.post_to_linkedin.run(user_id=_UID, post_id=5)
+        assert "agent placeholder" in result
+        set_status.assert_called_once_with(5, PostStatus.ERROR)
+        dry_run.assert_not_called()  # not even a simulated publish
+        credentials.assert_not_called()
+
+    def test_a_written_post_is_not_refused(self) -> None:
+        from cqc_lem.app.engagement import posting
+
+        with patch.object(posting, "get_post_status", return_value="scheduled"), \
+                patch.object(posting, "get_post_content", return_value=_TEXT), \
+                patch.object(posting, "update_db_post_status") as set_status, \
+                patch.object(posting, "sandbox_dry_run", return_value=True):
+            result = posting.post_to_linkedin.run(user_id=_UID, post_id=5)
+        assert "agent placeholder" not in result
+        set_status.assert_called_once_with(5, PostStatus.POSTED)  # the sandbox dry run's own write

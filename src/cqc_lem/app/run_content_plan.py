@@ -3143,8 +3143,34 @@ def _is_pending_text(row: dict) -> bool:
     return row.get("status") == PostStatus.PENDING.value and post_type == PostType.TEXT.value
 
 
-def _claim_agent_run(post_id: int, kind: str, task_name: str) -> bool:
-    """The once-per-dispatch claim. False (and nothing spent) when held or unreadable."""
+def _agent_spend_halted(user_id: int, post_id: int, task_name: str) -> bool:
+    """Is MCP spend stopped for this user RIGHT NOW? Re-read when the task starts, not when queued.
+
+    The MCP kill switch (`MCP_SERVER_KILL`, or the `mcp:kill` Redis key) and the `mcp-server-writes`
+    rollout flag stop new MCP calls at the gate; without this re-check a task queued before either
+    was thrown would still spend. An unreadable kill key counts as ON (it fails closed at the gate
+    too).
+    """
+    from cqc_lem.api.mcp.limits import KillState, kill_env_set, read_kill_key
+    from cqc_lem.utilities.flags import MCP_SERVER_WRITES, flag_enabled
+
+    if kill_env_set() or read_kill_key() is not KillState.OFF:
+        log_info("MCP kill switch is on or unreadable; not spending", user_id=user_id,
+                 post_id=post_id, task_name=task_name)
+        return True
+    if not flag_enabled(MCP_SERVER_WRITES, user_id):
+        log_info("MCP writes are off for this account; not spending", user_id=user_id,
+                 post_id=post_id, task_name=task_name)
+        return True
+    return False
+
+
+def _claim_agent_run(post_id: int, kind: str, task_name: str) -> Optional[bool]:
+    """The once-per-dispatch claim: True when taken, False when HELD, None when unreadable.
+
+    Nothing is spent unless True. A held claim is a Celery redelivery of a request whose first run
+    already started; an unreadable one is Redis being down (warned: the task cannot run at all).
+    """
     from cqc_lem.api.mcp.spend import LimitsUnavailable, claim_run
 
     try:
@@ -3153,10 +3179,24 @@ def _claim_agent_run(post_id: int, kind: str, task_name: str) -> bool:
     except LimitsUnavailable:
         log_warning("Could not read the agent spend claim; not spending", post_id=post_id,
                     task_name=task_name)
-        return False
+        return None
     log_info("Agent spend already ran for this request (redelivered task); not spending again",
              post_id=post_id, task_name=task_name)
     return False
+
+
+def _skip_unclaimed_media(post_id: int, kind: str, claimed: Optional[bool]) -> None:
+    """Wind up a media task that did not get its once-per-dispatch claim.
+
+    Unreadable (`claimed is None`): free the route's in-flight marker, so the user can ask again once
+    Redis is back. Held (`False`): KEEP it, because the first run may still be rendering; it expires
+    on its own (2h image, 4h video, `spend._CLAIM_TTL_SECONDS`), and `docs/mcp-server.md` has the
+    command to clear it after a confirmed-dead worker.
+    """
+    from cqc_lem.api.mcp.spend import release_inflight
+
+    if claimed is None:
+        release_inflight(post_id, kind)
 
 
 def _end_agent_run(post_id: int, kind: str, *, failed: bool) -> None:
@@ -3212,7 +3252,12 @@ def generate_agent_post(post_id: int, guidance: Optional[str]) -> Optional[str]:
         log_info("Agent post is no longer an untouched pending placeholder; not generating",
                  post_id=post_id, task_name=task)
         return None
-    if not _claim_agent_run(post_id, SPEND_TEXT, task):
+    # Killed, flagged off, or no claim (a redelivery, or Redis down): this run will never write the
+    # draft, so the placeholder is marked ERROR rather than left looking like one. The write is
+    # guarded on PENDING + placeholder, so a first run that already wrote its draft is untouched.
+    if _agent_spend_halted(user_id, post_id, task) \
+            or not _claim_agent_run(post_id, SPEND_TEXT, task):
+        fail_agent_post_placeholder(post_id, user_id, PLACEHOLDER_CONTENT)
         return None
     try:
         with admit_pipeline(user_id):
@@ -3279,7 +3324,12 @@ def generate_agent_post_image(post_id: int) -> Optional[str]:
                  post_id=post_id, task_name=task)
         _end_agent_run(post_id, SPEND_IMAGE, failed=False)
         return None
-    if not _claim_agent_run(post_id, SPEND_IMAGE, task):
+    if _agent_spend_halted(user_id, post_id, task):
+        _end_agent_run(post_id, SPEND_IMAGE, failed=False)
+        return None
+    claimed = _claim_agent_run(post_id, SPEND_IMAGE, task)
+    if not claimed:
+        _skip_unclaimed_media(post_id, SPEND_IMAGE, claimed)
         return None
     try:
         with admit_pipeline(user_id), llm_trace("post_image_generation", user_id=user_id,
@@ -3342,7 +3392,12 @@ def generate_agent_post_video(post_id: int) -> Optional[str]:
                  post_id=post_id, task_name=task)
         _end_agent_run(post_id, SPEND_VIDEO, failed=False)
         return None
-    if not _claim_agent_run(post_id, SPEND_VIDEO, task):
+    if _agent_spend_halted(user_id, post_id, task):
+        _end_agent_run(post_id, SPEND_VIDEO, failed=False)
+        return None
+    claimed = _claim_agent_run(post_id, SPEND_VIDEO, task)
+    if not claimed:
+        _skip_unclaimed_media(post_id, SPEND_VIDEO, claimed)
         return None
     brief_info: dict = {}
     signing: dict = {}

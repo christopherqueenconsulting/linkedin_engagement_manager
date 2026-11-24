@@ -97,6 +97,7 @@ from cqc_lem.utilities.auth_factors import (
 from cqc_lem.utilities.content_generation_status import clear_generation_status, get_generation_status, mark_queued
 from cqc_lem.utilities.curated_sources import credit_line
 from cqc_lem.utilities.db import (
+    AGENT_POST_PLACEHOLDER,
     EMAIL_VERIFICATION_REQUIRED_MESSAGE,
     INTERNAL_ACCOUNT_KINDS,
     MCP_SESSION_SCOPES,
@@ -147,6 +148,7 @@ from cqc_lem.utilities.db import (
     get_member_analytics_token_info,
     get_passkey_by_credential_id,
     get_planned_tasks,
+    get_post_content,
     get_post_for_user,
     get_post_type,
     get_post_url_from_log_for_user,
@@ -3076,6 +3078,37 @@ def get_posts_for_email(
     })
 
 
+# Statuses that put a post on the road to LinkedIn. A post still holding an MCP agent's placeholder
+# body (issue #2689) was never written, so none of them may be set on it.
+_PUBLISHING_STATUSES = frozenset({PostStatus.APPROVED.value, PostStatus.SCHEDULED.value,
+                                  PostStatus.POSTED.value})
+
+
+def _refuse_placeholder_approval(status: Any, contents: List[Optional[str]], *,
+                                 user_id: Optional[int]) -> None:
+    """409 `agent_draft_not_written` when a publishing status would land on a placeholder body.
+
+    Args:
+        status: The status the caller asked for (enum or string); anything else passes.
+        contents: The body each target post will carry after the write.
+        user_id: The caller, for the log line.
+
+    Raises:
+        HTTPException: 409 when any target still holds `AGENT_POST_PLACEHOLDER`.
+    """
+    if getattr(status, "value", status) not in _PUBLISHING_STATUSES:
+        return
+    if any((content or "").strip() == AGENT_POST_PLACEHOLDER for content in contents):
+        # DEBUG: the designed answer to a click on a draft that is still being written.
+        log_debug("Refused to approve an MCP agent post that was never written", user_id=user_id,
+                  action_type="post")
+        raise HTTPException(status_code=409, detail={
+            "code": "agent_draft_not_written",
+            "message": "LEM is still writing this draft for your AI agent; it cannot be approved "
+                       "yet.",
+        })
+
+
 @router.post("/posts/bulk_update/", responses={
     200: {"description": "Posts updated successfully"},
     **{k: v for k, v in error_responses.items() if k in [400, 401, 403, 405]}
@@ -3098,6 +3131,10 @@ def bulk_update_posts_endpoint(request: BulkUpdateRequest) -> ResponseModel[str]
     if not request.post_ids:
         raise HTTPException(status_code=400, detail="post_ids is required")
     _require_own_posts(user_id, request.post_ids)
+    if getattr(request.status, "value", request.status) in _PUBLISHING_STATUSES:
+        _refuse_placeholder_approval(request.status,
+                                     [get_post_content(pid) for pid in request.post_ids],
+                                     user_id=user_id)
 
     _warn_if_naive_schedule(request.scheduled_datetime, "/posts/bulk_update/", user_id=user_id)
 
@@ -3190,6 +3227,11 @@ def update_post(post_id: int, post: PostRequest) -> ResponseModel[str]:
     _reject_foreign_email(user_id, post.email)
     _require_own_posts(user_id, [post_id])
     _refuse_agent_approved_status(post.status)
+    if getattr(post.status, "value", post.status) in _PUBLISHING_STATUSES:
+        # The body the row will carry: the one sent, else the one stored.
+        _refuse_placeholder_approval(post.status,
+                                     [post.content if (post.content or "").strip()
+                                      else get_post_content(post_id)], user_id=user_id)
 
     _warn_if_naive_schedule(post.scheduled_datetime, "/update_post/", post_id=post_id,
                             user_id=user_id)

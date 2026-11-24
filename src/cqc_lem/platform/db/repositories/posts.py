@@ -29,6 +29,7 @@ from cqc_lem.platform.db.enums import (
 )
 from cqc_lem.platform.db.repositories.users import get_user_id
 from cqc_lem.platform.db.shared import (
+    AGENT_POST_PLACEHOLDER,
     DEFAULT_CONTENT_BUFFER_DAYS,
     DEFAULT_CONTENT_BUFFER_MAX_POSTS,
     MAX_CONTENT_BUFFER_DAYS,
@@ -1190,14 +1191,17 @@ def get_ready_to_post_posts(pre_post_time: datetime = None, post_time_delta_minu
             # manual_publish rows are drafted for LinkedIn's native occasion composer, which has no
             # API entity (issue #1074) — the author publishes them by hand, so the scheduler must
             # never see one. Excluding them HERE makes that true for every consumer of this query.
+            # Same for an MCP agent's post still holding its placeholder body (issue #2689): it is
+            # not a draft, so it can never be dispatched, whatever its status says.
             cursor.execute(
                 """SELECT p.id, p.scheduled_time, p.user_id
                     FROM posts AS p
                     WHERE status = 'approved' AND manual_publish = 0
                       AND scheduled_time BETWEEN %s AND %s
+                      AND (p.content IS NULL OR p.content <> %s)
                     ORDER BY scheduled_time ASC
                     """,
-                (yesterday, pre_post_time,))
+                (yesterday, pre_post_time, AGENT_POST_PLACEHOLDER))
             posts = cursor.fetchall()
             # A non-empty poll is a real state transition worth keeping at INFO; an empty one is the
             # scheduler idling and was 220 identical rows in 48h of PostHog Logs.

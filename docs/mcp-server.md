@@ -198,6 +198,70 @@ video credits here too. `lem_explain_lem` and each tool's description say all of
 
 A spend tool that outlives the 20s budget answers `unknown`, never a retryable `timeout`.
 
+### Spend incident: stop it, find what is stuck, unwind it
+
+Run everything from `/opt/lem`. Every key below lives in Redis db 0, the same database as `mcp:kill`.
+
+**1. Stop new spend, including spend already queued.** Turn the kill switch on (see *Kill switch*:
+`./scripts/compose.sh exec -T redis redis-cli -n 0 SET mcp:kill 1`) or turn `mcp-server-writes`
+off. The gate then refuses new calls. **Spend tasks already sitting in Celery stop too:** each of
+`generate_agent_post_task`, `generate_agent_post_image_task` and `generate_agent_post_video_task`
+re-reads `MCP_SERVER_KILL`, the `mcp:kill` key (unreadable counts as ON) and `mcp-server-writes`
+for the post's owner when it STARTS (`run_content_plan._agent_spend_halted`), and skips before any
+paid call. A skipped text task marks its placeholder `error`; a skipped media task releases its
+in-flight marker. A task already past that check (mid-render) finishes, and its result still lands
+only through the guarded writes. No `celery purge` or `revoke` is needed.
+
+**2. Inspect and clear the spend keys.** There are four families:
+
+| Key | Meaning | TTL |
+|---|---|---|
+| `mcp:spend:{text,image,video}:<user_id>:<YYYY-MM-DD>` | the day's sub-cap counter (UTC day) | 25h |
+| `mcp:spend:inflight:{text,image,video}:<post_id>` | the route's one-render-at-a-time marker | 2h (video 4h) |
+| `mcp:spend:run:{text,image,video}:<post_id>` | the task's once-per-dispatch claim | 2h (video 4h) |
+| `mcp:spend:post:<post_id>` | which token created the post (`<user_id>:<session_id>`) | 90 days |
+
+```bash
+./scripts/compose.sh exec -T redis redis-cli -n 0 --scan --pattern 'mcp:spend:inflight:*'
+./scripts/compose.sh exec -T redis redis-cli -n 0 --scan --pattern 'mcp:spend:run:*'
+./scripts/compose.sh exec -T redis redis-cli -n 0 --scan --pattern 'mcp:spend:video:*'
+./scripts/compose.sh exec -T redis redis-cli -n 0 GET mcp:spend:video:<user_id>:<YYYY-MM-DD>
+./scripts/compose.sh exec -T redis redis-cli -n 0 TTL mcp:spend:inflight:video:<post_id>
+./scripts/compose.sh exec -T redis redis-cli -n 0 DEL mcp:spend:inflight:video:<post_id> mcp:spend:run:video:<post_id>
+```
+
+A Celery redelivery (a worker that died mid-render) finds the `run` claim held, so it does not
+spend again, and it LEAVES the `inflight` marker: the first run may still be alive, so the user is
+told `generation_in_progress` until the TTL above expires. Once you have confirmed the worker
+really died (Flower, or `./scripts/compose.sh logs celery_worker`), `DEL` both keys for that post so
+the user can ask again. Deleting a day's counter (`mcp:spend:<kind>:<user_id>:<day>`) hands that
+user their sub-cap back. Never delete a `mcp:spend:post:*` mark you did not create: it is what
+allows media on that post at all.
+
+**3. Find agent posts still holding the placeholder.** A text task that never ran leaves its row
+PENDING with the placeholder body. The approve routes refuse such a row (409
+`agent_draft_not_written`), the ready-to-post query excludes it and `post_to_linkedin` refuses it
+(marking it `error`), so it can never publish. But it clutters the review queue:
+
+```bash
+./scripts/compose.sh exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysql -u"$MYSQL_USER" "$MYSQL_DATABASE" -e "SELECT id, user_id, status, scheduled_time FROM posts WHERE content LIKE '"'"'[LEM is writing this draft for your AI agent.%'"'"';"'
+```
+
+To retire them, run the same command with
+`UPDATE posts SET status = '"'"'error'"'"' WHERE status = '"'"'pending'"'"' AND content LIKE '"'"'[LEM is writing this draft for your AI agent.%'"'"';`
+as the query. The full string is `AGENT_POST_PLACEHOLDER` in `platform/db/shared.py`.
+
+**4. Check, and if owed refund, premium video credits for a post.** Credits are the
+`video_credit_ledger` table (`balance = SUM(delta)`). A premium render writes a negative row with
+reason `premium_video_<model>` and the `post_id`. A render that fails is already refunded by
+`_generate_video_src` (a positive `premium_video_refund` row). Note that `refund_video_credits` does
+NOT check for an earlier refund, so check before refunding:
+
+```bash
+./scripts/compose.sh exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysql -u"$MYSQL_USER" "$MYSQL_DATABASE" -e "SELECT id, user_id, delta, reason, created_at FROM video_credit_ledger WHERE post_id = <post_id> ORDER BY id;"'
+./scripts/compose.sh exec -T celery_worker python -c "from cqc_lem.utilities.db import refund_video_credits; print(refund_video_credits(<user_id>, <credits>, <post_id>))"
+```
+
 ## Smoke test — `scripts/mcp_smoke.py`
 
 Read-only before W2. It calls `initialize`, compares `tools/list` with the registry for the

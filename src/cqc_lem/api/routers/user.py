@@ -2856,6 +2856,10 @@ def rescore_post_endpoint(request: PostRescoreRequest) -> ResponseModel[dict[str
         raise HTTPException(
             status_code=409,
             detail=f"Post is '{post_status}' — only pending or approved posts can be re-scored")
+    # A clean re-score promotes PENDING -> APPROVED, so an MCP agent's still-unwritten placeholder
+    # (issue #2689) is refused here exactly as an approve is.
+    _main._refuse_placeholder_approval(PostStatus.APPROVED, [get_post_content(request.post_id)],
+                                       user_id=user_id)
     from cqc_lem.app.run_content_plan import rescore_post
     try:
         # Attributed to the session user and gated by the free-trial daily AI cap (issue #2378):

@@ -23,13 +23,13 @@ from typing import Optional
 
 from cqc_lem.api.mcp.limits import DAY, LimitsUnavailable, _incr_with_ttl, _require_redis
 from cqc_lem.utilities.ai_spend_cap import utc_day
+from cqc_lem.utilities.db import AGENT_POST_PLACEHOLDER
 from cqc_lem.utilities.logger import log_debug
 
-# The body `lem_generate_post`'s row carries until its text is written. It names itself as a
-# placeholder so a human who opens it early cannot mistake it for the draft; the media routes refuse
-# a post still holding it, and the writer always replaces it, even on a row approved by mistake.
-PLACEHOLDER_CONTENT = ("[LEM is writing this draft for your AI agent. It will be ready to review in "
-                       "a few minutes.]")
+# The body `lem_generate_post`'s row carries until its text is written (defined in
+# `platform/db/shared.py` so the publish lane can refuse it). It names itself as a placeholder; the
+# media routes, the approve routes, the ready-to-post query and `post_to_linkedin` all refuse it.
+PLACEHOLDER_CONTENT = AGENT_POST_PLACEHOLDER
 
 SPEND_TEXT = "text"
 SPEND_IMAGE = "image"

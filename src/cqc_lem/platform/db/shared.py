@@ -65,6 +65,12 @@ AUTH_FACTOR_PASSKEY = "passkey"
 
 VALID_VIDEO_QUALITIES = ("standard", "premium", "premium_top")
 
+# The body an MCP agent's post carries until LEM's writer replaces it (W2b, issue #2689). It lives
+# HERE, at the bottom of the stack, because the ready-to-post query, the approve routes and the
+# publish task all refuse a row still holding it, and none of them may import the API layer.
+AGENT_POST_PLACEHOLDER = ("[LEM is writing this draft for your AI agent. It will be ready to review "
+                          "in a few minutes.]")
+
 ENGAGEMENT_TARGET_WEEKLY_DEFAULT = 2
 
 ENGAGEMENT_TARGET_CONNECT_STATUSES = frozenset(ConnectStatus)
