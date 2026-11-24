@@ -762,6 +762,40 @@ class TestSweepOrchestration:
         assert rec.call_args_list[0].kwargs["visible_most_relevant"] is True
         assert rec.call_args_list[1].kwargs["skip_reason"] == "comment-not-found"
 
+    def test_author_reply_writes_one_reply_event_and_strips_the_slug(self):
+        from cqc_lem.app.engagement.posting import _run_comment_outcomes_sweep
+        targets = [{"log_id": 11, "post_url": "feedurn://urn:li:activity:1", "message": "a"}]
+        with ExitStack() as es:
+            self._driver_patches(es)
+            _p(es, "get_comment_outcome_targets", return_value=targets)
+            _p(es, "_read_comment_outcome",
+               return_value={"status": "checked", "skip_reason": None, "author_replied": True,
+                             "reply_count": 1, "like_count": 0, "visible_most_relevant": True,
+                             "our_reply_sent": False, "_author_slug": "glenda"})
+            rec = _p(es, "record_comment_outcome", return_value=True)
+            _p(es, "track_comment_outcome")
+            ev = _p(es, "record_lead_reply_event")
+            _run_comment_outcomes_sweep(1)
+        assert "_author_slug" not in rec.call_args.kwargs
+        ev.assert_called_once_with(1, "comment", "comment:11",
+                                   person_profile_url="https://www.linkedin.com/in/glenda/")
+
+    def test_no_author_reply_writes_no_event(self):
+        from cqc_lem.app.engagement.posting import _run_comment_outcomes_sweep
+        targets = [{"log_id": 11, "post_url": "feedurn://urn:li:activity:1", "message": "a"}]
+        with ExitStack() as es:
+            self._driver_patches(es)
+            _p(es, "get_comment_outcome_targets", return_value=targets)
+            _p(es, "_read_comment_outcome",
+               return_value={"status": "checked", "skip_reason": None, "author_replied": False,
+                             "reply_count": 0, "like_count": 0, "visible_most_relevant": True,
+                             "our_reply_sent": False})
+            _p(es, "record_comment_outcome", return_value=True)
+            _p(es, "track_comment_outcome")
+            ev = _p(es, "record_lead_reply_event")
+            _run_comment_outcomes_sweep(1)
+        assert not ev.called
+
     def test_unnavigable_key_is_skipped_without_a_row(self):
         from cqc_lem.app.engagement.posting import _run_comment_outcomes_sweep
         with ExitStack() as es:
