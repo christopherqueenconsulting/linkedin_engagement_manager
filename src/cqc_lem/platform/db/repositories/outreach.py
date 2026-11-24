@@ -653,13 +653,20 @@ def record_connection_accepted(user_id: int, person_profile_url: str) -> int:
     slug = profile_slug(person_profile_url)
     if not slug:
         return 0
+    lit = _like_literal(slug)
     try:
         with db_cursor(commit=True) as cursor:
             cursor.execute(
                 "UPDATE connection_requests SET accepted = 1, accepted_at = NOW() "
                 "WHERE user_id = %s AND status = %s AND accepted = 0 "
-                "AND LOWER(recipient_profile_url) LIKE %s ESCAPE '!'",
-                (user_id, ConnectionRequestStatus.SENT.value, f"%/in/{_like_literal(slug)}%"))
+                "AND (LOWER(recipient_profile_url) LIKE %s ESCAPE '!' "
+                "OR LOWER(recipient_profile_url) LIKE %s ESCAPE '!' "
+                "OR LOWER(recipient_profile_url) LIKE %s ESCAPE '!' "
+                "OR LOWER(recipient_profile_url) LIKE %s ESCAPE '!')",
+                # The slug must END at a URL boundary: a bare prefix match would flip
+                # /in/jane-doe when /in/jane is seen.
+                (user_id, ConnectionRequestStatus.SENT.value, f"%/in/{lit}", f"%/in/{lit}/%",
+                 f"%/in/{lit}?%", f"%/in/{lit}#%"))
             return int(cursor.rowcount or 0)
     except mysql.connector.Error as err:
         log_error("Could not record connection accepted", exc=err, user_id=user_id)

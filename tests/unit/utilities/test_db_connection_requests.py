@@ -101,7 +101,9 @@ class TestConnectionRequestDb:
             assert record_connection_accepted(1, "https://www.linkedin.com/in/Jane-Doe/?x=1") == 1
         sql, params = cur.execute.call_args[0]
         assert "accepted = 1, accepted_at = NOW()" in sql and "accepted = 0" in sql
-        assert params == (1, "sent", "%/in/jane-doe%")
+        # End-anchored: "jane" must never match "/in/jane-doe".
+        assert params == (1, "sent", "%/in/jane-doe", "%/in/jane-doe/%",
+                          "%/in/jane-doe?%", "%/in/jane-doe#%")
 
     def test_record_connection_accepted_without_a_slug_writes_nothing(self, fake_cursor):
         from cqc_lem.utilities.db import record_connection_accepted
