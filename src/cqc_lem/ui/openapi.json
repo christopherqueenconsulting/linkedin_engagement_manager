@@ -13687,7 +13687,7 @@
             "description": "Too many mints this hour"
           },
           "503": {
-            "description": "The active-token count could not be read"
+            "description": "The token could not be created; nothing was stored"
           }
         },
         "summary": "Mint Mcp Token"

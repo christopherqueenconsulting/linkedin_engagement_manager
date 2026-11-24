@@ -186,12 +186,17 @@ def _last_seen_is_fresh(last_seen_at: Optional[datetime], now: datetime) -> bool
     return now - last_seen_at < timedelta(seconds=MCP_LAST_SEEN_THROTTLE_SECONDS)
 
 
-def _resolve_session_row(token: str, raise_on_fault: bool) -> Optional[dict]:
+def _resolve_session_row(token: str, raise_on_fault: bool,
+                         mutate_scopes: Optional[frozenset] = None) -> Optional[dict]:
     """The one implementation behind `resolve_session` and `resolve_session_checked`.
 
     Returns `{user_id, scope, session_id, expires_at}` for a live token, None for an unknown,
     expired or revoked one. A database fault is None, or `SessionStoreUnavailable` when
     `raise_on_fault` is set.
+
+    `mutate_scopes`, when given, is the only set of scopes this lookup may WRITE for: a session of
+    any other scope is read and nothing about it changes, neither its expiry nor `last_seen_at`.
+    None keeps `resolve_session`'s behaviour, which writes for every scope.
     """
     token_hash = hash_session_token(token)
     if not token_hash:
@@ -220,6 +225,8 @@ def _resolve_session_row(token: str, raise_on_fault: bool) -> Optional[dict]:
         scope = row.get('scope') or SESSION_SCOPE_FULL
         found = {"user_id": row['user_id'], "scope": scope, "session_id": row.get('id'),
                  "expires_at": row.get('expires_at')}
+        if mutate_scopes is not None and scope not in mutate_scopes:
+            return found
 
         if scope in FIXED_TTL_SCOPES:
             # An agent (or observer) session's life is FIXED at mint, never slid (issue #1026). Sliding it is
@@ -266,16 +273,23 @@ def _resolve_session_row(token: str, raise_on_fault: bool) -> Optional[dict]:
         connection.close()
 
 
-def resolve_session_checked(token: str) -> Optional[dict]:
+def resolve_session_checked(token: str,
+                            mutate_scopes: Optional[frozenset] = None) -> Optional[dict]:
     """`resolve_session` for a caller that must tell "no such token" from "could not look".
 
     Returns `{user_id, scope, session_id, expires_at}` for a live token and None for an unknown,
     expired or revoked one, with the same expiry and `last_seen_at` rules as `resolve_session`.
 
+    Args:
+        token: The presented token.
+        mutate_scopes: When given, the only scopes this lookup may write for. The MCP gate passes
+            `MCP_SESSION_SCOPES`: it refuses every other scope, so a browser session presented
+            there must come out of the lookup exactly as it went in, its idle window unslid.
+
     Raises:
         SessionStoreUnavailable: The lookup did not run (a database fault).
     """
-    return _resolve_session_row(token, raise_on_fault=True)
+    return _resolve_session_row(token, raise_on_fault=True, mutate_scopes=mutate_scopes)
 
 
 def resolve_session(token: str) -> Optional[dict]:
@@ -1045,28 +1059,40 @@ def create_session(user_id: int, user_agent: Optional[str] = None,
     `token_prefix` is prepended to the random part (`lem_mcp_` for an MCP token), so a leaked token
     is recognisable. The stored hash covers the whole string, so resolving it is unchanged.
     """
-    import secrets
-    token = token_prefix + secrets.token_hex(32)
-    now = datetime.now(timezone.utc)
-    expires_at = now + timedelta(hours=ttl_hours if ttl_hours is not None else SESSION_IDLE_HOURS)
+    hours = ttl_hours if ttl_hours is not None else SESSION_IDLE_HOURS
     try:
         with db_cursor(commit=True) as cursor:
-            cursor.execute(
-                "INSERT INTO sessions (session_token, user_id, expires_at, user_agent, ip_hash, "
-                "last_seen_at, label, scope, last_verified_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                (hash_session_token(token), user_id, expires_at, (user_agent or None),
-                 hash_client_ip(ip), now, (label or _device_label(user_agent)), scope,
-                 now if verified else None),
-            )
-            cursor.execute(
-                "UPDATE users SET last_login = %s WHERE id = %s",
-                (now, user_id),
-            )
-            return token
+            return _insert_session_row(cursor, user_id, user_agent, ip, label, scope, verified,
+                                       hours, token_prefix)
     except mysql.connector.Error as err:
         log_error("Could not create session", exc=err, user_id=user_id)
         return None
+
+
+def _insert_session_row(cursor: MySQLCursorAbstract, user_id: int, user_agent: Optional[str],
+                        ip: Optional[str], label: Optional[str], scope: str, verified: bool,
+                        hours: int, token_prefix: str) -> str:
+    """Insert one session row on the caller's cursor and return its token. Raises on a fault.
+
+    `hours` is the row's life, already decided by the caller.
+    """
+    import secrets
+    token = token_prefix + secrets.token_hex(32)
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(hours=hours)
+    cursor.execute(
+        "INSERT INTO sessions (session_token, user_id, expires_at, user_agent, ip_hash, "
+        "last_seen_at, label, scope, last_verified_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        (hash_session_token(token), user_id, expires_at, (user_agent or None),
+         hash_client_ip(ip), now, (label or _device_label(user_agent)), scope,
+         now if verified else None),
+    )
+    cursor.execute(
+        "UPDATE users SET last_login = %s WHERE id = %s",
+        (now, user_id),
+    )
+    return token
 def _device_label(user_agent: Optional[str]) -> str:
     """A short, human-readable name for a session row ("Chrome on macOS"). Best effort: the account
     page has to show the user something they can recognise before they revoke it.
@@ -1192,10 +1218,11 @@ def get_owned_session(user_id: int, session_id: int,
 
 def list_sessions_by_scope(user_id: int, scopes: "frozenset[str] | tuple[str, ...]",
                            limit: int = 50) -> Optional[list[dict]]:
-    """This user's sessions in `scopes`, newest first, revoked and expired ones included.
+    """This user's sessions in `scopes`: every LIVE row first, then recent dead ones up to `limit`.
 
-    Never returns a token or a hash. `revoked_at` and `expires_at` are what lets the SPA grey out a
-    dead row rather than hide it.
+    Live-first in SQL, so a live token can never be pushed off the list by a pile of revoked or
+    expired ones, whatever `limit` is. Newest first within each group. Never returns a token or a
+    hash. `revoked_at` and `expires_at` are what lets the SPA grey out a dead row rather than hide it.
 
     Returns:
         Rows of `{id, label, scope, created_at, last_seen_at, expires_at, revoked_at}`, or None
@@ -1207,8 +1234,8 @@ def list_sessions_by_scope(user_id: int, scopes: "frozenset[str] | tuple[str, ..
             cursor.execute(
                 "SELECT id, label, scope, created_at, last_seen_at, expires_at, revoked_at "
                 f"FROM sessions WHERE user_id = %s AND scope IN ({placeholders}) "
-                "ORDER BY id DESC LIMIT %s",
-                (user_id, *values, int(limit)),
+                "ORDER BY (revoked_at IS NULL AND expires_at > %s) DESC, id DESC LIMIT %s",
+                (user_id, *values, datetime.now(timezone.utc), int(limit)),
             )
             return cursor.fetchall() or []
     except mysql.connector.Error as err:
@@ -1226,7 +1253,7 @@ def list_auth_audit_events(user_id: int, prefix: Optional[str] = None,
     literally. Never selects `ip_hash`.
 
     Returns:
-        Rows of `{event, success, details, created_at}`, or None when the read failed.
+        Rows of `{event, success, user_agent, details, created_at}`, or None when the read failed.
     """
     where = ["user_id = %s"]
     params: list = [user_id]
@@ -1239,7 +1266,7 @@ def list_auth_audit_events(user_id: int, prefix: Optional[str] = None,
     try:
         with db_cursor(dictionary=True) as cursor:
             cursor.execute(
-                "SELECT event, success, details, created_at FROM auth_audit_log "
+                "SELECT event, success, user_agent, details, created_at FROM auth_audit_log "
                 f"WHERE {' AND '.join(where)} ORDER BY id DESC LIMIT %s",
                 (*params, int(limit)),
             )
@@ -1329,3 +1356,53 @@ def revoke_sessions_by_scope(scopes: "frozenset[str] | tuple[str, ...]", reason:
     except mysql.connector.Error as err:
         log_error("Could not revoke sessions by scope", exc=err)
         return None
+
+
+
+class SessionCapReached(Exception):
+    """`create_session_within_cap` found the account already at its cap; nothing was inserted."""
+
+
+def create_session_within_cap(user_id: int, scopes: "frozenset[str] | tuple[str, ...]", cap: int,
+                              scope: str, user_agent: Optional[str] = None,
+                              ip: Optional[str] = None, label: Optional[str] = None,
+                              ttl_hours: Optional[int] = None,
+                              token_prefix: str = "") -> tuple[Optional[str], Optional[int]]:
+    """Mint a session only while the user holds fewer than `cap` live sessions in `scopes`.
+
+    The count and the insert run in ONE transaction that first takes the user's row lock
+    (`SELECT ... FOR UPDATE` on `users`). A second concurrent mint for the same account waits on
+    that lock and then counts the first one's row, so two mints cannot both pass the cap. Mints
+    for different accounts never wait on each other.
+
+    Returns:
+        `(token, session_id)` on success, or `(None, None)` when the transaction failed (logged;
+        nothing was inserted).
+
+    Raises:
+        SessionCapReached: The account is already at `cap`; nothing was inserted.
+    """
+    placeholders, values = _scope_params(scopes)
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("SELECT id FROM users WHERE id = %s FOR UPDATE", (user_id,))
+            if cursor.fetchone() is None:
+                log_warning("Session mint refused: no such user", user_id=user_id)
+                return None, None
+            cursor.execute(
+                f"SELECT COUNT(*) FROM sessions WHERE user_id = %s AND scope IN ({placeholders}) "
+                "AND revoked_at IS NULL AND expires_at > %s",
+                (user_id, *values, datetime.now(timezone.utc)),
+            )
+            row = cursor.fetchone()
+            live = int((row[0] if not isinstance(row, dict) else next(iter(row.values())))
+                       if row else 0)
+            if live >= cap:
+                raise SessionCapReached()
+            token = _insert_session_row(
+                cursor, user_id, user_agent, ip, label, scope, False,
+                ttl_hours if ttl_hours is not None else SESSION_IDLE_HOURS, token_prefix)
+            return token, cursor.lastrowid
+    except mysql.connector.Error as err:
+        log_error("Could not create a capped session", exc=err, user_id=user_id)
+        return None, None

@@ -738,8 +738,7 @@ _MCP_READ_PATHS = frozenset({
     "/user/weekly-report", "/leads/funnel",
     # engagement settings (the prefs GET never mints or returns `reply_inbound_address` for a
     # machine seat, MCP W1)
-    "/user/engagement-preferences", "/user/engagement-targets", "/user/dm-templates",
-    "/user/engagement-suggestions",
+    "/user/engagement-preferences", "/user/dm-templates",
     # voice kit: the user's own story bank, lead magnet, groups, skills and profile
     "/user/story-bank", "/user/lead-magnet", "/user/groups", "/user/linkedin-profile-skills",
     "/user/linkedin-profile",
@@ -748,9 +747,12 @@ _MCP_READ_PATHS = frozenset({
 })
 # `mcp` plus the lists that hold OTHER people's data: who LEM messages, invites, scores and replies
 # to. Opted into at mint (owner ruling O11). Row fields are cut to `_OBSERVER_ROW_FIELDS`.
+# `/user/engagement-targets` (named people to engage) and `/user/engagement-suggestions` (drafts
+# written from strangers' posts) are here too: both are other people's data, not the user's own.
 _MCP_OUTREACH_EXTRA_READ_PATHS = frozenset({
     "/dms", "/connection_requests", "/leads", "/lead_signals", "/catchup/touches",
-    "/outreach/targets", "/user/newsletter-subscribers",
+    "/outreach/targets", "/user/newsletter-subscribers", "/user/engagement-targets",
+    "/user/engagement-suggestions",
 })
 _MCP_OUTREACH_READ_PATHS = _MCP_READ_PATHS | _MCP_OUTREACH_EXTRA_READ_PATHS
 _GET_ONLY = frozenset({"GET"})

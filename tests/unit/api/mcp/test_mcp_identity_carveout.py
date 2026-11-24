@@ -6,7 +6,7 @@ one exception: it is public at the edge and resolves its own bearer, because it 
 public paths and cannot `inspect.getsource` the gate's helpers, so this file pins the exception:
 
 1. Only two functions under `src/cqc_lem/api/` call a session resolver directly: the kernel's
-   `get_session_user_id` and the gate's `_admit`.
+   `get_session_user_id` and the gate's `_authenticate`.
 2. The gate admits only the two MCP scopes (the parametrised 401s live in `test_mcp_gate_auth.py`;
    here the rule is read from the code).
 3. The gate imports its resolver through the `cqc_lem.utilities.db` facade.
@@ -23,7 +23,7 @@ pytestmark = pytest.mark.unit
 _API = Path(__file__).resolve().parents[4] / "src" / "cqc_lem" / "api"
 _RESOLVERS = {"resolve_session", "resolve_session_checked", "_db_resolve_session",
               "_resolve_session_row"}
-_ALLOWED = {("main.py", "get_session_user_id"), ("mcp/gate.py", "_admit")}
+_ALLOWED = {("main.py", "get_session_user_id"), ("mcp/gate.py", "_authenticate")}
 
 
 def _callers_of_resolvers() -> set[tuple[str, str]]:
