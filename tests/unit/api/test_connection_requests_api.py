@@ -161,20 +161,20 @@ class TestRecipientEmail:
         # The owner's decision note on #1836, asserted rather than asserted-in-prose:
         # `_refuse_agent_approval` gates 'approve' and 'retry' only, so an agent-scoped field-only
         # PUT was already reachable before this field existed and stays reachable after. Since
-        # #2684 it lands through the pending-only SQL edit, and it still names no status.
+        # #2684 an email-only PUT lands through the backfill#44 carve-out, which never writes a
+        # status.
         from cqc_lem.utilities.db import PendingEdit
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
              patch("cqc_lem.api.main._agent_scoped", return_value=True), \
              patch("cqc_lem.api.main.get_connection_request_user_id", return_value=_U), \
-             patch("cqc_lem.api.main.update_pending_row",
-                   return_value=PendingEdit.UPDATED) as pending, \
+             patch("cqc_lem.api.main.attach_email_to_connection_request",
+                   return_value=PendingEdit.UPDATED) as attach, \
              patch("cqc_lem.api.main.update_connection_request", return_value=True) as upd:
             resp = api_client.put("/api/connection_request", json={
                 "session_token": _S, "request_id": 3, "recipient_email": "jane@example.com"})
         assert resp.status_code == 200
         upd.assert_not_called()
-        assert pending.call_args.args == ("connection_request", 3, _U,
-                                          {"recipient_email": "jane@example.com"})
+        attach.assert_called_once_with(3, _U, "jane@example.com")
 
     def test_an_agent_scoped_email_put_still_cannot_retry(self, api_client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
@@ -217,25 +217,25 @@ class TestReviveOnAttach:
         # The address that triggered the revival must land in the SAME write, not a follow-up one.
         assert upd.call_args.kwargs["recipient_email"] == "jane@example.com"
 
-    def test_an_agent_scoped_attach_never_revives_and_is_now_a_409(self, api_client):
+    def test_an_agent_scoped_attach_leaves_the_row_failed(self, api_client):
         # The security-constraint comment on #1881: gate on the caller's surface, not the field —
-        # an agent never reaches approved through this route. Since #2684 a queue-only seat edits
-        # only PENDING rows, so attaching to a `failed` row is refused in SQL (the pending-only
-        # UPDATE matches nothing) and the row stays exactly as it was.
+        # an agent may still save the address, it just never reaches approved through this route.
+        # Since #2684 that is the backfill#44 carve-out: the address only, in SQL, status untouched.
         from cqc_lem.utilities.db import PendingEdit
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_U), \
              patch("cqc_lem.api.main._agent_scoped", return_value=True), \
              patch("cqc_lem.api.main.get_connection_request_user_id", return_value=_U), \
              patch("cqc_lem.api.main.get_connection_request", return_value=self._EMAIL_CHALLENGE_ROW), \
-             patch("cqc_lem.api.main.update_pending_row",
-                   return_value=PendingEdit.NOT_PENDING) as pending, \
+             patch("cqc_lem.api.main.attach_email_to_connection_request",
+                   return_value=PendingEdit.UPDATED) as attach, \
+             patch("cqc_lem.api.main.update_pending_row") as pending, \
              patch("cqc_lem.api.main.update_connection_request", return_value=True) as upd:
             resp = api_client.put("/api/connection_request", json={
                 "session_token": _S, "request_id": 3, "recipient_email": "jane@example.com"})
-        assert resp.status_code == 409
-        assert resp.json()["detail"]["code"] == "edit_requires_pending"
+        assert resp.status_code == 200
         upd.assert_not_called()
-        assert "status" not in pending.call_args.args[3]
+        pending.assert_not_called()
+        attach.assert_called_once_with(3, _U, "jane@example.com")
 
     def test_an_email_challenge_row_with_no_address_yet_does_not_revive(self, api_client):
         # A field-only PUT that carries no recipient_email (editing the note, say) must never revive.

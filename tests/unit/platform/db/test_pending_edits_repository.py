@@ -125,6 +125,90 @@ class TestThePendingPredicateIsInTheSql:
         cur.execute.assert_not_called()
 
 
+class TestTheBackfillEmailCarveOut:
+    """backfill#44: the address only, onto a pending OR an email-challenged failed request."""
+
+    def test_the_predicate_names_both_states_and_no_status_is_written(self,
+                                                                       fake_cursor: Any) -> None:
+        from cqc_lem.utilities.db import (
+            EMAIL_VERIFICATION_REQUIRED_MESSAGE,
+            PendingEdit,
+            attach_email_to_connection_request,
+        )
+
+        conn, cur = fake_cursor(fetch_one=("failed",))
+        with patch(_GET_CONN, return_value=conn):
+            assert attach_email_to_connection_request(5, 6, "j@example.com") is PendingEdit.UPDATED
+        (select, select_params), (update, update_params) = _statements(cur)
+        predicate = "(status = 'pending' OR (status = 'failed' AND failure_reason = %s))"
+        assert predicate in select and select.endswith("FOR UPDATE")
+        assert select_params == (5, 6, EMAIL_VERIFICATION_REQUIRED_MESSAGE)
+        assert update == ("UPDATE connection_requests SET recipient_email = %s "
+                          f"WHERE id = %s AND user_id = %s AND {predicate}")
+        assert update_params == ("j@example.com", 5, 6, EMAIL_VERIFICATION_REQUIRED_MESSAGE)
+        assert "status =" not in update.split("WHERE")[0]
+
+    def test_any_other_row_is_not_written(self, fake_cursor: Any) -> None:
+        from cqc_lem.utilities.db import PendingEdit, attach_email_to_connection_request
+
+        conn, cur = fake_cursor(fetch_one=None)
+        with patch(_GET_CONN, return_value=conn):
+            assert attach_email_to_connection_request(5, 6, "j@example.com") \
+                is PendingEdit.NOT_PENDING
+        assert len(_statements(cur)) == 1
+
+    def test_a_database_error_is_failed(self, fake_cursor: Any) -> None:
+        from cqc_lem.utilities.db import PendingEdit, attach_email_to_connection_request
+
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("down"))
+        with patch(_GET_CONN, return_value=conn):
+            assert attach_email_to_connection_request(5, 6, "j@example.com") is PendingEdit.FAILED
+
+
+class TestTheCuratedRejectIsOneTransaction:
+    def test_both_rows_are_checked_before_either_is_written(self, fake_cursor: Any) -> None:
+        from cqc_lem.utilities.db import PendingEdit, reject_pending_curated_source
+
+        conn, cur = fake_cursor(fetch_one_side_effect=[("drafted",), ("pending",)])
+        with patch(_GET_CONN, return_value=conn):
+            assert reject_pending_curated_source(4, 9, 2, "why") is PendingEdit.UPDATED
+        sql = [s for s, _p in _statements(cur)]
+        assert sql[0].startswith("SELECT status FROM curated_sources") and "FOR UPDATE" in sql[0]
+        assert sql[1].startswith("SELECT status FROM posts") and "FOR UPDATE" in sql[1]
+        assert sql[2].startswith("UPDATE posts SET status = 'rejected'")
+        assert "AND user_id = %s AND status = 'pending'" in sql[2]
+        assert sql[3].startswith("UPDATE curated_sources SET status = 'rejected'")
+        assert "status IN ('new', 'drafted')" in sql[3]
+        conn.commit.assert_called_once()
+
+    @pytest.mark.parametrize("rows", [[("approved",)], [None], [("drafted",), ("approved",)],
+                                      [("drafted",), None]])
+    def test_a_decided_row_on_either_side_writes_nothing(self, fake_cursor: Any,
+                                                          rows: list) -> None:
+        from cqc_lem.utilities.db import PendingEdit, reject_pending_curated_source
+
+        conn, cur = fake_cursor(fetch_one_side_effect=rows)
+        with patch(_GET_CONN, return_value=conn):
+            assert reject_pending_curated_source(4, 9, 2, "why") is PendingEdit.NOT_PENDING
+        assert not [s for s, _p in _statements(cur) if s.startswith("UPDATE")]
+
+    def test_a_source_with_no_post_writes_only_the_source(self, fake_cursor: Any) -> None:
+        from cqc_lem.utilities.db import PendingEdit, reject_pending_curated_source
+
+        conn, cur = fake_cursor(fetch_one_side_effect=[("new",)])
+        with patch(_GET_CONN, return_value=conn):
+            assert reject_pending_curated_source(4, None, 2, "why") is PendingEdit.UPDATED
+        assert [s.split(" SET")[0] for s, _p in _statements(cur) if s.startswith("UPDATE")] == [
+            "UPDATE curated_sources"]
+
+    def test_a_database_error_is_failed(self, fake_cursor: Any) -> None:
+        from cqc_lem.utilities.db import PendingEdit, reject_pending_curated_source
+
+        conn, _cur = fake_cursor(execute_error=mysql.connector.Error("down"))
+        with patch(_GET_CONN, return_value=conn):
+            assert reject_pending_curated_source(4, 9, 2, "why") is PendingEdit.FAILED
+
+
 class TestInsertPostReturningId:
     def test_it_answers_the_new_rows_id(self, fake_cursor: Any) -> None:
         from cqc_lem.utilities.db import PostType, insert_post_returning_id

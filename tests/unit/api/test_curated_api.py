@@ -71,14 +71,15 @@ class TestAgentScope:
         with patch(f"{_MAIN}.get_session_user_id", return_value=SESSION_USER_ID), \
              patch(f"{_R}.get_curated_source", return_value=SOURCE), \
              patch(f"{_R}.get_post_curated_context", return_value=CONTEXT), \
-             patch(f"{_MAIN}.update_pending_row", return_value=PendingEdit.UPDATED) as pending, \
+             patch(f"{_R}.reject_pending_curated_source",
+                   return_value=PendingEdit.UPDATED) as reject, \
              patch(f"{_R}.bulk_update_posts") as reject_post, \
              patch(f"{_R}.update_curated_source_status", return_value=True) as source_status:
             out = act_on_curated_source(CuratedSourceActionRequest(session_token="t",
                                                                    source_id=5, action="reject"))
         assert out.detail["status"] == "rejected"
-        # Since #2684 the agent's reject is pending-only in SQL: the draft post, then the source.
-        assert [c.args[0] for c in pending.call_args_list] == ["post", "curated_source"]
+        # Since #2684 the agent's reject is pending-only in SQL: post and source, one transaction.
+        reject.assert_called_once_with(5, 10, SESSION_USER_ID, "curated source rejected")
         reject_post.assert_not_called()
         source_status.assert_not_called()
         with patch(f"{_MAIN}.get_session_user_id", return_value=SESSION_USER_ID), \

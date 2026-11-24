@@ -13,7 +13,7 @@ patches the name HERE, where it lives.
 from collections.abc import Mapping
 from datetime import datetime
 from enum import Enum
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, Optional
 
 import mysql.connector
 
@@ -127,4 +127,88 @@ def update_pending_row(kind: str, row_id: int, user_id: int,
     except mysql.connector.Error as err:
         log_error("Could not apply a pending-only edit", exc=err, user_id=user_id,
                   action_type=kind)
+        return PendingEdit.FAILED
+
+
+def attach_email_to_connection_request(request_id: int, user_id: int,
+                                       recipient_email: str) -> PendingEdit:
+    """A queue-only seat's ONE edit on a non-pending row: the address an email challenge asked for.
+
+    The contract with the `backfill` supplier (christopherqueenconsulting/backfill#44, ruled the
+    narrow carve-out on #2684): a seat may write `recipient_email`, and nothing else, onto a request
+    that is still `pending`, or that is `failed` with exactly `EMAIL_VERIFICATION_REQUIRED_MESSAGE`
+    as its reason. The status is never written, so a failed row stays failed until a human retries
+    it. Same lock-then-update shape as `update_pending_row`, for the same reasons.
+
+    Args:
+        request_id: The connection request.
+        user_id: The account that must own it.
+        recipient_email: The address to attach.
+
+    Returns:
+        UPDATED, NOT_PENDING when the row is in neither state (nothing is written), or FAILED on a
+        database error.
+    """
+    from cqc_lem.platform.db.repositories.outreach import EMAIL_VERIFICATION_REQUIRED_MESSAGE
+
+    predicate = "(status = 'pending' OR (status = 'failed' AND failure_reason = %s))"
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("SELECT status FROM connection_requests WHERE id = %s AND user_id = %s "
+                           f"AND {predicate} FOR UPDATE",
+                           (request_id, user_id, EMAIL_VERIFICATION_REQUIRED_MESSAGE))
+            if not cursor.fetchone():
+                return PendingEdit.NOT_PENDING
+            cursor.execute("UPDATE connection_requests SET recipient_email = %s "
+                           f"WHERE id = %s AND user_id = %s AND {predicate}",
+                           (recipient_email, request_id, user_id,
+                            EMAIL_VERIFICATION_REQUIRED_MESSAGE))
+            return PendingEdit.UPDATED
+    except mysql.connector.Error as err:
+        log_error("Could not attach an email to a connection request", exc=err, user_id=user_id,
+                  action_type="connection_request")
+        return PendingEdit.FAILED
+
+
+def reject_pending_curated_source(source_id: int, post_id: Optional[int], user_id: int,
+                                  rejection_reason: str) -> PendingEdit:
+    """Reject a curated source and its draft post together, only if no human has acted on either.
+
+    Both rows are locked and checked before either is written, in ONE transaction, so the reject
+    never half-applies: a draft post the owner approved a moment ago leaves the source untouched too.
+
+    Args:
+        source_id: The curated source.
+        post_id: The draft post it became, or None when it has none this user owns.
+        user_id: The account that must own both.
+        rejection_reason: Written onto the post with its `rejected` status.
+
+    Returns:
+        UPDATED when both writes ran, NOT_PENDING when either row has left its pending state
+        (nothing is written), FAILED on a database error.
+    """
+    source_spec, post_spec = _TABLES["curated_source"], _TABLES["post"]
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("SELECT status FROM curated_sources WHERE id = %s AND user_id = %s "
+                           "FOR UPDATE", (source_id, user_id))
+            source = cursor.fetchone()
+            if not source or str(source[0]) not in source_spec.pending:
+                return PendingEdit.NOT_PENDING
+            if post_id:
+                cursor.execute("SELECT status FROM posts WHERE id = %s AND user_id = %s FOR UPDATE",
+                               (post_id, user_id))
+                post = cursor.fetchone()
+                if not post or str(post[0]) not in post_spec.pending:
+                    return PendingEdit.NOT_PENDING
+                cursor.execute("UPDATE posts SET status = 'rejected', rejection_reason = %s "
+                               "WHERE id = %s AND user_id = %s AND status = 'pending'",
+                               (rejection_reason, post_id, user_id))
+            cursor.execute("UPDATE curated_sources SET status = 'rejected' WHERE id = %s "
+                           "AND user_id = %s AND status IN ('new', 'drafted')",
+                           (source_id, user_id))
+            return PendingEdit.UPDATED
+    except mysql.connector.Error as err:
+        log_error("Could not reject a curated source", exc=err, user_id=user_id,
+                  action_type="curated_source")
         return PendingEdit.FAILED

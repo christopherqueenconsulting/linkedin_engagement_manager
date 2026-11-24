@@ -7,6 +7,8 @@ MCP epic #2682, PR W1. Each route is driven through the REAL resolver with a ses
 - `operator` on an `internal`/`sandbox` account: the operator exemption, exactly today's path.
 - a full human session: exactly today's path, `update_pending_row` never runs.
 
+A path grants every verb, so the DELETE (soft-cancel) routes are edits too.
+
 `/dm`, `/catchup/touch`, `/schedule_post/`, `/update_post/` and `/posts/bulk_update/` are on no
 machine surface today. Their guards are defence in depth for the MCP seats that follow, so the tests
 that drive them widen the agent surface for the length of one request (`_widened`).
@@ -31,7 +33,7 @@ _TOKEN = "queue-only-hardening-token"
 _LI = "https://www.linkedin.com/in/jane-doe-1a2b3c/"
 _SPA = {"X-LEM-Client": "spa"}
 
-# (seat id, session scope, account kind, held to pending-only?)
+# (seat id, session scope, account kind)
 _HELD = [("agent", "agent", "standard"), ("operator-standard", "operator", "standard")]
 _EXEMPT = [("operator-internal", "operator", "internal"), ("operator-sandbox", "operator", "sandbox")]
 
@@ -67,8 +69,7 @@ def _session(scope: str, kind: str = "standard") -> ExitStack:
 def _widened() -> Any:
     """Put the not-yet-reachable edit routes on the agent and operator surfaces for one request."""
     main = _kernel()
-    extra = {"/dm", "/catchup/touch", "/schedule_post", "/update_post", "/posts/bulk_update",
-             "/schedule_dm"}
+    extra = {"/dm", "/catchup/touch", "/schedule_post", "/update_post", "/posts/bulk_update"}
     return patch.dict(main._SCOPE_SURFACES, {
         main.SESSION_SCOPE_AGENT: main._AGENT_SESSION_SURFACE | extra,
         main.SESSION_SCOPE_OPERATOR: main._OPERATOR_SESSION_SURFACE | extra,
@@ -85,157 +86,137 @@ def _pending(outcome: str = "UPDATED") -> Any:
 # One row per edit route: how to call it, and what today's (human) path writes through.
 # ---------------------------------------------------------------------------------------------
 
-def _dm_route() -> dict:
-    return {"method": "put", "path": "/api/dm", "kind": "scheduled_dm",
-            "body": {"dm_id": 4, "message": "Hi Jane"},
-            "stubs": [patch(f"{_M}.get_scheduled_dm_user_id", return_value=_UID)],
-            "legacy": f"{_M}.update_scheduled_dm", "row_id": 4,
-            "fields": {"message": "Hi Jane"}}
+def _route(method: str, path: str, kind: str, body: dict, stubs: list, legacy: str,
+           row_id: int, fields: dict) -> dict:
+    return {"method": method, "path": path, "kind": kind, "body": body, "stubs": stubs,
+            "legacy": legacy, "row_id": row_id, "fields": fields}
 
 
-def _connection_route() -> dict:
-    return {"method": "put", "path": "/api/connection_request", "kind": "connection_request",
-            "body": {"request_id": 5, "message": "Hello"},
-            "stubs": [patch(f"{_M}.get_connection_request_user_id", return_value=_UID)],
-            "legacy": f"{_M}.update_connection_request", "row_id": 5,
-            "fields": {"message": "Hello"}}
+def _routes() -> dict:
+    from cqc_lem.utilities.db import (
+        CatchupTouchStatus,
+        ConnectionRequestStatus,
+        OutreachStatus,
+        ScheduledDmStatus,
+    )
+
+    dm_owner = [patch(f"{_M}.get_scheduled_dm_user_id", return_value=_UID)]
+    request_owner = [patch(f"{_M}.get_connection_request_user_id", return_value=_UID)]
+    target_owner = [patch(f"{_OUTREACH}.get_outreach_target_user_id", return_value=_UID)]
+    return {
+        "put_dm": _route("PUT", "/api/dm", "scheduled_dm", {"dm_id": 4, "message": "Hi Jane"},
+                         dm_owner, f"{_M}.update_scheduled_dm", 4, {"message": "Hi Jane"}),
+        "delete_dm": _route("DELETE", "/api/dm", "scheduled_dm", {"dm_id": 4}, dm_owner,
+                            f"{_M}.update_scheduled_dm_status", 4,
+                            {"status": ScheduledDmStatus.CANCELED}),
+        "put_connection_request": _route(
+            "PUT", "/api/connection_request", "connection_request",
+            {"request_id": 5, "message": "Hello"}, request_owner,
+            f"{_M}.update_connection_request", 5, {"message": "Hello"}),
+        "delete_connection_request": _route(
+            "DELETE", "/api/connection_request", "connection_request", {"request_id": 5},
+            request_owner, f"{_M}.update_connection_request_status", 5,
+            {"status": ConnectionRequestStatus.CANCELED, "failure_reason": None,
+             "recipient_email": None}),
+        "put_lead_signal": _route(
+            "PUT", "/api/lead_signal", "lead_signal", {"signal_id": 6, "draft_response": "Thanks!"},
+            [patch(f"{_M}.get_lead_signal", return_value={"user_id": _UID, "draft_response": "o"})],
+            f"{_M}.update_lead_signal", 6, {"draft_response": "Thanks!"}),
+        "put_catchup_touch": _route(
+            "PUT", "/api/catchup/touch", "catchup_touch", {"touch_id": 7, "message": "Congrats!"},
+            [patch(f"{_M}.get_catchup_touch", return_value={"user_id": _UID, "message": "old"})],
+            f"{_M}.update_catchup_touch", 7, {"message": "Congrats!"}),
+        "delete_catchup_touch": _route(
+            "DELETE", "/api/catchup/touch", "catchup_touch", {"touch_id": 7},
+            [patch(f"{_M}.get_catchup_touch_user_id", return_value=_UID)],
+            f"{_M}.update_catchup_touch_status", 7, {"status": CatchupTouchStatus.CANCELED}),
+        "put_outreach_target": _route(
+            "PUT", "/api/outreach/target", "outreach_target",
+            {"target_id": 8, "draft_text": "Great post"}, target_owner,
+            f"{_OUTREACH}.update_outreach_target", 8, {"draft_text": "Great post"}),
+        "delete_outreach_target": _route(
+            "DELETE", "/api/outreach/target", "outreach_target", {"target_id": 8}, target_owner,
+            f"{_OUTREACH}.update_outreach_target_status", 8, {"status": OutreachStatus.CANCELED}),
+        # Content and slot only, so the stored type and media are never part of the write.
+        "update_post": _route(
+            "POST", "/api/update_post/?post_id=9", "post",
+            {"content": "Revised", "scheduled_datetime": "2099-01-01T09:00:00Z",
+             "rejection_reason": "nope"},
+            [patch(f"{_M}.user_owns_posts", return_value=True)], f"{_M}.update_db_post", 9,
+            {"content": "Revised", "scheduled_time": datetime(2099, 1, 1, 9, tzinfo=timezone.utc)}),
+    }
 
 
-def _lead_signal_route() -> dict:
-    return {"method": "put", "path": "/api/lead_signal", "kind": "lead_signal",
-            "body": {"signal_id": 6, "draft_response": "Thanks!"},
-            "stubs": [patch(f"{_M}.get_lead_signal",
-                            return_value={"user_id": _UID, "draft_response": "old"})],
-            "legacy": f"{_M}.update_lead_signal", "row_id": 6,
-            "fields": {"draft_response": "Thanks!"}}
-
-
-def _catchup_route() -> dict:
-    return {"method": "put", "path": "/api/catchup/touch", "kind": "catchup_touch",
-            "body": {"touch_id": 7, "message": "Congrats!"},
-            "stubs": [patch(f"{_M}.get_catchup_touch",
-                            return_value={"user_id": _UID, "message": "old"})],
-            "legacy": f"{_M}.update_catchup_touch", "row_id": 7,
-            "fields": {"message": "Congrats!"}}
-
-
-def _outreach_route() -> dict:
-    return {"method": "put", "path": "/api/outreach/target", "kind": "outreach_target",
-            "body": {"target_id": 8, "draft_text": "Great post"},
-            "stubs": [patch(f"{_OUTREACH}.get_outreach_target_user_id", return_value=_UID)],
-            "legacy": f"{_OUTREACH}.update_outreach_target", "row_id": 8,
-            "fields": {"draft_text": "Great post"}}
-
-
-def _update_post_route() -> dict:
-    from cqc_lem.utilities.db import PostStatus, PostType
-
-    return {"method": "post", "path": "/api/update_post/?post_id=9", "kind": "post",
-            "body": {"content": "Revised", "scheduled_datetime": "2099-01-01T09:00:00Z",
-                     "post_type": "video", "video_url": "https://evil.example/x.mp4",
-                     "use_avatar": True, "rejection_reason": "nope"},
-            "stubs": [patch(f"{_M}.user_owns_posts", return_value=True)],
-            "legacy": f"{_M}.update_db_post", "row_id": 9,
-            "fields": {"content": "Revised", "video_url": None,
-                       "scheduled_time": datetime(2099, 1, 1, 9, tzinfo=timezone.utc),
-                       "post_type": PostType.TEXT, "status": PostStatus.PENDING}}
-
-
-_ROUTES = {"dm": _dm_route, "connection_request": _connection_route,
-           "lead_signal": _lead_signal_route, "catchup_touch": _catchup_route,
-           "outreach_target": _outreach_route, "update_post": _update_post_route}
+_ROUTE_NAMES = sorted(_routes())
 
 
 def _call(api_client: Any, route: dict, headers: Any = None) -> Any:
-    return getattr(api_client, route["method"])(route["path"],
-                                                json={"session_token": _TOKEN, **route["body"]},
-                                                headers=headers)
+    return api_client.request(route["method"], route["path"],
+                              json={"session_token": _TOKEN, **route["body"]}, headers=headers)
+
+
+def _drive(api_client: Any, name: str, scope: str, kind: str = "standard",
+           outcome: str = "UPDATED", headers: Any = None) -> tuple:
+    route = _routes()[name]
+    with ExitStack() as stack:
+        for stub in route["stubs"]:
+            stack.enter_context(stub)
+        stack.enter_context(_session(scope, kind))
+        stack.enter_context(_widened())
+        pending = stack.enter_context(_pending(outcome))
+        legacy = stack.enter_context(patch(route["legacy"], return_value=True))
+        side = [stack.enter_context(patch(f"{_M}.update_post_use_avatar")),
+                stack.enter_context(patch(f"{_M}.update_db_post_rejection_reason"))]
+        resp = _call(api_client, route, headers=headers)
+    return route, resp, pending, legacy, side
 
 
 class TestEveryEditRouteIsPendingOnlyForAHeldSeat:
     @pytest.mark.parametrize("seat,scope,kind", _HELD, ids=[h[0] for h in _HELD])
-    @pytest.mark.parametrize("name", sorted(_ROUTES))
+    @pytest.mark.parametrize("name", _ROUTE_NAMES)
     def test_the_edit_goes_through_the_pending_only_sql(self, api_client: Any, name: str,
                                                          seat: str, scope: str, kind: str) -> None:
-        route = _ROUTES[name]()
-        with ExitStack() as stack:
-            for stub in route["stubs"]:
-                stack.enter_context(stub)
-            stack.enter_context(_session(scope, kind))
-            stack.enter_context(_widened())
-            pending = stack.enter_context(_pending("UPDATED"))
-            legacy = stack.enter_context(patch(route["legacy"], return_value=True))
-            resp = _call(api_client, route)
+        route, resp, pending, legacy, side = _drive(api_client, name, scope, kind)
         assert resp.status_code == 200, resp.text
         legacy.assert_not_called()
+        for s in side:
+            s.assert_not_called()
         assert pending.call_args.args == (route["kind"], route["row_id"], _UID, route["fields"])
         assert "approved_by" not in pending.call_args.args[3], "a machine edit stamps no approver"
 
     @pytest.mark.parametrize("seat,scope,kind", _HELD, ids=[h[0] for h in _HELD])
-    @pytest.mark.parametrize("name", sorted(_ROUTES))
-    def test_a_row_that_left_pending_is_a_409_and_nothing_is_written(
+    @pytest.mark.parametrize("name", _ROUTE_NAMES)
+    def test_an_approved_row_is_a_409_and_nothing_is_written(
             self, api_client: Any, name: str, seat: str, scope: str, kind: str) -> None:
-        route = _ROUTES[name]()
-        with ExitStack() as stack:
-            for stub in route["stubs"]:
-                stack.enter_context(stub)
-            stack.enter_context(_session(scope, kind))
-            stack.enter_context(_widened())
-            stack.enter_context(_pending("NOT_PENDING"))
-            legacy = stack.enter_context(patch(route["legacy"], return_value=True))
-            avatar = stack.enter_context(patch(f"{_M}.update_post_use_avatar"))
-            reason = stack.enter_context(patch(f"{_M}.update_db_post_rejection_reason"))
-            resp = _call(api_client, route)
+        """NOT_PENDING is what the SQL answers for an approved (or sent, failed…) row."""
+        _route_, resp, _pending_, legacy, side = _drive(api_client, name, scope, kind,
+                                                       outcome="NOT_PENDING")
         assert resp.status_code == 409, resp.text
         assert resp.json()["detail"]["code"] == "edit_requires_pending"
         legacy.assert_not_called()
-        avatar.assert_not_called()
-        reason.assert_not_called()
+        for s in side:
+            s.assert_not_called()
 
-    @pytest.mark.parametrize("name", sorted(_ROUTES))
+    @pytest.mark.parametrize("name", _ROUTE_NAMES)
     def test_a_database_fault_is_a_500(self, api_client: Any, name: str) -> None:
-        route = _ROUTES[name]()
-        with ExitStack() as stack:
-            for stub in route["stubs"]:
-                stack.enter_context(stub)
-            stack.enter_context(_session("agent"))
-            stack.enter_context(_widened())
-            stack.enter_context(_pending("FAILED"))
-            resp = _call(api_client, route)
+        _route_, resp, *_rest = _drive(api_client, name, "agent", outcome="FAILED")
         assert resp.status_code == 500
 
 
 class TestTheOperatorExemptionAndHumansKeepTodaysPath:
     @pytest.mark.parametrize("seat,scope,kind", _EXEMPT, ids=[e[0] for e in _EXEMPT])
-    @pytest.mark.parametrize("name", sorted(_ROUTES))
+    @pytest.mark.parametrize("name", _ROUTE_NAMES)
     def test_an_exempt_operator_writes_through_the_original_updater(
             self, api_client: Any, name: str, seat: str, scope: str, kind: str) -> None:
-        route = _ROUTES[name]()
-        with ExitStack() as stack:
-            for stub in route["stubs"]:
-                stack.enter_context(stub)
-            stack.enter_context(_session(scope, kind))
-            stack.enter_context(_widened())
-            pending = stack.enter_context(_pending())
-            legacy = stack.enter_context(patch(route["legacy"], return_value=True))
-            resp = _call(api_client, route)
+        _route_, resp, pending, legacy, _side = _drive(api_client, name, scope, kind)
         assert resp.status_code == 200, resp.text
         legacy.assert_called_once()
         pending.assert_not_called()
 
-    @pytest.mark.parametrize("name", sorted(_ROUTES))
+    @pytest.mark.parametrize("name", _ROUTE_NAMES)
     def test_a_full_session_writes_through_the_original_updater(self, api_client: Any,
                                                                 name: str) -> None:
-        route = _ROUTES[name]()
-        with ExitStack() as stack:
-            for stub in route["stubs"]:
-                stack.enter_context(stub)
-            stack.enter_context(_session("full"))
-            pending = stack.enter_context(_pending())
-            legacy = stack.enter_context(patch(route["legacy"], return_value=True))
-            stack.enter_context(patch(f"{_M}.update_post_use_avatar"))
-            stack.enter_context(patch(f"{_M}.update_db_post_rejection_reason"))
-            resp = _call(api_client, route, headers=_SPA)
+        _route_, resp, pending, legacy, _side = _drive(api_client, name, "full", headers=_SPA)
         assert resp.status_code == 200, resp.text
         legacy.assert_called_once()
         pending.assert_not_called()
@@ -271,6 +252,23 @@ class TestTheOperatorExemptionAndHumansKeepTodaysPath:
         assert update.call_args.args[5] == PostStatus.APPROVED
         avatar.assert_called_once_with(9, True)
 
+    @pytest.mark.parametrize("path,body,stub,legacy", [
+        ("/api/connection_request", {"request_id": 5}, "get_connection_request_user_id",
+         "update_connection_request_status"),
+        ("/api/dm", {"dm_id": 4}, "get_scheduled_dm_user_id", "update_scheduled_dm_status"),
+        ("/api/catchup/touch", {"touch_id": 7}, "get_catchup_touch_user_id",
+         "update_catchup_touch_status"),
+    ])
+    def test_a_full_session_delete_cancels_in_any_status_as_before(
+            self, api_client: Any, path: str, body: dict, stub: str, legacy: str) -> None:
+        with _session("full"), _pending() as pending, patch(f"{_M}.{stub}", return_value=_UID), \
+             patch(f"{_M}.{legacy}", return_value=True) as cancel:
+            resp = api_client.request("DELETE", path, headers=_SPA,
+                                      json={"session_token": _TOKEN, **body})
+        assert resp.status_code == 200, resp.text
+        assert str(cancel.call_args.args[1]) == "canceled"
+        pending.assert_not_called()
+
 
 class TestCancelAndDismissArePendingOnlyToo:
     @pytest.mark.parametrize("path,body,kind,status", [
@@ -305,73 +303,140 @@ class TestCancelAndDismissArePendingOnlyToo:
                                              "failure_reason": None, "recipient_email": None}
 
 
+class TestTheBackfillEmailChallengeCarveOut:
+    """backfill#44: an email-only PUT may land on an email-challenged `failed` request (#2684)."""
+
+    @staticmethod
+    def _put(api_client: Any, scope: str, outcome: str, kind: str = "standard",
+             headers: Any = None, **body: Any) -> tuple:
+        from cqc_lem.utilities.db import PendingEdit
+
+        with _session(scope, kind), _pending("NOT_PENDING") as pending, \
+             patch(f"{_M}.get_connection_request_user_id", return_value=_UID), \
+             patch(f"{_M}.get_connection_request", return_value={"status": "pending"}), \
+             patch(f"{_M}.attach_email_to_connection_request",
+                   return_value=getattr(PendingEdit, outcome)) as attach, \
+             patch(f"{_M}.update_connection_request", return_value=True) as legacy:
+            resp = api_client.put("/api/connection_request", headers=headers,
+                                  json={"session_token": _TOKEN, "request_id": 5, **body})
+        return resp, attach, pending, legacy
+
+    @pytest.mark.parametrize("seat,scope,kind", _HELD, ids=[h[0] for h in _HELD])
+    def test_an_email_only_put_goes_through_the_carve_out(self, api_client: Any, seat: str,
+                                                          scope: str, kind: str) -> None:
+        resp, attach, pending, legacy = self._put(api_client, scope, "UPDATED", kind,
+                                                  recipient_email="jane@example.com")
+        assert resp.status_code == 200, resp.text
+        attach.assert_called_once_with(5, _UID, "jane@example.com")
+        pending.assert_not_called()
+        legacy.assert_not_called()
+
+    def test_a_row_in_neither_state_is_a_409(self, api_client: Any) -> None:
+        resp, attach, _pending_, legacy = self._put(api_client, "agent", "NOT_PENDING",
+                                                    recipient_email="jane@example.com")
+        assert resp.status_code == 409
+        assert resp.json()["detail"]["code"] == "edit_requires_pending"
+        attach.assert_called_once()
+        legacy.assert_not_called()
+
+    @pytest.mark.parametrize("extra", [{"message": "hi"}, {"recipient_name": "Jane"},
+                                       {"recipient_profile_url": _LI}, {"action": "cancel"}])
+    def test_any_extra_field_takes_it_back_to_pending_only(self, api_client: Any,
+                                                           extra: dict) -> None:
+        """On a failed row the pending-only write matches nothing, so the extra field is a 409."""
+        resp, attach, pending, legacy = self._put(api_client, "agent", "UPDATED",
+                                                  recipient_email="jane@example.com", **extra)
+        assert resp.status_code == 409, resp.text
+        attach.assert_not_called()
+        pending.assert_called_once()
+        legacy.assert_not_called()
+
+    def test_a_human_attach_still_revives_the_row(self, api_client: Any) -> None:
+        """#1881's revive-on-attach is the human path, untouched."""
+        from cqc_lem.utilities.db import EMAIL_VERIFICATION_REQUIRED_MESSAGE, ConnectionRequestStatus
+
+        with _session("full"), \
+             patch(f"{_M}.get_connection_request_user_id", return_value=_UID), \
+             patch(f"{_M}.get_connection_request",
+                   return_value={"status": "failed",
+                                 "failure_reason": EMAIL_VERIFICATION_REQUIRED_MESSAGE}), \
+             patch(f"{_M}.attach_email_to_connection_request") as attach, \
+             patch(f"{_M}.update_connection_request", return_value=True) as legacy:
+            resp = api_client.put("/api/connection_request", headers=_SPA, json={
+                "session_token": _TOKEN, "request_id": 5, "recipient_email": "jane@example.com"})
+        assert resp.status_code == 200, resp.text
+        attach.assert_not_called()
+        assert legacy.call_args.kwargs["status"] == ConnectionRequestStatus.APPROVED
+
+
 class TestCuratedRejectIsPendingOnly:
     _SOURCE = {"id": 4, "status": "drafted", "post_id": 9}
 
-    def _put(self, api_client: Any, scope: str, kind: str, context: dict, outcomes: list,
+    def _put(self, api_client: Any, scope: str, kind: str, context: Any, outcome: str,
              headers: Any = None) -> tuple:
         from cqc_lem.utilities.db import PendingEdit
 
         with _session(scope, kind), \
              patch(f"{_CURATED}.get_curated_source", return_value=self._SOURCE), \
              patch(f"{_CURATED}.get_post_curated_context", return_value=context), \
-             patch(f"{_M}.update_pending_row",
-                   side_effect=[getattr(PendingEdit, o) for o in outcomes]) as pending, \
+             patch(f"{_CURATED}.reject_pending_curated_source",
+                   return_value=getattr(PendingEdit, outcome)) as reject, \
              patch(f"{_CURATED}.bulk_update_posts") as bulk, \
              patch(f"{_CURATED}.update_curated_source_status", return_value=True) as status:
             resp = api_client.put("/api/curated/source", headers=headers, json={
                 "session_token": _TOKEN, "source_id": 4, "action": "reject"})
-        return resp, pending, bulk, status
+        return resp, reject, bulk, status
 
     @pytest.mark.parametrize("seat,scope,kind", _HELD, ids=[h[0] for h in _HELD])
-    def test_a_held_seat_rejects_only_a_pending_draft(self, api_client: Any, seat: str,
-                                                      scope: str, kind: str) -> None:
-        from cqc_lem.utilities.db import PostStatus
-
-        resp, pending, bulk, status = self._put(
-            api_client, scope, kind, {"post_user_id": _UID, "post_status": "pending"},
-            ["UPDATED", "UPDATED"])
+    def test_a_held_seat_rejects_through_the_one_transaction(self, api_client: Any, seat: str,
+                                                             scope: str, kind: str) -> None:
+        resp, reject, bulk, status = self._put(
+            api_client, scope, kind, {"post_user_id": _UID, "post_status": "pending"}, "UPDATED")
         assert resp.status_code == 200, resp.text
         assert resp.json()["detail"] == {"source_id": 4, "post_id": 9, "status": "rejected"}
-        post_call, source_call = pending.call_args_list
-        assert post_call.args == ("post", 9, _UID, {"status": PostStatus.REJECTED,
-                                                    "rejection_reason": "curated source rejected"})
-        assert source_call.args == ("curated_source", 4, _UID, {"status": "rejected"})
+        reject.assert_called_once_with(4, 9, _UID, "curated source rejected")
         bulk.assert_not_called()
         status.assert_not_called()
 
-    def test_an_approved_curated_post_is_a_409_for_a_held_seat(self, api_client: Any) -> None:
-        resp, pending, bulk, status = self._put(
+    def test_a_decided_row_is_a_409_and_nothing_is_written(self, api_client: Any) -> None:
+        resp, _reject, bulk, status = self._put(
             api_client, "agent", "standard", {"post_user_id": _UID, "post_status": "approved"},
-            ["NOT_PENDING"])
+            "NOT_PENDING")
         assert resp.status_code == 409
         assert resp.json()["detail"]["code"] == "edit_requires_pending"
-        assert pending.call_count == 1, "the source is not touched once the post refused"
         bulk.assert_not_called()
         status.assert_not_called()
 
-    def test_a_source_with_no_owned_post_is_guarded_on_the_source_alone(self,
-                                                                       api_client: Any) -> None:
-        resp, pending, _bulk, _status = self._put(api_client, "agent", "standard", None,
-                                                  ["NOT_PENDING"])
-        assert resp.status_code == 409
-        assert pending.call_args.args[0] == "curated_source"
+    def test_a_source_with_no_owned_post_passes_no_post(self, api_client: Any) -> None:
+        resp, reject, _bulk, _status = self._put(api_client, "agent", "standard", None,
+                                                 "UPDATED")
+        assert resp.status_code == 200
+        assert reject.call_args.args[1] is None
 
     def test_a_human_still_withdraws_an_approved_curated_post(self, api_client: Any) -> None:
-        resp, pending, bulk, status = self._put(
+        resp, reject, bulk, status = self._put(
             api_client, "full", "standard", {"post_user_id": _UID, "post_status": "approved"},
-            [], headers=_SPA)
+            "UPDATED", headers=_SPA)
         assert resp.status_code == 200, resp.text
-        pending.assert_not_called()
+        reject.assert_not_called()
         bulk.assert_called_once()
         status.assert_called_once()
 
 
-class TestSchedulePostDraftsTextOnlyForAHeldSeat:
-    _BODY = {"content": "Hello", "scheduled_datetime": "2099-01-01T09:00:00Z",
-             "post_type": "video", "video_url": "https://evil.example/x.mp4",
-             "video_quality": "premium_top", "use_avatar": True,
-             "carousel_slides": ["a", "b"], "image_url": "https://lem.example/api/assets/p.png"}
+_MEDIA_FIELDS = [
+    ("post_type", {"post_type": "video"}),
+    ("post_type", {"post_type": "carousel"}),
+    ("video_url", {"video_url": "https://evil.example/x.mp4"}),
+    ("carousel_slides", {"carousel_slides": ["a", "b"]}),
+    ("image_url", {"image_url": "https://lem.example/api/assets/p.png"}),
+    ("use_avatar", {"use_avatar": True}),
+    ("use_avatar", {"use_avatar": False}),
+    ("video_quality", {"video_quality": "premium_top"}),
+]
+
+
+class TestPostsAreTextOnlyForAHeldSeat:
+    _BODY = {"content": "Hello", "scheduled_datetime": "2099-01-01T09:00:00Z"}
 
     def _schedule(self, api_client: Any, scope: str, kind: str, headers: Any = None,
                   **extra: Any) -> tuple:
@@ -384,21 +449,31 @@ class TestSchedulePostDraftsTextOnlyForAHeldSeat:
         return resp, insert
 
     @pytest.mark.parametrize("seat,scope,kind", _HELD, ids=[h[0] for h in _HELD])
-    def test_media_is_dropped_and_the_row_is_a_pending_text_post(
-            self, api_client: Any, seat: str, scope: str, kind: str) -> None:
+    def test_a_text_draft_lands_pending_and_returns_its_id(self, api_client: Any, seat: str,
+                                                           scope: str, kind: str) -> None:
         from cqc_lem.utilities.db import PostStatus, PostType
 
-        resp, insert = self._schedule(api_client, scope, kind)
+        resp, insert = self._schedule(api_client, scope, kind, post_type="text",
+                                      video_quality="standard")
         assert resp.status_code == 200, resp.text
         assert resp.json()["post_id"] == 321
         args, kwargs = insert.call_args
         assert args[3] == PostType.TEXT
         assert kwargs["status"] == PostStatus.PENDING
-        assert kwargs["video_url"] is None
-        assert kwargs["carousel_slides"] is None
-        assert kwargs["use_avatar"] is None
-        assert kwargs["image_url"] is None
-        assert kwargs["video_quality"] == "standard"
+        assert (kwargs["video_url"], kwargs["carousel_slides"], kwargs["use_avatar"],
+                kwargs["image_url"], kwargs["video_quality"]) == (None, None, None, None,
+                                                                  "standard")
+
+    @pytest.mark.parametrize("seat,scope,kind", _HELD, ids=[h[0] for h in _HELD])
+    @pytest.mark.parametrize("field,extra", _MEDIA_FIELDS)
+    def test_any_media_field_is_a_422_not_a_silent_downgrade(
+            self, api_client: Any, seat: str, scope: str, kind: str, field: str,
+            extra: dict) -> None:
+        resp, insert = self._schedule(api_client, scope, kind, **extra)
+        assert resp.status_code == 422, resp.text
+        assert resp.json()["detail"]["code"] == "machine_seat_text_only"
+        assert resp.json()["detail"]["fields"] == [field]
+        insert.assert_not_called()
 
     @pytest.mark.parametrize("seat,scope,kind", _HELD, ids=[h[0] for h in _HELD])
     def test_asking_for_approved_is_a_403(self, api_client: Any, seat: str, scope: str,
@@ -413,7 +488,8 @@ class TestSchedulePostDraftsTextOnlyForAHeldSeat:
                                                             scope: str, kind: str) -> None:
         from cqc_lem.utilities.db import PostStatus, PostType
 
-        resp, insert = self._schedule(api_client, scope, kind, status="approved")
+        resp, insert = self._schedule(api_client, scope, kind, status="approved",
+                                      post_type="video", use_avatar=True)
         assert resp.status_code == 200, resp.text
         args, kwargs = insert.call_args
         assert args[3] == PostType.VIDEO
@@ -423,7 +499,10 @@ class TestSchedulePostDraftsTextOnlyForAHeldSeat:
     def test_a_full_session_is_unchanged_but_for_the_returned_id(self, api_client: Any) -> None:
         from cqc_lem.utilities.db import PostType
 
-        resp, insert = self._schedule(api_client, "full", "standard", headers=_SPA)
+        resp, insert = self._schedule(api_client, "full", "standard", headers=_SPA,
+                                      post_type="video", video_url="https://evil.example/x.mp4",
+                                      video_quality="premium_top", use_avatar=True,
+                                      image_url="https://lem.example/api/assets/p.png")
         assert resp.status_code == 200, resp.text
         assert resp.json() == {"status_code": 200, "detail": "Post scheduled successfully",
                                "post_id": 321}
@@ -440,10 +519,33 @@ class TestSchedulePostDraftsTextOnlyForAHeldSeat:
         with _session(scope, kind), _widened(), _pending() as pending, \
              patch(f"{_M}.user_owns_posts", return_value=True):
             resp = api_client.post("/api/update_post/?post_id=9", json={
-                "session_token": _TOKEN, "content": "c", "status": "approved",
-                "scheduled_datetime": "2099-01-01T09:00:00Z"})
+                "session_token": _TOKEN, **self._BODY, "status": "approved"})
         assert resp.status_code == 403
         pending.assert_not_called()
+
+    @pytest.mark.parametrize("field,extra", _MEDIA_FIELDS)
+    def test_update_post_refuses_any_type_or_media_change(self, api_client: Any, field: str,
+                                                          extra: dict) -> None:
+        with _session("agent"), _widened(), _pending() as pending, \
+             patch(f"{_M}.user_owns_posts", return_value=True):
+            resp = api_client.post("/api/update_post/?post_id=9", json={
+                "session_token": _TOKEN, **self._BODY, **extra})
+        assert resp.status_code == 422, resp.text
+        assert resp.json()["detail"]["code"] == "machine_seat_text_only"
+        pending.assert_not_called()
+
+    def test_revising_a_pending_carousel_writes_neither_its_type_nor_its_media(
+            self, api_client: Any) -> None:
+        """The stored carousel (or video) keeps its type and slides: only content and slot move.
+
+        The real-database half is `test_queue_only_edits_db.py`, against a stored carousel row.
+        """
+        with _session("agent"), _widened(), _pending() as pending, \
+             patch(f"{_M}.user_owns_posts", return_value=True):
+            resp = api_client.post("/api/update_post/?post_id=9", json={
+                "session_token": _TOKEN, **self._BODY})
+        assert resp.status_code == 200, resp.text
+        assert set(pending.call_args.args[3]) == {"content", "scheduled_time"}
 
 
 class TestBulkUpdateIsRefusedForEveryQueueOnlySeat:
@@ -464,15 +566,33 @@ class TestBulkUpdateIsRefusedForEveryQueueOnlySeat:
 
 _BAD_URLS = [
     "https://example.com/in/jane",
-    "http://www.linkedin.com/in/jane",
-    "https://linkedin.com/in/jane",
     "https://www.linkedin.com/company/acme",
-    "https://www.linkedin.com/in/jane?trk=x",
     "https://www.linkedin.com/in/jane/details/",
+    "https://www.linkedin.com/in/",
     "https://www.linkedin.com.evil.example/in/jane",
+    "https://evil.example/www.linkedin.com/in/jane",
+    "https://user:pw@www.linkedin.com/in/jane",
+    "https://www.linkedin.com:8443/in/jane",
+    "https://www.linkedin.com:notaport/in/jane",
+    "https://[::1/in/jane",
+    "ftp://www.linkedin.com/in/jane",
     "javascript:alert(1)",
     "",
 ]
+
+# What the scrapers and suppliers actually store, and the one spelling each becomes.
+_NORMALISED = [
+    ("https://linkedin.com/in/jane-doe", "https://www.linkedin.com/in/jane-doe/"),
+    ("https://www.linkedin.com/in/jane-doe?originalSubdomain=uk",
+     "https://www.linkedin.com/in/jane-doe/"),
+    ("https://www.linkedin.com/in/jérôme-x_1/", "https://www.linkedin.com/in/jérôme-x_1/"),
+    ("https://www.linkedin.com/in/j%C3%A9r%C3%B4me/", "https://www.linkedin.com/in/j%C3%A9r%C3%B4me/"),
+    ("http://WWW.LinkedIn.com/in/Jane#about", "https://www.linkedin.com/in/Jane/"),
+    ("  https://www.linkedin.com/in/jane  ", "https://www.linkedin.com/in/jane/"),
+    (_LI, _LI),
+]
+
+_CREATE_PATHS = ["/api/connection_request", "/api/schedule_dm", "/api/outreach/target"]
 
 
 class TestMachineSeatsNameOnlyLinkedInProfiles:
@@ -481,64 +601,75 @@ class TestMachineSeatsNameOnlyLinkedInProfiles:
         field = "target_profile_url" if "outreach" in path else "recipient_profile_url"
         body = {"session_token": _TOKEN, field: url, "message": "hi",
                 "scheduled_datetime": "2099-01-01T09:00:00Z"}
-        with _session(scope), _widened(), \
+        with _session(scope), \
              patch(f"{_M}.get_engagement_preferences", return_value={}), \
              patch(f"{_M}.insert_connection_request", return_value=1) as conn, \
              patch(f"{_M}.insert_scheduled_dm", return_value=2) as dm, \
-             patch(f"{_OUTREACH}.get_outreach_target_by_url", return_value=None), \
+             patch(f"{_OUTREACH}.get_outreach_target_by_url", return_value=None) as dup, \
              patch(f"{_OUTREACH}.insert_outreach_target", return_value=3) as target:
             resp = api_client.post(path, json=body, headers=headers)
-        return resp, (conn, dm, target)
+        return resp, {"conn": conn, "dm": dm, "target": target, "dup": dup}
+
+    @staticmethod
+    def _stored(path: str, mocks: dict) -> str:
+        insert = {"/api/connection_request": mocks["conn"], "/api/schedule_dm": mocks["dm"],
+                  "/api/outreach/target": mocks["target"]}[path]
+        return insert.call_args.args[1]
 
     @pytest.mark.parametrize("scope", ["agent", "operator"])
-    @pytest.mark.parametrize("path", ["/api/connection_request", "/api/schedule_dm",
-                                      "/api/outreach/target"])
+    @pytest.mark.parametrize("path", _CREATE_PATHS)
     @pytest.mark.parametrize("url", _BAD_URLS)
     def test_anything_else_is_a_422_and_nothing_is_queued(self, api_client: Any, scope: str,
                                                           path: str, url: str) -> None:
-        resp, inserts = self._create(api_client, scope, path, url)
+        resp, mocks = self._create(api_client, scope, path, url)
         assert resp.status_code == 422, resp.text
         if url.strip():  # the outreach route answers an empty URL with its own 422 first
             assert resp.json()["detail"]["code"] == "linkedin_profile_url_required"
-        for insert in inserts:
-            insert.assert_not_called()
+        for name in ("conn", "dm", "target"):
+            mocks[name].assert_not_called()
 
-    @pytest.mark.parametrize("path", ["/api/connection_request", "/api/schedule_dm"])
-    def test_surrounding_whitespace_is_not_a_profile_url(self, api_client: Any, path: str) -> None:
-        """Only the outreach create normalises its URL (it strips first); these two store it as is."""
-        resp, _inserts = self._create(api_client, "agent", path, f" {_LI}")
-        assert resp.status_code == 422
-
-    @pytest.mark.parametrize("url", [_LI, "https://www.linkedin.com/in/jane",
-                                     "https://www.linkedin.com/in/j%C3%A9r%C3%B4me-x_1/"])
-    @pytest.mark.parametrize("path", ["/api/connection_request", "/api/schedule_dm",
-                                      "/api/outreach/target"])
-    def test_a_profile_url_is_queued(self, api_client: Any, path: str, url: str) -> None:
-        resp, _inserts = self._create(api_client, "agent", path, url)
+    @pytest.mark.parametrize("raw,stored", _NORMALISED)
+    @pytest.mark.parametrize("path", _CREATE_PATHS)
+    def test_the_scraper_forms_are_stored_normalised(self, api_client: Any, path: str, raw: str,
+                                                     stored: str) -> None:
+        resp, mocks = self._create(api_client, "agent", path, raw)
         assert resp.status_code == 200, resp.text
+        assert self._stored(path, mocks) == stored
 
-    @pytest.mark.parametrize("path", ["/api/connection_request", "/api/schedule_dm",
-                                      "/api/outreach/target"])
-    def test_a_human_is_not_held_to_it(self, api_client: Any, path: str) -> None:
-        resp, _inserts = self._create(api_client, "full", path, "https://example.com/in/jane",
-                                      headers=_SPA)
+    def test_the_outreach_duplicate_lookup_sees_the_normalised_url(self, api_client: Any) -> None:
+        resp, mocks = self._create(api_client, "agent", "/api/outreach/target",
+                                   "https://linkedin.com/in/jane-doe?trk=x")
         assert resp.status_code == 200, resp.text
+        assert mocks["dup"].call_args.args == (_UID, "https://www.linkedin.com/in/jane-doe/")
+
+    @pytest.mark.parametrize("path", _CREATE_PATHS)
+    def test_a_human_is_neither_held_to_it_nor_rewritten(self, api_client: Any, path: str) -> None:
+        resp, mocks = self._create(api_client, "full", path, "https://example.com/in/jane",
+                                   headers=_SPA)
+        assert resp.status_code == 200, resp.text
+        assert self._stored(path, mocks) == "https://example.com/in/jane"
 
     @pytest.mark.parametrize("path,body,stub", [
         ("/api/connection_request", {"request_id": 5}, f"{_M}.get_connection_request_user_id"),
         ("/api/dm", {"dm_id": 4}, f"{_M}.get_scheduled_dm_user_id"),
     ])
-    def test_an_edit_naming_a_new_recipient_is_held_to_it_too(self, api_client: Any, path: str,
-                                                              body: dict, stub: str) -> None:
+    def test_an_edit_naming_a_new_recipient_is_held_and_normalised(
+            self, api_client: Any, path: str, body: dict, stub: str) -> None:
         with _session("agent"), _widened(), _pending() as pending, \
              patch(stub, return_value=_UID):
             bad = api_client.put(path, json={"session_token": _TOKEN, **body,
                                              "recipient_profile_url": "https://evil.example/x"})
             good = api_client.put(path, json={"session_token": _TOKEN, **body,
-                                              "recipient_profile_url": _LI})
+                                              "recipient_profile_url": "linkedin.com/in/jane"})
+            canonical = api_client.put(path, json={
+                "session_token": _TOKEN, **body,
+                "recipient_profile_url": "https://linkedin.com/in/jane?originalSubdomain=uk"})
         assert bad.status_code == 422
-        assert good.status_code == 200, good.text
+        assert good.status_code == 422, "a URL with no scheme is not one"
+        assert canonical.status_code == 200, canonical.text
         assert pending.call_count == 1
+        assert pending.call_args.args[3]["recipient_profile_url"] == \
+            "https://www.linkedin.com/in/jane/"
 
 
 class TestThePreferencesReadNeverMintsTheInboundAddressForAMachine:
@@ -578,20 +709,24 @@ class TestTheGuardsStayInTheHandlers:
     Pinned from source instead, so a deleted guard fails before a surface ever widens.
     """
 
+    _URL = "_linkedin_profile_url_for_seat("
+
     @pytest.mark.parametrize("handler,guards", [
         ("schedule_post", ("_refuse_agent_approved_status(post.status)", "_edits_pending_only()",
-                           "_text_only_draft(post)")),
+                           "_refuse_machine_media(post)")),
         ("update_post", ("_refuse_agent_approved_status(post.status)", "_edits_pending_only()",
-                         '_pending_edit_or_raise("post"')),
+                         "_refuse_machine_media(post)", '_pending_edit_or_raise("post"')),
         ("bulk_update_posts_endpoint", ("_agent_scoped()",)),
-        ("update_scheduled_dm_endpoint", ('_pending_edit_or_raise("scheduled_dm"',
-                                          "_require_linkedin_profile_url(")),
+        ("update_scheduled_dm_endpoint", ('_pending_edit_or_raise("scheduled_dm"', _URL)),
+        ("delete_scheduled_dm_endpoint", ('_pending_edit_or_raise("scheduled_dm"',)),
         ("update_catchup_touch_endpoint", ('_pending_edit_or_raise("catchup_touch"',)),
+        ("delete_catchup_touch_endpoint", ('_pending_edit_or_raise("catchup_touch"',)),
         ("update_connection_request_endpoint", ('_pending_edit_or_raise("connection_request"',
-                                                "_require_linkedin_profile_url(")),
+                                                "attach_email_to_connection_request(", _URL)),
+        ("delete_connection_request_endpoint", ('_pending_edit_or_raise("connection_request"',)),
         ("update_lead_signal_endpoint", ('_pending_edit_or_raise("lead_signal"',)),
-        ("schedule_dm_endpoint", ("_require_linkedin_profile_url(",)),
-        ("create_connection_request_endpoint", ("_require_linkedin_profile_url(",)),
+        ("schedule_dm_endpoint", (_URL,)),
+        ("create_connection_request_endpoint", (_URL,)),
     ])
     def test_the_handler_still_carries_its_guard(self, handler: str, guards: tuple) -> None:
         import inspect
@@ -606,11 +741,14 @@ class TestTheGuardsStayInTheHandlers:
 
         assert '_pending_edit_or_raise("outreach_target"' in inspect.getsource(
             outreach.update_outreach_target_endpoint)
-        assert "_require_linkedin_profile_url(" in inspect.getsource(
-            outreach.create_outreach_target_endpoint)
+        assert '_pending_edit_or_raise("outreach_target"' in inspect.getsource(
+            outreach.delete_outreach_target_endpoint)
+        create = inspect.getsource(outreach.create_outreach_target_endpoint)
+        assert create.index(self._URL) < create.index("get_outreach_target_by_url(")
         assert "_edits_pending_only()" in inspect.getsource(curated.act_on_curated_source)
+        assert "reject_pending_curated_source(" in inspect.getsource(curated._queue_only_reject)
 
-    def test_the_held_test_seats_are_exactly_the_non_exempt_queue_only_ones(self) -> None:
+    def test_the_held_seats_are_exactly_the_non_exempt_queue_only_ones(self) -> None:
         main = _kernel()
         for scope, kind, held in (("agent", "internal", True), ("operator", "standard", True),
                                   ("operator", "internal", False), ("full", "standard", False),
@@ -627,19 +765,53 @@ class TestTheGuardsStayInTheHandlers:
         main = _kernel()
         reset = main._request_session_scope.set(main.SESSION_SCOPE_AGENT)
         try:
-            main._require_linkedin_profile_url(None)
+            assert main._linkedin_profile_url_for_seat(None) is None
         finally:
             main._request_session_scope.reset(reset)
 
-    def test_the_text_only_draft_drops_every_media_field(self) -> None:
+    def test_a_plain_text_body_passes_the_media_check(self) -> None:
+        main = _kernel()
+        main._refuse_machine_media(main.PostRequest(content="c",
+                                                    scheduled_datetime=datetime(2099, 1, 1)))
+
+    def test_every_media_field_is_named_in_one_refusal(self) -> None:
+        from fastapi import HTTPException
+
         main = _kernel()
         post = main.PostRequest(content="c", scheduled_datetime=datetime(2099, 1, 1),
-                                post_type="video", video_url="v", use_avatar=True,
-                                video_quality="premium", image_url="i", carousel_slides=["s"],
-                                status="approved")
-        draft = main._text_only_draft(post)
-        assert (draft.post_type, draft.status, draft.video_url, draft.use_avatar,
-                draft.video_quality, draft.image_url, draft.carousel_slides) == (
-            main.PostType.TEXT, main.PostStatus.PENDING, None, None, "standard", None, None)
-        assert post.post_type == main.PostType.VIDEO, "the caller's body is not mutated"
+                                post_type="video", video_url="v", use_avatar=False,
+                                video_quality="premium", image_url="i", carousel_slides=["s"])
+        with pytest.raises(HTTPException) as exc:
+            main._refuse_machine_media(post)
+        assert exc.value.status_code == 422
+        assert exc.value.detail["fields"] == ["post_type", "video_url", "carousel_slides",
+                                              "image_url", "use_avatar", "video_quality"]
 
+
+
+class TestEveryAgentWriteIsClassified:
+    """`docs/identity-and-sessions.md` names every write the agent surface reaches; this holds it.
+
+    A new reachable write route fails here until someone says whether it is a pending-only edit, a
+    create, or a reviewed exception like `PUT /lead`.
+    """
+
+    PENDING_ONLY = frozenset({
+        ("PUT", "/connection_request"), ("DELETE", "/connection_request"),
+        ("PUT", "/lead_signal"), ("PUT", "/curated/source"),
+        ("PUT", "/outreach/target"), ("DELETE", "/outreach/target"),
+    })
+    CREATES = frozenset({("POST", "/schedule_dm"), ("POST", "/connection_request"),
+                         ("POST", "/outreach/target"), ("POST", "/curated/source")})
+    EXCEPTIONS = frozenset({("PUT", "/lead"), ("PUT", "/user/engagement-preferences")})
+
+    def test_the_agent_reaches_exactly_the_classified_writes(self) -> None:
+        main = _kernel()
+        reached = set()
+        for route in main._walk_routes(main.app.routes):
+            path = main._scope_path(getattr(route, "path", None) or "")
+            for method in getattr(route, "methods", None) or ():
+                if method not in ("GET", "HEAD", "OPTIONS") and \
+                        main._scope_allows(main.SESSION_SCOPE_AGENT, path, method):
+                    reached.add((method, path))
+        assert reached == self.PENDING_ONLY | self.CREATES | self.EXCEPTIONS

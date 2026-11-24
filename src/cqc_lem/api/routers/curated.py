@@ -33,6 +33,7 @@ from cqc_lem.utilities.db import (
     get_curated_source,
     get_curated_sources,
     get_post_curated_context,
+    reject_pending_curated_source,
     update_curated_source_status,
     update_db_post_status,
     user_approver,
@@ -182,15 +183,12 @@ def _queue_only_reject(source: dict, post_id: Optional[int], user_id: int
     """A queue-only seat's reject: only a source, and a draft post, no human has acted on yet.
 
     Approve never reaches here (`_refuse_agent_approval` refused it). The human's reject also
-    withdraws an APPROVED post; this one may not (issue #2684), so both writes are pending-only in
-    SQL and either one that finds the row already decided is a 409.
+    withdraws an APPROVED post; this one may not (issue #2684). Both rows are checked, then both
+    written, in ONE transaction, so a decided row on either side is a 409 that writes nothing.
     """
-    if post_id:
-        _main._pending_edit_or_raise("post", post_id, user_id, {
-            "status": PostStatus.REJECTED, "rejection_reason": "curated source rejected",
-        }, "Could not reject the curated post")
-    _main._pending_edit_or_raise("curated_source", source["id"], user_id,
-                                 {"status": STATUS_REJECTED}, "Could not reject the curated source")
+    _main._raise_unless_updated(
+        reject_pending_curated_source(source["id"], post_id, user_id, "curated source rejected"),
+        "Could not reject the curated source")
     return ResponseModel(status_code=200, detail={"source_id": source["id"], "post_id": post_id,
                                                   "status": "rejected"})
 
