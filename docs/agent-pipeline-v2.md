@@ -101,6 +101,29 @@ charged. What is removable is unchanged — `release_worktree` still refuses a d
 branch and anything outside `work/`. Log lines: `worktree sweep: …` in `logs/v2-actions-*.log`.
 `tests/unit/test_agent_pipeline_v2_worktree_sweep.py` pins the wiring end to end.
 
+**A phased issue's next phase starts from main, not its merged branch.** Every phase of an issue
+reuses `feature/claude-issue-<N>`. After Phase K's PR squash-merged, origin still held Phase K's
+original commits, so `add_worktree` attached to them and the Phase K+1 PR re-added every Phase K
+file (migration-version collisions, conflicts, merge-queue ejections; hand-repaired in #2693, #2694
+and #2706). `restart_spent_branch` (`lib/guards.sh`) runs whenever `add_worktree` attaches an
+existing `origin/<branch>`, and acts on `branch_reuse_plan`:
+
+| `origin/<branch>` | Worktree |
+|---|---|
+| an OPEN PR heads it | attach, as before (a fix/review/rebase lane works that head) |
+| PR list unreadable | attach |
+| every commit patch-equivalent on main (`git cherry` has no `+`) | **fresh** from `origin/main` |
+| a MERGED PR's head IS the tip (the multi-commit squash, which `git cherry` cannot see) | **fresh** |
+| a MERGED PR's head is an ancestor of the tip | **replay** only the commits after it (`rebase --onto origin/main <merged head>`). If one does not apply cleanly: attach, plus a WARNING naming the `<merged head>..<tip>` range |
+| any other unique commit | attach, no data loss |
+
+A fresh or replayed branch is pushed by the RUNNER, not the agent, with
+`--force-with-lease=refs/heads/<branch>:<old tip>`. So `git_push.sh` keeps its rule that only
+MODE=rebase may lease, and the agent's later push is a plain fast-forward. If origin moved after
+the fetch, the lease refuses the push and the worktree goes back to the old tip, logged as a
+WARNING. No `decide()` row changes: this is worktree preparation, after dispatch.
+`tests/unit/test_agent_pipeline_spent_branch.py` runs every row against a real bare remote.
+
 **Orphaned lane processes are swept too** (`v2/lemd/orphans.py`). `killpg` reaches a lane's process
 group only, and a lane's tools start commands in NEW sessions (an agent's shell tool) or groups
 (`timeout`). Lane tool processes started that way (a `pytest -n 8` and its workers, a `timeout … graft

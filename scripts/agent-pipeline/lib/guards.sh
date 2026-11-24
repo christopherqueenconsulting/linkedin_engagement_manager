@@ -522,6 +522,98 @@ seed_graft() {  # $1=worktree path -> always 0
   return 0
 }
 
+# --- A phased issue's next phase starts from main, not from its merged branch -------------------
+# Phased issues reuse ONE branch, `feature/claude-issue-<N>`, for every phase. Once Phase K's PR
+# squash-merges, origin/<branch> still holds Phase K's ORIGINAL commits, and a squash is a new
+# commit, so git cannot tell they landed (`origin/main..origin/<branch>` stays non-empty). The next
+# `start` attached to that branch, built Phase K+1 on top, and opened a PR that re-added every Phase
+# K file: migration-version collisions, conflicts, merge-queue ejections. Three hand repairs in one
+# day (#2693, #2694, #2706).
+#
+# The rule: a branch is SPENT when nothing on it is outside main. That is proven one of two ways,
+# and anything short of proof keeps the old behaviour, which is to attach and lose nothing:
+#   - every commit has a patch-equivalent on main (`git cherry` prints no `+`), or
+#   - a MERGED PR's head is the branch tip (GitHub saw exactly these commits land).
+# A merged PR's head that is an ANCESTOR of the tip means commits were pushed after the merge. Those
+# are real new work: they are replayed onto main (`rebase --onto main <merged head>`), and a replay
+# that does not apply cleanly attaches as before, with a WARNING naming the range.
+# An OPEN PR on the branch always attaches — it is the live artefact a fix/review/rebase lane works.
+
+branch_pr_heads() {  # $1=branch -> "<STATE> <headRefOid>" per PR headed by $1; rc!=0 = unreadable
+  gh pr list --repo "$SLUG" --head "$1" --state all --limit 100 \
+    --json state,headRefOid --jq '.[] | "\(.state) \(.headRefOid)"' 2>/dev/null
+}
+
+branch_reuse_plan() {  # $1=branch $2=base $3=branch_pr_heads output $4=1 if unreadable -> one line
+  # Pure over git state + the PR list it is handed: prints `fresh <why>`, `replay <merged-head>` or
+  # `attach <why>`. Every unreadable answer is `attach`, today's behaviour.
+  local branch="$1" base="$2" prs="$3" unreadable="${4:-0}" tip cherry state oid best="" best_n="" n
+  tip="$(git -C "$REPO" rev-parse --verify --quiet "refs/remotes/origin/$branch^{commit}")" \
+    || { echo "attach no-origin-branch"; return 0; }
+  [ "$unreadable" = "1" ] && { echo "attach pr-list-unreadable"; return 0; }
+  printf '%s\n' "$prs" | grep -q '^OPEN ' && { echo "attach open-pr"; return 0; }
+  cherry="$(git -C "$REPO" cherry "$base" "$tip" 2>/dev/null)" || { echo "attach cherry-unreadable"; return 0; }
+  printf '%s\n' "$cherry" | grep -q '^+' || { echo "fresh every-commit-on-$base"; return 0; }
+  # The merged head closest to the tip: the fewest commits after it.
+  while read -r state oid; do
+    [ "$state" = "MERGED" ] || continue
+    [[ "$oid" =~ ^[0-9a-f]{40,64}$ ]] || continue
+    git -C "$REPO" merge-base --is-ancestor "$oid" "$tip" 2>/dev/null || continue
+    n="$(git -C "$REPO" rev-list --count "$oid..$tip" 2>/dev/null)" || continue
+    if [ -z "$best_n" ] || [ "$n" -lt "$best_n" ]; then best="$oid"; best_n="$n"; fi
+  done <<< "$prs"
+  [ -n "$best" ] || { echo "attach unmerged-commits"; return 0; }
+  [ "$best_n" -eq 0 ] && { echo "fresh merged-pr-head-is-tip"; return 0; }
+  # Commits after the merge: replay only if main does not already carry them all.
+  cherry="$(git -C "$REPO" cherry "$base" "$tip" "$best" 2>/dev/null)" || { echo "attach cherry-unreadable"; return 0; }
+  printf '%s\n' "$cherry" | grep -q '^+' || { echo "fresh post-merge-commits-on-$base"; return 0; }
+  echo "replay $best"
+}
+
+restart_spent_branch() {  # $1=worktree (on origin/$2) $2=branch $3=base -> always 0, no stdout
+  # Acts on branch_reuse_plan. A restart is pushed HERE, by the runner, with a lease pinned to the
+  # tip it replaces, so the agent's git_push.sh then fast-forwards as usual and keeps its rule that
+  # only MODE=rebase may lease. A refused push puts the worktree back on the old tip — attach.
+  local wt="$1" branch="$2" base="$3" prs unreadable=0 plan verdict detail old new
+  old="$(git -C "$wt" rev-parse --verify --quiet HEAD 2>/dev/null)" || return 0
+  prs="$(branch_pr_heads "$branch")" || unreadable=1
+  plan="$(branch_reuse_plan "$branch" "$base" "$prs" "$unreadable")"
+  verdict="${plan%% *}"; detail="${plan#* }"
+  case "$verdict" in
+    fresh)
+      if ! git -C "$wt" checkout -q -B "$branch" "$base" >/dev/null 2>&1; then
+        git -C "$wt" checkout -q -B "$branch" "$old" >/dev/null 2>&1
+        log "add_worktree: WARNING $branch is spent ($detail) but could not be reset to $base; attached at $old." >&2
+        return 0
+      fi ;;
+    replay)
+      if ! git -C "$wt" rebase -q --onto "$base" "$detail" "$branch" >/dev/null 2>&1; then
+        git -C "$wt" rebase --abort >/dev/null 2>&1
+        git -C "$wt" checkout -q -B "$branch" "$old" >/dev/null 2>&1
+        log "add_worktree: WARNING $branch — its PR merged at $detail, and the commits pushed" \
+            "after it ($detail..$old) do not replay cleanly onto $base. Attached at $old as before," \
+            "so the next PR re-carries the merged phase's commits; rebase $detail..$old onto" \
+            "$base by hand." >&2
+        return 0
+      fi ;;
+    *)
+      [ "$detail" = "no-origin-branch" ] || log "add_worktree: attaching origin/$branch ($detail)." >&2
+      return 0 ;;
+  esac
+  new="$(git -C "$wt" rev-parse --verify --quiet HEAD 2>/dev/null)"
+  if git -C "$wt" push -q --force-with-lease="refs/heads/$branch:$old" -u origin \
+       "refs/heads/$branch:refs/heads/$branch" >/dev/null 2>&1; then
+    log "add_worktree: $branch was spent ($plan) — restarted from $base;" \
+        "origin/$branch $old -> $new (lease on $old)." >&2
+  else
+    git -C "$wt" checkout -q -B "$branch" "$old" >/dev/null 2>&1
+    git -C "$wt" branch -q --set-upstream-to="origin/$branch" "$branch" >/dev/null 2>&1
+    log "add_worktree: WARNING $branch is spent ($plan) but the leased push over $old was" \
+        "refused (origin moved, or unreachable); attached at $old as before." >&2
+  fi
+  return 0
+}
+
 add_worktree() {  # $1=branch  $2=base(ref)  -> path on stdout
   local branch="$1" base="$2" wt="$WORKROOT/$1"
   git -C "$REPO" worktree remove --force "$wt" >/dev/null 2>&1 || true
@@ -530,6 +622,9 @@ add_worktree() {  # $1=branch  $2=base(ref)  -> path on stdout
   if git -C "$REPO" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
     git -C "$REPO" worktree add "$wt" "origin/$branch" >/dev/null 2>&1
     git -C "$wt" checkout -B "$branch" "origin/$branch" >/dev/null 2>&1
+    # A phased issue's merged branch is SPENT: restart it from $base rather than build the next
+    # phase on commits main already carries. Never discards work — see restart_spent_branch.
+    [ -d "$wt" ] && restart_spent_branch "$wt" "$branch" "$base"
   else
     # Origin ref missing, so there are three cases and only one of them wants `-b`.
     if git -C "$REPO" show-ref --verify --quiet "refs/heads/$branch"; then
