@@ -97,7 +97,6 @@ from cqc_lem.utilities.db import (
     get_comment_outcome_backfill_targets,
     get_comment_outcome_targets,
     get_engagement_preferences,
-    get_latest_post_stats,
     get_lead_magnet_settings,
     get_linkedin_profile_url_by_user_id,
     get_post_archetype,
@@ -462,9 +461,7 @@ def _swap_post_stats_session(user_id: int, old_driver) -> Tuple[Optional[object]
 
 
 def _scrape_one_post_stats(driver: WebDriver, user_id: int, pid: int, url: str,
-                           post_types: dict[int, Any], shipped_variants: dict[int, Any],
-                           api_access_token: Optional[str] = None,
-                           api_state: Optional[dict[str, Any]] = None) -> bool:
+                           post_types: dict[int, Any], shipped_variants: dict[int, Any]) -> bool:
     """Read one post's detail + analytics pages and record its stats. True when a row was written.
 
     A crashed tab raises out of here (from either navigation) so the sweep can reopen the session
@@ -483,16 +480,6 @@ def _scrape_one_post_stats(driver: WebDriver, user_id: int, pid: int, url: str,
     # the analytics view doesn't render can't zero out one the detail page did.
     for key, val in _post_analytics_counts(driver, url).items():
         counts[key] = max(counts.get(key) or 0, val)
-    api_counts = {}
-    if api_access_token and not (api_state or {}).get("disabled", False):
-        api_counts, api_failure = fetch_member_post_analytics(
-            url, api_access_token, LI_API_VERSION)
-        for key, val in api_counts.items():
-            counts[key] = max(counts.get(key) or 0, val)
-        if api_failure:
-            log_member_post_analytics_failure(api_failure, user_id, pid)
-            if api_state is not None:
-                api_state["disabled"] = True
     # WHICH signals the two pages put a number against, as opposed to what those numbers
     # were (issue #2023). `_post_social_counts` flattens a label it never found to 0, which
     # is right for scoring and wrong for a stored reading: "the analytics page rendered no
@@ -501,8 +488,7 @@ def _scrape_one_post_stats(driver: WebDriver, user_id: int, pid: int, url: str,
     # text is readable here without navigating again — the same thing the zero-walk
     # cross-check below already relies on.
     seen = (_rendered_signal_labels(detail_text)
-            | _rendered_signal_labels(_main_text(driver))
-            | set(api_counts))
+            | _rendered_signal_labels(_main_text(driver)))
     # NOTHING parsed (a readable page always yields the full zero-filled dict) means the page
     # never rendered — auth wall, 429, dead permalink — not that the post earned nothing.
     # Recording those zeros publishes a fabricated row to the analytics panel, and for a
@@ -516,7 +502,7 @@ def _scrape_one_post_stats(driver: WebDriver, user_id: int, pid: int, url: str,
     # layout score identically. Ask the page — the analytics view is the one on screen now,
     # so both texts are cross-checked — and leave a drifted read uncaptured for the same
     # reason an unreadable one is left: a written zero is permanent for a backfilled post.
-    if not any(counts.values()) and not api_counts:
+    if not any(counts.values()):
         texts = [text for text in (detail_text, _main_text(driver)) if text is not None]
         native = sum(_rendered_count_signals(text) for text in texts) if texts else None
         if _grade_zero_walk(native, "Post social-count parse", user_id=user_id,
@@ -548,7 +534,6 @@ def _record_member_api_post_stats(user_id: int, post_id: int, post_url: str,
                                   post_types: dict[int, Any], shipped_variants: dict[int, Any],
                                   api_counts: dict[str, Optional[int]]) -> bool:
     """Persist complete API totals; reject partial reads because missing is not zero."""
-    previous = get_latest_post_stats(user_id, post_id) or {}
     counts = {}
     # API totals must be complete before one snapshot is written; Selenium reads visible card
     # values and preserves absent metrics as NULL, so its capture path has different semantics.
@@ -556,23 +541,16 @@ def _record_member_api_post_stats(user_id: int, post_id: int, post_url: str,
         current = api_counts.get(name)
         if current is None:
             return False
-        prior = previous.get(name)
-        counts[name] = max(current, prior if isinstance(prior, int) else 0)
+        counts[name] = current
 
     # This helper reads the saved post comments from MySQL; it never opens Selenium.
     own_comments = own_comment_count_or_none(user_id, post_url)
-    recorded = record_post_stats(
+    # Its own `source='api'` row, never merged with a scraped one and never sent to PostHog (#2702,
+    # LinkedIn's API terms).
+    return record_post_stats(
         user_id, post_id, counts["reactions"], counts["comments"],
         reposts=counts["reposts"], impressions=counts["impressions"],
-        saves=counts["saves"], own_comments=own_comments)
-    if not recorded:
-        return False
-    track_post_outcome(
-        post_id=post_id, reactions=counts["reactions"], comments=counts["comments"],
-        reposts=counts["reposts"], impressions=counts["impressions"] or None,
-        saves=counts["saves"], own_comments=own_comments, user_id=user_id,
-        post_type=post_types.get(post_id), variant_key=shipped_variants.get(post_id))
-    return True
+        saves=counts["saves"], own_comments=own_comments, source="api")
 
 
 def _post_stats_capture_summary(total_captured: int, api_captured: int) -> str:
@@ -613,7 +591,6 @@ def auto_scrape_post_stats(self, user_id: int) -> str:
     # (issue #1513), so reach and saves are readable per format instead of pooled.
     post_types = get_post_types_for_user(user_id)
     api_access_token = None
-    api_state = {"disabled": False}
     api_max_posts = 0
     api_posts_attempted = 0
     api_captured = 0
@@ -639,7 +616,6 @@ def auto_scrape_post_stats(self, user_id: int) -> str:
             api_metrics_read += len(api_counts)
             if api_failure:
                 log_member_post_analytics_failure(api_failure, user_id, pid)
-                api_state["disabled"] = True
                 api_failures += 1
                 break
             if _record_member_api_post_stats(
@@ -709,13 +685,8 @@ def auto_scrape_post_stats(self, user_id: int) -> str:
                                        f"not be reopened")
                 read_on_session = 0
             try:
-                post_api_token = (api_access_token if api_access_token
-                                  and api_posts_attempted < api_max_posts else None)
-                if post_api_token:
-                    api_posts_attempted += 1
                 recorded = _scrape_one_post_stats(
-                    driver, user_id, pid, url, post_types, shipped_variants,
-                    api_access_token=post_api_token, api_state=api_state)
+                    driver, user_id, pid, url, post_types, shipped_variants)
             except Exception as e:
                 if is_proxy_tunnel_failure(e):
                     log_warning(f"Post stats scrape ended after {scraped} of {len(post_ids)} post(s) — "

@@ -167,7 +167,7 @@ class TestPostStats:
             from cqc_lem.utilities.db import record_post_stats
             assert record_post_stats(1, 9, None, None, reposts=None, impressions=120, saves=None) is True
         params = cur.execute.call_args[0][1]  # last execute = the INSERT
-        assert params == (1, 9, 0, 0, None, 0, 120, None, None, None, None, None, None)
+        assert params == (1, 9, 0, 0, None, 0, 120, None, None, None, None, None, None, "scrape")
 
     def test_record_post_stats_snapshots_post_attribution(self, fake_cursor):
         # The post's shape/topic is snapshotted onto the stat row at capture time (#386).
@@ -183,7 +183,7 @@ class TestPostStats:
         # own_comments sits directly after comments: the two are read together and a query that
         # wants third-party engagement needs both.
         assert insert_params == (1, 9, 10, 3, 2, 1, 200, 6,
-                                 "tactical_list", "bold_claim", "text", "AI hiring", "awareness")
+                                 "tactical_list", "bold_claim", "text", "AI hiring", "awareness", "scrape")
 
     def test_get_post_engagement_rows_none_coerced(self, fake_cursor):
         conn, cur = fake_cursor(fetch_all=None)

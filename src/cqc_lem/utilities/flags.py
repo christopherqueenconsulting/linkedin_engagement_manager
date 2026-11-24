@@ -88,9 +88,20 @@ COMMENT_CANDIDATE_CRAWL = "comment-candidate-crawl-enabled"
 IMPACT_REPORT = "impact-report-enabled"
 MCP_SERVER = "mcp-server-enabled"
 MCP_SERVER_WRITES = "mcp-server-writes"
+COMMENT_RAMP = "comment-ramp-enabled"
 
 FLAGS: Dict[str, FlagSpec] = {
     spec.key: spec for spec in (
+        FlagSpec(
+            key=COMMENT_RAMP,
+            env_var="COMMENT_RAMP_ENABLED",
+            default=False,
+            owner="engagement",
+            description=("The comment-volume ramp state machine, 20 -> 40 -> 70 -> 100 a day "
+                         "(issue #2647, Phase 5). Steps up only on healthy reply rate, no demotion "
+                         "hold, no 429 in 7 days and an ok tripwire; steps down on a breach. "
+                         "Lifts the brand's comment ceiling. OFF by default."),
+        ),
         FlagSpec(
             key=COMMENT_CANDIDATE_CRAWL,
             env_var="COMMENT_CANDIDATE_CRAWL_ENABLED",
