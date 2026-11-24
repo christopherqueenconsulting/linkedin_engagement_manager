@@ -1868,6 +1868,20 @@ def health_check_deep():
     except Exception as e:
         log_warning("Deep health check could not measure the LinkedIn session", exc=e)
 
+    # Egress streak (#2620): since when, how many sessions and which failure kind, for streaks that
+    # already escalated. Redis down reads null; no outage reads 0 sessions. Words and counts only.
+    streak: dict = {"egress_down_since": None, "egress_failures": None,
+                    "egress_failure_kind": None}
+    try:
+        from cqc_lem.utilities.linkedin.rate_limit import egress_streak_summary
+        summary = egress_streak_summary()
+        if summary is not None:
+            streak = {"egress_down_since": summary["down_since"],
+                      "egress_failures": summary["failures"],
+                      "egress_failure_kind": summary["kind"]}
+    except Exception as e:
+        log_warning("Deep health check could not read the egress streak", exc=e)
+
     # `lanes` is computed but NOT returned (issue #1020): this endpoint is unauthenticated by
     # design — an external dead-man's switch cannot carry a credential — and the per-worker map was
     # the one field with disclosure value, naming container IDs and the internal queue topology.
@@ -1878,7 +1892,7 @@ def health_check_deep():
     # insertion order, so dropping the last key leaves the literal `"status":"healthy"` that
     # docs/stack-watchdog.md pins as a monitor contract byte-identical.
     return {"status": status, "workers": len(lanes), "consuming": consuming,
-            "maintenance": maintenance, **egress, **session}
+            "maintenance": maintenance, **egress, **session, **streak}
 
 
 @router.get("/app-info")
