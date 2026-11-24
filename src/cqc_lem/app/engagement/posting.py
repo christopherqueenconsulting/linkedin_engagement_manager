@@ -814,11 +814,25 @@ def capture_follower_stats(self, user_id: int):
             candidate = getattr(my_profile, "profile_url", None)
             profile_url = str(candidate) if candidate else None
         counts = capture_audience_snapshot(driver, profile_url)
-        if not record_follower_stat(user_id, **counts):
+        from cqc_lem.utilities.linkedin.member_post_analytics import member_audience_counts
+        try:
+            api_counts = member_audience_counts(user_id)
+        except Exception as e:
+            log_debug("API audience counts unavailable; keeping scraped values",
+                      error_type=type(e).__name__, user_id=user_id,
+                      task_name="capture_follower_stats")
+            api_counts = {}
+        sources: dict = {}
+        for key, source_key in (("follower_count", "follower_source"),
+                                ("connection_count", "connection_source")):
+            if api_counts.get(key) is not None:
+                counts[key] = api_counts[key]
+                sources[source_key] = "api"
+        if not record_follower_stat(user_id, **counts, **sources):
             log_warning("No audience signal readable — snapshot skipped", user_id=user_id,
                         task_name="capture_follower_stats")
             return "No audience signals readable"
-        track_audience_snapshot(user_id=user_id, **counts)
+        track_audience_snapshot(user_id=user_id, **counts, **sources)
         log_info("Audience snapshot captured", user_id=user_id, task_name="capture_follower_stats")
         return (f"Followers: {counts['follower_count'] if counts['follower_count'] is not None else 'unknown'}; "
                 f"profile views: {counts['profile_views'] if counts['profile_views'] is not None else 'unknown'}")

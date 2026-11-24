@@ -207,7 +207,14 @@ class TestFollowerStatDb:
             assert record_follower_stat(1, follower_count=4312, connection_count=None,
                                         profile_views=48, search_appearances=None) is True
         assert "INSERT INTO follower_stats" in cur.execute.call_args[0][0]
-        assert cur.execute.call_args[0][1] == (1, 4312, None, 48, None)
+        assert cur.execute.call_args[0][1] == (1, 4312, None, 48, None, "scrape", "scrape")
+
+    def test_record_tags_api_sources(self, fake_cursor):
+        from cqc_lem.utilities.db import record_follower_stat
+        conn, cur = fake_cursor()
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            assert record_follower_stat(1, follower_count=9, follower_source="api") is True
+        assert cur.execute.call_args[0][1] == (1, 9, None, None, None, "api", "scrape")
 
     def test_all_null_snapshot_is_not_written(self, fake_cursor):
         from cqc_lem.utilities.db import record_follower_stat
