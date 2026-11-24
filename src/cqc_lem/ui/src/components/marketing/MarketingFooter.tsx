@@ -21,7 +21,7 @@ export default function MarketingFooter() {
               width={1340}
               height={300}
               className="-ml-[5px] h-8 w-auto"
-              loading="lazy"
+              decoding="async"
             />
             <p className="mt-4 text-sm leading-relaxed text-fg-muted">
               LinkedIn posts in your voice, published only when you approve them, plus engagement

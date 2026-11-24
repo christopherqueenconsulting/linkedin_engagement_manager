@@ -35,7 +35,6 @@ export default function ApproachComparison() {
   return (
     <Section id="comparison" analyticsName="comparison" tone="tinted">
       <SectionHeading
-        eyebrow="Honest comparison"
         title="LEM, doing it yourself, or a general AI writer"
         lede="Doing it by hand works — it just costs an hour a day. A general writer solves the smaller half of the problem."
       />
@@ -71,7 +70,12 @@ export default function ApproachComparison() {
                 Capability
               </th>
               {COLUMNS.map((column) => (
-                <th key={column} scope="col" className="p-4 text-sm font-semibold text-fg">
+                <th
+                  key={column}
+                  scope="col"
+                  // LEM's column is the one the table argues for, so its header carries the accent.
+                  className={`p-4 text-sm font-semibold ${column === 'LEM' ? 'text-accent' : 'text-fg'}`}
+                >
                   {column}
                 </th>
               ))}

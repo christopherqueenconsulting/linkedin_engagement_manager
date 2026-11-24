@@ -93,7 +93,7 @@ function EngagementPane() {
           </span>
         </div>
         <p className="mt-1 text-xs text-fg-muted">How do you decide which ideas become a carousel?</p>
-        <div className="mt-3 rounded-lg border border-accent/30 bg-page p-3">
+        <div className="mt-3 rounded-lg border border-hairline bg-page p-3">
           <div className="flex items-center gap-2 text-xs font-semibold text-accent">
             <Icon name="chat" className="h-4 w-4" />
             Suggested comment, in your voice
@@ -121,7 +121,7 @@ function QueueRows() {
   )
 }
 
-export type PanelVariant = 'hero' | 'queue' | 'schedule' | 'engagement' | 'measure'
+export type PanelVariant = 'hero' | 'queue' | 'plan' | 'schedule' | 'engagement' | 'measure'
 
 export default function ProductPanel({ variant }: { variant: PanelVariant }) {
   if (variant === 'schedule') {
@@ -131,9 +131,7 @@ export default function ProductPanel({ variant }: { variant: PanelVariant }) {
           {['Mon', 'Tue', 'Wed', 'Thu', 'Fri'].map((day, index) => (
             <div key={day} className="rounded-lg border border-hairline p-2 text-center">
               <div className="text-xs font-semibold text-fg-muted">{day}</div>
-              <div
-                className={`mt-2 h-10 rounded ${index % 2 === 0 ? 'bg-accent/15' : 'bg-page'}`}
-              />
+              <div className={`mt-2 h-10 rounded ${index % 2 === 0 ? 'bg-accent' : 'bg-page'}`} />
             </div>
           ))}
         </div>
@@ -159,13 +157,62 @@ export default function ProductPanel({ variant }: { variant: PanelVariant }) {
           <div className="flex flex-col justify-between gap-3">
             <QueueRows />
           </div>
-          <div className="flex flex-col justify-between gap-3">
+          <div className="flex flex-col gap-3">
             <EngagementPane />
           </div>
         </div>
         <div className="flex items-center gap-2 rounded-lg bg-page px-3 py-2 text-xs text-fg">
           <Icon name="shield" className="h-4 w-4 text-accent" />
           Posts publish only after you approve them
+        </div>
+      </Panel>
+    )
+  }
+
+  // The content beat's own visual (design pass 2026-11-24): it used to repeat the hero's queue row
+  // for row. It draws the two facts the beat states, the buyer-journey stages and the 70/20/10
+  // value / authority / promo mix, as a sequence and a share bar. No count of posts is drawn.
+  if (variant === 'plan') {
+    return (
+      <Panel label="Diagram of a LEM 30-day plan: drafts placed across the awareness, consideration and decision stages, in a 70/20/10 value, authority and promo mix.">
+        <div className="text-xs font-semibold text-fg-muted">30-day plan, by buyer stage</div>
+        {/* A row from sm; on a phone the stages stack, so "Consideration" never truncates. */}
+        <div className="flex flex-col items-stretch gap-1 sm:flex-row sm:items-center sm:gap-2">
+          {['Awareness', 'Consideration', 'Decision'].flatMap((stage, index) => [
+            ...(index > 0
+              ? [
+                  <Icon
+                    key={`${stage}-arrow`}
+                    name="arrowRight"
+                    className="h-4 w-4 shrink-0 rotate-90 self-center text-fg-muted sm:rotate-0"
+                  />,
+                ]
+              : []),
+            <span
+              key={stage}
+              className="min-w-0 flex-1 rounded-lg border border-hairline px-2 py-2 text-center text-sm font-medium text-fg"
+            >
+              {stage}
+            </span>,
+          ])}
+        </div>
+        <div className="pt-2 text-xs font-semibold text-fg-muted">Content mix</div>
+        <div className="flex h-3 overflow-hidden rounded-full">
+          <span className="w-[70%] bg-accent" />
+          <span className="w-[20%] bg-fg-muted" />
+          <span className="w-[10%] bg-field" />
+        </div>
+        <div className="flex flex-wrap gap-x-5 gap-y-2 text-sm text-fg">
+          {[
+            ['bg-accent', 'Value 70%'],
+            ['bg-fg-muted', 'Authority 20%'],
+            ['bg-field', 'Promo 10%'],
+          ].map(([swatch, label]) => (
+            <span key={label} className="flex items-center gap-2">
+              <span className={`h-2.5 w-2.5 rounded-full ${swatch}`} />
+              {label}
+            </span>
+          ))}
         </div>
       </Panel>
     )

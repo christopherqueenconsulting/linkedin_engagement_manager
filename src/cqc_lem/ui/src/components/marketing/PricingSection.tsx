@@ -25,7 +25,6 @@ export default function PricingSection() {
   return (
     <Section id="pricing" analyticsName="pricing" tone="white">
       <SectionHeading
-        eyebrow="Pricing"
         title="Every plan runs the whole loop"
         lede={`Start with a ${TRIAL_DAYS}-day free trial on any plan. No credit card required.`}
       />

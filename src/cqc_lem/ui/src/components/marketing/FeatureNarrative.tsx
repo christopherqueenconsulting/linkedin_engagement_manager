@@ -27,7 +27,7 @@ const BEATS: {
       'A 70/20/10 value / authority / promo mix, so the feed is not a pitch',
       'A quality contract and slop lint that block the tells before you ever see the draft',
     ],
-    panel: 'queue',
+    panel: 'plan',
   },
   {
     key: 'scheduling',
@@ -70,7 +70,6 @@ export default function FeatureNarrative() {
   return (
     <Section id="features" analyticsName="features" tone="white">
       <SectionHeading
-        eyebrow="What it does"
         title="One loop: write, schedule, engage, measure"
         lede="Four beats, in the order they run."
       />

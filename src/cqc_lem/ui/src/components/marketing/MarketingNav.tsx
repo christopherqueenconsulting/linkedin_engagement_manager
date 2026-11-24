@@ -17,7 +17,7 @@ export default function MarketingNav() {
   return (
     <nav
       aria-label="Main"
-      className="sticky top-0 z-20 border-b border-hairline bg-raised/95 backdrop-blur"
+      className="sticky top-0 z-20 border-b border-hairline bg-raised"
     >
       <div className="box-content max-w-6xl mx-auto px-4 h-16 flex items-center gap-4">
         <Link to="/" className="flex items-center shrink-0" aria-label="LinkedIn Engagement Manager — home">
@@ -39,7 +39,10 @@ export default function MarketingNav() {
           </picture>
         </Link>
 
-        <div className="hidden md:flex items-center gap-6 ml-4">
+        {/* Inline links from lg (design pass 2026-11-24): at 768px five links, Log in and the trial
+            button did not fit one row and "How it works" wrapped to three lines. Below lg the
+            menu button and sheet carry them. */}
+        <div className="hidden lg:flex items-center gap-6 ml-4">
           {NAV_ANCHORS.map(({ href, label }) => (
             <NavAnchor
               key={href}
@@ -68,6 +71,7 @@ export default function MarketingNav() {
               section="nav"
               cta="nav_trial"
               label="Start free trial from the top navigation"
+              variant="ghost"
               onClick={openLoginModal}
               className="px-4 py-2 text-sm"
             >
@@ -80,7 +84,7 @@ export default function MarketingNav() {
             aria-controls="marketing-nav-sheet"
             aria-label={menuOpen ? 'Close the navigation menu' : 'Open the navigation menu'}
             onClick={() => setMenuOpen((open) => !open)}
-            className="md:hidden inline-flex items-center justify-center h-11 w-11 rounded-lg text-fg hover:bg-page focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            className="lg:hidden inline-flex items-center justify-center h-11 w-11 rounded-lg text-fg hover:bg-page focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
           >
             <Icon name={menuOpen ? 'close' : 'menu'} className="h-6 w-6" />
           </button>
@@ -88,7 +92,7 @@ export default function MarketingNav() {
       </div>
 
       {menuOpen && (
-        <div id="marketing-nav-sheet" className="md:hidden border-t border-hairline bg-raised px-4 py-3">
+        <div id="marketing-nav-sheet" className="lg:hidden border-t border-hairline bg-raised px-4 py-3">
           <ul className="flex flex-col">
             {NAV_ANCHORS.map(({ href, label }) => (
               <li key={href}>

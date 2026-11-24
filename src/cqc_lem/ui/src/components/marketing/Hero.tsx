@@ -18,14 +18,13 @@ export default function Hero() {
           titles, so the panel column asked for 498px on a 375px phone and took the page with it. */}
       <div className="grid items-start gap-12 lg:grid-cols-12 lg:items-stretch">
         <div className="min-w-0 lg:col-span-5">
-          <h1 className="text-hero font-semibold text-fg">
-            Your LinkedIn content, written in your voice — published only when you approve it
+          <h1 className="text-section-lg font-semibold text-balance text-fg sm:text-hero">
+            Your LinkedIn content, written in your voice&nbsp;— published only when you approve it
           </h1>
           <p className="mt-6 max-w-measure text-lg leading-relaxed text-fg-muted">
-            LEM writes and schedules a month of posts in your voice and publishes each one through
-            LinkedIn&apos;s API only after you approve it. It also suggests comments, replies and
-            follow-ups, which you review and send yourself. You connect with LinkedIn sign-in, and
-            LEM never asks for your LinkedIn password.
+            LEM writes and schedules a month of posts in your voice and publishes each one only after
+            you approve it. It also suggests comments, replies and follow-ups, which you review and
+            send yourself. LEM never asks for your LinkedIn password.
           </p>
           <div className="mt-8 flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:gap-6">
             <CtaButton

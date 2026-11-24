@@ -26,7 +26,6 @@ export default function ProblemSection() {
   return (
     <Section id="problem" analyticsName="problem" tone="white">
       <SectionHeading
-        eyebrow="The problem"
         title="Showing up on LinkedIn is a daily job nobody has time for"
         lede="Not a content problem or an engagement problem — the same problem, twice a day, every weekday."
       />
