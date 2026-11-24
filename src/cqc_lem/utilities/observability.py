@@ -390,6 +390,10 @@ EVENTS = {spec.event: spec for spec in (
         # row from the demotion denominator. A bool() here would invent a confirmed reading.
         prop("visible_most_relevant"), flag("our_reply_sent"),
     )),
+    # Daily tripwire (#2663): the follow-up sweep saw replies on posts whose latest v2 outcome reads 0.
+    EventSpec("outcome_reader_disagreement", (
+        prop("user_id"), label("status"), count("disagreeing_posts"), count("followup_posts"),
+    )),
     EventSpec("comment_quality", (
         prop("user_id"), prop("days"), prop("sample_size"), prop("checked"), prop("skipped"),
         prop("author_reply_rate"), prop("reply_rate"), prop("like_rate"), prop("demotion_rate"),
@@ -1575,6 +1579,18 @@ def track_comment_outcome(
     """
     _emit(EVENTS["comment_outcome"], {**dict(outcome or {}), "user_id": user_id, "log_id": log_id},
           {**experiment_props(user_id, keys=(COMMENT_CONTRACT_PROMPT,)), **extra})
+
+
+def track_outcome_reader_disagreement(user_id: Optional[int], disagreeing_posts: int,
+                                      followup_posts: int) -> None:
+    """Emit one `outcome_reader_disagreement` reading (#2663).
+
+    The follow-up sweep saw a reply on these posts but the latest v2 comment outcome says none.
+    Emitted only when there is a disagreement.
+    """
+    _emit(EVENTS["outcome_reader_disagreement"],
+          {"user_id": user_id, "status": "disagreement", "disagreeing_posts": disagreeing_posts,
+           "followup_posts": followup_posts}, {})
 
 
 # A DOM sample is evidence, not a metric: enough rows to recognise a shape, capped so one rotated

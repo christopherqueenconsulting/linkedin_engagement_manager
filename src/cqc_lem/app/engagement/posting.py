@@ -94,6 +94,7 @@ from cqc_lem.utilities.db import (
     count_scheduled_dms_created_today,
     get_carousel_slides,
     get_comment_followup,
+    get_comment_outcome_backfill_targets,
     get_comment_outcome_targets,
     get_engagement_preferences,
     get_latest_post_stats,
@@ -110,6 +111,7 @@ from cqc_lem.utilities.db import (
     get_post_url_from_log_for_user,
     get_post_user_id,
     get_post_video_url,
+    get_reader_disagreements,
     get_recent_commented_rows_with_text,
     get_recent_navigable_commented_posts,
     get_recent_posted_post_ids,
@@ -225,6 +227,7 @@ from cqc_lem.utilities.observability import (
     llm_attribution,
     track_audience_snapshot,
     track_comment_outcome,
+    track_outcome_reader_disagreement,
     track_post_outcome,
     track_selector_evidence,
 )
@@ -252,6 +255,7 @@ __all__ = [
     "reconcile_recent_comment_urns",
     "sweep_comment_followups",
     "sweep_comment_outcomes",
+    "check_outcome_reader_disagreement",
     "sweep_reply_comments",
     "update_stale_profile",
     # The reply amplifier's vocabulary. Nothing INSIDE this module reads these three — they are the
@@ -2420,6 +2424,10 @@ def _read_comment_outcome(driver, wait, user_id: int, post_url: str, our_slug: s
     outcome = {"status": "checked", "skip_reason": None, "author_replied": False,
                "reply_count": 0, "like_count": 0, "visible_most_relevant": None,
                "our_reply_sent": False}
+    # Stamped up front so a SKIPPED v2 attempt is a v2 row, not an unread v1 one the backfill would
+    # select again forever (#2663).
+    if comment_outcome_reader_v2():
+        outcome["reader_version"] = 2
     driver.get(post_url)
     time.sleep(random.uniform(2.5, 4))
     _load_comment_thread(driver)
@@ -2506,6 +2514,24 @@ def sweep_comment_outcomes(self, user_id: int):
     return _run_comment_outcomes_sweep(user_id)
 
 
+def check_outcome_reader_disagreement(user_id: int) -> int:
+    """Daily tripwire (#2663): the follow-up sweep saw replies on a post whose latest v2 outcome says 0.
+
+    DB-only, no browser. A no-op while `COMMENT_OUTCOME_READER_V2` is off (v1 zeros are unscored).
+    Logs ONE warning per user and emits `outcome_reader_disagreement`; returns the disagreement count.
+    """
+    if not comment_outcome_reader_v2():
+        return 0
+    found = get_reader_disagreements(user_id)
+    bad = int(found.get("disagreeing_posts") or 0)
+    if bad <= 0:
+        return 0
+    log_warning("Comment outcome reader disagrees with the follow-up sweep: replies seen, reader read none",
+                user_id=user_id, task_name="check_outcome_reader_disagreement")
+    track_outcome_reader_disagreement(user_id, bad, int(found.get("followup_posts") or 0))
+    return bad
+
+
 def _run_comment_outcomes_sweep(user_id: int) -> str:
     """Body of sweep_comment_outcomes, extracted so it is unit-testable without the QueueOnce/Redis
     task wrapper.
@@ -2513,6 +2539,13 @@ def _run_comment_outcomes_sweep(user_id: int) -> str:
     targets = get_comment_outcome_targets(user_id, min_age_hours=_OUTCOME_MIN_AGE_HOURS,
                                           max_age_hours=_OUTCOME_MAX_AGE_HOURS,
                                           limit=_MAX_OUTCOME_CHECKS_PER_RUN)
+    # v2 backfill (#2663): spare capacity in this run's cap re-reads v1-only comments, known
+    # positives first. New comments always take the slots first; the cap is shared, never exceeded.
+    spare = _MAX_OUTCOME_CHECKS_PER_RUN - len(targets)
+    if spare > 0 and comment_outcome_reader_v2():
+        targets = targets + get_comment_outcome_backfill_targets(
+            user_id, min_age_hours=_OUTCOME_MIN_AGE_HOURS,
+            max_age_hours=_OUTCOME_MAX_AGE_HOURS, limit=spare)
     if not targets:
         return "No comments due an outcome check"
     lock_name = f"sweep_comment_outcomes:{user_id}"

@@ -1036,6 +1036,14 @@ thread replies, likes, whether we replied, `visible_most_relevant`.
 - Demotion rate > `COMMENT_DEMOTION_HOLD_RATE` on ≥`COMMENT_QUALITY_MIN_SAMPLE` readable readings
   **holds that user's feed commenting** (`hold_commenting` in `rate_limit.py` — narrower than
   `pause_automation`) and escalates as CRITICAL.
+- **Reader v2 backfill + tripwire** (#2663, `COMMENT_OUTCOME_READER_V2` on only): the sweep spends any
+  capacity left under `_MAX_OUTCOME_CHECKS_PER_RUN` on `get_comment_outcome_backfill_targets` —
+  comments with a v1 row and no v2 row, `comment_followups` known positives first (exempt from the
+  168 h ceiling). The re-read is a NEW `reader_version=2` row; the v1 row stays. A SKIPPED v2 read is
+  stamped v2 up front, so it is never re-selected as an unread v1 row. `check_outcome_reader_disagreement`
+  runs in the daily dispatch: ONE warning + `outcome_reader_disagreement` when the follow-up sweep saw
+  replies on a post whose latest CHECKED v2 outcome reads `reply_count = 0`. A v1 row is unscored and a
+  skipped row read nothing, so neither counts. Reader rules are unchanged.
 - Live: `scripts/linkedin_live_validation.py --comment-outcome-url`.
 
 ## Suppression tripwire (`auto_suppression_tripwire` + `utilities/suppression.py`, issue #629)
