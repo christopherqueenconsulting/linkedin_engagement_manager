@@ -9,7 +9,7 @@ import { join } from 'node:path'
 // silently pulls the whole authenticated app back into the marketing page's entry chunk.
 
 const APP = readFileSync(join(process.cwd(), 'src', 'App.tsx'), 'utf8')
-const LAZY_ROUTES = ['Dashboard', 'Account', 'Avatars', 'ContentStudio', 'AdminFeedbackPage']
+const LAZY_ROUTES = ['Dashboard', 'Account', 'Avatars', 'ContentStudio', 'AdminFeedbackPage', 'AgentsPage']
 
 describe('the authenticated app is code-split (issue #1300)', () => {
   it('statically imports none of the authenticated screens', () => {
