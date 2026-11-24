@@ -582,6 +582,37 @@ def send_newsletter_cover_pending_email(to_email: str, edition_title: str, sched
         high_priority=True)
 
 
+def send_stale_approvals_email(to_email: str, total: int, stale: int, oldest_age_hours: float,
+                               by_lane: dict, stale_hours: int, review_url: Optional[str] = None
+                               ) -> bool:
+    """Email an author that approvals have waited past `stale_hours` (issue #2625).
+
+    `by_lane` maps a lane label to its waiting count; zero lanes are omitted. The caller never
+    sends at zero, so this takes `stale >= 1` as given.
+    """
+    import os
+    base = (os.getenv("LEM_APP_URL") or "https://lem.christopherqueenconsulting.com").rstrip("/")
+    url = html_escape(review_url or f"{base}/content?tab=review")
+    rows = "".join(f"<li>{html_escape(str(label))}: <strong>{int(n)}</strong></li>"
+                   for label, n in by_lane.items() if n)
+    days = round(oldest_age_hours / 24, 1)
+    html = f"""
+    <html><body style="font-family:Arial,Helvetica,sans-serif;color:#222;">
+    <h2>{stale} approval{'s' if stale != 1 else ''} waiting more than {stale_hours} hours</h2>
+    <p>{total} item{'s are' if total != 1 else ' is'} waiting for your review; the oldest has
+    waited {days} days. Review them before their slots arrive.</p>
+    <ul>{rows}</ul>
+    <p><a href="{url}" style="background:#0a66c2;color:#fff;padding:10px 16px;border-radius:6px;
+    text-decoration:none;">Review now</a></p>
+    <p style="color:#888;font-size:12px;">You get this reminder once a day, and only while
+    something has waited over {stale_hours} hours.</p>
+    </body></html>
+    """
+    return _dispatch_email(
+        to_email, f"⏳ {stale} approval{'s' if stale != 1 else ''} waiting over {stale_hours}h",
+        html, high_priority=True)
+
+
 def send_content_generation_ready_email(to_email: str, ready_count: int,
                                         failed_count: int = 0) -> bool:
     """Email a user that their weekly content finished generating (issue #545). Generation runs

@@ -10998,6 +10998,102 @@
         "summary": "Comment Posted"
       }
     },
+    "/api/review/queue": {
+      "get": {
+        "description": "Every approval waiting on the caller, oldest first; `lane` narrows to one.",
+        "operationId": "review_queue_endpoint_api_review_queue_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "session_token",
+            "required": true,
+            "schema": {
+              "title": "Session Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "lane",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Lane"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_list_dict_str__Any___"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Review Queue Endpoint"
+      }
+    },
+    "/api/review/summary": {
+      "get": {
+        "description": "`{total, stale_48h, oldest_age_hours, by_lane}` for the nav badge.",
+        "operationId": "review_summary_endpoint_api_review_summary_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "session_token",
+            "required": true,
+            "schema": {
+              "title": "Session Token",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Review Summary Endpoint"
+      }
+    },
     "/api/schedule_dm": {
       "post": {
         "description": "Create a scheduled 1:1 DM (draft or approved). The beat scanner (auto_check_scheduled_dms)\nsends approved DMs at their scheduled_time via send_scheduled_dm, honoring per-day DM caps.",

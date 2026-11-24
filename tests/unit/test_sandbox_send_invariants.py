@@ -540,6 +540,8 @@ _NO_LINKEDIN_ACTION = {
                            "get_docker_driver backstop refuses a sandbox account",
     "auto_draft_group_post": "drafts text with an LLM and stores it; the publish is auto_post_to_group",
     "render_avatar_samples_task": "image generation",
+    "auto_notify_stale_approvals": "reads the approval queue and emails the owner a digest; no LinkedIn "
+                                   "session is opened",
     "auto_generate_content": "content generation (LLM), stores drafts",
     "plan_content_for_user": "content planning (LLM), stores drafts",
     "regenerate_post_video_task": "media generation",

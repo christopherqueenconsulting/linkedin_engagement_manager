@@ -2716,3 +2716,24 @@ def get_impact_llm_cost_by_day(user_id: int, start_day, end_day) -> Optional[lis
     except mysql.connector.Error as err:
         log_error("Could not read impact LLM cost", exc=err, user_id=user_id)
         return None
+
+
+def get_held_pending_posts(user_id: int) -> list[dict]:
+    """Posts parked at PENDING for a reason, oldest first — the Daily review's post lane (#2625).
+
+    Held means PENDING with persisted gate findings (`gate_reason`) or a repaired draft
+    (`ever_gate_demoted`): a plain pending post is the normal approval queue, not a hold. The
+    findings come back raw; the caller parses them. A read error is the empty list.
+    """
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT id, content, post_type, scheduled_time, gate_reason, ever_gate_demoted, "
+                "authenticity_score, updated_at FROM posts "
+                "WHERE user_id = %s AND status = %s "
+                "AND (gate_reason IS NOT NULL OR ever_gate_demoted = 1) "
+                "ORDER BY updated_at ASC, id ASC", (user_id, str(PostStatus.PENDING)))
+            return cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        log_error("Could not list held pending posts", exc=err, user_id=user_id)
+        return []

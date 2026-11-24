@@ -319,6 +319,55 @@ def notify_newsletter_cover_pending(user_id: int, edition_id: int, edition_title
     return sent
 
 
+STALE_APPROVALS_EMAIL_KEY = "lem:stale_approvals_email:{user_id}:{day}"
+
+
+def notify_stale_approvals(user_id: int, summary: dict, stale_hours: int) -> bool:
+    """Email the author the daily stale-approval digest (#2625). ONE per user per UTC day.
+
+    The claim is taken through Redis BEFORE the send and released when the send fails, like
+    `notify_newsletter_cover_pending`. **Fails open**: a Redis outage degrades to at most one email
+    per beat run, never to silence. Returns True only if an email was actually sent.
+    """
+    from datetime import timezone
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    key = STALE_APPROVALS_EMAIL_KEY.format(user_id=user_id, day=day)
+    claimed_client = None
+    try:
+        from cqc_lem.utilities.linkedin.rate_limit import shared_redis_client
+        client = shared_redis_client()
+        if client is not None:
+            if not client.set(key, "1", nx=True, ex=2 * 86400):
+                return False
+            claimed_client = client
+    except Exception as e:
+        log_warning("Could not read the stale-approvals claim — sending anyway", exc=e,
+                    user_id=user_id, action_type="review_digest")
+
+    sent = False
+    try:
+        email = get_user_email(user_id)
+        if email:
+            from cqc_lem.utilities.email import send_stale_approvals_email
+            from cqc_lem.utilities.review_queue import LANE_LABELS
+            by_lane = {LANE_LABELS.get(k, k): n for k, n in summary["by_lane"].items()}
+            sent = send_stale_approvals_email(email, summary["total"], summary["stale_48h"],
+                                              summary["oldest_age_hours"], by_lane, stale_hours)
+        if sent:
+            log_info("Sent stale-approvals digest", user_id=user_id, action_type="review_digest")
+    except Exception as e:
+        log_warning("Could not send the stale-approvals digest", exc=e, user_id=user_id,
+                    action_type="review_digest")
+
+    if not sent and claimed_client is not None:
+        try:
+            claimed_client.delete(key)
+        except Exception as e:
+            log_warning("Could not release the stale-approvals claim after a failed send",
+                        exc=e, user_id=user_id, action_type="review_digest")
+    return sent
+
+
 def notify_newsletter_draft_ready(user_id: int, edition_title: str, scheduled_for,
                                   auto_publish: bool = True) -> bool:
     """Email the user that their newsletter draft is ready to review, and what its slot will do.
