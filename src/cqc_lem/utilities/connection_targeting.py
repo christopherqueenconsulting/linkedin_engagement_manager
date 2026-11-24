@@ -12,9 +12,10 @@ order we work through them.
 
 import dataclasses
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from typing import Iterable, Optional
 
+from cqc_lem.utilities.icp_evaluation import EXPLORATION_MARK, split_exploration
 from cqc_lem.utilities.icp_rubric import IcpDefinition, IcpScore, has_facts, score_person
 from cqc_lem.utilities.lead_scoring import ICP_UNKNOWN, icp_fit, person_key, profile_slug, recency_weight
 
@@ -275,7 +276,8 @@ def held_candidate_urls(candidates: Iterable[ScoredCandidate], facts_by_url: dic
 
 def apply_icp_rubric(candidates: Iterable[ScoredCandidate], definition: IcpDefinition,
                      facts_by_url: dict = None, min_score: int = 0, limit: int = None,
-                     touched_slugs: Optional[set] = None) -> tuple:
+                     touched_slugs: Optional[set] = None, user_id: Optional[int] = None,
+                     today: Optional[date] = None) -> tuple:
     """Re-score ranked candidates with the #2630 rubric (flag-on path only).
 
     Returns `(kept, scores, held)`. `kept` are copies of the candidates with `icp_score` /
@@ -286,6 +288,10 @@ def apply_icp_rubric(candidates: Iterable[ScoredCandidate], definition: IcpDefin
     (`touched_slugs`), a scraped profile with no facts (an empty profile) and a suspected bot.
     A hard-filter failure or a total under `min_score` is dropped after. These only ADD
     exclusions — the forever dedup runs upstream and is unchanged.
+
+    With `user_id` and a `limit`, about 10% of the slots are an exploration slice drawn from the
+    next-lower score band (`icp_evaluation.split_exploration`), marked in the stored reason so the
+    outcome report can compare it. Still above `min_score`; never run without the builder flag.
     """
     facts_by_slug = {profile_slug(k): v for k, v in (facts_by_url or {}).items() if profile_slug(k)}
     touched = touched_slugs or set()
@@ -310,7 +316,16 @@ def apply_icp_rubric(candidates: Iterable[ScoredCandidate], definition: IcpDefin
         kept.append(dataclasses.replace(c, icp_score=result.total, known_fit=True,
                                         score=result.total, reasons=result.reason))
     kept.sort(key=lambda c: (c.score, c.warmth_score, c.signal_count), reverse=True)
-    return (kept if limit is None else kept[:max(0, int(limit))]), scores, held
+    if limit is None:
+        return kept, scores, held
+    if user_id is None:
+        return kept[:max(0, int(limit))], scores, held
+    picked, explored = split_exploration(kept, limit, user_id, today or date.today())
+    for key in explored:
+        scores[key].reason = f"{scores[key].reason} {EXPLORATION_MARK}"[:512]
+    picked = [dataclasses.replace(c, reasons=scores[c.person_key].reason) if c.person_key in explored
+              else c for c in picked]
+    return picked, scores, held
 
 
 def rubric_icp_scorer(definition: IcpDefinition):
