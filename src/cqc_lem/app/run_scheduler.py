@@ -2968,5 +2968,16 @@ def auto_impact_report(self):
     return lane_result(TaskOutcome.NO_OP, f"Impact report beat: {result.get('action')}")
 
 
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})
+def auto_poll_calendly_bookings(self):
+    """Poll Calendly hourly and move leads to `meeting_booked` or back (#2658).
+
+    Labels and counts only, sends nothing; a no-op unless `BOOKING_HOOK_ENABLED` is set.
+    """
+    from cqc_lem.utilities.booking_hook import poll_all_bookings
+
+    return lane_result(TaskOutcome.NO_OP, poll_all_bookings())
+
+
 if __name__ == "__main__":
     print("Process finished")

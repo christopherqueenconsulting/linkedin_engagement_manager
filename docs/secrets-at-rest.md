@@ -12,6 +12,7 @@ set, how to rotate, and how to turn the fail-closed switch on without locking an
 | `users.access_token` | LinkedIn OAuth access token |
 | `users.refresh_token` | LinkedIn OAuth refresh token (durable API access) |
 | `users.password` | the stored LinkedIn password — **deprecated**, see *Cookie-only* below |
+| `calendly_credentials.access_token` | Calendly personal access token for the hourly booking poll (#2658); `BOOKING_HOOK_ENABLED`, default off |
 
 Stored as one self-describing string in the existing column:
 
