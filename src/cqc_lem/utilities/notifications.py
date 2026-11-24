@@ -276,6 +276,38 @@ def notify_faq_answer(user_id: int, question: str, answer: str) -> bool:
         return False
 
 
+def notify_authenticity_hold(user_id: int, kind: str, score: Optional[int], issues: list) -> bool:
+    """Email the user a draft was held because it never reached the authenticity floor (#2751).
+
+    The email carries the concrete reasons so they can edit it. Non-fatal: True only if an email
+    went out.
+    """
+    try:
+        email = get_user_email(user_id)
+        if not email:
+            return False
+        from html import escape
+
+        from cqc_lem.utilities.email import _dispatch_email
+        reasons = "".join(f"<li>{escape(str(i))}</li>" for i in (issues or [])) or \
+            "<li>It read as generic.</li>"
+        html = (f"<html><body style=\"font-family:Arial,Helvetica,sans-serif;color:#222;\">"
+                f"<h2>A {escape(kind)} draft needs your edit</h2>"
+                f"<p>It scored {score if score is not None else '?'} for authenticity after "
+                f"three rewrites, so it was held and will not be sent on its own.</p>"
+                f"<ul>{reasons}</ul>"
+                f"<p>Edit it in your review queue, or approve it with a reason.</p></body></html>")
+        sent = _dispatch_email(email, f"A {kind} draft needs your edit", html)
+        if sent:
+            log_info(f"Sent authenticity-hold email for a {kind} draft", user_id=user_id,
+                     action_type="authenticity")
+        return sent
+    except Exception as e:
+        log_warning("Could not send authenticity-hold email", exc=e, user_id=user_id,
+                    action_type="authenticity")
+        return False
+
+
 def notify_content_generation_ready(user_id: int, ready_count: int, failed_count: int = 0) -> bool:
     """Email the user that their weekly content finished generating (issue #545). Sent once per
     run by the generation task — no throttling ledger, the run itself is the trigger. Non-fatal:
