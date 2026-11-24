@@ -101,6 +101,44 @@ charged. What is removable is unchanged — `release_worktree` still refuses a d
 branch and anything outside `work/`. Log lines: `worktree sweep: …` in `logs/v2-actions-*.log`.
 `tests/unit/test_agent_pipeline_v2_worktree_sweep.py` pins the wiring end to end.
 
+**A phased issue's next phase starts from main, not its merged branch.** Every phase of an issue
+reuses `feature/claude-issue-<N>`. After Phase K's PR squash-merged, the branch still held Phase K's
+original commits, so `add_worktree` attached to them and the Phase K+1 PR re-added every Phase K
+file (migration-version collisions, conflicts, merge-queue ejections; hand-repaired in #2693, #2694
+and #2706). The repo has `delete_branch_on_merge`, so after the merge origin no longer has the
+branch: it survives as the LOCAL `refs/heads/<branch>` (often checked out in `work/<branch>`) and/or
+a stale `refs/remotes/origin/<branch>`, which v2 never prunes. `restart_spent_branch`
+(`lib/guards.sh`) runs on BOTH of `add_worktree`'s attach paths: the origin path (a tracking ref
+exists, possibly stale) and the local-only path (`reattaching existing <branch> (has commits not on
+base)`).
+
+ONE exact rule, no heuristics. The tip is the local ref, or the tracking ref when there is no local
+one. After `git fetch origin main` the branch is **SPENT iff its tip SHA EQUALS the `headRefOid` of a
+PR whose state is `MERGED`, whose `baseRefName` is `main`, and whose `mergeCommit.oid` is an
+ancestor of `origin/main`.** GitHub merged exactly those commits and main carries the merge, so
+nothing on the branch is outside main. There is no `git cherry` path (patch ids are whitespace-blind,
+and once read unmerged work as already on main) and no post-merge replay: a commit pushed after the
+merge moves the tip off the merged head, so it attaches. No data loss by construction.
+
+| Branch | Worktree |
+|---|---|
+| `git fetch origin main` failed, or `ls-remote` of origin unreadable | attach |
+| the tip, the tracking ref and origin's ref (where each exists) disagree | attach (`refs-disagree`), no reset. `refs/heads/<branch>` never moves backwards: a local ref NOT an ancestor of the tracking ref (unpushed or diverged commits) is attached as-is (`attaching local <branch>`), and only a local ref equal to or behind it is fast-forwarded onto the tracking ref first |
+| the branch is HELD by ANOTHER worktree (the main checkout included): checked out, or mid-rebase / mid-bisect of it (porcelain says `detached`, but `rebase-merge/head-name`, `rebase-apply/head-name` or `BISECT_START` names it), or that worktree's state is unreadable, or the list is unreadable — on ANY path, spent or not | **refused, fail closed**: `add_worktree` returns 1 with ONE `WARNING refusing <branch>` and builds, moves, attaches and pushes nothing. Two layers. The pre-check (`branch_checked_out_elsewhere`, right after the stale-worktree prune) names the other worktree (`checked-out-elsewhere` / `worktree-list-unreadable`). The backstop is git itself: every branch-moving or attaching step is a `git worktree add` (`-B <branch> <wt> origin/<branch>`, attach, `-b`; the spent reset and the lease-refusal restore remove the fresh tree and re-add with `-B`), which git 2.43 refuses for any held branch, rebase and bisect included, leaving the ref untouched (`git-refused`). Never `checkout -B`: 2.43 lets it move a branch held elsewhere. The leased push runs only after the local reset succeeded. A `prunable` entry (directory deleted) holds the branch for git too, so both `add_worktree` and `agent_run.sh` prune first. `agent_run.sh` runs the pre-check BEFORE the budget charge and exits `EX_SETUP`: re-observed next pass, nothing charged, nothing parked (only a branch taken after the charge costs a run) |
+| PR list unreadable | attach |
+| an OPEN PR into ANY base | attach (a fix/review/rebase lane works that head). The PR list is therefore not `--base main` |
+| SPENT, origin has no `<branch>` (deleted on merge) | **fresh** from `origin/main`, push NOTHING (the lane's first push creates it); the stale tracking ref is dropped, as a prune would |
+| SPENT, origin still has `<branch>` (at the tip) | **fresh**, pushed by the RUNNER with `--force-with-lease=refs/heads/<branch>:<tip>`; a refused lease attaches at the tip with a WARNING |
+| anything else (post-merge commits, CLOSED PR, merged into another base, merge commit not on `origin/main`) | attach, as before |
+
+The runner, not the agent, makes the one leased push, so `git_push.sh` keeps its rule that only
+MODE=rebase may lease, and the agent's later push is a plain fast-forward. A **reverted** squash is
+still spent: main reverted the phase, but the tip equals the merged PR's head, so the branch
+restarts from main without it. That is accepted: the phase's commits live on in
+`refs/pull/<N>/head`, which the restart's log line names, and bringing a reverted phase back is a
+deliberate act. No `decide()` row changes: this is worktree preparation, after dispatch.
+`tests/unit/test_agent_pipeline_spent_branch.py` runs every row against a real bare remote.
+
 **Orphaned lane processes are swept too** (`v2/lemd/orphans.py`). `killpg` reaches a lane's process
 group only, and a lane's tools start commands in NEW sessions (an agent's shell tool) or groups
 (`timeout`). Lane tool processes started that way (a `pytest -n 8` and its workers, a `timeout … graft
@@ -1135,7 +1173,8 @@ the profile is fixed; every dispatch under `off` logs `PERMISSION PROFILE OFF`.
 
 **A refusal never spends budget.** v2's `agent_run.sh` checks `permission_profile_ready` before
 `ledger_charge` and exits `EX_SETUP`, which the daemon treats as a refusal (retry on the next
-observation, nothing parked). v1's `tick.sh` wraps `ledger_charge` once
+observation, nothing parked). A branch held by another worktree is refused the same way, before
+the charge (`branch_held_elsewhere_refusal`, `lib/guards.sh`). v1's `tick.sh` wraps `ledger_charge` once
 (`guard_ledger_charge_with_profile`) so its six charge sites charge nothing for an agent MODE that
 would be refused. `run_lane` itself also returns 73 on the refusal.
 
