@@ -658,6 +658,11 @@ One connect and one `lem_whoami` each: Claude Code, Codex, Cursor, VS Code, Gemi
 
 ## 10. Rollout, kill switch and rollback
 
+**P1 note (added in PR #2695):** the commands that work in P1 — the `mcp:kill` Redis key, the
+`MCP_SERVER_KILL` env path, the verify `curl` and rollback — are in **`docs/mcp-server.md`**. That
+runbook needs no P2 or P3 file. `POST /api/admin/mcp-kill`, `scripts/mcp_kill.py` and
+`scripts/mcp_revoke_all.py` below arrive in P2.
+
 **Flags** (rollout only; they are never a safety control):
 - `FlagSpec(key="mcp-server-enabled", env_var="MCP_SERVER_ENABLED", default=False, owner=…, description=…)`. It gates the nav, mint, rotate, info and the gate.
 - `FlagSpec(key="mcp-server-writes", env_var="MCP_SERVER_WRITES_ENABLED", default=False, …)`. It gates the W2 tools, which return `isError` "writes not enabled" when off.

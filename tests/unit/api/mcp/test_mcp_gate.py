@@ -5,19 +5,27 @@ bearer that survives the HTTP checks is refused with 401 — the endpoint is mou
 """
 
 import asyncio
+import contextlib
 import logging
+import socket
+import time
 from typing import Any, Iterator
 from unittest.mock import patch
 
 import pytest
+import redis
 
-from cqc_lem.api.mcp import gate as gate_mod
+from cqc_lem.api.mcp import gate as gate_mod, limits
 from cqc_lem.api.mcp.gate import McpGate
 from cqc_lem.api.mcp.lifespan import MAX_REQUEST_BODY_BYTES, mcp_state
 
 from .conftest import FakeRedis
 
 pytestmark = pytest.mark.unit
+
+# Taken at import, before the unit lane's autouse guard patches `from_url` to raise, so the one
+# test that needs a real client on a local socket can put it back for its own duration.
+_REAL_FROM_URL = redis.Redis.__dict__["from_url"]
 
 _JSON = {"Content-Type": "application/json"}
 _BODY = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
@@ -252,12 +260,90 @@ class TestKillSwitch:
         assert resp.status_code == status
         assert fake_redis.keys_read == []
 
-    def test_the_real_redis_lookup_uses_the_shared_handle(self) -> None:
-        from cqc_lem.api.mcp import limits
 
-        with patch("cqc_lem.utilities.linkedin.rate_limit.shared_redis_client",
-                   return_value=FakeRedis(kill_value=b"1")):
+
+class TestKillClient:
+    """The kill read's own Redis client: short timeouts, no retry, cached per (pid, url)."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_client(self) -> Iterator[None]:
+        limits.reset_kill_client()
+        yield
+        limits.reset_kill_client()
+
+    def test_it_is_built_short_and_never_retries(self) -> None:
+        with patch("redis.Redis.from_url", return_value=FakeRedis(kill_value=b"1")) as build:
             assert limits.read_kill_key() is limits.KillState.ON
+            assert limits.read_kill_key() is limits.KillState.ON
+        assert build.call_count == 1, "the client is cached per (pid, url)"
+        kwargs = build.call_args.kwargs
+        assert kwargs["socket_timeout"] <= 1 and kwargs["socket_connect_timeout"] <= 1
+        assert kwargs["retry"]._retries == 0
+
+    def test_it_takes_the_url_from_the_shared_resolution_rule(
+            self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CELERY_BROKER_URL", "redis://kill-host:6390/3")
+        with patch("redis.Redis.from_url", return_value=FakeRedis()) as build:
+            assert limits.read_kill_key() is limits.KillState.OFF
+        assert build.call_args.args[0] == "redis://kill-host:6390/3"
+
+    def test_a_client_that_cannot_be_built_is_unreadable_and_not_cached(self) -> None:
+        # The unit lane's hermetic guard makes `from_url` raise, which is exactly this case.
+        assert limits.read_kill_key() is limits.KillState.UNREADABLE
+        with patch("redis.Redis.from_url", return_value=FakeRedis()):
+            assert limits.read_kill_key() is limits.KillState.OFF
+
+    def test_no_redis_package_is_unreadable(self) -> None:
+        with patch.dict("sys.modules", {"redis": None}):
+            assert limits._redis() is None
+
+
+@contextlib.contextmanager
+def _silent_redis() -> Iterator[str]:
+    """A local TCP listener that accepts and never answers: Redis hung, not refused."""
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(("127.0.0.1", 0))
+    server.listen(16)
+    try:
+        yield f"redis://127.0.0.1:{server.getsockname()[1]}/0"
+    finally:
+        server.close()
+
+
+class TestUnreachableRedisIsAFast503:
+    """With Redis hung or gone, the gate still answers inside about a second, failing closed.
+
+    A REAL redis-py client on a real socket: the unit lane's hermetic guard is lifted for this test
+    only, and the socket is local, so nothing leaves the machine.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _real_redis_client(self) -> Iterator[None]:
+        limits.reset_kill_client()
+        with patch.object(redis.Redis, "from_url", _REAL_FROM_URL):
+            yield
+        limits.reset_kill_client()
+
+    def test_a_hung_redis_is_503_within_a_second(self, api_client: Any,
+                                                 monkeypatch: pytest.MonkeyPatch) -> None:
+        with _silent_redis() as url:
+            monkeypatch.setenv("CELERY_BROKER_URL", url)
+            started = time.monotonic()
+            resp = _post(api_client)
+            elapsed = time.monotonic() - started
+        _assert_refusal(resp, 503, "mcp_unavailable")
+        assert elapsed < 1.5, f"kill read took {elapsed:.2f}s against a hung Redis"
+
+    def test_a_refused_redis_is_503_within_a_second(self, api_client: Any,
+                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+        with _silent_redis() as url:
+            pass  # closed again: nothing listens on that port now
+        monkeypatch.setenv("CELERY_BROKER_URL", url)
+        started = time.monotonic()
+        resp = _post(api_client)
+        elapsed = time.monotonic() - started
+        _assert_refusal(resp, 503, "mcp_unavailable")
+        assert elapsed < 1.5, f"kill read took {elapsed:.2f}s against a refused port"
 
 
 class TestPathMatching:
