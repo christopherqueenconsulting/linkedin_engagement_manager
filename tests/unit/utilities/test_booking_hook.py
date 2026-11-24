@@ -171,6 +171,13 @@ def test_refused_status_returns_none():
         assert booking_hook._get("/users/me", TOKEN) is None
 
 
+def test_token_never_sent_to_non_calendly_url():
+    with patch.object(booking_hook.requests, "get") as get:
+        assert booking_hook._get("https://evil.example/invitees", TOKEN) is None
+        assert booking_hook._get("https://api.calendly.com.evil.example/x", TOKEN) is None
+    get.assert_not_called()
+
+
 def test_poll_user_without_token_is_empty():
     with patch.object(booking_hook.db, "get_calendly_token", return_value=None):
         assert booking_hook.poll_user_bookings(1) == {}

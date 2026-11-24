@@ -31,6 +31,10 @@ def booking_hook_enabled() -> bool:
 
 def _get(path_or_url: str, token: str, params: Optional[dict] = None) -> Optional[dict]:
     url = path_or_url if path_or_url.startswith("http") else f"{CALENDLY_API}{path_or_url}"
+    if not url.startswith(f"{CALENDLY_API}/"):
+        # event and pagination URLs come from the response; never send the PAT anywhere but Calendly
+        log_warning("Refusing non-Calendly URL for token-bearing request")
+        return None
     try:
         resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, params=params,
                             timeout=_TIMEOUT_SECONDS)
