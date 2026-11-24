@@ -73,9 +73,9 @@ LI_MEMBER_POST_ANALYTICS_CLIENT_ID = get_constant_from_env('LI_MEMBER_POST_ANALY
 LI_MEMBER_POST_ANALYTICS_CLIENT_SECRET = get_constant_from_env('LI_MEMBER_POST_ANALYTICS_CLIENT_SECRET')
 try:
     LI_MEMBER_POST_ANALYTICS_MAX_POSTS_PER_SWEEP = max(
-        0, int(get_constant_from_env('LI_MEMBER_POST_ANALYTICS_MAX_POSTS_PER_SWEEP', default_value='5')))
+        0, int(get_constant_from_env('LI_MEMBER_POST_ANALYTICS_MAX_POSTS_PER_SWEEP', default_value='20')))
 except ValueError:
-    LI_MEMBER_POST_ANALYTICS_MAX_POSTS_PER_SWEEP = 5
+    LI_MEMBER_POST_ANALYTICS_MAX_POSTS_PER_SWEEP = 20
 PEXELS_API_KEY = get_constant_from_env('PEXELS_API_KEY')
 PERPLEXITY_API_KEY = get_constant_from_env('PERPLEXITY_API_KEY')
 HF_TOKEN = get_constant_from_env('HF_TOKEN')

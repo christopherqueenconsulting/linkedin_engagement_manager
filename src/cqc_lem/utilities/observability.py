@@ -1490,6 +1490,7 @@ def track_post_outcome(
     user_id: Optional[int] = None,
     post_type: Optional[str] = None,
     own_comments: Optional[int] = None,
+    source: str = "scrape",
     **extra,
 ) -> None:
     """Emit a LinkedIn post-outcome event so content performance (impressions / engagement rate) is
@@ -1506,7 +1507,11 @@ def track_post_outcome(
     along as `$feature/cost-routing-arm` when PostHog enrolled them — `variant_key` (the #396 media
     combo this post shipped, when the caller knows it) becomes the media experiment's arm the same
     way.
+
+    `source="api"` emits NOTHING (#2702): LinkedIn API-sourced counts never reach PostHog.
     """
+    if source == "api":
+        return
     from cqc_lem.utilities.post_stats import (
         engagement_rate,
         engagement_score,
@@ -1536,12 +1541,21 @@ def track_audience_snapshot(
     connection_count: Optional[int] = None,
     profile_views: Optional[int] = None,
     search_appearances: Optional[int] = None,
+    follower_source: str = "scrape",
+    connection_source: str = "scrape",
     **extra,
 ) -> None:
     """Emit one audience-telemetry snapshot (issue #627) so follower growth and profile views are
     queryable in PostHog next to the content outcomes that drove them. Unreadable counts stay None
     (not 0) — a zero would read as a real collapse in a growth chart.
+
+    A count whose source is `api` is dropped to None before the emit (#2702): LinkedIn API values
+    never reach PostHog.
     """
+    if follower_source == "api":
+        follower_count = None
+    if connection_source == "api":
+        connection_count = None
     _emit(EVENTS["audience_snapshot"], {"user_id": user_id, "follower_count": follower_count,
                                         "connection_count": connection_count,
                                         "profile_views": profile_views,

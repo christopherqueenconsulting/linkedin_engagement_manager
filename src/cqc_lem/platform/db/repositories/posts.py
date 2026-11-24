@@ -955,6 +955,14 @@ def get_recent_post_texts(user_id: int, limit: int = 20,
 # The most rows a windowed history read scans (the cooldown window above).
 _WINDOW_SCAN_MAX = 200
 
+# The ONE `post_stats` row per post a reader should see (#2702): a post's `api` row when it has one,
+# else its latest scraped row. The two sources are never merged. One `%s` = the user id.
+_LATEST_STATS_IDS = (
+    "(SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY post_id "
+    "ORDER BY (source='api') DESC, id DESC) AS rn FROM post_stats WHERE user_id=%s) ranked "
+    "WHERE rn=1)")
+_LATEST_STATS_IDS_ALL_USERS = _LATEST_STATS_IDS.replace(" WHERE user_id=%s", "")
+
 
 def get_recent_post_topics(user_id: int, limit: int = 3,
                            exclude_post_id: Optional[int] = None) -> list:
@@ -1619,7 +1627,7 @@ def get_shipped_content_for_quality(user_id: int, days: int = 1) -> list:
             "  s.reactions, s.comments, s.own_comments, s.reposts, s.impressions "
             "FROM posts p LEFT JOIN post_stats s "
             "  ON s.post_id=p.id AND s.user_id=p.user_id "
-            "  AND s.id IN (SELECT MAX(id) FROM post_stats WHERE user_id=%s GROUP BY post_id) "
+            "  AND s.id IN " + _LATEST_STATS_IDS + " "
             "WHERE p.user_id=%s AND p.status=%s AND p.content IS NOT NULL AND p.content <> '' "
             "  AND p.scheduled_time >= (NOW() - INTERVAL %s DAY) "
             "ORDER BY p.scheduled_time DESC",
@@ -1759,7 +1767,7 @@ def get_content_quality_scores(user_id: int, days: int = 14) -> list:
 def record_post_stats(user_id: int, post_id: int, reactions: Optional[int], comments: Optional[int],
                       reposts: Optional[int] = 0, impressions: Optional[int] = None,
                       saves: Optional[int] = None,
-                      own_comments: Optional[int] = None) -> bool:
+                      own_comments: Optional[int] = None, source: str = "scrape") -> bool:
     """Append one engagement snapshot for a post, with the post's SHAPE copied in beside the numbers.
 
     archetype / hook_style / format / topic / buyer_stage are snapshotted from `posts` at capture time so
@@ -1774,7 +1782,12 @@ def record_post_stats(user_id: int, post_id: int, reactions: Optional[int], comm
     rather than 0 for the same reason `impressions` already does — a label the page never rendered
     is not a zero. `reactions`, `comments` and `reposts` keep their `or 0` coercion because the
     callers that write them have always treated a missing bar as no engagement.
+
+    `source` is `scrape` or `api` (#2702). The two are never merged: each lands as its own row, and
+    readers prefer a post's API row over its scraped one.
     """
+    if source not in ("scrape", "api"):
+        raise ValueError(f"post_stats source must be 'scrape' or 'api', got {source!r}")
     try:
         with db_cursor(commit=True) as cursor:
         # Snapshot the post's content attributes at capture time so the feedback loop (#386) can
@@ -1787,12 +1800,12 @@ def record_post_stats(user_id: int, post_id: int, reactions: Optional[int], comm
             archetype, hook_style, fmt, topic, buyer_stage = row if row else (None, None, None, None, None)
             cursor.execute(
                 "INSERT INTO post_stats (user_id, post_id, reactions, comments, own_comments, "
-                "reposts, impressions, saves, archetype, hook_style, `format`, topic, buyer_stage) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                "reposts, impressions, saves, archetype, hook_style, `format`, topic, buyer_stage, source) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (user_id, post_id, int(reactions or 0), int(comments or 0),
                  None if own_comments is None else int(own_comments), int(reposts or 0),
                  impressions, None if saves is None else int(saves),
-                 archetype, hook_style, fmt, topic, buyer_stage))
+                 archetype, hook_style, fmt, topic, buyer_stage, source))
             return True
     except mysql.connector.Error as err:
         log_error("Could not record post stats", exc=err, user_id=user_id)
@@ -1807,7 +1820,8 @@ def get_latest_post_stats(user_id: int, post_id: int) -> Optional[dict]:
         with db_cursor(dictionary=True) as cursor:
             cursor.execute(
                 "SELECT reactions, comments, reposts, impressions, saves, captured_at "
-                "FROM post_stats WHERE user_id=%s AND post_id=%s ORDER BY id DESC LIMIT 1",
+                "FROM post_stats WHERE user_id=%s AND post_id=%s "
+                "ORDER BY (source='api') DESC, id DESC LIMIT 1",
                 (user_id, post_id))
             return cursor.fetchone()
     except mysql.connector.Error as err:
@@ -1898,7 +1912,7 @@ def get_post_engagement_rows(user_id: int) -> list:
                 "s.archetype, s.hook_style, s.`format`, s.topic, s.buyer_stage, s.impressions "
                 "FROM posts p JOIN post_stats s ON s.post_id=p.id AND s.user_id=p.user_id "
                 "WHERE p.user_id=%s AND s.id IN "
-                "(SELECT MAX(id) FROM post_stats WHERE user_id=%s GROUP BY post_id)",
+                "" + _LATEST_STATS_IDS + "",
                 (user_id, user_id))
             return cursor.fetchall() or []
     except mysql.connector.Error as err:
@@ -1929,7 +1943,7 @@ def get_shape_performance(user_id: int, days: int = 90) -> dict:
                     "ON s.post_id=p.id AND s.user_id=p.user_id "
                     f"WHERE p.user_id=%s AND p.status='posted' AND p.{column} IS NOT NULL "
                     "AND p.scheduled_time >= (NOW() - INTERVAL %s DAY) "
-                    "AND s.id IN (SELECT MAX(id) FROM post_stats WHERE user_id=%s GROUP BY post_id) "
+                    "AND s.id IN " + _LATEST_STATS_IDS + " "
                     f"GROUP BY p.{column}",
                     (user_id, days, user_id))
                 for key, samples, reactions, comments, reposts, impressions, imp_samples in cursor.fetchall():
@@ -1964,7 +1978,7 @@ def get_post_performance_rows(user_id: int, days: Optional[int] = None) -> list:
                 "s.own_comments "
                 "FROM posts p JOIN post_stats s ON s.post_id=p.id AND s.user_id=p.user_id "
                 "WHERE p.user_id=%s AND p.status='posted' "
-                "AND s.id IN (SELECT MAX(id) FROM post_stats WHERE user_id=%s GROUP BY post_id) "
+                "AND s.id IN " + _LATEST_STATS_IDS + " "
                 + window +
                 "ORDER BY p.scheduled_time DESC",
                 params)
@@ -2043,7 +2057,7 @@ def get_variant_outcome_rows(user_id: int) -> list:
                 "JOIN posts p ON p.id=v.post_id AND p.user_id=v.user_id "
                 "JOIN post_stats s ON s.post_id=v.post_id AND s.user_id=v.user_id "
                 "WHERE v.user_id=%s AND s.id IN "
-                "(SELECT MAX(id) FROM post_stats WHERE user_id=%s GROUP BY post_id)",
+                "" + _LATEST_STATS_IDS + "",
                 (user_id, user_id))
             return [
                 {"variant_key": r[0], "scheduled_time": r[1], "reactions": r[2],
@@ -2253,7 +2267,7 @@ def get_post_quality_rows(start_date, end_date) -> list:
                 "p.authenticity_score, s.reactions, s.comments, s.reposts, s.impressions "
                 "FROM posts p JOIN post_stats s ON s.post_id=p.id AND s.user_id=p.user_id "
                 "WHERE p.status='posted' AND p.scheduled_time BETWEEN %s AND %s "
-                "AND s.id IN (SELECT MAX(id) FROM post_stats GROUP BY post_id)",
+                "AND s.id IN " + _LATEST_STATS_IDS_ALL_USERS + "",
                 (start_date, end_date))
             rows = cursor.fetchall() or []
             return [
@@ -2601,7 +2615,7 @@ def get_weekly_post_rows(user_id: int, start: datetime, end: datetime) -> Option
                 "SELECT p.id, s.impressions, s.reactions, s.comments, s.own_comments, s.reposts "
                 "FROM posts p LEFT JOIN post_stats s "
                 "  ON s.post_id=p.id AND s.user_id=p.user_id "
-                "  AND s.id IN (SELECT MAX(id) FROM post_stats WHERE user_id=%s GROUP BY post_id) "
+                "  AND s.id IN " + _LATEST_STATS_IDS + " "
                 "WHERE p.user_id=%s AND p.status=%s AND p.scheduled_time >= %s "
                 "  AND p.scheduled_time < %s ORDER BY p.scheduled_time",
                 (user_id, user_id, PostStatus.POSTED.value, to_naive_utc(start), to_naive_utc(end)))
@@ -2663,7 +2677,7 @@ def get_impact_post_rows(user_id: int, start: datetime, end: datetime) -> Option
                 "  s.own_comments, s.reposts "
                 "FROM posts p LEFT JOIN post_stats s "
                 "  ON s.post_id=p.id AND s.user_id=p.user_id "
-                "  AND s.id IN (SELECT MAX(id) FROM post_stats WHERE user_id=%s GROUP BY post_id) "
+                "  AND s.id IN " + _LATEST_STATS_IDS + " "
                 "WHERE p.user_id=%s AND p.status=%s AND p.scheduled_time >= %s "
                 "  AND p.scheduled_time < %s ORDER BY p.scheduled_time",
                 (user_id, user_id, PostStatus.POSTED.value, to_naive_utc(start), to_naive_utc(end)))
