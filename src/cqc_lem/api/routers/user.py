@@ -753,6 +753,11 @@ class EngagementPreferencesRequest(BaseModel):
     funnel_stage_mode: Optional[str] = None
     # Daily-review stale digest email (#2669). None = leave what is stored; a stored NULL is on.
     review_digest_enabled: Optional[bool] = None
+    # Per-user background-session windows and zone (issue #2767). None = leave what is stored;
+    # `[]` / "" = back to the defaults. Only SESSION_WINDOW_MODE=enforce reads them. An invalid
+    # value is stored as "defaults" and named in the PUT response, never a 422.
+    session_windows: Optional[List[Dict[str, str]]] = Field(default=None, max_length=8)
+    session_timezone: Optional[str] = Field(default=None, max_length=64)
     # Opt-in auto-connect for roster targets following did not unlock (issue #979), OFF by default
     # and independent of roster_auto_follow. No cap of its own — roster invites take at most a
     # minority share of whatever max_invites_per_day has left.
@@ -993,6 +998,7 @@ EngagementPreferencesDetail = detail_model_from(
         "catchup_contact_interval_bounds": (CatchupContactIntervalBounds, ...),
         "catchup_per_contact_cap_bounds": (CatchupPerContactCapBounds, ...),
         "gate_defaults": (GateDefaults, ...),
+        "session_window_defaults": (List[Dict[str, str]], ...),
         "feed_reach": (Optional[FeedReach], ...),
     },
     doc="The saved engagement preferences, plus the read-only context the Settings hub renders.\n\n"
@@ -2387,6 +2393,12 @@ def get_engagement_preferences_endpoint(session_token: str) -> ResponseModel[dic
     # Read-only: the highest catch-up cap this plan allows, so the UI can bound the input and show
     # what upgrading unlocks (10/day is premium-only).
     prefs["max_catchup_touches_allowed"] = max_catchup_touches_allowed(user_id)
+    # Read-only context for the session-window control (issue #2767): what is stored, validated
+    # the way the gate reads it, and the defaults a NULL means.
+    from cqc_lem.utilities.engagement_window import SESSION_WINDOWS
+    prefs["session_window_defaults"] = [
+        {"start": f"{s // 60:02d}:{s % 60:02d}", "end": f"{e // 60:02d}:{e % 60:02d}"}
+        for s, e in SESSION_WINDOWS.values()]
     # Read-only: bounds for the per-contact catch-up frequency guard (issue #1078).
     prefs["catchup_contact_interval_bounds"] = {
         "min_days": CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MIN,
@@ -2451,6 +2463,11 @@ def update_engagement_preferences_endpoint(request: EngagementPreferencesRequest
             prefs.pop(mode_key, None)
     if prefs.get("review_digest_enabled") is None:
         prefs.pop("review_digest_enabled", None)
+    # Same rule for the session windows and zone (issue #2767): omitted keeps what is stored;
+    # `[]` / "" clears back to the defaults.
+    for window_key in ("session_windows", "session_timezone"):
+        if prefs.get(window_key) is None:
+            prefs.pop(window_key, None)
     # Same rule for the forbidden-claim list (issue #2047): omitted or null is "leave what is
     # stored", never "store an empty list" — the saved subjects must survive a partial PUT.
     if prefs.get("forbidden_claim_terms") is None:
@@ -2468,6 +2485,12 @@ def update_engagement_preferences_endpoint(request: EngagementPreferencesRequest
     if not update_engagement_preferences(user_id, prefs):
         raise HTTPException(status_code=500, detail="Could not update engagement preferences")
     detail = "Engagement preferences updated"
+    # Said, not swallowed: the upsert stores an invalid window set or zone as "defaults".
+    from cqc_lem.utilities.engagement_window import normalize_session_windows, valid_session_timezone
+    if request.session_windows and normalize_session_windows(request.session_windows) is None:
+        detail += " — the session windows were invalid, so the defaults apply"
+    if (request.session_timezone or "").strip() and valid_session_timezone(request.session_timezone) is None:
+        detail += " — the session timezone was not recognised, so the account timezone applies"
     dropped = request.dropped_forbidden_claim_terms
     if dropped:
         # Said, not swallowed: a subject that is too short, too long, has no letters, or is past

@@ -2007,6 +2007,44 @@
             "title": "Roster Auto Follow",
             "type": "boolean"
           },
+          "session_timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Timezone"
+          },
+          "session_window_defaults": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "title": "Session Window Defaults",
+            "type": "array"
+          },
+          "session_windows": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Windows"
+          },
           "text_post_images": {
             "title": "Text Post Images",
             "type": "boolean"
@@ -2080,6 +2118,8 @@
           "appreciation_dm_mode",
           "funnel_stage_mode",
           "review_digest_enabled",
+          "session_windows",
+          "session_timezone",
           "roster_auto_connect",
           "hold_repaired_posts_for_review",
           "profile_viewer_dm_auto_send",
@@ -2100,6 +2140,7 @@
           "catchup_contact_interval_bounds",
           "catchup_per_contact_cap_bounds",
           "gate_defaults",
+          "session_window_defaults",
           "feed_reach"
         ],
         "title": "EngagementPreferencesDetail",
@@ -2572,9 +2613,39 @@
             "title": "Roster Auto Follow",
             "type": "boolean"
           },
+          "session_timezone": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Timezone"
+          },
           "session_token": {
             "title": "Session Token",
             "type": "string"
+          },
+          "session_windows": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                "maxItems": 8,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Windows"
           },
           "text_post_images": {
             "default": true,

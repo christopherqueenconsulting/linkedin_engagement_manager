@@ -4940,6 +4940,16 @@ export interface components {
             roster_auto_connect: boolean;
             /** Roster Auto Follow */
             roster_auto_follow: boolean;
+            /** Session Timezone */
+            session_timezone: string | null;
+            /** Session Window Defaults */
+            session_window_defaults: {
+                [key: string]: string;
+            }[];
+            /** Session Windows */
+            session_windows: {
+                [key: string]: string;
+            }[] | null;
             /** Text Post Images */
             text_post_images: boolean;
             /** Tone */
@@ -5201,8 +5211,14 @@ export interface components {
              * @default false
              */
             roster_auto_follow: boolean;
+            /** Session Timezone */
+            session_timezone?: string | null;
             /** Session Token */
             session_token: string;
+            /** Session Windows */
+            session_windows?: {
+                [key: string]: string;
+            }[] | null;
             /**
              * Text Post Images
              * @default true

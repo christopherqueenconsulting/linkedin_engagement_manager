@@ -90,6 +90,15 @@ export default function ContentSection() {
                   review_digest_enabled: !(eng.review_digest_enabled ?? true),
                 })} />
             </Field>
+            <Field settingKey="session_windows">
+              <SessionWindowsInput />
+            </Field>
+            <Field settingKey="session_timezone">
+              <input type="text" value={eng.session_timezone ?? ''} maxLength={64}
+                placeholder="Account timezone" aria-label="Session timezone"
+                onChange={(e) => setEng({ session_timezone: e.target.value.trim() })}
+                className={inputClass} />
+            </Field>
             <Field settingKey="authenticity_score_min">
               <input type="number" min={0} max={100} value={eng.authenticity_score_min ?? ''}
                 placeholder={`Default ${gateDefaults.authenticity_score_min}`}
@@ -122,6 +131,40 @@ export default function ContentSection() {
       </SectionCard>
       <BrandKitCard />
     </>
+  )
+}
+
+// Two fixed rows (A and C): the server validates the set and falls back to the defaults on anything
+// overlapping, inverted or outside 07:00-19:00, so this only keeps the rows well-formed. Clearing
+// both inputs of a row drops it; no rows means "use the defaults".
+function SessionWindowsInput() {
+  const { eng, setEng } = useEngagementPrefs()
+  if (!eng) return null
+  const defaults = eng.session_window_defaults ?? []
+  const stored = eng.session_windows ?? []
+  const rows = [0, 1].map((i) => stored[i] ?? { start: '', end: '' })
+  const update = (i: number, patch: Partial<{ start: string; end: string }>) => {
+    const next = rows.map((r, j) => (j === i ? { ...r, ...patch } : r))
+    setEng({ session_windows: next.filter((r) => r.start && r.end) })
+  }
+  return (
+    <div>
+      {rows.map((row, i) => (
+        <div key={i} className="flex items-center gap-2 mb-2">
+          <input type="time" value={row.start} aria-label={`Window ${i + 1} start`}
+            placeholder={defaults[i]?.start}
+            onChange={(e) => update(i, { start: e.target.value })} className={inputClass} />
+          <span className="text-fg-muted text-sm">to</span>
+          <input type="time" value={row.end} aria-label={`Window ${i + 1} end`}
+            placeholder={defaults[i]?.end}
+            onChange={(e) => update(i, { end: e.target.value })} className={inputClass} />
+        </div>
+      ))}
+      <p className="text-xs text-fg-muted">
+        {stored.length ? 'Custom windows.' : `Defaults: ${defaults.map((d) => `${d.start}-${d.end}`).join(' and ')}.`}
+        {' '}Weekdays 07:00-19:00 only.
+      </p>
+    </div>
   )
 }
 

@@ -195,6 +195,8 @@ class TestPartialUpdateKeepsTheRest:
         "followup_step_mode": "auto_approve", "appreciation_dm_mode": "auto_approve",
         "funnel_stage_mode": "auto_approve",
         "forbidden_claim_terms": '["complexity router"]',
+        "session_windows": '[{"start": "09:00", "end": "10:00"}]',
+        "session_timezone": "Europe/London",
         "brand_kit": '{"primary_hex": "#e9d437", "avoid": ["gears"]}',
         "audience_mix": ('{"primary_audience": "ops leaders", "secondary_audience": '
                          '"small-business owners", "secondary_share": 0.6, '
