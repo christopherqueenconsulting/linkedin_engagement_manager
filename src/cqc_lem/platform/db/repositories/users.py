@@ -3130,6 +3130,8 @@ def has_engagement_preferences(user_id: int) -> bool:
     WRITE on the answer must use the three-valued function instead (issue #952).
     """
     return engagement_preferences_are_configured(user_id) is True
+
+
 def get_review_digest_enabled(user_id: int) -> bool:
     """Whether the daily stale-approval email may be sent to this account (#2625).
 

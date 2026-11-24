@@ -604,8 +604,8 @@ def send_stale_approvals_email(to_email: str, total: int, stale: int, oldest_age
     <ul>{rows}</ul>
     <p><a href="{url}" style="background:#0a66c2;color:#fff;padding:10px 16px;border-radius:6px;
     text-decoration:none;">Review now</a></p>
-    <p style="color:#888;font-size:12px;">You can turn this daily reminder off in your
-    engagement preferences.</p>
+    <p style="color:#888;font-size:12px;">You get this reminder once a day, and only while
+    something has waited over {stale_hours} hours.</p>
     </body></html>
     """
     return _dispatch_email(
