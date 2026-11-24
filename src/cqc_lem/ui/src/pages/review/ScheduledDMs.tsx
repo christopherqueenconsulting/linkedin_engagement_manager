@@ -275,7 +275,7 @@ export default function ScheduledDMs(
       {override && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onMouseDown={(e) => { if (e.target === e.currentTarget) { setOverride(null); setReason('') } }}>
           <section role="dialog" aria-modal="true" aria-labelledby="authenticity-override-title" aria-describedby="authenticity-override-description"
-            className="w-full max-w-lg rounded-panel bg-raised p-5 shadow-panel space-y-3">
+            className="w-full max-w-lg max-h-viewport overflow-y-auto rounded-panel bg-raised p-5 shadow-panel space-y-3">
             <h2 id="authenticity-override-title" className="font-semibold text-fg">Confirm authenticity override</h2>
             <p id="authenticity-override-description" className="text-sm text-fg-muted">{override.detail.message} Score: {override.detail.score}.</p>
             {override.detail.issues.length > 0 && <ul className="list-disc pl-5 text-sm text-fg">{override.detail.issues.map((issue, i) => <li key={`${i}-${issue}`}>{issue}</li>)}</ul>}
