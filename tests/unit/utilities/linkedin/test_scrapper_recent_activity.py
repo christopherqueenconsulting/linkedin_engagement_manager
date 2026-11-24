@@ -166,6 +166,29 @@ class TestGetProfileRecentActivity:
         warn.assert_called_once()
         assert "Recent-activity post-card chain" in warn.call_args.args[0]
 
+    def test_drift_warning_carries_author_shape_and_lane(self):
+        html = (f"<main><div data-x='urn:li:comment:(post,2)'>"
+                f"<span data-testid='expandable-text-box'>{POST_A}</span></div></main>")
+        with patch.object(scrapper, "go_to_base_employee_link"), \
+                patch.object(scrapper, "wait_for_ajax"), \
+                patch.object(scrapper, "get_page_source", return_value=_soup(html)), \
+                patch("cqc_lem.utilities.linkedin.zero_walk.log_warning") as warn:
+            scrapper.get_profile_recent_activity(
+                _driver(), "https://www.linkedin.com/in/ann/", lane="outreach_roster")
+        ctx = warn.call_args.kwargs
+        assert ctx["profile_url"] == "https://www.linkedin.com/in/ann/"
+        assert ctx["activity_url"].endswith("/recent-activity/all/")
+        assert ctx["lane"] == "outreach_roster"
+        assert ctx["text_boxes"] == 1
+        assert ctx["feed_update_anchors"] == 0
+        assert ctx["comment_urn_attrs"] == 1
+
+    def test_lane_defaults_to_unspecified(self):
+        html = f"<main><span data-testid='expandable-text-box'>{POST_A}</span></main>"
+        _d, _r, warn, _dbg = self._run(html)
+        assert warn.call_args.kwargs["lane"] == "unspecified"
+        assert warn.call_args.kwargs["urn_attrs"] == 0
+
     def test_a_page_with_no_posts_is_a_quiet_author_not_a_warning(self):
         _driver, result, warn, debug = self._run("<main><h2>No recent posts</h2></main>")
         assert result == []
