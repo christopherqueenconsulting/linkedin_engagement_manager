@@ -370,6 +370,26 @@ def _run_roster(boxes, targets, *, prefs=None, relevant=True, engage=True, max_p
 
 
 class TestCommentOnRosterPosts:
+    def test_group_feed_makes_no_roster_visit(self):
+        """#2747: a group feed never runs the roster pass, so no target is read or visited."""
+        from cqc_lem.app.engagement import feed as ra
+
+        driver = MagicMock()
+        with patch(f"{_FEED}.get_engagement_targets",
+                   return_value=[_target("https://www.linkedin.com/in/a/")]) as targets:
+            stats = ra.comment_on_roster_posts(_ctx(driver, is_group_feed=True), 5)
+        assert stats["posted"] == 0
+        assert stats["targets_visited"] == 0
+        targets.assert_not_called()
+        driver.get.assert_not_called()
+
+    def test_non_group_feed_still_reads_the_roster(self):
+        from cqc_lem.app.engagement import feed as ra
+
+        with patch(f"{_FEED}.get_engagement_targets", return_value=[]) as targets:
+            ra.comment_on_roster_posts(_ctx(MagicMock(), is_group_feed=False), 5)
+        targets.assert_called_once()
+
     def test_empty_roster_is_a_noop(self):
         r = _run_roster([_box("A post long enough to be scanned here.")], [])
         assert r["stats"]["posted"] == 0
