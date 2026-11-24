@@ -379,6 +379,11 @@ from cqc_lem.platform.db.repositories.groups import (
     update_group_post_draft,
     upsert_user_group,
 )
+from cqc_lem.platform.db.repositories.icp_audience_reports import (
+    get_latest_icp_audience_report,
+    icp_audience_report_exists,
+    insert_icp_audience_report,
+)
 from cqc_lem.platform.db.repositories.linkedin_connections import (
     delete_member_analytics_token,
     get_member_analytics_access_token,
@@ -1214,6 +1219,9 @@ __all__ = [
     "get_latest_profile_audit",
     "get_profile_audit_findings",
     "insert_profile_audit",
+    "get_latest_icp_audience_report",
+    "icp_audience_report_exists",
+    "insert_icp_audience_report",
     "profile_audit_exists",
     "create_call_source",
     "get_candidates_for_call",

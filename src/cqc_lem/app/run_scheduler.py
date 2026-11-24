@@ -1596,6 +1596,13 @@ def auto_weekly_report():
 
 
 @shared_task.task
+def auto_icp_audience_report_monthly():
+    """1st of the month: store the ICP-audience report per flag-enabled user (issue #2758)."""
+    from cqc_lem.utilities.icp_audience_report_job import run_monthly_icp_audience_reports
+    return f"Monthly ICP-audience report: {run_monthly_icp_audience_reports()}"
+
+
+@shared_task.task
 def auto_profile_audit_weekly():
     """Monday: rubric-only profile audit per flag-enabled user, once per ISO week (issue #2631)."""
     from cqc_lem.utilities.profile_audit_job import run_profile_audits
