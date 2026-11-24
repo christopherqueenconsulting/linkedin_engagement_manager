@@ -199,9 +199,11 @@ class TestTheMcpSeatsAreQueueOnlyOnEveryAccountKind:
         resets = _as(main_mod, scope, "internal")
         try:
             with pytest.raises(HTTPException) as refused:
-                main_mod._linkedin_profile_url_for_seat("https://example.com/in/jane")
+                main_mod._linkedin_profile_url_for_seat("https://example.com/in/jane", user_id=1,
+                                                       action_type="schedule_dm")
             assert main_mod._linkedin_profile_url_for_seat(
-                "https://linkedin.com/in/jane") == "https://www.linkedin.com/in/jane/"
+                "https://linkedin.com/in/jane", user_id=1,
+                action_type="schedule_dm") == "https://www.linkedin.com/in/jane/"
         finally:
             _reset(main_mod, resets)
         assert refused.value.status_code == 422

@@ -711,12 +711,75 @@ Three more rules ride the same seats:
   - Anything else gets **422 `linkedin_profile_url_required`**: another host, a company page, a
     path beneath a profile, credentials or a port in the URL. That includes the exempt operator.
   - A human's URL is neither checked nor rewritten.
+  - **Existing rows are never rewritten.** Only a row a queue-only seat creates or edits from
+    #2684 on is stored canonically; older rows keep the spelling their scraper or supplier saw.
+    `GET /connection_requests`, `/dms` and `/outreach/targets` return stored values unchanged, so
+    a supplier such as backfill sees the canonical URL on new rows only.
+  - The outreach-target duplicate check therefore matches on the profile, not the string, for a
+    queue-only seat. `get_outreach_target_by_profile` compares `profile_url_key`, which is the
+    slug, percent-decoded and lowercased (`utilities/linkedin/profile_url.py`). An old
+    `https://linkedin.com/in/jane-doe` row is a 409 for a new `…/in/Jane-Doe?originalSubdomain=uk`
+    create, not a second row. A human's create keeps today's exact match.
+  - `POST /connection_request` and `POST /schedule_dm` have no duplicate check to adjust.
 - **The inbound address stays with the human.** `GET /user/engagement-preferences` neither calls
   `get_or_create_reply_inbound_token` nor returns `reply_inbound_address` for any non-human scope
   (agent, operator, observer). The address embeds a bearer secret, and for an account that has none,
   the read MINTS one.
 
 `POST /schedule_post/` now also returns the new row's `post_id`, for every caller.
+
+#### Healthy or broken
+
+Every refusal above leaves one INFO line in the production log, with the code in the message and no
+URL or email in it:
+
+```
+<UTC stamp> Queue-only seat refused: <code> | user_id=<id> action_type=<queue>
+```
+
+The code is one of `edit_requires_pending`, `machine_seat_text_only`,
+`linkedin_profile_url_required` or `agent_may_not_bulk_update`. To read a day:
+
+```bash
+grep -c 'Queue-only seat refused: ' /opt/lem/logs/cqc_lem_YYYY_MM_DD.log
+grep -o 'Queue-only seat refused: [a-z_]* | user_id=[0-9]*' /opt/lem/logs/cqc_lem_YYYY_MM_DD.log \
+  | sort | uniq -c | sort -rn
+```
+
+- **Healthy:** zero lines, or a few for a seat that tried something it may not do once and then
+  stopped.
+- **Broken:** a steady run of one code for one `user_id`. That is a machine client retrying a
+  refused write, and its owner should fix the client; the guard is working. Watch for a burst of
+  `linkedin_profile_url_required` on `action_type=connection_request` right after a release. That
+  is the backfill supplier sending URLs the normaliser rejects, so check its URL source before
+  touching this code.
+- A 409 a human reports is never one of these lines: full sessions do not take this path.
+
+#### Rollback
+
+**The revert is the only lever, by design. There is no flag, and none should be added.** Every
+change here narrows what a machine seat may do, so reverting returns the seats to their previous,
+wider behaviour and harms no data. A flag would itself be a path back to that wider behaviour, one
+that a config change or a mistaken PostHog rollout could take without review. That is exactly the
+weakening this change exists to prevent.
+
+- **Schema-safe.** No migration ships with this change, so a revert touches no table.
+- **Normal path:** `git revert <merge sha>` on a branch, a PR to `main`, then the normal release.
+- **Urgent path:** `release:now` is allowed for this revert (`docs/release-fast-lane.md`). If even
+  that is too slow, redeploy the previous release tag from the box, exactly as `docs/DEPLOYMENT.md`
+  gives it (as the owner):
+
+  ```bash
+  cd /opt/lem && sudo ./scripts/backup.sh          # deploy.sh runs migrations and takes no backup
+  sudo ls -t backups/ | grep '^db-' | head -1        # confirm a dump stamped just now exists
+  sudo env DOCKER_CONFIG=/home/deploy/.docker bash ./scripts/deploy.sh vX.Y.Z
+  sudo chown -R deploy:deploy /opt/lem/.git
+  ```
+
+  Use the tag before the release that shipped #2684 as `vX.Y.Z`.
+- **Who runs it:** the operator on call, or the owner.
+- Rows written canonically before the revert stay canonical afterwards. That is harmless, because
+  every reader accepts that spelling.
 
 ### The TTL is fixed at mint, and never slid
 

@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 from cqc_lem.api.models import ResponseModel
 from cqc_lem.utilities.db import (
     OutreachStatus,
+    get_outreach_target_by_profile,
     get_outreach_target_by_url,
     get_outreach_target_user_id,
     get_outreach_targets,
@@ -103,10 +104,13 @@ def create_outreach_target_endpoint(request: OutreachTargetRequest) -> ResponseM
     context_url = request.context_url.strip() if request.context_url else None
     if not target_profile_url:
         raise HTTPException(status_code=422, detail="target_profile_url is required")
-    # A queue-only seat's URL is normalised BEFORE the duplicate lookup, so the lookup and the row
-    # both see the canonical spelling (issue #2684).
-    target_profile_url = _main._linkedin_profile_url_for_seat(target_profile_url)
-    if get_outreach_target_by_url(user_id, target_profile_url):
+    # A queue-only seat's URL is normalised BEFORE the duplicate lookup (issue #2684). Existing rows
+    # keep whatever spelling they were stored with, so that seat's lookup matches on the PROFILE, not
+    # the string; a human's create keeps today's exact match.
+    target_profile_url = _main._linkedin_profile_url_for_seat(
+        target_profile_url, user_id=user_id, action_type="outreach_target")
+    lookup = get_outreach_target_by_profile if _main._agent_scoped() else get_outreach_target_by_url
+    if lookup(user_id, target_profile_url):
         raise HTTPException(status_code=409, detail="Target is already in the outreach funnel")
     _main._refuse_agent_approved_status(request.status)
     status = OutreachStatus.APPROVED if request.status == "approved" else OutreachStatus.PENDING
