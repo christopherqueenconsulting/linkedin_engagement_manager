@@ -1098,8 +1098,17 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
         if not failures:
             shipped, claim_failure = _review_claims(candidate)
             if shipped is not None:
-                _track(GATE_SHIPPED if shipped == candidate else GATE_STRIPPED, attempt)
-                return shipped
+                # Batch lint (#2665) steers, never skips: a hint spends one regeneration, and the
+                # last attempt ships whatever it has.
+                hints = (_framework.comment_batch_report(shipped, recent_comments)["hints"]
+                         if surface == "comment" and attempt < attempts else [])
+                if not hints:
+                    _track(GATE_SHIPPED if shipped == candidate else GATE_STRIPPED, attempt)
+                    return shipped
+                log_debug(f"Comment batch lint asked for a different shape: {'; '.join(hints)}",
+                          user_id=user_id, action_type="comment")
+                fix_directive = _framework.comment_retry_directive(hints)
+                continue
             failures = [claim_failure]
             last["checks"] = ["claims"]
         # Rewrite without the claim (issue #2136): drop the sentences carrying the invented
