@@ -4239,6 +4239,7 @@ def generate_carousel_content(user_id: int, stage: str, prefs: dict = None,
     """
     from cqc_lem.utilities.carousel_creator import missing_carousel_fields
     from cqc_lem.utilities.db import get_user_password_pair_by_id
+    from cqc_lem.utilities.engagement_window import SessionDeferred
     from cqc_lem.utilities.linkedin.helper import get_my_profile
     from cqc_lem.utilities.linkedin.profile import LinkedInProfile as _Profile
     from cqc_lem.utilities.selenium_util import get_driver_wait_pair, quit_gracefully
@@ -4262,8 +4263,11 @@ def generate_carousel_content(user_id: int, stage: str, prefs: dict = None,
             profile = get_my_profile(driver, wait, user_email, user_password, user_id=user_id)
         finally:
             quit_gracefully(driver)
-    except Exception as exc:
-        if isinstance(exc, SuggestOnlyEngagement):
+    except (Exception, SessionDeferred) as exc:
+        if isinstance(exc, SessionDeferred):
+            log_debug("Live profile scrape deferred for carousel generation (session window)",
+                      user_id=user_id)
+        elif isinstance(exc, SuggestOnlyEngagement):
             log_debug("Live profile scrape skipped for carousel generation — suggest-only account",
                       user_id=user_id)
         else:

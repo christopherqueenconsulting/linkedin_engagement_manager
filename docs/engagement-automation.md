@@ -983,24 +983,44 @@ never touched. It runs from STDIN inside the production image
 (`sudo docker exec -i celery_worker python - [--cancel] [--json] < scripts/audit_outbound_drafts.py`),
 against `mysql_db`, never `lem-it-mysql`.
 
-## Session window gate — Phase 1, shadow only (`utilities/engagement_window.py`, issue #2628)
+## Session window gate — shadow and enforce (`utilities/engagement_window.py`, issue #2628)
 
-`session_window_decision(user_id, lane, now, tz, sessions_today)` is the pure answer to "may a
-BACKGROUND browser session open now": Monday–Friday, 07:00–19:00 in the user's own timezone,
-inside window A (08:00–08:45) or C (12:30–13:15), at most 3 sessions per local day. Window B
-(post-tied), volume-scaled blocks, deferral with an eta and per-user windows are later phases.
+`session_window_decision(user_id, lane, now, tz, sessions_today, user_started, approved_comments,
+post_times)` is the pure answer to "may a BACKGROUND browser session open now": Monday–Friday,
+07:00–19:00 in the user's own timezone, inside window A (08:00–08:45) or C (12:30–13:15), at most
+3 sessions per local day (4 when the volume needs a fourth block). Per-user windows and the
+experiments are later phases.
 
-- `SESSION_WINDOW_MODE=off|shadow`, read at call time, default **off**. `enforce` is not built and
-  reads as `shadow`. Shadow NEVER refuses: `observe_session_window` runs at `get_docker_driver`,
-  the one seam every `get_driver_wait_pair` lane reaches (DMs, invites, stale-invite withdrawal,
-  `comment_on_post`, content generation), so counts are complete.
-- A would-defer is an INFO line plus one `session_window_shadow` event (`reason`, `lane`, `window`),
-  never `log_warning`. Reasons: `weekend`, `night`, `outside_window`, `over_daily_target`.
+- `SESSION_WINDOW_MODE=off|shadow|enforce`, read at call time, default **off**. With `off` or
+  `shadow` every schedule and behaviour is unchanged (`test_session_window.py` pins it). Both
+  modes run `observe_session_window` at `get_docker_driver`, the one seam every
+  `get_driver_wait_pair` lane reaches (DMs, invites, stale-invite withdrawal, `comment_on_post`,
+  content generation), so the gate needs no per-beat crontab edit.
+- **Shadow** never refuses. A would-defer is an INFO line plus one `session_window_shadow` event
+  (`reason`, `lane`, `window`), never `log_warning`. Reasons: `weekend`, `night`,
+  `outside_window`, `over_daily_target`.
+- **Enforce** raises `SessionDeferred` (a `BaseException`, so a lane's `except Exception` cannot log
+  a designed deferral as a failure). `DailyCapAwareTask.__call__` catches it and re-queues the same
+  task with `eta=next_window_start(...)` — the next block start on a weekday, a capped day skipped
+  — and ends `no_op`. Deferred, never dropped; if the re-queue itself fails the deferral is
+  raised so it never reads as success. The event is the shadow one with `window="deferred"`.
+- **Volume-scaled blocks** (`session_blocks`): none approved is A and C; otherwise ~88 s per
+  approved comment (`get_approved_comment_candidates`) spread over 2–4 blocks of 45–60 minutes
+  (100 comments ≈ 3 × 49 min), the extra blocks at 16:00 (D) and 10:00 (E). **Window B** opens
+  15 minutes before to 60 after each scheduled post (`get_scheduled_post_times`).
+- Content generation (`run_content_plan._resolve_user_profile`, the `ai_helper` carousel) catches
+  the deferral and writes from the cached profile instead of waiting.
 - A NULL or unparseable `users.timezone` falls back to America/New_York, NOT UTC; a bad value warns
-  once per process. The per-local-day session counter is Redis and fails OPEN.
-- Sessions the user starts (profile refresh, Publish click, login) are exempt, matched on the
-  session name (`USER_STARTED_SESSION_MARKERS`).
-- Owner action: run shadow for 7 days or more, then ask for enforcement (Phase 2).
+  once per process. The per-local-day session counter is Redis; Redis, DB or any state fault fails
+  OPEN (the session opens).
+- **User-started exemption is an explicit flag**, `get_docker_driver(user_started=True)` via
+  `get_current_profile`, never a session-name match: the on-demand profile refresh
+  (`update_stale_profile(force_refresh=True)`, the SPA button) passes it and the nightly sweep,
+  which shares its session name, does not. A Publish click and a cookie/PIN login open no
+  separate session today; one that does must pass the flag.
+- The host-cron SDUI drift probe is not a Celery beat and is not gated; it runs Mondays 16:00 UTC.
+- Owner action: run shadow for 7 days or more, then `SESSION_WINDOW_MODE=enforce`. Rollback:
+  `off`.
 
 ## Human pacing (`utilities/human_pacing.py`, issue #626)
 

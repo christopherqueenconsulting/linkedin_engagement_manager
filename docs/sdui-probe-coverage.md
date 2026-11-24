@@ -84,7 +84,7 @@ degree badge and a green verdict there would claim coverage the run does not hav
 
 ## The weekly drift cron
 
-`scripts/weekly_sdui_drift_check.sh` (host cron, as `lem`, Mondays 06:40 UTC):
+`scripts/weekly_sdui_drift_check.sh` (host cron, as `lem`, Mondays 16:00 UTC):
 
 ```cron
 40 6 * * 1 /home/lem/<repo-clone>/scripts/weekly_sdui_drift_check.sh

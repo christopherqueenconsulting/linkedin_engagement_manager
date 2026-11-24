@@ -299,7 +299,8 @@ def _wait_for_selenium_ready(host: str, port: str, timeout: int = None) -> None:
 def get_docker_driver(headless: bool = True, session_name: str = "ChromeTests", coordinates: dict = None,
                       user_id: int = None, lat: float = None, lng: float = None,
                       debug: bool = None, debug_required: bool = False,
-                      needs_images: bool = False, demo_safe: bool = False) -> webdriver.Remote:
+                      needs_images: bool = False, demo_safe: bool = False,
+                      user_started: bool = False) -> webdriver.Remote:
     """Open a Chrome session on the standalone-chrome container — the ONE way a driver is created.
 
     Everything that makes a session look like the user rather than a datacenter bot is applied here:
@@ -336,9 +337,13 @@ def get_docker_driver(headless: bool = True, session_name: str = "ChromeTests", 
     `demo_safe=True` is the exemption for a session that films our OWN SPA and never navigates to
     LinkedIn (the tutorial recorder); `test_demo_mode.py` pins who may pass it.
 
+    `user_started=True` is the explicit exemption from the session window (#2628) for a session
+    the USER asked for (on-demand profile refresh); it is never inferred from the session name.
+
     Raises:
         DemoModeError: `DEMO_MODE` is on and the caller did not pass `demo_safe=True`.
         SuggestOnlyEngagement: `user_id` belongs to a suggest-only account (issue #2367).
+        SessionDeferred: `SESSION_WINDOW_MODE=enforce` and a background session may not open now.
     """
     if not demo_safe:
         guard_linkedin("selenium.get_docker_driver")
@@ -348,7 +353,7 @@ def get_docker_driver(headless: bool = True, session_name: str = "ChromeTests", 
         from cqc_lem.utilities.engagement_mode import require_browser_automation
         require_browser_automation(user_id, session_name)
         from cqc_lem.utilities.engagement_window import observe_session_window
-        observe_session_window(user_id, session_name)  # shadow only: never refuses (#2628)
+        observe_session_window(user_id, session_name, user_started=user_started)  # #2628
 
     if debug is None:
         debug = isTrue(os.getenv("SELENIUM_DEBUG_NODE", "False"))
@@ -1450,7 +1455,7 @@ def get_driver_wait(driver, wait_time: int = None):
 
 def get_driver_wait_pair(headless=False, session_name: str = "ChromeTests", max_retry=3, coordinates: dict = None,
                          user_id: int = None, debug: bool = None, debug_required: bool = False,
-                         needs_images: bool = False):
+                         needs_images: bool = False, user_started: bool = False):
     """Create a driver and its matching wait, retrying session creation with exponential backoff.
 
     ONLY SessionNotCreatedException is retried: a full pool clears on its own, while any other
@@ -1472,7 +1477,7 @@ def get_driver_wait_pair(headless=False, session_name: str = "ChromeTests", max_
         try:
             driver = get_docker_driver(headless=headless, session_name=session_name, coordinates=coordinates,
                                        user_id=user_id, debug=debug, debug_required=debug_required,
-                                       needs_images=needs_images)
+                                       needs_images=needs_images, user_started=user_started)
             break  # Exit the loop if successful
         except SessionNotCreatedException as e:
             if attempt == max_retry - 1:
