@@ -43,6 +43,18 @@ def test_dm_prompt_carries_exemplars_when_present():
     assert _MARK in content and "- my own dm one" in content
 
 
+def test_dm_near_copy_of_exemplar_is_redrafted_once():
+    from cqc_lem.utilities.ai import ai_helper
+    with patch(_NEAREST, return_value=["my own dm one"]), \
+         patch(f"{_AI}._call_llm", return_value=_resp("hi")) as call, \
+         patch(f"{_AI}._humanize_text", side_effect=lambda c, **kw: c), \
+         patch(f"{_AI}._voice_exemplars.too_close_to_exemplar",
+               side_effect=[{"score": 0.9, "threshold": 0.82}, None]):
+        ai_helper.generate_nurture_dm("Sounds good", "interested", _profile(), user_id=7)
+    assert call.call_count == 2
+    assert "nearly copied" in call.call_args.kwargs["messages"][0]["content"]
+
+
 def _capture_comment(exemplars):
     from cqc_lem.utilities.ai import ai_helper
     seen = {}

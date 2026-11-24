@@ -1976,9 +1976,9 @@ def generate_nurture_dm(their_message: str, intent: str, profile: "LinkedInProfi
     # Few-shot from the user's own writing (#2627); "" (prompt unchanged) unless the flag is on and
     # enough exemplars exist. The query is the contact's reply, which already goes to the same
     # LiteLLM proxy for drafting; the Phase 2 sensitive-info check will cover both calls.
-    voice_block = _voice_exemplars.exemplar_block(
-        _voice_exemplars.nearest_voice_exemplars(user_id, str(their_message or "")[:500])
-        if user_id else [])
+    dm_exemplars = (_voice_exemplars.nearest_voice_exemplars(user_id, str(their_message or "")[:500])
+                    if user_id else [])
+    voice_block = _voice_exemplars.exemplar_block(dm_exemplars)
     if voice_block:
         user_prompt = {"role": "user", "content": user_prompt["content"] + voice_block}
     temperature = round(random.uniform(0.4, 0.6), 2)
@@ -1991,8 +1991,14 @@ def generate_nurture_dm(their_message: str, intent: str, profile: "LinkedInProfi
         content = response.choices[0].message.content
         if content is None:
             return None
-        return _humanize_text(content.strip(), content_type="dm",
+        text = _humanize_text(content.strip(), content_type="dm",
                               profile_synthesis=profile_synthesis, prefs=prefs, max_chars=300)
+        # One fresh retry when the draft near-copies an exemplar it was shown (#2627); the lint's own
+        # redrafts pass a directive, so this never nests.
+        if not fix and _voice_exemplars.too_close_to_exemplar(text, dm_exemplars):
+            return _draft("\nYour last draft nearly copied one of the user's example messages. "
+                          "Write it fresh, in their style but in new words.")
+        return text
 
     return lint_repaired(_draft(), "dm", _draft, action_type="dm")
 
