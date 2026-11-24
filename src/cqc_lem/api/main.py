@@ -3671,18 +3671,60 @@ def _refuse_agent_approved_status(status: Optional[str]) -> None:
     raise _agent_approval_refusal()
 
 
-def _voice_note_edit(user_id: int, lane: str, item_id: int, stored: Optional[str],
-                     submitted: Optional[str]) -> None:
-    """Edited-draft capture (#2627 1b): keep a pending draft's text as drafted before an edit lands."""
+def _machine_seat() -> bool:
+    """Is THIS request an MCP or agent seat? Text such a seat writes is never the user's own voice."""
+    return bool(_mcp_source() or _agent_scoped())
+
+
+# Lane -> (column naming who wrote the row's text, whether a later human edit takes the text back).
+# A scheduled DM or connection request an agent created is the user's text once they edit it, which
+# leaves a noted original (an agent rewrite discards it); a catch-up touch or funnel target flagged
+# by an agent stays the agent's for review, so it is never labelled.
+_AGENT_TEXT_MARKS: dict[str, tuple[str, bool]] = {
+    "scheduled_dm": ("source", True), "connection_request": ("source", True),
+    "catchup_touch": ("edited_via", False), "outreach_target": ("created_via", False),
+}
+
+
+def _agent_wrote_text(user_id: int, lane: str, item_id: int, row: Optional[dict]) -> bool:
+    """Was the text about to be approved last written by an MCP agent, per the row's provenance?"""
+    mark = _AGENT_TEXT_MARKS.get(lane)
+    if mark is None or not row or row.get(mark[0]) != MCP_ROW_SOURCE:
+        return False
+    if not mark[1]:
+        return True
     from cqc_lem.utilities.ai import voice_exemplars
 
+    return not voice_exemplars.human_edit_noted(user_id, lane, item_id)
+
+
+def _voice_note_edit(user_id: int, lane: str, item_id: int, stored: Optional[str],
+                     submitted: Optional[str]) -> None:
+    """Edited-draft capture (#2627 1b): keep a pending draft's text as drafted before an edit lands.
+
+    An MCP or agent seat's edit is never captured, and it discards any original a human edit noted,
+    because the text on file is now the agent's.
+    """
+    from cqc_lem.utilities.ai import voice_exemplars
+
+    if _machine_seat():
+        if submitted is not None:
+            voice_exemplars.discard_draft_edit(user_id, lane, item_id)
+        return
     voice_exemplars.note_draft_edit(user_id, lane, item_id, stored, submitted)
 
 
-def _voice_record_approval(user_id: int, lane: str, item_id: int, final: Optional[str]) -> None:
-    """Edited-draft capture (#2627 1b): an approval of an edited draft stores original + final."""
+def _voice_record_approval(user_id: int, lane: str, item_id: int, final: Optional[str],
+                           row: Optional[dict] = None) -> None:
+    """Edited-draft capture (#2627 1b): an approval of an edited draft stores original + final.
+
+    Skipped for an MCP or agent seat, and when `row` shows the approved text was last written by an
+    agent (a human or MCP approval alike): agent text is never stored as the user's own writing.
+    """
     from cqc_lem.utilities.ai import voice_exemplars
 
+    if _machine_seat() or _agent_wrote_text(user_id, lane, item_id, row):
+        return
     voice_exemplars.record_approved_edit(user_id, lane, item_id, final)
 
 
@@ -4244,14 +4286,13 @@ def update_scheduled_dm_endpoint(request: UpdateDmRequest) -> ResponseModel[str]
             # rule rides along: approving a DM past its slot means send it now (#2103).
             fields.update(_mcp_approval_fields())
             if request.scheduled_datetime is None:
-                dm = get_scheduled_dm(request.dm_id)
-                if dm and scheduled_dm_is_stale(dm.get("scheduled_time")):
+                if stored_dm and scheduled_dm_is_stale(stored_dm.get("scheduled_time")):
                     fields["scheduled_time"] = datetime.now(timezone.utc)
         _pending_edit_or_raise("scheduled_dm", request.dm_id, user_id, fields,
                                "Could not update scheduled DM")
         if status == ScheduledDmStatus.APPROVED:
             _voice_record_approval(user_id, "scheduled_dm", request.dm_id,
-                                   request.message or stored_message)
+                                   request.message or stored_message, stored_dm)
         return ResponseModel(status_code=200, detail="Scheduled DM updated")
     scheduled_time = request.scheduled_datetime
     if status == ScheduledDmStatus.APPROVED and scheduled_time is None:
@@ -4265,7 +4306,7 @@ def update_scheduled_dm_endpoint(request: UpdateDmRequest) -> ResponseModel[str]
         raise HTTPException(status_code=500, detail="Could not update scheduled DM")
     if status == ScheduledDmStatus.APPROVED:
         _voice_record_approval(user_id, "scheduled_dm", request.dm_id,
-                               request.message or stored_message)
+                               request.message or stored_message, stored_dm)
     return ResponseModel(status_code=200, detail="Scheduled DM updated")
 
 
@@ -4404,9 +4445,10 @@ def update_connection_request_endpoint(request: ConnectionRequestUpdate) -> Resp
                                                   request.recipient_name, request.message,
                                                   request.recipient_email)):
         raise HTTPException(status_code=422, detail="Nothing to update — provide at least one field or an action")
-    stored_message = None
+    stored_row: dict = {}
     if request.message is not None or status == ConnectionRequestStatus.APPROVED:
-        stored_message = (current or get_connection_request(request.request_id) or {}).get("message")
+        stored_row = current or get_connection_request(request.request_id) or {}
+    stored_message = stored_row.get("message")
     _voice_note_edit(user_id, "connection_request", request.request_id, stored_message, request.message)
     if _edits_pending_only():
         if status is None and request.recipient_email is not None and all(
@@ -4435,7 +4477,7 @@ def update_connection_request_endpoint(request: ConnectionRequestUpdate) -> Resp
                                "Could not update connection request")
         if status == ConnectionRequestStatus.APPROVED:
             _voice_record_approval(user_id, "connection_request", request.request_id,
-                                   request.message or stored_message)
+                                   request.message or stored_message, stored_row)
         return ResponseModel(status_code=200, detail="Connection request updated")
     if not update_connection_request(request.request_id,
                                      recipient_profile_url=request.recipient_profile_url,
@@ -4447,7 +4489,7 @@ def update_connection_request_endpoint(request: ConnectionRequestUpdate) -> Resp
         raise HTTPException(status_code=500, detail="Could not update connection request")
     if status == ConnectionRequestStatus.APPROVED:
         _voice_record_approval(user_id, "connection_request", request.request_id,
-                               request.message or stored_message)
+                               request.message or stored_message, stored_row)
     return ResponseModel(status_code=200, detail="Connection request updated")
 
 
@@ -4504,6 +4546,16 @@ def list_lead_signals_endpoint(session_token: str, status_filter: Optional[str] 
     return ResponseModel(status_code=200, detail=result)
 
 
+def _finish_lead_approval(user_id: int, signal_id: int, draft: Optional[str], send: bool) -> None:
+    """After an approved lead signal is stored: record the voice approval (if allowed), THEN send.
+
+    The one order for the human and the MCP path, so a send never precedes the label.
+    """
+    _voice_record_approval(user_id, "lead_signal", signal_id, draft)
+    if send:
+        send_lead_response.apply_async(kwargs={"signal_id": signal_id})
+
+
 @router.put("/lead_signal")
 def update_lead_signal_endpoint(request: LeadSignalUpdate) -> ResponseModel[str]:
     """Edit a lead's draft, dismiss the signal, or APPROVE it — approval is the only thing that
@@ -4533,19 +4585,15 @@ def update_lead_signal_endpoint(request: LeadSignalUpdate) -> ResponseModel[str]
                                     ("status", status)) if v is not None}
         _pending_edit_or_raise("lead_signal", request.signal_id, user_id, fields,
                                "Could not update lead signal")
-        if status == LeadSignalStatus.APPROVED and _mcp_approval_granted():
+        if status == LeadSignalStatus.APPROVED:
             # Reached only when the pending-only write above moved the row (it raises otherwise),
             # so a signal already approved, sent or dismissed never dispatches a second reply.
-            send_lead_response.apply_async(kwargs={"signal_id": request.signal_id})
-        if status == LeadSignalStatus.APPROVED:
-            _voice_record_approval(user_id, "lead_signal", request.signal_id, draft)
+            _finish_lead_approval(user_id, request.signal_id, draft, send=_mcp_approval_granted())
         return ResponseModel(status_code=200, detail="Lead signal updated")
     if not update_lead_signal(request.signal_id, draft_response=request.draft_response, status=status):
         raise HTTPException(status_code=500, detail="Could not update lead signal")
     if status == LeadSignalStatus.APPROVED:
-        _voice_record_approval(user_id, "lead_signal", request.signal_id, draft)
-    if status == LeadSignalStatus.APPROVED:
-        send_lead_response.apply_async(kwargs={"signal_id": request.signal_id})
+        _finish_lead_approval(user_id, request.signal_id, draft, send=True)
     return ResponseModel(status_code=200, detail="Lead signal updated")
 
 
@@ -4720,13 +4768,13 @@ def update_catchup_touch_endpoint(request: UpdateCatchupTouchRequest) -> Respons
         _pending_edit_or_raise("catchup_touch", request.touch_id, user_id, fields,
                                "Could not update catch-up touch")
         if status == CatchupTouchStatus.APPROVED:
-            _voice_record_approval(user_id, "catchup_touch", request.touch_id, final_message)
+            _voice_record_approval(user_id, "catchup_touch", request.touch_id, final_message, touch)
         return ResponseModel(status_code=200, detail="Catch-up touch updated")
     if not update_catchup_touch(request.touch_id, message=request.message,
                                 person_name=request.person_name, status=status):
         raise HTTPException(status_code=500, detail="Could not update catch-up touch")
     if status == CatchupTouchStatus.APPROVED:
-        _voice_record_approval(user_id, "catchup_touch", request.touch_id, final_message)
+        _voice_record_approval(user_id, "catchup_touch", request.touch_id, final_message, touch)
     return ResponseModel(status_code=200, detail="Catch-up touch updated")
 
 

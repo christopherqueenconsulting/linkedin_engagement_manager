@@ -9,9 +9,10 @@ whose text echoes the rejected values, and lists every registered tool to every 
 - `tools/call` refuses a tool outside the scope, validates with the tool's own `extra="forbid"`
   model and reports only WHICH fields failed, runs the tool under a 20s limit, and shapes every
   result through `redact.finalize`;
-- a queue-write tool (W2) runs through `writes.run_write` (flag, dedupe, write budgets, audit; a
-  timeout is `unknown`, never `timeout`); a W2b spend tool guards itself and a timeout is `unknown`
-  too. The internal/sandbox-only `lem_approve_item` (owner ruling O1)
+- a queue-write tool (W2: `write` and not `self_guarded`) runs through `writes.run_write` (flag,
+  dedupe, write budgets, audit; a timeout is `unknown`, never `timeout`); a W2b spend tool is
+  `self_guarded`: it checks its own flag and budget, its route audits it, it is not deduped, and a
+  timeout is `unknown` too. The internal/sandbox-only `lem_approve_item` (owner ruling O1)
   is neither listed nor run for any other account;
 - each call is logged at INFO (tool, outcome, latency; never arguments or results) and reported as
   `mcp_tool_call` and, content-free, to PostHog MCP analytics (`observability.capture_mcp_analytics`).
@@ -188,7 +189,7 @@ async def call_tool(request: Optional[Request], name: str,
         except ValidationError as exc:
             raise _validation_failure(exc) from None
         loopback = loopback_for(request)
-        if spec.name in registry.QUEUE_WRITE_NAMES:
+        if registry.routed_through_run_write(spec):
             bound = loopback
             payload = await writes.run_write(spec, args, principal,
                                              lambda: spec.run(bound, args), TOOL_TIMEOUT_SECONDS,
@@ -263,8 +264,9 @@ _STATIC = {
     GUIDE_URI: "\n\n".join(registry.EXPLANATIONS[t] for t in
                            ("overview", "statuses", "gates", "approval")),
     POLICY_URI: registry.EXPLANATIONS["agent_capabilities"] + (
-        " Nothing an agent creates is ever sent: it lands as pending, and only the user approves it "
-        "in LEM. Never tell the user something was sent, posted or approved."),
+        " Nothing an agent creates is sent by the agent: it lands as pending, and the user approves it "
+        "in LEM (the one exception is `lem_approve_item`, on internal and sandbox accounts only). "
+        "Never tell the user something was sent, posted or approved unless a tool result says so."),
 }
 
 

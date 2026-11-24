@@ -917,6 +917,7 @@ from cqc_lem.platform.db.repositories.users import (
 from cqc_lem.platform.db.repositories.voice_exemplars import (
     MAX_EXEMPLARS_PER_USER,
     count_voice_exemplars,
+    discard_draft_original,
     exemplar_hash,
     finalize_edit_label,
     get_draft_original,
@@ -1268,6 +1269,7 @@ __all__ = [
     "count_voice_exemplars",
     "exemplar_hash",
     "finalize_edit_label",
+    "discard_draft_original",
     "get_draft_original",
     "get_embedded_voice_exemplars",
     "get_existing_exemplar_hashes",

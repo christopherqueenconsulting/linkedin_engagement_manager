@@ -20,8 +20,11 @@ Rules every tool keeps:
   a database or Redis read behind an existing route. The only spend is the three `write` tools from
   `tools_spend.py` (W2b), which queue generation behind their own narrow routes and never run it.
 - The queue-only write tools (W2) live in `tools_write.py` and are appended to `TOOLS` at the bottom
-  of this module. A `write` spec runs through `writes.run_write` (flag, dedupe, write budgets, audit);
-  an `approval` spec is listed and run ONLY for an internal or sandbox account (owner ruling O1).
+  of this module. A `write` spec that is not `self_guarded` runs through `writes.run_write` (flag,
+  dedupe, write budgets, audit), exactly once. The three spend specs are `self_guarded`: they check
+  the flag and spend the write budgets in their own runner, are audited by their route, and are not
+  deduped. An `approval` spec is listed and run ONLY for an internal or sandbox account (owner ruling
+  O1) and is always routed through `run_write` (asserted at import).
 """
 
 import datetime as dt
@@ -174,11 +177,17 @@ class ToolSpec:
     calls: tuple[tuple[str, str], ...]
     run: Runner
     open_world: bool = False
-    # A tool that changes something (W2 queue-only writes, W2b spend tools): gated by
-    # `mcp-server-writes`, annotated `readOnlyHint=false`, deduped, spends the write budgets and
-    # writes an `mcp_write` audit row. A write that runs out of time is `unknown`, never a
-    # safe-to-retry `timeout`. Never approves, except `approval` below.
+    # A tool that changes something (W2 queue-only writes, W2b spend tools), annotated
+    # `readOnlyHint=false`. A queue write goes through `writes.run_write`: gated by
+    # `mcp-server-writes`, deduped, spends the write budgets and writes an `mcp_write` audit row;
+    # one that runs out of time is `unknown`, never a safe-to-retry `timeout`. Never approves,
+    # except `approval` below.
     write: bool = False
+    # True only for a write that checks the flag and spends the write budgets itself (the W2b spend
+    # tools; their route writes the audit row and they are not deduped). `calls` skips `run_write`
+    # for it, because running both would charge every call twice. Default False, so a new write is
+    # guarded unless it says otherwise.
+    self_guarded: bool = False
     # Listed in `tools/list` and run ONLY when the account is internal or sandbox (owner ruling O1);
     # refused with `agent_may_not_approve` everywhere else, by the tool AND by the route.
     approval: bool = False
@@ -609,7 +618,7 @@ _WRITE_EXPLANATION = (
     "outreach token) queue DMs, connection requests and outreach targets, edit pending lead-signal "
     "and catch-up drafts and update a lead. Every one of those lands PENDING for the user's approval "
     "in LEM; on LEM's own internal and sandbox accounts only, `lem_approve_item` can approve a "
-    "pending outreach item.")
+    "pending outreach item, which releases it to be sent (a lead reply sends immediately).")
 
 EXPLANATIONS: dict[str, str] = {
     "overview": (
@@ -628,9 +637,10 @@ EXPLANATIONS: dict[str, str] = {
         "fails is held at pending with `gate_reason` saying why."),
     "approval": (
         "Approval is a human action in LEM. Anything an agent creates or edits through MCP lands "
-        "as PENDING for the user to review, and nothing is sent until they approve it. The one "
-        "exception is `lem_approve_item`, which exists only on LEM's own internal and sandbox "
-        "accounts; it never approves a post. An agent can never publish, delete or change settings."),
+        "as PENDING for the user to review. The one exception is `lem_approve_item`, which exists "
+        "only on LEM's own internal and sandbox accounts: there, approving an outreach item "
+        "releases it to be sent, and approving a lead reply sends it immediately. It never "
+        "approves a post. An agent can never publish, delete or change settings."),
     # Read rules, then each write family's own sentence (queue-only writes: `_WRITE_EXPLANATION`;
     # AI and media generation: `tools_spend.SPEND_EXPLANATION`), then what no tool can do. A write
     # family adds its sentence here, never a second explanation.
@@ -639,8 +649,9 @@ EXPLANATIONS: dict[str, str] = {
         "newsletter and (with an outreach token) the outreach queues.",
         _WRITE_EXPLANATION,
         SPEND_EXPLANATION,
-        "It cannot send, publish, delete, run the browser automation or change settings: for "
-        "those, use `lem_open_in_lem` and ask the user to act in LEM.")),
+        "Apart from `lem_approve_item` on those internal and sandbox accounts, it cannot send, "
+        "publish, delete, run the browser automation or change settings: for those, use "
+        "`lem_open_in_lem` and ask the user to act in LEM.")),
 }
 
 DESTINATIONS: dict[str, str] = {
@@ -769,11 +780,18 @@ READ_TOOLS: tuple[ToolSpec, ...] = (
 from cqc_lem.api.mcp.tools_write import WRITE_TOOLS  # noqa: E402
 
 TOOLS: tuple[ToolSpec, ...] = READ_TOOLS + spend_tools() + WRITE_TOOLS
-# The tools `writes.run_write` serves (flag, dedupe, budgets, audit). The W2b spend tools are `write`
-# too but spend the flag and the write budgets inside their own runner (`tools_spend.py`), so
-# running them through `run_write` as well would charge every call twice.
-QUEUE_WRITE_NAMES: frozenset[str] = frozenset(spec.name for spec in WRITE_TOOLS)
 TOOLS_BY_NAME: dict[str, ToolSpec] = {spec.name: spec for spec in TOOLS}
+
+
+def routed_through_run_write(spec: ToolSpec) -> bool:
+    """Whether `tools/call` runs this spec through `writes.run_write` (the one routing rule)."""
+    return spec.write and not spec.self_guarded
+
+
+for _spec in TOOLS:
+    if _spec.approval:
+        assert routed_through_run_write(_spec), f"{_spec.name}: an approval tool must run via run_write"
+del _spec
 
 
 def tools_for_scope(scope: Optional[str]) -> tuple[ToolSpec, ...]:
@@ -793,4 +811,4 @@ def refused_tool(name: str) -> ToolFailure:
 
 __all__ = ["TOOLS", "READ_TOOLS", "TOOLS_BY_NAME", "ToolSpec", "ToolArgs", "tools_for_scope", "registry_grants",
            "refused_tool", "THIRD_PARTY_NOTE", "FAN_OUT_CONCURRENCY", "EXPLANATIONS",
-           "DESTINATIONS", "QUEUE_WRITE_NAMES"]
+           "DESTINATIONS", "routed_through_run_write"]

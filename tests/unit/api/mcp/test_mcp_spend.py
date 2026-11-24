@@ -9,6 +9,7 @@ dispatch are patched; no LLM is ever reached (`mock_openai_client` is asserted u
 """
 
 import asyncio
+import dataclasses
 import logging
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -391,7 +392,7 @@ class TestTheTruthTheAgentIsTold:
 
     def test_every_spend_tool_states_its_caps_and_that_it_lands_pending(self) -> None:
         for spec in registry.TOOLS:
-            if spec.write and spec.name not in registry.QUEUE_WRITE_NAMES:
+            if spec.self_guarded:
                 assert "10 posts, 3 images and 1 video" in spec.description, spec.name
                 assert "PENDING" in spec.description, spec.name
         assert "premium video credits" in registry.TOOLS_BY_NAME[
@@ -509,9 +510,7 @@ class TestTheSpendToolsInTheRegistry:
 
         spec = registry.TOOLS_BY_NAME["lem_generate_post"]
         monkeypatch.setitem(registry.TOOLS_BY_NAME, "lem_generate_post",
-                            registry.ToolSpec(spec.name, spec.title, spec.description,
-                                              spec.args_model, spec.scopes, spec.calls, slow,
-                                              write=True))
+                            dataclasses.replace(spec, run=slow))
         monkeypatch.setattr(calls, "TOOL_TIMEOUT_SECONDS", 0.01)
         request = MagicMock()
         request.scope = {"state": {"mcp_principal": MagicMock(user_id=UID, scope="mcp",

@@ -201,18 +201,18 @@ def spend_tools() -> "tuple[ToolSpec, ...]":
                  "Have LEM write a new post about `topic` in the user's own voice and settings."
                  + _SPEND_RULES,
                  GeneratePostArgs, BOTH_SCOPES, ((POST, SPEND_POST_PATH),), _generate_post,
-                 write=True),
+                 write=True, self_guarded=True),
         ToolSpec("lem_generate_post_image", "Generate a post image",
                  "Render an image for a pending text post THIS token created, once its text is "
                  "written and while it has no image. The post stays PENDING." + _SPEND_RULES,
                  SpendPostIdArgs, BOTH_SCOPES, ((POST, SPEND_IMAGE_PATH),), _generate_post_image,
-                 write=True),
+                 write=True, self_guarded=True),
         ToolSpec("lem_generate_post_video", "Generate a post video",
                  "Render a video for a pending text post THIS token created, once its text is "
                  "written; the post becomes a video post when the video lands, still PENDING. "
                  "Takes minutes." + _VIDEO_CREDITS + _SPEND_RULES,
                  SpendPostIdArgs, BOTH_SCOPES, ((POST, SPEND_VIDEO_PATH),), _generate_post_video,
-                 write=True),
+                 write=True, self_guarded=True),
     )
 
 

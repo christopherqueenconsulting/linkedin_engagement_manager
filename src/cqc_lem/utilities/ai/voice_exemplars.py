@@ -176,6 +176,24 @@ def note_draft_edit(user_id: int, lane: str, item_id: int, stored: Optional[str]
     db.remember_draft_original(user_id, lane, item_id, stored)
 
 
+def discard_draft_edit(user_id: int, lane: str, item_id: int) -> None:
+    """Drop a draft's noted original because an agent just rewrote its text.
+
+    The text on file is no longer one a human edited, so a later approval must not label it as the
+    user's writing. A no-op when nothing was noted or the label is already finalized.
+    """
+    from cqc_lem.utilities import db
+
+    db.discard_draft_original(user_id, lane, item_id)
+
+
+def human_edit_noted(user_id: int, lane: str, item_id: int) -> bool:
+    """Has a human edit of this draft been noted (and not discarded by a later agent rewrite)?"""
+    from cqc_lem.utilities import db
+
+    return db.get_draft_original(user_id, lane, item_id) is not None
+
+
 def record_approved_edit(user_id: int, lane: str, item_id: int, final: Optional[str]) -> bool:
     """Label an approved draft the user edited: store original + final, feed the final to the corpus.
 

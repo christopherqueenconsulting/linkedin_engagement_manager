@@ -162,9 +162,10 @@ def update_outreach_target_endpoint(request: UpdateOutreachTargetRequest) -> Res
     if status is None and all(v is None for v in (request.target_name, request.context_url,
                                                   request.draft_text)):
         raise HTTPException(status_code=422, detail="Nothing to update — provide at least one field or an action")
-    stored_draft = None
+    stored_target: dict = {}
     if request.draft_text is not None or status == OutreachStatus.APPROVED:
-        stored_draft = (get_outreach_target(request.target_id) or {}).get("draft_text")
+        stored_target = get_outreach_target(request.target_id) or {}
+    stored_draft = stored_target.get("draft_text")
     _main._voice_note_edit(user_id, "outreach_target", request.target_id, stored_draft, request.draft_text)
     if _main._edits_pending_only():
         fields = {k: v for k, v in (("target_name", request.target_name),
@@ -179,7 +180,7 @@ def update_outreach_target_endpoint(request: UpdateOutreachTargetRequest) -> Res
                                      "Could not update outreach target")
         if status == OutreachStatus.APPROVED:
             _main._voice_record_approval(user_id, "outreach_target", request.target_id,
-                                         request.draft_text or stored_draft)
+                                         request.draft_text or stored_draft, stored_target)
         return ResponseModel(status_code=200, detail="Outreach target updated")
     if not update_outreach_target(request.target_id, target_name=request.target_name,
                                   context_url=request.context_url, draft_text=request.draft_text,
@@ -189,7 +190,7 @@ def update_outreach_target_endpoint(request: UpdateOutreachTargetRequest) -> Res
         raise HTTPException(status_code=500, detail="Could not update outreach target")
     if status == OutreachStatus.APPROVED:
         _main._voice_record_approval(user_id, "outreach_target", request.target_id,
-                                     request.draft_text or stored_draft)
+                                     request.draft_text or stored_draft, stored_target)
     return ResponseModel(status_code=200, detail="Outreach target updated")
 
 

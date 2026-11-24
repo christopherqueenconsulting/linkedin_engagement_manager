@@ -87,7 +87,7 @@ def _error(result: dict) -> dict:
 
 class TestTheWriteRegistry:
     def test_the_write_tools_are_exactly_the_plan_s(self) -> None:
-        assert registry.QUEUE_WRITE_NAMES == WRITE_NAMES
+        assert {s.name for s in registry.TOOLS if registry.routed_through_run_write(s)} == WRITE_NAMES
 
     def test_the_only_other_write_tools_are_the_w2b_spend_tools(self) -> None:
         """Every `write` spec is a queue write (run by `run_write`) or one of the three spend tools."""
