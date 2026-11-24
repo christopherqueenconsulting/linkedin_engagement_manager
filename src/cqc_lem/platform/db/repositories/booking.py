@@ -157,8 +157,10 @@ def attribute_booking(user_id: int, lead_id: int, invitee_uri: str) -> bool:
     """Store first/last touch on the booking's stage event (#2668); True when a row was updated.
 
     Walks back `ATTRIBUTION_WINDOW_DAYS` from the event time through the lead's recorded activity
-    and inbound reply events. No touch is `unattributed`, never a guess. A read fault writes nothing
-    (attribution stays NULL) rather than a false `unattributed`. Leads keyed by email (a booking with
+    and inbound reply events. No touch is `unattributed`, never a guess. A fault in this function's
+    own reads writes nothing (attribution stays NULL). `get_lead_activity` logs and skips a single
+    failing source instead of raising, so a fault inside one source can still read `unattributed`;
+    that is logged at ERROR there. Leads keyed by email (a booking with
     no matching LinkedIn lead) have no activity under that key, so they read `unattributed`.
     """
     from cqc_lem.platform.db.repositories.outreach import get_lead_activity
