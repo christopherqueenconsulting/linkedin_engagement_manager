@@ -103,26 +103,29 @@ def _refusal_from(status: int, body: Any) -> ToolFailure:
                        status)
 
 
-_ROUTE_PATHS: dict[str, str] = {}
+_ROUTE_PATHS: dict[tuple[str, str], str] = {}
 
 
-def route_path(path: str) -> str:
-    """The real `/api` path of the GET route a registry path names.
+def route_path(path: str, method: str = "GET") -> str:
+    """The real `/api` path of the route a registry path names, for one verb.
 
     The registry speaks scope keys (`/posts`, no trailing slash) because that is what the grants
     are keyed on, but several routes are declared WITH one (`/api/posts/`), and asking for the other
     spelling is answered with a 307 the loopback deliberately does not follow. So the route table
     is read once and each key mapped to the path the route really has. A concrete templated path
-    (`/posts/5`) has no key of its own and is sent as given.
+    (`/posts/5`) has no key of its own and is sent as given. Keyed by verb too, because a write
+    route and a read route can share a key with different spellings (`POST /schedule_post/`).
     """
     if not _ROUTE_PATHS:
         from cqc_lem.api import main  # lazy: main imports this package
 
         for route in main._walk_routes(main.app.routes):
             full = getattr(route, "path", None)
-            if full and full.startswith("/api/") and "GET" in (getattr(route, "methods", None) or ()):
-                _ROUTE_PATHS.setdefault(main._scope_path(full), full)
-    return _ROUTE_PATHS.get(path, f"/api{path}")
+            if not full or not full.startswith("/api/"):
+                continue
+            for verb in getattr(route, "methods", None) or ():
+                _ROUTE_PATHS.setdefault((verb, main._scope_path(full)), full)
+    return _ROUTE_PATHS.get((method.upper(), path), f"/api{path}")
 
 
 def build_transport() -> httpx2.ASGITransport:
@@ -148,6 +151,8 @@ class Loopback:
     token: str = field(repr=False)
     client_ip: Optional[str] = None
     inner_calls: int = 0
+    # Writes SENT to a route (W2): a write tool's failure before the first one changed nothing.
+    writes_attempted: int = 0
     last_status: Optional[int] = None
     _limiter: anyio.Semaphore = field(default_factory=lambda: anyio.Semaphore(FAN_OUT_CONCURRENCY),
                                       repr=False)
@@ -214,6 +219,9 @@ class Loopback:
             # Its own task: the route's ContextVars (session scope, path, request) live and die there.
             task = asyncio.create_task(client.get(route_path(path), params=query))
             response = await task
+        return self._detail(response)
+
+    def _detail(self, response: httpx2.Response) -> Any:
         self.last_status = response.status_code
         try:
             body = response.json()
@@ -222,6 +230,43 @@ class Loopback:
         if response.status_code != 200:
             raise _refusal_from(response.status_code, body)
         return body.get("detail") if isinstance(body, dict) else None
+
+    async def write(self, method: str, path: str, body: Mapping[str, Any],
+                    params: Optional[Mapping[str, Any]] = None) -> dict[str, Any]:
+        """Send one write (POST or PUT) to a LEM route as the caller and return its whole body.
+
+        A write spends no READ budget: the write tool already spent the per-user WRITE budgets once
+        for the tool call (`writes.py`). The body carries `session_token=cookie`, the same sentinel a
+        read puts in its query, so the real token is in no URL and no body.
+
+        Args:
+            method: `POST` or `PUT`.
+            path: The registry's path, e.g. `/schedule_dm`.
+            body: The JSON body; `session_token` is always replaced with the sentinel.
+            params: Query parameters (`/update_post/` takes its `post_id` there).
+
+        Returns:
+            The route's JSON body on a 200 (`detail` plus any top-level fields, e.g. `post_id`).
+
+        Raises:
+            ToolFailure: The route answered anything but 200.
+        """
+        from cqc_lem.api.main import COOKIE_SESSION_SENTINEL  # lazy: main imports this package
+
+        payload = {k: v for k, v in body.items() if v is not None}
+        payload["session_token"] = COOKIE_SESSION_SENTINEL
+        query = {k: v for k, v in (params or {}).items() if v is not None}
+        query["session_token"] = COOKIE_SESSION_SENTINEL
+        async with self._limiter:
+            self.inner_calls += 1
+            self.writes_attempted += 1
+            client = self._http()
+            task = asyncio.create_task(client.request(method.upper(), route_path(path, method),
+                                                      params=query, json=payload))
+            response = await task
+        self._detail(response)
+        data = response.json()
+        return data if isinstance(data, dict) else {"detail": data}
 
 
 def loopback_for(request: Optional[Request]) -> Loopback:

@@ -19,6 +19,12 @@ Rules every tool keeps:
 - No READ tool runs Selenium, calls an LLM, generates media or queries PostHog. Every read here is
   a database or Redis read behind an existing route. The only spend is the three `write` tools from
   `tools_spend.py` (W2b), which queue generation behind their own narrow routes and never run it.
+- The queue-only write tools (W2) live in `tools_write.py` and are appended to `TOOLS` at the bottom
+  of this module. A `write` spec that is not `self_guarded` runs through `writes.run_write` (flag,
+  dedupe, write budgets, audit), exactly once. The three spend specs are `self_guarded`: they check
+  the flag and spend the write budgets in their own runner, are audited by their route, and are not
+  deduped. An `approval` spec is listed and run ONLY for an internal or sandbox account (owner ruling
+  O1) and is always routed through `run_write` (asserted at import).
 """
 
 import datetime as dt
@@ -171,9 +177,20 @@ class ToolSpec:
     calls: tuple[tuple[str, str], ...]
     run: Runner
     open_world: bool = False
-    # A tool that changes something (W2b's spend tools): annotated `readOnlyHint=false`, and a call
-    # that runs out of time is `unknown`, never a safe-to-retry `timeout`.
+    # A tool that changes something (W2 queue-only writes, W2b spend tools), annotated
+    # `readOnlyHint=false`. A queue write goes through `writes.run_write`: gated by
+    # `mcp-server-writes`, deduped, spends the write budgets and writes an `mcp_write` audit row;
+    # one that runs out of time is `unknown`, never a safe-to-retry `timeout`. Never approves,
+    # except `approval` below.
     write: bool = False
+    # True only for a write that checks the flag and spends the write budgets itself (the W2b spend
+    # tools; their route writes the audit row and they are not deduped). `calls` skips `run_write`
+    # for it, because running both would charge every call twice. Default False, so a new write is
+    # guarded unless it says otherwise.
+    self_guarded: bool = False
+    # Listed in `tools/list` and run ONLY when the account is internal or sandbox (owner ruling O1);
+    # refused with `agent_may_not_approve` everywhere else, by the tool AND by the route.
+    approval: bool = False
 
 
 # --- helpers ---------------------------------------------------------------------------------------
@@ -594,6 +611,15 @@ async def _newsletter_subscribers(lb: Loopback, args: SubscriberArgs) -> dict[st
                      "this is the paged count history.")}
 
 
+# The queue-only write tools' sentence in `agent_capabilities` (W2, `tools_write.py`). Spelled
+# here, not imported: `tools_write` imports this module.
+_WRITE_EXPLANATION = (
+    "When writes are enabled it can also draft text posts and revise pending ones, and (with an "
+    "outreach token) queue DMs, connection requests and outreach targets, edit pending lead-signal "
+    "and catch-up drafts and update a lead. Every one of those lands PENDING for the user's approval "
+    "in LEM; on LEM's own internal and sandbox accounts only, `lem_approve_item` can approve a "
+    "pending outreach item, which releases it to be sent (a lead reply sends immediately).")
+
 EXPLANATIONS: dict[str, str] = {
     "overview": (
         "LEM runs a user's LinkedIn presence: it plans and drafts posts for a 30-day content plan, "
@@ -610,17 +636,22 @@ EXPLANATIONS: dict[str, str] = {
         "similarity check against recent posts, a slop lint and a no-meeting-ask rule. A draft that "
         "fails is held at pending with `gate_reason` saying why."),
     "approval": (
-        "Approval is a human action in LEM. An agent connected through MCP can never approve, "
-        "send, publish, delete or change settings. Anything an agent creates lands as pending for "
-        "the user to review."),
-    # Read rules, then each write family's own sentence (spend: `tools_spend.SPEND_EXPLANATION`),
-    # then what no tool can do. A write family adds its sentence here, never a second explanation.
+        "Approval is a human action in LEM. Anything an agent creates or edits through MCP lands "
+        "as PENDING for the user to review. The one exception is `lem_approve_item`, which exists "
+        "only on LEM's own internal and sandbox accounts: there, approving an outreach item "
+        "releases it to be sent, and approving a lead reply sends it immediately. It never "
+        "approves a post. An agent can never publish, delete or change settings."),
+    # Read rules, then each write family's own sentence (queue-only writes: `_WRITE_EXPLANATION`;
+    # AI and media generation: `tools_spend.SPEND_EXPLANATION`), then what no tool can do. A write
+    # family adds its sentence here, never a second explanation.
     "agent_capabilities": " ".join((
         "This MCP server can read the user's posts, plan, performance, settings, voice kit, "
         "newsletter and (with an outreach token) the outreach queues.",
+        _WRITE_EXPLANATION,
         SPEND_EXPLANATION,
-        "It cannot send, approve, publish, delete, run the browser automation or change settings: "
-        "for those, use `lem_open_in_lem` and ask the user to act in LEM.")),
+        "Apart from `lem_approve_item` on those internal and sandbox accounts, it cannot send, "
+        "publish, delete, run the browser automation or change settings: for those, use "
+        "`lem_open_in_lem` and ask the user to act in LEM.")),
 }
 
 DESTINATIONS: dict[str, str] = {
@@ -643,7 +674,7 @@ _HEALTH_CALLS = ((GET, "/user/automation-status"), (GET, "/user/linkedin-signin-
                  (GET, "/user/account-readiness"))
 _DASHBOARD_CALLS = ((GET, "/dashboard/stats"), (GET, "/dashboard/planned-tasks"))
 
-TOOLS: tuple[ToolSpec, ...] = (
+READ_TOOLS: tuple[ToolSpec, ...] = (
     ToolSpec("lem_whoami", "Who am I in LEM",
              "Your LEM account: account name (LinkedIn handle), engagement mode, content "
              "language, and this token's scope and expiry. Call it first.",
@@ -742,11 +773,25 @@ TOOLS: tuple[ToolSpec, ...] = (
              "change settings).",
              OpenArgs, BOTH_SCOPES, (), _open_in_lem),
 )
-# The AI/media spend tools (W2b) live in their own module; appended here so ONE registry serves
-# `tools/list`, `tools/call` and the surface drift guard.
-TOOLS = TOOLS + spend_tools()
+# Last, and deliberately so: the write tools import this module's models and helpers, which all
+# exist by this line. Appending here keeps one registry, so `tools/list`, the drift guard and
+# `tools/call` read the same table. The AI/media spend tools (W2b) live in `tools_spend.py` and the
+# queue-only writes (W2) in `tools_write.py`.
+from cqc_lem.api.mcp.tools_write import WRITE_TOOLS  # noqa: E402
 
+TOOLS: tuple[ToolSpec, ...] = READ_TOOLS + spend_tools() + WRITE_TOOLS
 TOOLS_BY_NAME: dict[str, ToolSpec] = {spec.name: spec for spec in TOOLS}
+
+
+def routed_through_run_write(spec: ToolSpec) -> bool:
+    """Whether `tools/call` runs this spec through `writes.run_write` (the one routing rule)."""
+    return spec.write and not spec.self_guarded
+
+
+for _spec in TOOLS:
+    if _spec.approval:
+        assert routed_through_run_write(_spec), f"{_spec.name}: an approval tool must run via run_write"
+del _spec
 
 
 def tools_for_scope(scope: Optional[str]) -> tuple[ToolSpec, ...]:
@@ -764,6 +809,6 @@ def refused_tool(name: str) -> ToolFailure:
     return ToolFailure(REFUSED, "unknown_tool", "That tool is not available to this token.")
 
 
-__all__ = ["TOOLS", "TOOLS_BY_NAME", "ToolSpec", "ToolArgs", "tools_for_scope", "registry_grants",
+__all__ = ["TOOLS", "READ_TOOLS", "TOOLS_BY_NAME", "ToolSpec", "ToolArgs", "tools_for_scope", "registry_grants",
            "refused_tool", "THIRD_PARTY_NOTE", "FAN_OUT_CONCURRENCY", "EXPLANATIONS",
-           "DESTINATIONS"]
+           "DESTINATIONS", "routed_through_run_write"]

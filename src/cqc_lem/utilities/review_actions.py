@@ -47,6 +47,8 @@ NOT_WAITING = "not_waiting_for_review"
 NOT_ACTIONABLE = "lane_not_actionable"
 EMPTY_MESSAGE = "empty_message"
 WRITE_FAILED = "write_failed"
+# An agent-created row (MCP W2) is approved one at a time, never swept up in a multi-item approve.
+APPROVE_ONE_AT_A_TIME = "agent_created_approve_individually"
 AUTHENTICITY_BELOW_FLOOR = "authenticity_below_floor"
 
 

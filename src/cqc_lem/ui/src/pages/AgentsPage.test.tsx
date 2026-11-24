@@ -117,6 +117,9 @@ function expectTokenNowhereButTheDom(token = TOKEN) {
   }
 }
 
+// MCP W2: the activity card's rows (`GET /user/mcp-token/activity`).
+let activity: unknown[] = []
+
 beforeEach(() => {
   get.mockReset()
   post.mockReset()
@@ -125,12 +128,16 @@ beforeEach(() => {
   flagState.on = true
   strong = true
   info = { enabled: true, mcp_url: URL, tokens: [] }
+  activity = []
   get.mockImplementation((path: string) => {
     if (path.startsWith('/user/mcp-token/info')) {
       return info instanceof Error ? Promise.reject(info) : Promise.resolve({ data: { detail: info } })
     }
     if (path.startsWith('/user/auth-factors')) {
       return Promise.resolve({ data: { detail: { has_strong_factor: strong } } })
+    }
+    if (path.startsWith('/user/mcp-token/activity')) {
+      return Promise.resolve({ data: { detail: { events: activity } } })
     }
     return Promise.reject(new Error(`unexpected GET ${path}`))
   })
@@ -679,5 +686,23 @@ describe('AgentsPage error and off states', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create connection' }))
     await waitFor(() => expect(screen.getByText(/Shown once/)).toBeTruthy())
     for (const [path] of [...get.mock.calls, ...post.mock.calls]) expect(String(path)).not.toContain(TOKEN)
+  })
+})
+
+describe('AgentsPage activity (MCP W2)', () => {
+  it('shows what the agents did once a connection exists', async () => {
+    info = { enabled: true, mcp_url: URL, tokens: [row({})] }
+    activity = [{ event: 'mcp_write', success: true, client: 'claude-code',
+      details: { tool: 'lem_queue_dm', target_id: 5 }, created_at: '2026-11-24T03:00:00+00:00' }]
+    harness()
+    expect(await screen.findByText('Queued for your review: DM #5')).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'Agent activity' })).toBeTruthy()
+  })
+
+  it('has no activity card before any connection exists', async () => {
+    harness()
+    await screen.findByRole('heading', { name: 'Agents' })
+    expect(screen.queryByRole('heading', { name: 'Agent activity' })).toBeNull()
+    expect(get.mock.calls.some((c) => String(c[0]).startsWith('/user/mcp-token/activity'))).toBe(false)
   })
 })

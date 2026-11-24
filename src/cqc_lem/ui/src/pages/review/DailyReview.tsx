@@ -8,6 +8,7 @@ import {
   FLAG_LABELS,
   UNDO_LANES,
   ageTone,
+  bulkTargets,
   groupOf,
   highlightSegments,
   isSweepable,
@@ -37,6 +38,7 @@ const ERROR_TEXT: Record<string, string> = {
   lane_not_actionable: 'edit this one by hand',
   write_failed: 'could not save',
   server_unreachable: 'server unreachable',
+  agent_created_approve_individually: 'agent-created — approve it on its own',
 }
 
 interface BulkResult {
@@ -144,7 +146,7 @@ export default function DailyReview() {
 
   const run = useCallback(
     (targets: ReviewItem[], action: Action) => {
-      const allowed = targets.filter((t) => t.allowed_actions.includes(action))
+      const allowed = bulkTargets(targets, action).filter((t) => t.allowed_actions.includes(action))
       if (!allowed.length || bulk.isPending) return
       // Cancelling a funnel target aborts the whole funnel, so it is never one keystroke away.
       if (action === 'cancel' && allowed.some((t) => t.lane === FUNNEL_LANE)) {
@@ -303,6 +305,15 @@ export default function DailyReview() {
                         onChange={() => setSelected((s) => toggle(s, k))}
                       />
                       <span className="text-sm font-medium text-fg">{item.summary}</span>
+                      {item.agent_created && (
+                        <span
+                          data-testid="agent-created-badge"
+                          title="Queued by your coding agent. Approve it on its own."
+                          className="rounded bg-accent/10 px-1.5 py-0.5 text-xs font-medium text-accent"
+                        >
+                          Agent-created
+                        </span>
+                      )}
                       <span
                         data-testid="age-badge"
                         data-tone={tone}

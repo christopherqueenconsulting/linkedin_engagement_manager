@@ -111,6 +111,22 @@ HANDLER_GUARDED_ROUTES: dict[str, tuple[tuple[str, ...], str]] = {
     "act_on_curated_source": (
         ("_refuse_agent_approval(request.action)",),
         "action='approve' approves a curated post for publication"),
+    # Reached only by `mcp_outreach` (MCP W2): `PUT /dm` is `lem_approve_item`'s DM approval, which the
+    # handler allows only on an internal or sandbox account (owner ruling O1).
+    "update_scheduled_dm_endpoint": (
+        ("_refuse_agent_approval(request.action)",),
+        "action='approve' releases a DM that auto_check_scheduled_dms SENDS"),
+    "update_catchup_touch_endpoint": (
+        ("_refuse_agent_approval(request.action)",),
+        "action='approve' queues a congratulations for the send drip"),
+    # Reached only by the MCP seats (W2): `lem_draft_post` / `lem_revise_post_draft`. A queue-only seat
+    # is refused `approved` and held to a PENDING text draft with no media (W1).
+    "schedule_post": (
+        ("_refuse_agent_approved_status(post.status)", "_edits_pending_only()"),
+        "status='approved' queues a post for publication; media fields would spend before review"),
+    "update_post": (
+        ("_refuse_agent_approved_status(post.status)", "_edits_pending_only()"),
+        "status='approved' publishes a post; a machine seat may only revise a PENDING draft's text"),
 }
 
 # Reachable write routes whose body carries an `action` or `status` field and which were reviewed
@@ -146,16 +162,39 @@ OPERATOR_EXTRA_NON_ADMIN_ROUTES = frozenset({("POST", "/leads/refresh")})
 
 # A new restricted machine role is one more entry here.
 ROLE_SCOPES = _scopes()
-# The roles held to read verbs. The MCP seats are read-only in P2 (epic #2682); W2 moves them out
-# when it grants exactly one write verb per write-tool path.
-READ_ONLY_ROLES = ("observer", "mcp", "mcp_outreach")
-# The ONLY write verbs a read-only role reaches: the MCP AI/media spend routes (W2b, owner ruling O4).
-# Each creates or illustrates a PENDING draft, never approves, sends or edits anything else; their
-# bodies carry no `action`/`status` (pinned below), and each handler refuses every seat but an MCP one.
-SPEND_WRITE_REACH: dict[str, frozenset] = {
-    role: frozenset({("POST", "/user/mcp-spend/post"), ("POST", "/user/mcp-spend/post-image"),
-                     ("POST", "/user/mcp-spend/post-video")})
-    for role in ("mcp", "mcp_outreach")
+# The roles held to read verbs. The MCP seats were read-only in P2 (epic #2682); W2 moved them out
+# when it granted exactly one write verb per write-tool call (`test_mcp_scope.py` pins that table).
+READ_ONLY_ROLES = ("observer",)
+MCP_ROLES = ("mcp", "mcp_outreach")
+
+# The W2b spend routes (owner ruling O4): the only `/user/mcp-spend/*` writes an MCP seat reaches. Each
+# creates or illustrates a PENDING draft, never approves, sends or edits anything else; their bodies
+# carry no `action`/`status` (pinned below), and each handler refuses every seat but an MCP one.
+SPEND_WRITE_REACH: frozenset = frozenset({
+    ("POST", "/user/mcp-spend/post"), ("POST", "/user/mcp-spend/post-image"),
+    ("POST", "/user/mcp-spend/post-video"),
+})
+
+# Which classified handlers (HANDLER_GUARDED_ROUTES + NOT_AN_APPROVAL_VECTOR) each write-capable role
+# reaches, exactly. A classified route that moves out from under a role, or a guarded one that moves
+# in, fails `test_the_classified_routes_a_role_reaches_are_exactly_the_reviewed_ones`.
+_AGENT_CLASSIFIED = frozenset({
+    "update_engagement_preferences_endpoint", "schedule_dm_endpoint",
+    "create_outreach_target_endpoint", "create_connection_request_endpoint",
+    "update_connection_request_endpoint", "update_outreach_target_endpoint",
+    "update_lead_signal_endpoint", "act_on_curated_source", "update_lead_endpoint",
+})
+_MCP_CLASSIFIED = frozenset({"schedule_post", "update_post"})
+CLASSIFIED_REACH: dict[str, frozenset] = {
+    "agent": _AGENT_CLASSIFIED,
+    "operator": _AGENT_CLASSIFIED,
+    "mcp": _MCP_CLASSIFIED,
+    "mcp_outreach": _MCP_CLASSIFIED | frozenset({
+        "schedule_dm_endpoint", "create_connection_request_endpoint",
+        "update_connection_request_endpoint", "create_outreach_target_endpoint",
+        "update_outreach_target_endpoint", "update_lead_signal_endpoint",
+        "update_catchup_touch_endpoint", "update_lead_endpoint", "update_scheduled_dm_endpoint",
+    }),
 }
 
 
@@ -286,25 +325,27 @@ class TestReadOnlyRolesReachNoWriteVerb:
             route_table: list[tuple[str, str, Any]],
             role: str,
     ) -> None:
-        allowed = SPEND_WRITE_REACH.get(role, frozenset())
         offenders = [_describe(role, m, p, r)
                      for (m, p, r) in _reachable(main_mod, route_table, ROLE_SCOPES[role])
-                     if m not in READ_VERBS and (m, p) not in allowed]
+                     if m not in READ_VERBS]
         assert not offenders, (
             f"\n\nThe read-only {role!r} role can reach WRITE verbs:\n" + "\n".join(offenders) + "\n")
 
-    @pytest.mark.parametrize("role", sorted(SPEND_WRITE_REACH))
+    @pytest.mark.parametrize("role", MCP_ROLES)
     def test_the_spend_writes_are_reachable_exactly_and_carry_no_approval_field(
             self,
             main_mod: ModuleType,
             route_table: list[tuple[str, str, Any]],
             role: str,
     ) -> None:
-        """The allowlist above is exact: every entry is reached, and none can move a draft."""
-        writes = [(m, p, r) for (m, p, r) in _reachable(main_mod, route_table, ROLE_SCOPES[role])
-                  if m not in READ_VERBS]
-        assert {(m, p) for (m, p, _r) in writes} == SPEND_WRITE_REACH[role]
-        for _m, p, r in writes:
+        """The W2b spend routes (owner ruling O4) are reached as exactly these POSTs.
+
+        None can move a draft: no `action`/`status` in the body, and each serves MCP seats only.
+        """
+        spend = [(m, p, r) for (m, p, r) in _reachable(main_mod, route_table, ROLE_SCOPES[role])
+                 if p.startswith("/user/mcp-spend/")]
+        assert {(m, p) for (m, p, _r) in spend} == SPEND_WRITE_REACH
+        for _m, p, r in spend:
             assert not _body_fields(r) & _APPROVAL_FIELDS, p
             assert "_mcp_caller(" in inspect.getsource(r.endpoint) or \
                 "_queue_media(" in inspect.getsource(r.endpoint), p
@@ -377,18 +418,26 @@ class TestWriteCapableRolesCannotApprove:
             + "\n".join(offenders) + "\n")
 
     @pytest.mark.parametrize("role", WRITE_ROLES)
-    def test_every_classification_entry_is_still_a_reachable_route(
+    def test_the_classified_routes_a_role_reaches_are_exactly_the_reviewed_ones(
             self,
             main_mod: ModuleType,
             route_table: list[tuple[str, str, Any]],
             role: str,
     ) -> None:
-        """Stale entries hide a route that moved out from under its guard check."""
+        """Stale entries hide a route that moved out from under its guard check.
+
+        Roles reach different guarded routes (the MCP seats draft posts, the agent curates sources), so
+        each role's reach is pinned exactly rather than every entry being required of every role.
+        """
         reachable_names = {getattr(r.endpoint, "__name__", "")
                            for (_m, _p, r) in _reachable(main_mod, route_table, ROLE_SCOPES[role])}
-        stale = [n for n in (*HANDLER_GUARDED_ROUTES, *NOT_AN_APPROVAL_VECTOR)
-                 if n not in reachable_names]
-        assert not stale, f"classified but no longer reachable by {role!r}: {stale}"
+        classified = {*HANDLER_GUARDED_ROUTES, *NOT_AN_APPROVAL_VECTOR}
+        assert reachable_names & classified == CLASSIFIED_REACH[role], role
+
+    def test_every_classification_entry_is_reached_by_some_role(self) -> None:
+        """An entry no role reaches is a check that cannot fail."""
+        reached = set().union(*CLASSIFIED_REACH.values())
+        assert {*HANDLER_GUARDED_ROUTES, *NOT_AN_APPROVAL_VECTOR} == reached
 
 
 class TestOperatorApprovesOnlyOnInternalOrSandboxAccounts:
@@ -483,6 +532,169 @@ class TestOperatorApprovesOnlyOnInternalOrSandboxAccounts:
         assert names("operator") == names("agent") != set()
 
 
+class TestMcpApprovesOnlyOnInternalOrSandboxAccounts:
+    """Owner ruling O1: the MCP branch of `_refuse_agent_approval` mirrors the operator exemption.
+
+    Asserted from the guards themselves, like the operator's: the `approve`/`retry` action is allowed
+    (and audited `mcp_approval`) only when the acting account is internal or sandbox, and refused
+    with 403 `agent_may_not_approve` on every other kind. Unlike the operator, a CREATE asking for
+    `approved` is refused on every account kind: every MCP write other than the approval lands
+    pending. `_agent_scoped()` stays True, so the passive `auto_approve` default never opens.
+    """
+
+    @staticmethod
+    def _as_mcp(main_mod: ModuleType, scope: str, kind: Any) -> Any:
+        scope_reset = main_mod._request_session_scope.set(scope)
+        state = {"user_id": 1} if kind == "<unread>" else {"user_id": 1, "account_kind": kind}
+        state_reset = main_mod._request_mcp.set(state)
+        return scope_reset, state_reset
+
+    @staticmethod
+    def _restore(main_mod: ModuleType, resets: Any) -> None:
+        main_mod._request_mcp.reset(resets[1])
+        main_mod._request_session_scope.reset(resets[0])
+
+    @pytest.mark.parametrize("scope", MCP_ROLES)
+    @pytest.mark.parametrize("kind", ["internal", "sandbox"])
+    @pytest.mark.parametrize("action", ["approve", "retry"])
+    def test_an_mcp_seat_may_approve_on_an_internal_or_sandbox_account(
+            self, main_mod: ModuleType, scope: str, kind: str, action: str) -> None:
+        from unittest.mock import patch
+
+        resets = self._as_mcp(main_mod, scope, kind)
+        try:
+            with patch.object(main_mod, "_safe_auth_event") as audit:
+                main_mod._refuse_agent_approval(action)  # must not raise
+                assert main_mod._mcp_approval_granted() is True
+                # Unlike the operator, the approval itself stays a pending-only write: only a row
+                # still PENDING can be approved (409 otherwise), and nothing else opens.
+                assert main_mod._edits_pending_only() is True
+                # Nothing is recorded until that write has moved the row...
+                audit.assert_not_called()
+                with patch.object(main_mod, "update_pending_row",
+                                  return_value=main_mod.PendingEdit.UPDATED):
+                    main_mod._pending_edit_or_raise("scheduled_dm", 5, 1, {"status": "approved"},
+                                                    "x")
+                # ...and then exactly one `mcp_approval` row.
+                audit.assert_called_once()
+        finally:
+            self._restore(main_mod, resets)
+        assert audit.call_args.args[0] == main_mod.AuthAuditEvent.MCP_APPROVAL
+        assert audit.call_args.kwargs["details"]["account_kind"] == kind
+
+    def test_a_refused_approval_write_is_never_audited(self, main_mod: ModuleType) -> None:
+        from unittest.mock import patch
+
+        from fastapi import HTTPException
+
+        resets = self._as_mcp(main_mod, "mcp_outreach", "sandbox")
+        try:
+            with patch.object(main_mod, "_safe_auth_event") as audit, \
+                    patch.object(main_mod, "update_pending_row",
+                                 return_value=main_mod.PendingEdit.NOT_PENDING):
+                main_mod._refuse_agent_approval("approve")
+                with pytest.raises(HTTPException) as exc:
+                    main_mod._pending_edit_or_raise("scheduled_dm", 5, 1, {"status": "approved"},
+                                                    "x")
+        finally:
+            self._restore(main_mod, resets)
+        assert exc.value.status_code == 409
+        audit.assert_not_called()
+
+    @pytest.mark.parametrize("scope", MCP_ROLES)
+    @pytest.mark.parametrize("kind", ["standard", "", None, "INTERNAL", "internal ", "admin", 0])
+    def test_every_other_account_kind_is_refused_with_a_403(
+            self, main_mod: ModuleType, scope: str, kind: Any) -> None:
+        from fastapi import HTTPException
+
+        resets = self._as_mcp(main_mod, scope, kind)
+        try:
+            with pytest.raises(HTTPException) as exc:
+                main_mod._refuse_agent_approval("approve")
+            assert main_mod._mcp_approval_granted() is False
+            assert main_mod._edits_pending_only() is True
+        finally:
+            self._restore(main_mod, resets)
+        assert exc.value.status_code == 403
+        assert exc.value.detail["code"] == "agent_may_not_approve"
+
+    def test_an_unread_kind_is_read_once_and_fails_closed(self, main_mod: ModuleType) -> None:
+        from unittest.mock import patch
+
+        from fastapi import HTTPException
+
+        resets = self._as_mcp(main_mod, "mcp_outreach", "<unread>")
+        try:
+            with patch.object(main_mod, "get_user_account_kind", return_value="standard") as kind:
+                with pytest.raises(HTTPException):
+                    main_mod._refuse_agent_approval("approve")
+                main_mod._mcp_may_approve()
+        finally:
+            self._restore(main_mod, resets)
+        kind.assert_called_once_with(1)
+
+    def test_an_mcp_approval_is_stamped_with_the_agent_session_never_the_user(
+            self, main_mod: ModuleType) -> None:
+        from unittest.mock import patch
+
+        cookie = main_mod._request_session_cookie.set("lem_mcp_token")
+        try:
+            with patch.object(main_mod, "get_session_id", return_value=901) as sid:
+                fields = main_mod._mcp_approval_fields()
+            with patch.object(main_mod, "get_session_id", return_value=None):
+                assert main_mod._mcp_approver() == "mcp"
+        finally:
+            main_mod._request_session_cookie.reset(cookie)
+        sid.assert_called_once_with("lem_mcp_token")
+        assert fields["approved_by"] == "mcp:901"
+        assert not fields["approved_by"].startswith("user:")
+        assert fields["approved_at"] is not None
+
+    def test_no_resolver_stamp_is_refused(self, main_mod: ModuleType) -> None:
+        from fastapi import HTTPException
+
+        reset = main_mod._request_session_scope.set("mcp_outreach")
+        try:
+            with pytest.raises(HTTPException):
+                main_mod._refuse_agent_approval("approve")
+        finally:
+            main_mod._request_session_scope.reset(reset)
+
+    @pytest.mark.parametrize("scope", MCP_ROLES)
+    @pytest.mark.parametrize("kind", ["internal", "sandbox", "standard"])
+    def test_a_create_asking_for_approved_is_refused_on_every_kind(
+            self, main_mod: ModuleType, scope: str, kind: str) -> None:
+        from fastapi import HTTPException
+
+        resets = self._as_mcp(main_mod, scope, kind)
+        try:
+            with pytest.raises(HTTPException) as exc:
+                main_mod._refuse_agent_approved_status("approved")
+            assert main_mod._agent_scoped() is True
+        finally:
+            self._restore(main_mod, resets)
+        assert exc.value.detail["code"] == "agent_may_not_approve"
+
+    def test_the_mcp_scopes_never_enter_the_operator_exemption(self, main_mod: ModuleType) -> None:
+        for scope in MCP_ROLES:
+            reset = main_mod._request_session_scope.set(scope)
+            op = main_mod._request_operator.set({"account_kind": "internal", "user_id": 1})
+            try:
+                assert main_mod._operator_may_approve() is False
+            finally:
+                main_mod._request_operator.reset(op)
+                main_mod._request_session_scope.reset(reset)
+
+    def test_an_operator_never_takes_the_mcp_branch(self, main_mod: ModuleType) -> None:
+        reset = main_mod._request_session_scope.set(main_mod.SESSION_SCOPE_OPERATOR)
+        state = main_mod._request_mcp.set({"user_id": 1, "account_kind": "internal"})
+        try:
+            assert main_mod._mcp_may_approve() is False
+        finally:
+            main_mod._request_mcp.reset(state)
+            main_mod._request_session_scope.reset(reset)
+
+
 def patch_audit(main_mod: ModuleType) -> Any:
     """Silence the operator-approval audit row, which the guard writes when it allows an approval."""
     from unittest.mock import patch
@@ -554,11 +766,15 @@ class TestOperatorEligibilityGatesStayInPlace:
 
 
 class TestPostMutatingRoutesStayOffEveryMachineSurface:
-    """The post-mutating routes stay off every machine surface.
+    """The post-mutating routes stay off every machine surface but the MCP draft verbs.
 
     `/schedule_post`, `/update_post` and `/posts/bulk_update` can move a post to `approved`, which
-    publishes it. None of them is on any machine surface today; this keeps it that way.
+    publishes it. The ONLY machine reach is MCP W2's: `POST` on the first two, where the handler
+    refuses `approved` and keeps a queue-only seat to a PENDING text draft (HANDLER_GUARDED_ROUTES).
+    `/posts/bulk_update` stays off every surface.
     """
+
+    MCP_REACH = {"/schedule_post": ["POST"], "/update_post": ["POST"], "/posts/bulk_update": []}
 
     _PATHS = ("/schedule_post", "/update_post", "/posts/bulk_update")
 
@@ -579,5 +795,7 @@ class TestPostMutatingRoutesStayOffEveryMachineSurface:
     def test_no_role_can_reach_it_on_any_verb(self, main_mod: ModuleType,
                                               route_table: list[tuple[str, str, Any]], role: str,
                                               path: str) -> None:
-        reached = [m for (m, p, _r) in _reachable(main_mod, route_table, ROLE_SCOPES[role]) if p == path]
-        assert not reached, f"{role} reaches {path} on {reached}"
+        reached = sorted(m for (m, p, _r) in _reachable(main_mod, route_table, ROLE_SCOPES[role])
+                         if p == path)
+        expected = self.MCP_REACH[path] if role in MCP_ROLES else []
+        assert reached == expected, f"{role} reaches {path} on {reached}"

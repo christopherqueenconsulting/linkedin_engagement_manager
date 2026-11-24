@@ -100,6 +100,19 @@ def remember_draft_original(user_id: int, lane: str, item_id: int, original: str
         return False
 
 
+def discard_draft_original(user_id: int, lane: str, item_id: int) -> bool:
+    """Forget a draft's noted original, unless its label is already finalized. True when removed."""
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "DELETE FROM voice_edit_labels WHERE user_id = %s AND lane = %s AND item_id = %s "
+                "AND final_text IS NULL", (user_id, lane, int(item_id)))
+            return cursor.rowcount >= 1
+    except mysql.connector.Error as err:
+        log_error("Could not discard a draft's original text", exc=err, user_id=user_id)
+        return False
+
+
 def get_draft_original(user_id: int, lane: str, item_id: int) -> Optional[str]:
     """The text as drafted, or None for a draft never edited (or a read fault)."""
     try:

@@ -855,22 +855,26 @@ def get_requested_person_keys(user_id: int) -> set:
         return set()
 # --- Comment-first outreach funnel (issue #399) — approval-gated comment->connect->DM ---
 _OUTREACH_COLS = ("id", "user_id", "target_profile_url", "target_name", "stage", "status",
-                  "context_url", "draft_text", "notes", "approved_by", "created_at", "updated_at")
+                  "context_url", "draft_text", "notes", "approved_by", "created_via", "created_at",
+                  "updated_at")
 def insert_outreach_target(user_id: int, target_profile_url: str, target_name: str = None,
                            context_url: str = None, draft_text: str = None,
                            stage: "OutreachStage" = OutreachStage.COMMENT,
-                           status: "OutreachStatus" = OutreachStatus.PENDING) -> Optional[int]:
+                           status: "OutreachStatus" = OutreachStatus.PENDING,
+                           created_via: Optional[str] = None) -> Optional[int]:
     """Enter a person into the comment-first outreach funnel and return the row id.
 
     Starts at the COMMENT stage, PENDING: the funnel is approval-gated end to end, so this only queues.
     None when the insert failed — including when the (user, profile) pair is already in the funnel.
+    `created_via` is 'mcp' for a target the user's coding agent added (MCP W2); NULL otherwise.
     """
     try:
         with db_cursor(commit=True) as cursor:
             cursor.execute(
                 "INSERT INTO outreach_funnel_targets (user_id, target_profile_url, target_name, stage, "
-                "status, context_url, draft_text) VALUES (%s,%s,%s,%s,%s,%s,%s)",
-                (user_id, target_profile_url, target_name, str(stage), str(status), context_url, draft_text))
+                "status, context_url, draft_text, created_via) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                (user_id, target_profile_url, target_name, str(stage), str(status), context_url,
+                 draft_text, created_via))
             return cursor.lastrowid
     except mysql.connector.Error as err:
         log_error("Could not insert outreach target", exc=err, user_id=user_id)
@@ -1060,7 +1064,8 @@ def update_outreach_target(target_id: int, target_profile_url: str = None, targe
         return False
 # --- LinkedIn Catch-up touches (issue #482) — approval-gated, deduped milestone congratulations ---
 _CATCHUP_COLS = ("id", "user_id", "profile_url", "person_name", "event_type", "event_detail",
-                 "event_period", "score", "message", "status", "created_at", "updated_at")
+                 "event_period", "score", "message", "status", "edited_via", "created_at",
+                 "updated_at")
 def insert_catchup_touch(user_id: int, profile_url: str, event_type: "CatchupEventType",
                          event_period: str, person_name: str = None, event_detail: str = None,
                          message: str = None, score: int = 0,

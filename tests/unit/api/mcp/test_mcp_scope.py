@@ -1,4 +1,4 @@
-"""The `mcp` / `mcp_outreach` session scopes: surface, verbs, dispatch binding, field cuts (P2).
+"""The `mcp` / `mcp_outreach` session scopes: surface, verbs, dispatch binding, field cuts (P2, W2).
 
 `docs/agent-mcp-plan.md` §3.2 and §3.4. The route-table invariants every machine role keeps
 (nothing in `FORBIDDEN_ROLE_ROUTES`, no write verb for a read-only role) run for both MCP scopes in
@@ -40,14 +40,29 @@ EXPECTED_OUTREACH_EXTRA = frozenset({
     "/dms", "/connection_requests", "/leads", "/lead_signals", "/catchup/touches",
     "/outreach/targets", "/user/engagement-targets", "/user/engagement-suggestions",
 })
-# The ONLY write grants (W2b, owner ruling O4): `POST`, the three narrow AI/media spend routes.
+# The W2b spend grants (owner ruling O4): `POST`, the three narrow AI/media spend routes.
 EXPECTED_SPEND_POSTS = frozenset({
     "/user/mcp-spend/post", "/user/mcp-spend/post-image", "/user/mcp-spend/post-video",
 })
 
-
-def _get_grants(main_mod: Any, scope: str) -> set:
-    return {p for p, verbs in main_mod._SCOPE_PATH_METHODS[scope].items() if verbs == {"GET"}}
+# The reviewed WRITE grants (W2, plan §4): exactly one verb per write-tool call, written out. Two
+# outreach paths carry two verbs because `lem_approve_item` (owner ruling O1) PUTs the same path the
+# create POSTs; `PUT /dm` is that approval and nothing else. The W2b spend routes are `POST` on both.
+EXPECTED_MCP_WRITES = {"/schedule_post": frozenset({"POST"}), "/update_post": frozenset({"POST"}),
+                       **{path: frozenset({"POST"}) for path in EXPECTED_SPEND_POSTS}}
+EXPECTED_OUTREACH_WRITES = {
+    **EXPECTED_MCP_WRITES,
+    "/schedule_dm": frozenset({"POST"}),
+    "/connection_request": frozenset({"POST", "PUT"}),
+    "/outreach/target": frozenset({"POST", "PUT"}),
+    "/lead_signal": frozenset({"PUT"}),
+    "/catchup/touch": frozenset({"PUT"}),
+    "/lead": frozenset({"PUT"}),
+    "/dm": frozenset({"PUT"}),
+}
+EXPECTED_WRITES = {"mcp": EXPECTED_MCP_WRITES, "mcp_outreach": EXPECTED_OUTREACH_WRITES}
+EXPECTED_READS = {"mcp": EXPECTED_MCP_PATHS,
+                  "mcp_outreach": EXPECTED_MCP_PATHS | EXPECTED_OUTREACH_EXTRA}
 
 # Plan §4 "never read" and §5 "never exposed", as (method, path): each must be refused to both.
 NEVER_REACHABLE = (
@@ -56,9 +71,17 @@ NEVER_REACHABLE = (
     ("PUT", "/user/engagement-preferences"), ("POST", "/admin/automation-pause"),
     ("POST", "/admin/mcp-kill"), ("GET", "/user/token_status"), ("GET", "/user/security"),
     ("GET", "/user/posthog-stats"), ("GET", "/user/affiliate"), ("GET", "/admin/automation-status"),
-    ("GET", "/user/mcp-token/info"), ("GET", "/review/queue"), ("POST", "/schedule_dm"),
-    ("POST", "/connection_request"), ("POST", "/schedule_post"), ("POST", "/update_post"),
+    ("GET", "/user/mcp-token/info"), ("GET", "/user/mcp-token/activity"), ("GET", "/review/queue"),
+    # W2: no bulk approval, no delete or cancel, no curated sources (plan §5), no second verb.
+    ("POST", "/posts/bulk_update"), ("POST", "/review/bulk"), ("DELETE", "/dm"),
+    ("DELETE", "/connection_request"), ("DELETE", "/outreach/target"), ("DELETE", "/catchup/touch"),
+    ("POST", "/curated/source"), ("PUT", "/curated/source"), ("PUT", "/schedule_dm"),
+    ("PUT", "/schedule_post"), ("PUT", "/update_post"), ("POST", "/dm"), ("POST", "/lead_signal"),
+    ("POST", "/create_weekly_content"), ("POST", "/leads/refresh"),
 )
+# The outreach writes an `mcp` token never reaches: they act on other people (owner ruling O11).
+OUTREACH_ONLY_WRITES = tuple((verb, path) for path, verbs in EXPECTED_OUTREACH_WRITES.items()
+                             for verb in sorted(verbs) if path not in EXPECTED_MCP_WRITES)
 
 
 @pytest.fixture(scope="module")
@@ -69,39 +92,55 @@ def main_mod() -> Any:
 
 
 @pytest.fixture(scope="module")
-def get_routes(main_mod: Any) -> set:
-    """Every (scope-path) the app serves for GET."""
+def routes_by_verb(main_mod: Any) -> set:
+    """Every (verb, scope-path) the app serves."""
     out = set()
     for route in main_mod._walk_routes(main_mod.app.routes):
         path = getattr(route, "path", None)
-        if path and "GET" in (getattr(route, "methods", None) or ()):
-            out.add(main_mod._scope_path(path))
+        for verb in (getattr(route, "methods", None) or ()) if path else ():
+            out.add((verb, main_mod._scope_path(path)))
     return out
 
 
+def _expected_grants(scope: str) -> dict:
+    grants = {path: frozenset({"GET"}) for path in EXPECTED_READS[scope]}
+    for path, verbs in EXPECTED_WRITES[scope].items():
+        grants[path] = grants.get(path, frozenset()) | verbs
+    return grants
+
+
 class TestTheSurface:
-    def test_mcp_reads_exactly_the_reviewed_paths(self, main_mod: Any) -> None:
-        assert main_mod._SCOPE_SURFACES["mcp"] == EXPECTED_MCP_PATHS
-        assert _get_grants(main_mod, "mcp") == EXPECTED_MCP_PATHS
+    def test_mcp_reaches_exactly_the_reviewed_paths(self, main_mod: Any) -> None:
+        assert main_mod._SCOPE_SURFACES["mcp"] == EXPECTED_MCP_PATHS | set(EXPECTED_MCP_WRITES)
 
-    def test_mcp_outreach_is_mcp_plus_exactly_the_pii_lists(self, main_mod: Any) -> None:
-        assert main_mod._SCOPE_SURFACES["mcp_outreach"] == EXPECTED_MCP_PATHS | EXPECTED_OUTREACH_EXTRA
-        assert _get_grants(main_mod, "mcp_outreach") == EXPECTED_MCP_PATHS | EXPECTED_OUTREACH_EXTRA
-
-    @pytest.mark.parametrize("scope", MCP_SCOPES)
-    def test_every_grant_is_a_read_or_exactly_a_spend_post(self, main_mod: Any, scope: str) -> None:
-        grants = main_mod._SCOPE_PATH_METHODS[scope]
-        assert {v for v in grants.values()} == {frozenset({"GET"}), frozenset({"POST"})}
-        assert {p for p, verbs in grants.items() if verbs == {"POST"}} == EXPECTED_SPEND_POSTS
+    def test_mcp_outreach_is_mcp_plus_exactly_the_pii_lists_and_outreach_writes(
+            self, main_mod: Any) -> None:
+        assert main_mod._SCOPE_SURFACES["mcp_outreach"] == (
+            EXPECTED_MCP_PATHS | EXPECTED_OUTREACH_EXTRA | set(EXPECTED_OUTREACH_WRITES))
 
     @pytest.mark.parametrize("scope", MCP_SCOPES)
-    def test_every_granted_path_is_a_real_route_for_its_verb(self, main_mod: Any, get_routes: set,
-                                                             scope: str) -> None:
+    def test_the_verb_table_is_exactly_the_reviewed_one(self, main_mod: Any, scope: str) -> None:
+        """Reads are GET only; each write path carries exactly its reviewed verb(s), never more."""
+        assert dict(main_mod._SCOPE_PATH_METHODS[scope]) == _expected_grants(scope)
+
+    @pytest.mark.parametrize("scope", MCP_SCOPES)
+    def test_no_grant_is_delete_or_patch(self, main_mod: Any, scope: str) -> None:
+        verbs = set().union(*main_mod._SCOPE_PATH_METHODS[scope].values())
+        assert verbs <= {"GET", "POST", "PUT"}
+
+    @pytest.mark.parametrize("scope", MCP_SCOPES)
+    def test_every_grant_is_a_real_route_on_its_verb(self, main_mod: Any, routes_by_verb: set,
+                                                     scope: str) -> None:
         """A grant matching no route is a check that cannot fail, and a tool that cannot work."""
-        post_routes = {main_mod._scope_path(r.path) for r in main_mod._walk_routes(main_mod.app.routes)
-                       if "POST" in (getattr(r, "methods", None) or ())}
-        assert _get_grants(main_mod, scope) - get_routes == set()
-        assert EXPECTED_SPEND_POSTS - post_routes == set()
+        granted = {(verb, path) for path, verbs in main_mod._SCOPE_PATH_METHODS[scope].items()
+                   for verb in verbs}
+        assert granted - routes_by_verb == set()
+
+    @pytest.mark.parametrize("method,path", OUTREACH_ONLY_WRITES)
+    def test_mcp_cannot_reach_the_outreach_writes(self, main_mod: Any, method: str,
+                                                  path: str) -> None:
+        assert main_mod._scope_allows("mcp", path, method) is False
+        assert main_mod._scope_allows("mcp_outreach", path, method) is True
 
     @pytest.mark.parametrize("path", sorted(EXPECTED_OUTREACH_EXTRA))
     def test_mcp_cannot_reach_the_outreach_lists(self, main_mod: Any, path: str) -> None:

@@ -9,6 +9,11 @@ whose text echoes the rejected values, and lists every registered tool to every 
 - `tools/call` refuses a tool outside the scope, validates with the tool's own `extra="forbid"`
   model and reports only WHICH fields failed, runs the tool under a 20s limit, and shapes every
   result through `redact.finalize`;
+- a queue-write tool (W2: `write` and not `self_guarded`) runs through `writes.run_write` (flag,
+  dedupe, write budgets, audit; a timeout is `unknown`, never `timeout`); a W2b spend tool is
+  `self_guarded`: it checks its own flag and budget, its route audits it, it is not deduped, and a
+  timeout is `unknown` too. The internal/sandbox-only `lem_approve_item` (owner ruling O1)
+  is neither listed nor run for any other account;
 - each call is logged at INFO (tool, outcome, latency; never arguments or results) and reported as
   `mcp_tool_call` and, content-free, to PostHog MCP analytics (`observability.capture_mcp_analytics`).
 """
@@ -18,6 +23,7 @@ import json
 import time
 from typing import Any, Optional
 
+from fastapi.concurrency import run_in_threadpool
 from mcp.shared.exceptions import MCPError
 from mcp_types import (
     INVALID_PARAMS,
@@ -36,7 +42,7 @@ from mcp_types import (
 from pydantic import ValidationError
 from starlette.requests import Request
 
-from cqc_lem.api.mcp import tools as registry
+from cqc_lem.api.mcp import tools as registry, writes
 from cqc_lem.api.mcp.loopback import (
     INVALID_ARGS,
     OK,
@@ -76,7 +82,11 @@ def _input_schema(spec: registry.ToolSpec) -> dict[str, Any]:
 
 
 def mcp_tool(spec: registry.ToolSpec) -> Tool:
-    """One registry entry as the MCP `Tool` a client lists."""
+    """One registry entry as the MCP `Tool` a client lists.
+
+    A write tool says `readOnlyHint=false, destructiveHint=false` (plan §4): it only ever creates or
+    edits a pending item. It is not `idempotent` on its own; a repeated `client_request_id` is.
+    """
     return Tool(name=spec.name, title=spec.title, description=spec.description,
                 input_schema=_input_schema(spec),
                 annotations=ToolAnnotations(title=spec.title, read_only_hint=not spec.write,
@@ -84,11 +94,26 @@ def mcp_tool(spec: registry.ToolSpec) -> Tool:
                                             open_world_hint=spec.open_world))
 
 
-def list_tools(request: Optional[Request]) -> ListToolsResult:
-    """`tools/list` for this caller: exactly its scope's tools, nothing for an unadmitted request."""
+async def _approval_allowed(principal: Any) -> bool:
+    """May this caller see and run the approval tool? Only on an internal or sandbox account."""
+    user_id = getattr(principal, "user_id", None)
+    if user_id is None:
+        return False
+    return await run_in_threadpool(writes.account_may_approve, user_id)
+
+
+async def list_tools(request: Optional[Request]) -> ListToolsResult:
+    """`tools/list` for this caller: exactly its scope's tools, nothing for an unadmitted request.
+
+    An `approval` tool is listed only when the account is internal or sandbox (owner ruling O1); the
+    account kind is read only when the scope lists one.
+    """
     principal = principal_of(request)
     scope = getattr(principal, "scope", None)
-    return ListToolsResult(tools=[mcp_tool(spec) for spec in registry.tools_for_scope(scope)])
+    specs = registry.tools_for_scope(scope)
+    if any(spec.approval for spec in specs) and not await _approval_allowed(principal):
+        specs = tuple(spec for spec in specs if not spec.approval)
+    return ListToolsResult(tools=[mcp_tool(spec) for spec in specs])
 
 
 def _validation_failure(exc: ValidationError) -> ToolFailure:
@@ -164,12 +189,19 @@ async def call_tool(request: Optional[Request], name: str,
         except ValidationError as exc:
             raise _validation_failure(exc) from None
         loopback = loopback_for(request)
-        payload = await asyncio.wait_for(spec.run(loopback, args), TOOL_TIMEOUT_SECONDS)
+        if registry.routed_through_run_write(spec):
+            bound = loopback
+            payload = await writes.run_write(spec, args, principal,
+                                             lambda: spec.run(bound, args), TOOL_TIMEOUT_SECONDS,
+                                             attempted=lambda: bound.writes_attempted > 0)
+        else:
+            payload = await asyncio.wait_for(spec.run(loopback, args), TOOL_TIMEOUT_SECONDS)
         shaped = finalize(payload)
-        if (isinstance(shaped, dict) and shaped.get("truncated")
+        if (not spec.write and isinstance(shaped, dict) and shaped.get("truncated")
                 and "limit" in spec.args_model.model_fields):
             # A page trimmed to fit 64 KB would have a cursor that skips the rows it cut. A tool
             # with a `limit` refuses instead, so every row stays reachable with a smaller page.
+            # Never a write: its answer is small, and refusing it would hide a write that landed.
             raise ToolFailure(INVALID_ARGS, "result_too_large",
                               "This result is over 64 KB. Ask again with a lower `limit`.")
         result = _ok(spec, shaped)
@@ -178,8 +210,9 @@ async def call_tool(request: Optional[Request], name: str,
         result = _error(failure)
     except asyncio.TimeoutError:
         if spec is not None and spec.write:
-            # A write may have landed after the budget ran out: `unknown`, never a safe retry
-            # (plan §5), or a retry could queue the spend twice.
+            # Only a W2b spend tool reaches this (a queue write's timeout is raised by
+            # `writes.run_write`). It may have landed after the budget ran out: `unknown`, never a
+            # safe retry (plan §5), or a retry could queue the spend twice.
             outcome = UNKNOWN
             result = _error(ToolFailure(UNKNOWN, "unknown",
                                         "LEM did not confirm this in time and it may have been "
@@ -231,8 +264,9 @@ _STATIC = {
     GUIDE_URI: "\n\n".join(registry.EXPLANATIONS[t] for t in
                            ("overview", "statuses", "gates", "approval")),
     POLICY_URI: registry.EXPLANATIONS["agent_capabilities"] + (
-        " Nothing an agent creates is ever sent: it lands as pending, and only the user approves it "
-        "in LEM. Never tell the user something was sent, posted or approved."),
+        " Nothing an agent creates is sent by the agent: it lands as pending, and the user approves it "
+        "in LEM (the one exception is `lem_approve_item`, on internal and sandbox accounts only). "
+        "Never tell the user something was sent, posted or approved unless a tool result says so."),
 }
 
 

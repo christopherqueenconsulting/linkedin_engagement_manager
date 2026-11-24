@@ -14,6 +14,9 @@ export interface ReviewItem {
   confidence: number | null
   allowed_actions: string[]
   edit_href: string
+  // MCP W2: a DM or connection request the user's coding agent queued. Badged, and never part
+  // of a bulk approve: it is approved one row at a time, after a human has read it.
+  agent_created?: boolean
 }
 
 export interface ReviewSummary {
@@ -85,9 +88,11 @@ export function groupOf(item: ReviewItem): ReviewGroup {
   return item.risk_flags.length ? 'check' : 'clean'
 }
 
-/** What "Approve all with no flags" may sweep in: unflagged, unheld, scored, and approvable. */
+/** What "Approve all with no flags" may sweep in: unflagged, unheld, scored, approvable, and
+ * not agent-created (MCP W2 — those are approved one at a time). */
 export function isSweepable(item: ReviewItem): boolean {
   return (
+    !item.agent_created &&
     item.risk_flags.length === 0 &&
     !item.hold_reason &&
     item.confidence !== null &&
@@ -98,6 +103,17 @@ export function isSweepable(item: ReviewItem): boolean {
 // Cancel-until-sent is real only where an approved row waits for a scheduled slot. Connection
 // requests, funnel stages and catch-up touches dispatch on the next scan, so there is nothing to undo.
 export const UNDO_LANES = ['scheduled_dms']
+
+/** The targets a bulk action may take. An approve of more than one item never includes an
+ * agent-created row (MCP W2); the server refuses it too. Single-item approve and every cancel
+ * are unchanged. */
+export function bulkTargets<T extends Pick<ReviewItem, 'agent_created'>>(
+  targets: T[],
+  action: 'approve' | 'cancel',
+): T[] {
+  if (action !== 'approve' || targets.length < 2) return targets
+  return targets.filter((t) => !t.agent_created)
+}
 
 export function ageTone(hours: number | null): 'red' | 'amber' | 'none' {
   if (hours === null) return 'none'

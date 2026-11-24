@@ -31,6 +31,8 @@ interface ScheduledDm {
 const SOURCE_LABELS: Record<string, string> = {
   nurture: 'AUTO-DRAFTED REPLY',
   profile_viewer: 'VIEWED YOUR PROFILE',
+  // MCP W2: queued by the user's own coding agent, never by LEM. Read it before approving.
+  mcp: 'Agent-created',
 }
 
 const STATUS_COLORS: Record<string, string> = {

@@ -682,8 +682,10 @@ write route below is now **pending-only, in SQL**, for a queue-only seat:
   (`agent_may_not_configure`). The operator adds `/leads/refresh` and the pause.
 - **Who is held:** `_edits_pending_only()` is `_agent_scoped() and not _operator_may_approve()`. The
   operator exemption (an `operator` on an internal or sandbox account) keeps the human write path,
-  exactly as it keeps the approval verbs and the `operator_approval` audit row. A full session is
-  untouched.
+  exactly as it keeps the approval verbs and the `operator_approval` audit row. An MCP seat never
+  leaves the pending-only path, not even for its internal/sandbox approval (MCP W2): that approval
+  is a pending-only write of `status` (plus `approved_by = mcp:<session>`), so it can only move a
+  row still waiting for review. A full session is untouched.
 
 Three more rules ride the same seats:
 
@@ -1010,20 +1012,48 @@ there is no new login and no new credential store. Full plan: `docs/agent-mcp-pl
 
 | Scope | Reaches | Verbs |
 |---|---|---|
-| `mcp` | `_MCP_READ_PATHS`: the user's own settings, automation state, dashboard, posts, plan, generation status, performance, engagement preferences and DM templates, voice kit, newsletter settings/draft and subscriber counts, plus one templated grant, `GET /posts/{post_id}` (`_SCOPE_PATH_PATTERN_METHODS`). `/user/settings` returns `subscription: null` to any seat outside the human scopes, and the billing row is not read | `GET` only, per path (`_SCOPE_PATH_METHODS`) |
-| `mcp_outreach` | `mcp` plus `_MCP_OUTREACH_EXTRA_READ_PATHS`: DMs, connection requests, leads, lead signals, catch-up touches, outreach targets, engagement targets (named people) and engagement suggestions (drafts written from strangers' posts) | `GET` only |
+| `mcp` | `_MCP_READ_PATHS`: the user's own settings, automation state, dashboard, posts, plan, generation status, performance, engagement preferences and DM templates, voice kit, newsletter settings/draft and subscriber counts, plus one templated grant, `GET /posts/{post_id}` (`_SCOPE_PATH_PATTERN_METHODS`). `/user/settings` returns `subscription: null` to any seat outside the human scopes, and the billing row is not read. W2 adds `_MCP_WRITE_METHODS`: `POST /schedule_post/` and `POST /update_post/` (PENDING text drafts) | `GET` on every read path; exactly the write verb each W2 tool sends on a write path (`_SCOPE_PATH_METHODS`) |
+| `mcp_outreach` | `mcp` plus `_MCP_OUTREACH_EXTRA_READ_PATHS`: DMs, connection requests, leads, lead signals, catch-up touches, outreach targets, engagement targets (named people) and engagement suggestions (drafts written from strangers' posts). W2 adds `_MCP_OUTREACH_WRITE_METHODS`: `POST /schedule_dm`, `POST`+`PUT /connection_request`, `POST`+`PUT /outreach/target`, `PUT /lead_signal`, `PUT /catchup/touch`, `PUT /lead`, `PUT /dm` (the approval only) | as `mcp`; never DELETE or PATCH |
 
 `mcp_outreach` is opted into at mint (owner ruling O11), because those lists hold other people's
 data; its rows are cut to `_OBSERVER_ROW_FIELDS` exactly as an observer's are (`_FIELD_FILTERED_SCOPES`).
 What each P3 tool calls, and the drift guard tying those calls to these grants, is in `docs/mcp-server.md`.
 Both scopes are in `FIXED_TTL_SCOPES`, `_QUEUE_ONLY_SCOPES` (so the W2 write tools inherit every
 approval guard and the `auto_approve` downgrade), `_WARN_ON_REFUSAL_SCOPES` and `_SCOPE_REFUSAL_CODE`.
-They are **never** in `_operator_may_approve`: owner ruling O1's internal/sandbox approval lands in W2
-as its own branch that mirrors the operator exemption. In P2 neither scope reaches a write verb;
-`test_role_surface_invariants.py` holds them in `READ_ONLY_ROLES`, and `FORBIDDEN_ROLE_ROUTES` now
-also lists `/user/mcp-token`, its `rotate` and `/admin/mcp-kill`. Never reachable either:
-`/user/token_status`, `/user/security`, `/user/posthog-stats`, `/user/affiliate`, billing, every
-`/admin/*` route, `/user/mcp-token/info` (`tests/unit/api/mcp/test_mcp_scope.py`).
+They are **never** in `_operator_may_approve`. `FORBIDDEN_ROLE_ROUTES` lists `/user/mcp-token`, its
+`rotate`, `/activity` and `info` and `/admin/mcp-kill`. Never reachable either: `/user/token_status`,
+`/user/security`, `/user/posthog-stats`, `/user/affiliate`, billing, every `/admin/*` route,
+`/posts/bulk_update`, `/review/*`, every DELETE, curated sources
+(`tests/unit/api/mcp/test_mcp_scope.py`). Since W2 both scopes are write-capable roles in
+`test_role_surface_invariants.py`, so every approval-capable route they reach must refuse in its
+handler (`HANDLER_GUARDED_ROUTES`, which now also lists `schedule_post`, `update_post`,
+`update_scheduled_dm_endpoint` and `update_catchup_touch_endpoint`), and each role's reach of those
+routes is pinned exactly (`CLASSIFIED_REACH`).
+
+### MCP approval — internal and sandbox accounts only (owner ruling O1, W2)
+
+Every MCP write lands pending, with ONE exception: `lem_approve_item` approves a DM, connection
+request, lead signal, catch-up touch or outreach target (never a post). It is decided twice:
+
+- **The tool** is listed in `tools/list` and run only when the account's `account_kind` is
+  `internal` or `sandbox` (`writes.account_may_approve`, the same `INTERNAL_ACCOUNT_KINDS` set).
+- **The route** decides again. `_refuse_agent_approval` grows an MCP branch, `_mcp_may_approve()`, that
+  mirrors the operator exemption: for an `mcp`/`mcp_outreach` request it reads the acting account's
+  kind once (`get_user_account_kind`, failing closed to `standard`; stamped per request in
+  `_request_mcp`), allows `action="approve"`/`"retry"` only on internal/sandbox, and, once the pending-only
+  write has moved the row (`_pending_edit_or_raise`), writes an **`mcp_approval`** audit row (role,
+  via, path, account kind), the `operator_approval` twin. A refused approval leaves no such row. On a
+  standard account it is the same **403 `agent_may_not_approve`** an agent gets.
+
+Two deliberate differences from the operator: `_refuse_agent_approved_status` has NO MCP branch,
+so a create asking for `approved` is refused on every account kind; and the approval itself is a
+**pending-only write** (`update_pending_row`): approving a row already approved, sent, canceled or
+failed is 409 `edit_requires_pending` and dispatches nothing. Each handler adds the approval's
+columns (`_mcp_approval_fields`: `approved_by = mcp:<session id>`, never `user:<id>`, and
+`approved_at`) and runs its side effects (the stale-DM slot reset, the lead-reply dispatch) only
+around that write. `_agent_scoped()` stays True, so the passive `auto_approve` default never
+opens. Pinned by `TestMcpApprovesOnlyOnInternalOrSandboxAccounts` and
+`tests/unit/api/mcp/test_mcp_write_tools.py`.
 
 ### The audience binding — an MCP token is dead on raw `/api`
 

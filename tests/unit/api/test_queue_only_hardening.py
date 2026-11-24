@@ -964,13 +964,27 @@ class TestEveryRefusalLeavesOneInfoLine:
 class TestTheDraftSlotCanNeverBeBlanked:
     """A queue-only `update_post` never writes NULL into `content` or `scheduled_time`."""
 
-    def test_omitting_the_slot_is_a_422_before_any_write(self, api_client: Any) -> None:
+    def test_omitting_the_slot_writes_only_the_content(self, api_client: Any) -> None:
+        """MCP W2: a queue-only seat sends only what it revises (`PostUpdateRequest`).
+
+        The omitted slot is left exactly as stored, never written as NULL and never written back
+        from a stale read, so a slot moved meanwhile survives a content-only revise.
+        """
         with _session("agent"), _widened(), _pending() as pending, \
              patch(f"{_M}.user_owns_posts", return_value=True):
             resp = api_client.post("/api/update_post/?post_id=9", json={
                 "session_token": _TOKEN, "content": "c"})
+        assert resp.status_code == 200, resp.text
+        assert pending.call_args.args[3] == {"content": "c"}
+
+    def test_a_human_session_still_needs_both_fields(self, api_client: Any) -> None:
+        """The human path writes the whole row, so it still refuses a body without the slot."""
+        with patch(f"{_M}.require_session_user_id", return_value=_UID), \
+             patch(f"{_M}._require_own_posts"), patch(f"{_M}.update_db_post") as write:
+            resp = api_client.post("/api/update_post/?post_id=9", json={
+                "session_token": _TOKEN, "content": "c"})
         assert resp.status_code == 422
-        pending.assert_not_called()
+        write.assert_not_called()
 
     @staticmethod
     def _call_handler(**body: Any) -> Any:

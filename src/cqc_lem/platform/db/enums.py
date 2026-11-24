@@ -387,7 +387,11 @@ class AuthAuditEvent(StrEnum):
     MCP_TOKEN_EXPOSED = "mcp_token_exposed"
     # At most one per MCP session per UTC day (utilities/observer_access.py): the access record.
     MCP_ACCESS = "mcp_access"
+    # One per queue-only write an MCP tool made (W2): the tool and the target id, never a body.
     MCP_WRITE = "mcp_write"
+    # One per approval `lem_approve_item` made on an internal or sandbox account (owner ruling O1),
+    # the MCP counterpart of `operator_approval`.
+    MCP_APPROVAL = "mcp_approval"
     MCP_KILL_TOGGLED = "mcp_kill_toggled"
     # Fleet-wide "revoke all" (`revoke_sessions_by_scope`): one row per affected user.
     MCP_SESSIONS_REVOKED = "mcp_sessions_revoked"

@@ -580,6 +580,9 @@ _request_session_scope: ContextVar[Optional[str]] = ContextVar("lem_session_scop
 # account's `account_kind` (the fourth approval guard reads it) and that the action was audited.
 # None for every other scope.
 _request_operator: ContextVar[Optional[Dict[str, Any]]] = ContextVar("lem_operator", default=None)
+# The same for an MCP request (W2, owner ruling O1): the acting user, the account kind once the
+# approval guard has read it, and whether this request's approval was allowed. None otherwise.
+_request_mcp: ContextVar[Optional[Dict[str, Any]]] = ContextVar("lem_mcp", default=None)
 
 _guard_canonical_module()
 
@@ -600,6 +603,7 @@ async def session_cookie_middleware(request: Request, call_next):
     request_reset = _request_object.set(request)
     scope_reset = _request_session_scope.set(None)
     operator_reset = _request_operator.set(None)
+    mcp_reset = _request_mcp.set(None)
     try:
         return await call_next(request)
     finally:
@@ -608,6 +612,7 @@ async def session_cookie_middleware(request: Request, call_next):
         _request_object.reset(request_reset)
         _request_session_scope.reset(scope_reset)
         _request_operator.reset(operator_reset)
+        _request_mcp.reset(mcp_reset)
 
 
 # Registered LAST on purpose, which makes it the OUTERMOST middleware: Starlette runs the most
@@ -724,10 +729,11 @@ _SCOPE_PATTERNS: Dict[str, tuple] = {
 # (`_SCOPE_PATH_METHODS`), so the extension can neither write the queue nor read through the done path.
 _ASSIST_SESSION_SURFACE = frozenset({"/assist/queue", "/review/comment-posted"})
 
-# The end-user MCP seats (epic #2682, `docs/agent-mcp-plan.md` §3.2). Read-only in P2: every path is
-# granted `GET` and nothing else. They are reached ONLY through the in-process loopback behind
-# `POST /api/mcp` — `_scope_checked` refuses an mcp session without this worker's dispatch secret —
-# so this list is what a P3 tool may call, and a tool that needs a path not listed here cannot work.
+# The end-user MCP seats (epic #2682, `docs/agent-mcp-plan.md` §3.2). Every path below is granted
+# `GET` and nothing else; the W2 write verbs are `_MCP_WRITE_METHODS`. They are reached ONLY
+# through the in-process loopback behind `POST /api/mcp` (`_scope_checked` refuses an mcp session
+# without this worker's dispatch secret), so this list is what a tool may call, and a tool that
+# needs a path not listed here cannot work.
 # Each entry is the user's OWN data. Deliberately absent: every credential, factor, step-up and
 # recovery route; session revoke and every token mint (including `/user/mcp-token`); billing,
 # `/user/affiliate`, `/user/security`, `/user/token_status` and `/user/posthog-stats` (three
@@ -765,12 +771,49 @@ _MCP_OUTREACH_EXTRA_READ_PATHS = frozenset({
 })
 _MCP_OUTREACH_READ_PATHS = _MCP_READ_PATHS | _MCP_OUTREACH_EXTRA_READ_PATHS
 _GET_ONLY = frozenset({"GET"})
+_POST_ONLY = frozenset({"POST"})
+_PUT_ONLY = frozenset({"PUT"})
 # The AI/media spend tools (W2b, owner ruling O4), `POST` only. These three routes serve MCP seats
 # and nobody else, and each refuses media for any post but a pending one this token created; W1's
 # text-only rule on `/schedule_post/` and `/update_post/` is untouched (`api/routers/mcp_spend.py`).
 _MCP_SPEND_PATHS = frozenset({"/user/mcp-spend/post", "/user/mcp-spend/post-image",
                               "/user/mcp-spend/post-video"})
-_POST_ONLY = frozenset({"POST"})
+
+# The W2 write grants (`docs/agent-mcp-plan.md` §4): exactly the verb each write tool sends on each
+# path, never DELETE or PATCH. The surface drift guard (`test_mcp_tool_surface.py`) proves this table
+# equals what the tool registry calls, per scope and per verb. Every route here lands or keeps a row
+# PENDING for an MCP seat: the approval guards (`_refuse_agent_approval`,
+# `_refuse_agent_approved_status`), the `auto_approve` downgrade and the SQL pending-only edits (W1)
+# all hold for these scopes, because they are queue-only (`_QUEUE_ONLY_SCOPES`).
+#   /schedule_post, /update_post   lem_draft_post / lem_revise_post_draft: text-only PENDING drafts
+#   /user/mcp-spend/*              the W2b spend tools; POST only, listed above
+_MCP_WRITE_METHODS: Dict[str, frozenset[str]] = {
+    "/schedule_post": _POST_ONLY, "/update_post": _POST_ONLY,
+    **{path: _POST_ONLY for path in _MCP_SPEND_PATHS},
+}
+# `mcp_outreach` adds the outreach writes. Two paths carry TWO verbs: the create (POST) and the
+# internal/sandbox-only approval `lem_approve_item` sends (PUT, owner ruling O1). `PUT /dm` is that
+# approval and nothing else. On a standard account the handler refuses every approval with 403
+# `agent_may_not_approve`, exactly as it refuses an `agent`.
+_MCP_OUTREACH_WRITE_METHODS: Dict[str, frozenset[str]] = {
+    **_MCP_WRITE_METHODS,
+    "/schedule_dm": _POST_ONLY,                         # lem_queue_dm
+    "/connection_request": frozenset({"POST", "PUT"}),  # lem_queue_connection_request; approve
+    "/outreach/target": frozenset({"POST", "PUT"}),     # lem_add_outreach_target; approve
+    "/lead_signal": _PUT_ONLY,                          # lem_edit_lead_signal_draft; approve
+    "/catchup/touch": _PUT_ONLY,                        # lem_edit_catchup_draft; approve
+    "/lead": _PUT_ONLY,                                 # lem_update_lead
+    "/dm": _PUT_ONLY,                                   # approve only
+}
+
+
+def _mcp_grants(read_paths: frozenset, writes: Dict[str, frozenset[str]]) -> Dict[str, frozenset[str]]:
+    """One MCP scope's `(path -> verbs)` table: GET on every read path, plus its write verbs."""
+    grants = {path: _GET_ONLY for path in read_paths}
+    for path, verbs in writes.items():
+        grants[path] = grants.get(path, frozenset()) | verbs
+    return grants
+
 
 # The templated grants of a verb-limited scope: `(anchored pattern, verbs)`. A path parameter cannot
 # be a literal key in `_SCOPE_PATH_METHODS`, so one that a tool needs is listed here instead, and the
@@ -787,15 +830,13 @@ _SCOPE_PATH_PATTERN_METHODS: Dict[str, tuple] = {
 _SCOPE_PATH_METHODS: Dict[str, Dict[str, frozenset[str]]] = {
     SESSION_SCOPE_ASSIST: {"/assist/queue": frozenset({"GET"}),
                            "/review/comment-posted": frozenset({"POST"})},
-    SESSION_SCOPE_MCP: {**{path: _GET_ONLY for path in _MCP_READ_PATHS},
-                        **{path: _POST_ONLY for path in _MCP_SPEND_PATHS}},
-    SESSION_SCOPE_MCP_OUTREACH: {**{path: _GET_ONLY for path in _MCP_OUTREACH_READ_PATHS},
-                                 **{path: _POST_ONLY for path in _MCP_SPEND_PATHS}},
+    SESSION_SCOPE_MCP: _mcp_grants(_MCP_READ_PATHS, _MCP_WRITE_METHODS),
+    SESSION_SCOPE_MCP_OUTREACH: _mcp_grants(_MCP_OUTREACH_READ_PATHS, _MCP_OUTREACH_WRITE_METHODS),
 }
 
 _SCOPE_SURFACES: Dict[str, frozenset[str]] = {
-    SESSION_SCOPE_MCP: _MCP_READ_PATHS,
-    SESSION_SCOPE_MCP_OUTREACH: _MCP_OUTREACH_READ_PATHS,
+    SESSION_SCOPE_MCP: _MCP_READ_PATHS | frozenset(_MCP_WRITE_METHODS),
+    SESSION_SCOPE_MCP_OUTREACH: _MCP_OUTREACH_READ_PATHS | frozenset(_MCP_OUTREACH_WRITE_METHODS),
     SESSION_SCOPE_ASSIST: _ASSIST_SESSION_SURFACE,
     SESSION_SCOPE_EXTENSION: _EXTENSION_SESSION_SURFACE,
     SESSION_SCOPE_ENROLL: _ENROLL_SESSION_SURFACE,
@@ -1114,10 +1155,12 @@ _OBSERVER_ROW_FIELDS: Dict[str, frozenset] = {
         "has_recipient_email"}),
     "outreach_targets": frozenset({"id", "user_id", "target_profile_url", "target_name", "stage", "status",
                                    "context_url", "draft_text", "notes", "approved_by",
-                                   "created_at", "updated_at"}),
+                                   # 'mcp' when the user's coding agent added it (MCP W2)
+                                   "created_via", "created_at", "updated_at"}),
     "catchup_touches": frozenset({"id", "user_id", "profile_url", "person_name", "event_type",
                                   "event_detail", "event_period", "score", "message", "status",
-                                  "created_at", "updated_at"}),
+                                  # 'mcp' when the user's coding agent rewrote the draft (MCP W2)
+                                  "edited_via", "created_at", "updated_at"}),
     "lead_signals": frozenset({
         "id", "user_id", "source", "channel", "person_name", "person_profile_url", "thread_key",
         "snippet", "score", "matched_signals", "post_id", "context_url", "draft_response", "status",
@@ -1256,6 +1299,9 @@ def _scope_checked(resolved: Dict[str, Any], token: Optional[str]) -> int:
             _record_observer_access(user_id, token, path)
         if scope == SESSION_SCOPE_OPERATOR:
             _stamp_operator(user_id, path, token)
+        if scope in MCP_SESSION_SCOPES:
+            # No read here: the account kind is read only if this request asks to approve.
+            _request_mcp.set({"user_id": user_id, "session": _session_log_id(token)})
         return user_id
     if scope == SESSION_SCOPE_EXTENSION:
         # Audited AND warned, for the extension scope only. The extension calls exactly one path
@@ -1523,6 +1569,19 @@ class PostRequest(BaseModel):
     # A compose-time image the author uploaded or generated BEFORE the row existed (issue #1030).
     # Only a preview URL we issued to this caller is accepted — see `owns_post_image_url`.
     image_url: Optional[str] = Field(default=None, max_length=1000)
+
+
+class PostUpdateRequest(PostRequest):
+    """Body of `POST /update_post/`: `PostRequest`, with `content` and the slot optional.
+
+    A human session still sends both and is refused 422 without either, exactly as before. A
+    queue-only seat (MCP W2) sends ONLY the field it is revising, and the pending-only write touches
+    only the fields sent, so a content-only revise can never write back a slot someone moved
+    meanwhile.
+    """
+
+    content: Optional[str] = None  # type: ignore[assignment]
+    scheduled_datetime: Optional[datetime] = None  # type: ignore[assignment]
 
 
 class VideoCreditCheckoutRequest(BaseModel):
@@ -3296,7 +3355,7 @@ def _refuse_placeholder_save(post_id: int, post: "PostRequest", *, user_id: int)
     409: {"description": "An AI agent's draft LEM is still writing, or a stale save over it"},
     503: {"description": "Could not read the stored post"},
 })
-def update_post(post_id: int, post: PostRequest) -> ResponseModel[str]:
+def update_post(post_id: int, post: PostUpdateRequest) -> ResponseModel[str]:
     """Edit one of the caller's posts in place.
 
     `use_avatar` is three-valued (issue #744) and is written ONLY when the body states it: omitting
@@ -3331,6 +3390,9 @@ def update_post(post_id: int, post: PostRequest) -> ResponseModel[str]:
         _pending_edit_or_raise("post", post_id, user_id, fields, "Post could not be updated")
         return ResponseModel(status_code=200, detail="Post updated successful")
 
+    if post.content is None or post.scheduled_datetime is None:
+        # The human path writes the whole row, so it still needs both (the SPA always sends them).
+        raise HTTPException(status_code=422, detail="content and scheduled_datetime are required")
     if update_db_post(post.content, post.video_url, post.scheduled_datetime, post.post_type, post_id,
                       post.status, user_id=user_id, approved_by=user_approver(user_id)):
         reason = (post.rejection_reason or "").strip() or None
@@ -3432,8 +3494,12 @@ def _challenge_expiry() -> datetime:
 # no write verb at all, so this changes nothing they can do today; it is in place so the W2 write
 # tools inherit every approval guard below, the `auto_approve` downgrade and `agent_may_not_configure`
 # without a second list to remember. They are NEVER added to `_operator_may_approve`: owner ruling
-# O1's internal/sandbox approval lands in W2 as its own mcp branch mirroring the operator exemption.
+# O1's internal/sandbox approval is its own branch, `_mcp_may_approve`, mirroring the operator
+# exemption on the approval verb only (W2).
 _QUEUE_ONLY_SCOPES = frozenset({SESSION_SCOPE_AGENT, SESSION_SCOPE_OPERATOR, *MCP_SESSION_SCOPES})
+# The `source` a DM or connection request carries when an MCP seat created it (W2): the SPA badges it
+# "Agent-created" and the Daily review never bulk-approves it.
+MCP_ROW_SOURCE = "mcp"
 
 
 def _agent_scoped() -> bool:
@@ -3491,6 +3557,66 @@ def _audit_operator_approval(vector: str) -> None:
                               "account_kind": state.get("account_kind")})
 
 
+def _mcp_may_approve() -> bool:
+    """Owner ruling O1: an MCP seat may approve only on an internal or sandbox account.
+
+    The MCP counterpart of `_operator_may_approve`, and deliberately a SEPARATE branch: MCP seats are
+    never added to that function. True only for an `mcp`/`mcp_outreach` request whose acting account's
+    `account_kind` is in `INTERNAL_ACCOUNT_KINDS`. The kind is read on first ask and kept for the
+    request; `get_user_account_kind` fails closed to 'standard', so an unreadable account never
+    approves. As for the operator, the acting account IS the item's owner: every approving handler
+    scopes the item to the caller's own user id.
+    """
+    if _request_session_scope.get() not in MCP_SESSION_SCOPES:
+        return False
+    state = _request_mcp.get()
+    if not state or not state.get("user_id"):
+        return False
+    if "account_kind" not in state:
+        state["account_kind"] = get_user_account_kind(state["user_id"])
+    return state.get("account_kind") in INTERNAL_ACCOUNT_KINDS
+
+
+def _audit_mcp_approval(vector: str) -> None:
+    """Record that an MCP seat just approved something (`mcp_approval`, the `operator_approval` twin)."""
+    http_request = _request_object.get()
+    state = _request_mcp.get() or {}
+    scope = _request_session_scope.get()
+    _safe_auth_event(AuthAuditEvent.MCP_APPROVAL, user_id=state.get("user_id"),
+                     ip=_client_ip(http_request), user_agent=_user_agent(http_request),
+                     details={"role": scope, "via": vector,
+                              "path": _access_path(scope, _request_path.get()),
+                              "account_kind": state.get("account_kind")})
+
+
+def _mcp_approval_granted() -> bool:
+    """Did `_refuse_agent_approval` allow an MCP approval on THIS request?
+
+    The approval still goes through the pending-only write (`_edits_pending_only()` stays True for
+    every MCP seat), so it can only move a row that is PENDING right now: approving a row already
+    approved, sent, canceled or failed is 409 `edit_requires_pending`. Each handler adds the
+    approval's own columns (`_mcp_approval_fields`) and runs its side effects only after that write
+    succeeded.
+    """
+    return bool((_request_mcp.get() or {}).get("approval_granted"))
+
+
+def _mcp_approver() -> str:
+    """`approved_by` for an MCP approval: `mcp:<session row id>`, never the human `user:<id>`.
+
+    The session is read off the request's cookie (the loopback presents the MCP token there), only
+    when an approval is being written. `mcp` alone when the row id cannot be read.
+    """
+    token = _request_session_cookie.get()
+    session_id = get_session_id(token) if token else None
+    return f"{MCP_ROW_SOURCE}:{session_id}" if session_id else MCP_ROW_SOURCE
+
+
+def _mcp_approval_fields() -> Dict[str, Any]:
+    """The columns an MCP approval stamps on its row, alongside `status`."""
+    return {"approved_by": _mcp_approver(), "approved_at": datetime.now(timezone.utc)}
+
+
 def _agent_approval_refusal() -> HTTPException:
     return HTTPException(status_code=403, detail={
         "code": "agent_may_not_approve",
@@ -3518,6 +3644,13 @@ def _refuse_agent_approval(action: Optional[str]) -> None:
         return
     if _operator_may_approve():
         _audit_operator_approval("action")
+        return
+    if _mcp_may_approve():
+        # Owner ruling O1: the operator exemption's mirror, for `lem_approve_item` on an internal or
+        # sandbox account; a standard account falls through to the 403. The approval is still a
+        # pending-only write, and its `mcp_approval` row is written by `_pending_edit_or_raise`
+        # once that write moved the row, so a refused approval is never recorded as one.
+        (_request_mcp.get() or {})["approval_granted"] = True
         return
     raise _agent_approval_refusal()
 
@@ -3568,18 +3701,60 @@ def _enforce_authenticity_floor(user_id: int, dm_id: int, stored: dict,
         raise HTTPException(status_code=503, detail="Could not record the override")
 
 
-def _voice_note_edit(user_id: int, lane: str, item_id: int, stored: Optional[str],
-                     submitted: Optional[str]) -> None:
-    """Edited-draft capture (#2627 1b): keep a pending draft's text as drafted before an edit lands."""
+def _machine_seat() -> bool:
+    """Is THIS request an MCP or agent seat? Text such a seat writes is never the user's own voice."""
+    return bool(_mcp_source() or _agent_scoped())
+
+
+# Lane -> (column naming who wrote the row's text, whether a later human edit takes the text back).
+# A scheduled DM or connection request an agent created is the user's text once they edit it, which
+# leaves a noted original (an agent rewrite discards it); a catch-up touch or funnel target flagged
+# by an agent stays the agent's for review, so it is never labelled.
+_AGENT_TEXT_MARKS: dict[str, tuple[str, bool]] = {
+    "scheduled_dm": ("source", True), "connection_request": ("source", True),
+    "catchup_touch": ("edited_via", False), "outreach_target": ("created_via", False),
+}
+
+
+def _agent_wrote_text(user_id: int, lane: str, item_id: int, row: Optional[dict]) -> bool:
+    """Was the text about to be approved last written by an MCP agent, per the row's provenance?"""
+    mark = _AGENT_TEXT_MARKS.get(lane)
+    if mark is None or not row or row.get(mark[0]) != MCP_ROW_SOURCE:
+        return False
+    if not mark[1]:
+        return True
     from cqc_lem.utilities.ai import voice_exemplars
 
+    return not voice_exemplars.human_edit_noted(user_id, lane, item_id)
+
+
+def _voice_note_edit(user_id: int, lane: str, item_id: int, stored: Optional[str],
+                     submitted: Optional[str]) -> None:
+    """Edited-draft capture (#2627 1b): keep a pending draft's text as drafted before an edit lands.
+
+    An MCP or agent seat's edit is never captured, and it discards any original a human edit noted,
+    because the text on file is now the agent's.
+    """
+    from cqc_lem.utilities.ai import voice_exemplars
+
+    if _machine_seat():
+        if submitted is not None:
+            voice_exemplars.discard_draft_edit(user_id, lane, item_id)
+        return
     voice_exemplars.note_draft_edit(user_id, lane, item_id, stored, submitted)
 
 
-def _voice_record_approval(user_id: int, lane: str, item_id: int, final: Optional[str]) -> None:
-    """Edited-draft capture (#2627 1b): an approval of an edited draft stores original + final."""
+def _voice_record_approval(user_id: int, lane: str, item_id: int, final: Optional[str],
+                           row: Optional[dict] = None) -> None:
+    """Edited-draft capture (#2627 1b): an approval of an edited draft stores original + final.
+
+    Skipped for an MCP or agent seat, and when `row` shows the approved text was last written by an
+    agent (a human or MCP approval alike): agent text is never stored as the user's own writing.
+    """
     from cqc_lem.utilities.ai import voice_exemplars
 
+    if _machine_seat() or _agent_wrote_text(user_id, lane, item_id, row):
+        return
     voice_exemplars.record_approved_edit(user_id, lane, item_id, final)
 
 
@@ -3591,6 +3766,11 @@ def _edits_pending_only() -> bool:
     verbs. Never true for a full session, so the human path is untouched.
     """
     return _agent_scoped() and not _operator_may_approve()
+
+
+def _mcp_source() -> Optional[str]:
+    """`'mcp'` for a row an MCP seat creates (W2), so the review rows can badge it; else None."""
+    return MCP_ROW_SOURCE if _request_session_scope.get() in MCP_SESSION_SCOPES else None
 
 
 def _pending_edit_or_raise(kind: str, row_id: int, user_id: int, fields: Dict[str, Any],
@@ -3610,6 +3790,9 @@ def _pending_edit_or_raise(kind: str, row_id: int, user_id: int, fields: Dict[st
     """
     _raise_unless_updated(update_pending_row(kind, row_id, user_id, fields), failure_detail,
                           user_id=user_id, action_type=kind)
+    if _mcp_approval_granted():
+        # The row really moved out of pending: only now is it an approval (owner ruling O1).
+        _audit_mcp_approval("action")
 
 
 def _log_queue_only_refusal(code: str, *, user_id: Optional[int], action_type: str) -> None:
@@ -4067,7 +4250,7 @@ def schedule_dm_endpoint(request: ScheduleDmRequest) -> ResponseModel[dict[str, 
     status = ScheduledDmStatus.APPROVED if request.status == "approved" else ScheduledDmStatus.PENDING
     dm_id = insert_scheduled_dm(user_id, request.recipient_profile_url, request.message,
                                 request.scheduled_datetime, recipient_name=request.recipient_name,
-                                status=status)
+                                status=status, source=_mcp_source())
     if not dm_id:
         raise HTTPException(status_code=500, detail="Could not schedule DM")
     return ResponseModel(status_code=200, detail={"dm_id": dm_id})
@@ -4131,11 +4314,18 @@ def update_scheduled_dm_endpoint(request: UpdateDmRequest) -> ResponseModel[str]
                                     ("message", request.message),
                                     ("scheduled_time", request.scheduled_datetime),
                                     ("status", status)) if v is not None}
+        if status == ScheduledDmStatus.APPROVED and _mcp_approval_granted():
+            # An MCP approval (owner ruling O1), still pending-only. The human path's stale-slot
+            # rule rides along: approving a DM past its slot means send it now (#2103).
+            fields.update(_mcp_approval_fields())
+            if request.scheduled_datetime is None:
+                if stored_dm and scheduled_dm_is_stale(stored_dm.get("scheduled_time")):
+                    fields["scheduled_time"] = datetime.now(timezone.utc)
         _pending_edit_or_raise("scheduled_dm", request.dm_id, user_id, fields,
                                "Could not update scheduled DM")
         if status == ScheduledDmStatus.APPROVED:
             _voice_record_approval(user_id, "scheduled_dm", request.dm_id,
-                                   request.message or stored_message)
+                                   request.message or stored_message, stored_dm)
         return ResponseModel(status_code=200, detail="Scheduled DM updated")
     scheduled_time = request.scheduled_datetime
     if status == ScheduledDmStatus.APPROVED and scheduled_time is None:
@@ -4149,7 +4339,7 @@ def update_scheduled_dm_endpoint(request: UpdateDmRequest) -> ResponseModel[str]
         raise HTTPException(status_code=500, detail="Could not update scheduled DM")
     if status == ScheduledDmStatus.APPROVED:
         _voice_record_approval(user_id, "scheduled_dm", request.dm_id,
-                               request.message or stored_message)
+                               request.message or stored_message, stored_dm)
     return ResponseModel(status_code=200, detail="Scheduled DM updated")
 
 
@@ -4204,7 +4394,8 @@ def create_connection_request_endpoint(request: ConnectionRequestCreate) -> Resp
     request_id = insert_connection_request(user_id, request.recipient_profile_url,
                                            message=request.message,
                                            recipient_name=request.recipient_name, status=status,
-                                           recipient_email=request.recipient_email)
+                                           recipient_email=request.recipient_email,
+                                           source=_mcp_source())
     if not request_id:
         raise HTTPException(status_code=500, detail="Could not create connection request")
     return ResponseModel(status_code=200, detail={"request_id": request_id})
@@ -4287,9 +4478,10 @@ def update_connection_request_endpoint(request: ConnectionRequestUpdate) -> Resp
                                                   request.recipient_name, request.message,
                                                   request.recipient_email)):
         raise HTTPException(status_code=422, detail="Nothing to update — provide at least one field or an action")
-    stored_message = None
+    stored_row: dict = {}
     if request.message is not None or status == ConnectionRequestStatus.APPROVED:
-        stored_message = (current or get_connection_request(request.request_id) or {}).get("message")
+        stored_row = current or get_connection_request(request.request_id) or {}
+    stored_message = stored_row.get("message")
     _voice_note_edit(user_id, "connection_request", request.request_id, stored_message, request.message)
     if _edits_pending_only():
         if status is None and request.recipient_email is not None and all(
@@ -4311,11 +4503,14 @@ def update_connection_request_endpoint(request: ConnectionRequestUpdate) -> Resp
             fields.update(status=status, failure_reason=None)
             if request.recipient_email is None and status == ConnectionRequestStatus.CANCELED:
                 fields["recipient_email"] = None
+            if status == ConnectionRequestStatus.APPROVED and _mcp_approval_granted():
+                # An MCP approval (O1): pending-only, so a `retry` of a failed row is a 409.
+                fields.update(_mcp_approval_fields())
         _pending_edit_or_raise("connection_request", request.request_id, user_id, fields,
                                "Could not update connection request")
         if status == ConnectionRequestStatus.APPROVED:
             _voice_record_approval(user_id, "connection_request", request.request_id,
-                                   request.message or stored_message)
+                                   request.message or stored_message, stored_row)
         return ResponseModel(status_code=200, detail="Connection request updated")
     if not update_connection_request(request.request_id,
                                      recipient_profile_url=request.recipient_profile_url,
@@ -4327,7 +4522,7 @@ def update_connection_request_endpoint(request: ConnectionRequestUpdate) -> Resp
         raise HTTPException(status_code=500, detail="Could not update connection request")
     if status == ConnectionRequestStatus.APPROVED:
         _voice_record_approval(user_id, "connection_request", request.request_id,
-                               request.message or stored_message)
+                               request.message or stored_message, stored_row)
     return ResponseModel(status_code=200, detail="Connection request updated")
 
 
@@ -4384,6 +4579,16 @@ def list_lead_signals_endpoint(session_token: str, status_filter: Optional[str] 
     return ResponseModel(status_code=200, detail=result)
 
 
+def _finish_lead_approval(user_id: int, signal_id: int, draft: Optional[str], send: bool) -> None:
+    """After an approved lead signal is stored: record the voice approval (if allowed), THEN send.
+
+    The one order for the human and the MCP path, so a send never precedes the label.
+    """
+    _voice_record_approval(user_id, "lead_signal", signal_id, draft)
+    if send:
+        send_lead_response.apply_async(kwargs={"signal_id": signal_id})
+
+
 @router.put("/lead_signal")
 def update_lead_signal_endpoint(request: LeadSignalUpdate) -> ResponseModel[str]:
     """Edit a lead's draft, dismiss the signal, or APPROVE it — approval is the only thing that
@@ -4414,14 +4619,14 @@ def update_lead_signal_endpoint(request: LeadSignalUpdate) -> ResponseModel[str]
         _pending_edit_or_raise("lead_signal", request.signal_id, user_id, fields,
                                "Could not update lead signal")
         if status == LeadSignalStatus.APPROVED:
-            _voice_record_approval(user_id, "lead_signal", request.signal_id, draft)
+            # Reached only when the pending-only write above moved the row (it raises otherwise),
+            # so a signal already approved, sent or dismissed never dispatches a second reply.
+            _finish_lead_approval(user_id, request.signal_id, draft, send=_mcp_approval_granted())
         return ResponseModel(status_code=200, detail="Lead signal updated")
     if not update_lead_signal(request.signal_id, draft_response=request.draft_response, status=status):
         raise HTTPException(status_code=500, detail="Could not update lead signal")
     if status == LeadSignalStatus.APPROVED:
-        _voice_record_approval(user_id, "lead_signal", request.signal_id, draft)
-    if status == LeadSignalStatus.APPROVED:
-        send_lead_response.apply_async(kwargs={"signal_id": request.signal_id})
+        _finish_lead_approval(user_id, request.signal_id, draft, send=True)
     return ResponseModel(status_code=200, detail="Lead signal updated")
 
 
@@ -4587,16 +4792,22 @@ def update_catchup_touch_endpoint(request: UpdateCatchupTouchRequest) -> Respons
         fields = {k: v for k, v in (("message", request.message),
                                     ("person_name", request.person_name),
                                     ("status", status)) if v is not None}
+        if request.message is not None and _mcp_source():
+            # The text a human is about to approve was written by their agent (MCP W2): the review
+            # badges it and never sweeps it into a bulk approve.
+            fields["edited_via"] = _mcp_source()
+        if status == CatchupTouchStatus.APPROVED and _mcp_approval_granted():
+            fields.update(_mcp_approval_fields())
         _pending_edit_or_raise("catchup_touch", request.touch_id, user_id, fields,
                                "Could not update catch-up touch")
         if status == CatchupTouchStatus.APPROVED:
-            _voice_record_approval(user_id, "catchup_touch", request.touch_id, final_message)
+            _voice_record_approval(user_id, "catchup_touch", request.touch_id, final_message, touch)
         return ResponseModel(status_code=200, detail="Catch-up touch updated")
     if not update_catchup_touch(request.touch_id, message=request.message,
                                 person_name=request.person_name, status=status):
         raise HTTPException(status_code=500, detail="Could not update catch-up touch")
     if status == CatchupTouchStatus.APPROVED:
-        _voice_record_approval(user_id, "catchup_touch", request.touch_id, final_message)
+        _voice_record_approval(user_id, "catchup_touch", request.touch_id, final_message, touch)
     return ResponseModel(status_code=200, detail="Catch-up touch updated")
 
 

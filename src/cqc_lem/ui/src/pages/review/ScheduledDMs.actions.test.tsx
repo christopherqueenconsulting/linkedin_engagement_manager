@@ -56,6 +56,14 @@ const render_ = () => harness(<ScheduledDMs userTimezone="UTC" timezoneResolved 
 const approve = () => screen.getByRole('button', { name: 'Approve' })
 const cancel = () => screen.getByRole('button', { name: 'Cancel' })
 
+describe('ScheduledDMs provenance (MCP W2)', () => {
+  it('badges a DM the user\'s coding agent queued as Agent-created', async () => {
+    get.mockResolvedValue({ data: { detail: { dms: [{ ...PENDING_DM, source: 'mcp' }], total: 1 } } })
+    render_()
+    expect(await screen.findByText('Agent-created')).toBeDefined()
+  })
+})
+
 describe('ScheduledDMs approve/cancel (issue #1528)', () => {
   it('says what an approve did, not just that it was clicked', async () => {
     put.mockResolvedValue({ data: { detail: 'Scheduled DM updated' } })

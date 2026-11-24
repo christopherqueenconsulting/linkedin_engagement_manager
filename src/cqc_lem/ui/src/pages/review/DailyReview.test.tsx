@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import DailyReview from './DailyReview'
-import { ageTone, groupOf, highlightSegments, isSweepable } from './reviewHighlights'
+import { ageTone, bulkTargets, groupOf, highlightSegments, isSweepable } from './reviewHighlights'
 import type { ReviewItem } from './reviewHighlights'
 
 const get = vi.fn()
@@ -174,5 +174,56 @@ describe('DailyReview', () => {
   it('shows the empty state', async () => {
     mount([])
     expect(await screen.findByText('Nothing is waiting on you.')).toBeDefined()
+  })
+})
+
+// MCP W2: a row the user's coding agent queued is badged and never part of a bulk approve.
+describe('agent-created rows', () => {
+  const AGENT = item({ id: 7, summary: 'DM to Agent pick', agent_created: true })
+
+  it('never sweeps or multi-approves an agent-created row', () => {
+    expect(isSweepable(AGENT)).toBe(false)
+    // Outreach targets the agent added and catch-up drafts it rewrote are agent-created too.
+    for (const lane of ['outreach_funnel_targets', 'catchup_touches']) {
+      expect(isSweepable(item({ lane, agent_created: true }))).toBe(false)
+      expect(isSweepable(item({ lane, agent_created: false }))).toBe(true)
+    }
+    expect(bulkTargets([AGENT, CLEAN_A], 'approve')).toEqual([CLEAN_A])
+    expect(bulkTargets([AGENT], 'approve')).toEqual([AGENT])
+    expect(bulkTargets([AGENT, CLEAN_A], 'cancel')).toEqual([AGENT, CLEAN_A])
+  })
+
+  it('badges the row and leaves it out of approve-all', async () => {
+    mount([AGENT, CLEAN_A])
+    const row = await screen.findByTestId('review-item-scheduled_dms:7')
+    expect(within(row).getByTestId('agent-created-badge').textContent).toBe('Agent-created')
+    expect(within(screen.getByTestId('review-item-scheduled_dms:1')).queryByTestId('agent-created-badge'))
+      .toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Approve all 1 with no flags' }))
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1))
+    expect(post.mock.calls[0][1].items).toEqual([{ lane: 'scheduled_dms', id: 1 }])
+  })
+
+  it('drops it from approve-selected but approves it on its own', async () => {
+    mount([AGENT, CLEAN_A])
+    await screen.findByText('DM to Agent pick')
+    for (const box of screen.getAllByRole('checkbox')) fireEvent.click(box)
+    fireEvent.click(screen.getByRole('button', { name: 'Approve selected (2)' }))
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1))
+    expect(post.mock.calls[0][1].items).toEqual([{ lane: 'scheduled_dms', id: 1 }])
+
+    const row = screen.getByTestId('review-item-scheduled_dms:7')
+    fireEvent.click(within(row).getByRole('button', { name: 'Approve' }))
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(2))
+    expect(post.mock.calls[1][1]).toMatchObject({ action: 'approve', items: [{ lane: 'scheduled_dms', id: 7 }] })
+  })
+
+  it('names the server refusal for a multi-item approve', async () => {
+    mount([CLEAN_A])
+    post.mockResolvedValue({
+      data: { detail: [{ lane: 'scheduled_dms', id: 1, ok: false, error: 'agent_created_approve_individually' }] },
+    })
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve all 1 with no flags' }))
+    expect((await screen.findByRole('status')).textContent).toMatch(/approve it on its own/)
   })
 })

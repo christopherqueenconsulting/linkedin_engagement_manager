@@ -87,11 +87,16 @@ def test_every_tool_call_is_granted(main_mod: Any, scope: str) -> None:
 
 @pytest.mark.parametrize("scope", MCP_SCOPES)
 def test_the_resolver_agrees_for_every_tool_call(main_mod: Any, scope: str) -> None:
-    """The real resolver, not the tables: each call is allowed on its verb and refused on others."""
-    for verb, path in registry.registry_grants(scope):
+    """The real resolver, not the tables: each call is allowed, and every other verb refused.
+
+    "Other" is every verb no tool sends to that path (W2: exactly one write verb per write call).
+    """
+    grants = registry.registry_grants(scope)
+    for verb, path in grants:
         concrete = path.replace("{post_id}", "12")
         assert main_mod._scope_allows(scope, f"/api{concrete}", verb), (scope, verb, path)
-        for other in {"GET", "POST", "PUT", "PATCH", "DELETE"} - {verb}:
+        called = {v for v, p in grants if p == path}
+        for other in {"GET", "POST", "PUT", "PATCH", "DELETE"} - called:
             assert not main_mod._scope_allows(scope, f"/api{concrete}", other), (scope, other, path)
 
 
@@ -110,22 +115,22 @@ def test_the_post_pattern_crosses_no_segment(main_mod: Any) -> None:
         assert not main_mod._scope_allows(scope, "/api/posts/bulk_update", "POST")
 
 
-def test_every_tool_call_resolves_to_a_real_route_for_its_verb(main_mod: Any) -> None:
+def test_every_tool_call_resolves_to_a_real_route_on_its_verb(main_mod: Any) -> None:
     """A call whose path is no route for its verb would 404/405 (or 307) on every use."""
-    routes = {(verb, main_mod._scope_path(r.path))
+    served = {(verb, main_mod._scope_path(r.path))
               for r in main_mod._walk_routes(main_mod.app.routes)
               for verb in (getattr(r, "methods", None) or ())}
     for spec in registry.TOOLS:
         for verb, path in spec.calls:
-            assert (verb, path) in routes, (spec.name, verb, path)
-            if verb == "GET" and "{" not in path:
-                assert route_path(path).startswith("/api/"), path
+            assert (verb, path) in served, (spec.name, verb, path)
+            if "{" not in path:
+                real = route_path(path, verb)
+                assert real.startswith("/api/"), path
+                assert (verb, main_mod._scope_path(real)) in served, (spec.name, verb, real)
 
 
-def test_only_the_write_tools_call_anything_but_get() -> None:
-    for spec in registry.TOOLS:
-        verbs = {verb for verb, _path in spec.calls}
-        if spec.write:
-            assert verbs == {"POST"}, spec.name
-        else:
-            assert verbs <= {"GET"}, spec.name
+def test_a_write_route_resolves_to_its_own_spelling(main_mod: Any) -> None:
+    """`POST /schedule_post/` is declared WITH a slash; asking without it would be a 307."""
+    assert route_path("/schedule_post", "POST") == "/api/schedule_post/"
+    assert route_path("/update_post", "POST") == "/api/update_post/"
+    assert route_path("/schedule_dm", "POST") == "/api/schedule_dm"

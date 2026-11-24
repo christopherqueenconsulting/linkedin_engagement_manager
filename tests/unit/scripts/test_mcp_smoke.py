@@ -14,7 +14,7 @@ from typing import Any, Optional
 import httpx2
 import pytest
 
-from cqc_lem.api.mcp.tools import tools_for_scope
+from cqc_lem.api.mcp.tools import TOOLS_BY_NAME, tools_for_scope
 
 pytestmark = pytest.mark.unit
 
@@ -24,6 +24,22 @@ smoke = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(smoke)
 
 _TOKEN = "lem_mcp_" + "smokecanary" * 3
+
+
+@pytest.fixture(autouse=True)
+def _restore_http_loggers() -> Any:
+    """`smoke.main()` quiets the `httpx`/`httpx2` loggers for the whole process, as a CLI should.
+
+    In a test process that leaks into every later test on the same worker: the MCP caplog test
+    (`test_mcp_analytics.py`) asserts the loopback's inner requests ARE logged, and silently loses
+    them when it runs after this file. Restore whatever level each logger had.
+    """
+    import logging
+
+    saved = {name: logging.getLogger(name).level for name in ("httpx", "httpx2")}
+    yield
+    for name, level in saved.items():
+        logging.getLogger(name).setLevel(level)
 
 
 def _server(scope: str = "mcp", tools: Optional[list[str]] = None, failing: str = "",
@@ -50,6 +66,8 @@ def _server(scope: str = "mcp", tools: Optional[list[str]] = None, failing: str 
             result = {"structuredContent": {"scope": scope, "account_name": "jane"}}
         elif params.get("name") == "lem_list_posts":
             result = {"structuredContent": {"posts": [{"post_id": 4}]}}
+        elif params.get("name") in _WRITE_ANSWERS:
+            result = _WRITE_ANSWERS[params["name"]](params.get("arguments") or {}, names, seen)
         else:
             result = {"structuredContent": {}}
         return httpx2.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
@@ -57,9 +75,38 @@ def _server(scope: str = "mcp", tools: Optional[list[str]] = None, failing: str 
     return httpx2.Client(transport=httpx2.MockTransport(handle)), seen
 
 
-def _run(client: httpx2.Client, *extra: str) -> tuple[int, str]:
+def _error(code: str) -> dict:
+    return {"isError": True, "structuredContent": {"error": {"code": code}}}
+
+
+def _queue_dm(args: dict, _names: list, seen: list) -> dict:
+    first = next((b["params"]["arguments"] for b in seen
+                  if b.get("params", {}).get("name") == "lem_queue_dm"), None)
+    if first is not None and first is not args and first.get("client_request_id") == args.get(
+            "client_request_id"):
+        if first != args:
+            return _error("client_request_id_reused")
+        return {"structuredContent": {"id": 5, "status": "pending", "source": "mcp",
+                                      "replayed": True}}
+    return {"structuredContent": {"id": 5, "status": "pending", "source": "mcp"}}
+
+
+def _approve(_args: dict, names: list, _seen: list) -> dict:
+    if "lem_approve_item" in names:
+        return {"structuredContent": {"status": "approved"}}
+    return _error("agent_may_not_approve")
+
+
+_WRITE_ANSWERS = {
+    "lem_queue_dm": _queue_dm,
+    "lem_edit_lead_signal_draft": lambda a, n, s: _error("invalid_arguments"),
+    "lem_approve_item": _approve,
+}
+
+
+def _run(client: httpx2.Client, *extra: str, mode: str = "--read-only") -> tuple[int, str]:
     out = io.StringIO()
-    code = smoke.main(["--read-only", "--base", "https://lem.example", "--token", _TOKEN, *extra],
+    code = smoke.main([mode, "--base", "https://lem.example", "--token", _TOKEN, *extra],
                       out=out, client=client)
     return code, out.getvalue()
 
@@ -70,7 +117,7 @@ def test_a_healthy_server_passes_and_every_read_tool_is_called(scope: str) -> No
     code, text = _run(client)
     assert code == 0, text
     called = [b["params"]["name"] for b in seen if b["method"] == "tools/call"]
-    assert set(called) == {s.name for s in tools_for_scope(scope)}
+    assert set(called) == {s.name for s in tools_for_scope(scope) if not s.write}
     assert {"name": "lem_get_post", "arguments": {"post_id": 4}} in [
         b["params"] for b in seen if b["method"] == "tools/call"]
     if scope == "mcp_outreach":
@@ -106,3 +153,99 @@ def test_no_token_is_bad_usage(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LEM_MCP_TOKEN", raising=False)
     out = io.StringIO()
     assert smoke.main(["--base", "https://lem.example"], out=out) == 2
+
+
+def test_a_standard_account_may_omit_the_approval_tool() -> None:
+    client, _ = _server("mcp_outreach", tools=[s.name for s in tools_for_scope("mcp_outreach")
+                                               if not s.approval])
+    code, text = _run(client)
+    assert code == 0, text
+
+
+_RECIPIENT = "https://www.linkedin.com/in/smoke-test/"
+
+
+def _approvals(seen: list) -> list:
+    return [b for b in seen if b.get("params", {}).get("name") == "lem_approve_item"]
+
+
+@pytest.mark.parametrize("kind,listed", [("sandbox", True), ("standard", False)])
+def test_the_write_checks_pass_on_a_healthy_server(kind: str, listed: bool) -> None:
+    names = [s.name for s in tools_for_scope("mcp_outreach") if listed or not s.approval]
+    client, seen = _server("mcp_outreach", tools=names)
+    code, text = _run(client, "--recipient", _RECIPIENT, "--account-kind", kind, mode="--write")
+    assert code == 0, text
+    assert "[PASS] lem_queue_dm lands pending with source=mcp" in text
+    assert "[PASS] a retried write replays instead of writing twice" in text
+    assert "[PASS] a reused request id is refused" in text
+    label = ("lem_approve_item approves (sandbox)" if kind == "sandbox"
+             else "approve is refused on a standard account")
+    assert f"[PASS] {label}" in text
+    queued = [b for b in seen if b.get("params", {}).get("name") == "lem_queue_dm"]
+    assert queued[0]["params"]["arguments"]["recipient_profile_url"] == _RECIPIENT
+    assert TOOLS_BY_NAME["lem_queue_dm"].write
+    # Without a local DB to cancel through, any kind but sandbox tells the operator to cancel it.
+    assert ("[ACTION] cancel the smoke DM #5" in text) is (kind != "sandbox")
+
+
+def test_an_internal_account_never_approves_even_when_the_tool_is_listed() -> None:
+    client, seen = _server("mcp_outreach")  # lem_approve_item listed
+    code, text = _run(client, "--recipient", _RECIPIENT, "--account-kind", "internal",
+                      mode="--write")
+    assert code == 0, text
+    assert _approvals(seen) == []
+    assert "[SKIP] lem_approve_item" in text and "REAL send" in text
+    assert "[ACTION] cancel the smoke DM #5" in text
+
+
+def test_a_listed_approval_tool_on_a_declared_standard_account_fails() -> None:
+    client, seen = _server("mcp_outreach")  # listed, but the operator says standard
+    code, text = _run(client, "--recipient", _RECIPIENT, "--account-kind", "standard",
+                      mode="--write")
+    assert code == 1 and "[FAIL] lem_approve_item is not listed on a standard account" in text
+
+
+def test_an_approval_that_lands_on_a_standard_account_fails() -> None:
+    names = [s.name for s in tools_for_scope("mcp_outreach") if not s.approval]
+    client, _ = _server("mcp_outreach", tools=names)
+    _WRITE_ANSWERS["lem_approve_item"], saved = (
+        lambda a, n, s: {"structuredContent": {"status": "approved"}}), _WRITE_ANSWERS[
+        "lem_approve_item"]
+    try:
+        code, text = _run(client, "--recipient", _RECIPIENT, "--account-kind", "standard",
+                          mode="--write")
+    finally:
+        _WRITE_ANSWERS["lem_approve_item"] = saved
+    assert code == 1 and "[FAIL] approve is refused on a standard account" in text
+
+
+@pytest.mark.parametrize("canceled", [True, False])
+def test_the_smoke_dm_is_canceled_through_the_local_db(canceled: bool) -> None:
+    names = [s.name for s in tools_for_scope("mcp_outreach") if not s.approval]
+    client, _ = _server("mcp_outreach", tools=names)
+    out = io.StringIO()
+    run = smoke.Smoke("https://lem.example", out, client)
+    calls: list[int] = []
+
+    def cancel(dm_id: int) -> bool:
+        calls.append(dm_id)
+        return canceled
+
+    smoke.run_write_checks(run, _TOKEN, _RECIPIENT, "standard", cancel)
+    assert calls == [5]
+    assert ("[PASS] the smoke DM was canceled" in out.getvalue()) is canceled
+    assert "[ACTION]" not in out.getvalue()
+
+
+def test_the_write_checks_skip_without_an_outreach_token() -> None:
+    client, _ = _server("mcp")
+    code, text = _run(client, "--recipient", _RECIPIENT, "--account-kind", "sandbox",
+                      mode="--write")
+    assert code == 0 and "[SKIP] write checks" in text
+
+
+@pytest.mark.parametrize("extra", [(), ("--recipient", _RECIPIENT), ("--account-kind", "sandbox")])
+def test_write_needs_a_recipient_and_an_account_kind(extra: tuple) -> None:
+    client, _ = _server("mcp_outreach")
+    code, text = _run(client, *extra, mode="--write")
+    assert code == 2 and "--write needs --recipient and --account-kind" in text

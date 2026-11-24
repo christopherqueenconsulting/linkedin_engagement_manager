@@ -4,8 +4,9 @@ The runbook and posture for LEM's MCP server: a user's own coding agent (Claude 
 ...) connects with a URL plus a bearer token and reads their LEM account. The design, with every
 owner ruling, is [agent-mcp-plan.md](agent-mcp-plan.md); the token scopes are in
 [agent-roles.md](agent-roles.md) and the identity carve-out in
-[identity-and-sessions.md](identity-and-sessions.md). This page is what is BUILT, as of phase P3
-(read-only tools, epic #2682, issue #2686).
+[identity-and-sessions.md](identity-and-sessions.md). This page is what is BUILT, as of phase W2
+(read tools #2686, queue-only write tools and the internal/sandbox `lem_approve_item` #2688, epic
+#2682).
 
 ## How a call flows
 
@@ -77,7 +78,75 @@ subscriber-identity table is ever added, its rows belong in that tool, outreach-
 **Resources**: `lem://guide/how-lem-works`, `lem://policy/write-rules` (static), `lem://account/overview`,
 `lem://plan/upcoming`, and the template `lem://post/{post_id}`; each reads through its tool's runner
 and spends a tool call, like the tool.
-**Prompts**: `weekly_review`, `whats_wrong`, `explain_my_performance(post_id?)`.
+**Prompts**: `weekly_review`, `whats_wrong`, `explain_my_performance(post_id?)`, and (W2)
+`fill_my_content_plan(weeks=1)` and the outreach-only `prepare_outreach_batch` (neither listed nor
+served to an `mcp` token).
+
+## The write tools (W2)
+
+Every write CREATES or EDITS an item that lands in, and stays in, **pending**. Nothing reaches
+LinkedIn until the user approves it in LEM and a beat task runs it. The routes enforce that, not the
+tools: an MCP seat is queue-only (`_QUEUE_ONLY_SCOPES`), so a create asking for `approved` is 403
+`agent_may_not_approve`, a connection request never takes the passive `auto_approve` default, every
+edit is SQL pending-only (409 `edit_requires_pending`, W1), and a post is a TEXT draft with no media.
+The tools live in `api/mcp/tools_write.py` (`ToolSpec.write=True`); no write tool has a `status` or
+`action` argument, and a recipient or target must be a `https://www.linkedin.com/in/<handle>/` URL,
+checked by the argument model and again by the route. Each answer carries `review_url` and
+"Pending your approval in LEM".
+
+| Tool | `mcp` | `mcp_outreach` | Call | Lands as |
+|---|---|---|---|---|
+| `lem_draft_post` | yes | yes | `POST /schedule_post/` | PENDING text post |
+| `lem_revise_post_draft` | yes | yes | `POST /update_post/` (only the fields it revises) | a pending post's text and/or slot; the other is never written back |
+| `lem_queue_dm` | no | yes | `POST /schedule_dm` | PENDING DM, `source='mcp'` |
+| `lem_queue_connection_request` | no | yes | `POST /connection_request` | PENDING request, `source='mcp'` |
+| `lem_add_outreach_target` | no | yes | `POST /outreach/target` | PENDING target (create only), `created_via='mcp'` |
+| `lem_edit_lead_signal_draft` | no | yes | `PUT /lead_signal` | a pending signal's draft |
+| `lem_edit_catchup_draft` | no | yes | `PUT /catchup/touch` | a pending touch's message/name; a rewritten message sets `edited_via='mcp'` |
+| `lem_update_lead` | no | yes | `PUT /lead` | note, stage, deal value, dismiss/restore (sends nothing) |
+| `lem_approve_item` | no | internal/sandbox only | `PUT /dm`, `/connection_request`, `/lead_signal`, `/catchup/touch`, `/outreach/target` with `action=approve` | APPROVED (owner ruling O1) |
+
+The scope grants are exactly these verbs (`_MCP_WRITE_METHODS` / `_MCP_OUTREACH_WRITE_METHODS` in
+`api/main.py`), pinned by `test_mcp_scope.py` and tied to the registry by the drift guard. Two paths
+carry two verbs, `/connection_request` and `/outreach/target`, because the create POSTs them and
+`lem_approve_item` PUTs them; `PUT /dm` is the approval and nothing else. No DELETE, no PATCH, no
+`/posts/bulk_update`, no `/review/bulk`, no curated sources.
+
+**`lem_approve_item` (owner ruling O1).** It is listed in `tools/list` ONLY when the account's
+`account_kind` is `internal` or `sandbox`, the same set `_operator_may_approve()` reads, and the tool
+refuses it on every other account. The route decides again: `_refuse_agent_approval` has an MCP
+branch, `_mcp_may_approve()`, that mirrors the operator exemption for the approval verb; once the approval's write has moved
+the row it records an `mcp_approval` audit row (the `operator_approval` twin). A standard account is refused 403
+`agent_may_not_approve` by both, and never approves anything. Unlike the operator, the approval
+is itself a **pending-only write** (`update_pending_row`, the W1 SQL guard): it moves a row only
+while it is still waiting for review, so approving one already approved, sent, canceled or failed
+is 409 `edit_requires_pending` and dispatches nothing. It stamps `approved_by = mcp:<session id>`
+(never the human `user:<id>`) and `approved_at`; a DM past its slot is rescheduled to now, and a
+lead-signal reply is dispatched only AFTER the write succeeded. A create asking for `approved` is
+refused on every account kind. It never approves a post.
+
+**The write path** (`api/mcp/writes.py`, in order): the `mcp-server-writes` flag (off is `isError`
+`writes_disabled`); the approval account check; **dedupe, only when the client sends
+`client_request_id`**: a Redis claim `mcp:dedupe:{user}:{session}:{tool}:{client_request_id}`
+taken with `SET NX EX 600` BEFORE dispatch, holding `sha256(canonical args)`. With no id nothing
+is deduped (dismiss, restore, dismiss is three real writes). A replay
+of a finished write returns its first answer with `replayed: true`, the same id with other arguments
+is `client_request_id_reused`, and a write still running or whose outcome is unknown is
+`outcome=unknown`; the write budgets (30 an hour, 150 a day per user); the call under the 20 s limit.
+Once a write has been SENT (`Loopback.writes_attempted`), a timeout, a 5xx or a crash is
+`outcome=unknown`, **not retryable** (the handler's thread may still finish), and keeps the claim
+so a blind retry cannot double it. A failure before the first write was sent, and a refused write
+(4xx), changed nothing and release it. A write that landed writes ONE `mcp_write {tool, target_id, scope}` audit row, never a
+body. Redis unreadable is `mcp_unavailable` (fails closed).
+
+**What the user sees.** Rows whose text the agent wrote are marked: DMs and connection requests
+it queued carry `source='mcp'`, outreach targets it added `created_via='mcp'`, catch-up touches
+whose draft it rewrote `edited_via='mcp'` (migration `V20261124083939`). The review pages badge
+them "Agent-created", and the Daily review never bulk-approves one ("Approve all with no
+flags" and "Approve selected" leave it out, and `POST /review/bulk` refuses it with
+`agent_created_approve_individually` in any multi-item approve). `GET /user/mcp-token/activity`
+lists the account's latest 50 `mcp_*` audit rows (mints, access, every `mcp_write` and
+`mcp_approval`) for the Agents tab; a failed read is 503, never an empty list.
 
 ## What a result may carry (`api/mcp/redact.py`)
 
@@ -106,9 +175,12 @@ reads:
 2026-11-24 07:09:51Z MCP tool call: tool=lem_whoami outcome=ok latency_ms=42 | user_id=39
 ```
 
-Outcomes: `ok`, `refused`, `invalid_args`, `upstream_error`, `rate_limited`, `timeout`, and
-`unknown` for a write tool that timed out (W2b's spend tools; it may have been queued, so it is never
-a safe retry).
+Outcomes: `ok`, `refused`, `invalid_args`, `upstream_error`, `rate_limited`, `timeout` (a read
+that ran out of time), and `unknown` (a write that was SENT and then timed out, hit a 5xx or
+crashed, or a duplicate of one whose outcome is unknown; a W2b spend tool that outlives its budget is
+`unknown` too). An `unknown` write may have been queued, so it is never a safe retry: check the queue
+before retrying. A write refusal logs DEBUG (flag off, budget, dedupe hit) or INFO (an approval
+refused on a standard account), never arguments or results.
 
 ### Am I healthy?
 
@@ -141,7 +213,7 @@ a safe retry).
 | Tool calls | 60 / minute / user | the gate, per JSON-RPC `tools/call` and per `resources/read` of a data resource (the two static text resources are free) |
 | Inner reads | 240 / minute, 4000 / day / user | the loopback, per inner route call |
 | In flight | 2 per user, 8 per worker | the gate |
-| Writes | 30 / hour, 150 / day | W2, and each W2b spend tool call |
+| Writes | 30 / hour, 150 / day / user | the write tools, once per write, and each W2b spend tool call (`MCP_RATE_WRITES_PER_*`) |
 | Spend sub-cap | 10 text, 3 image, 1 video / UTC day / user (`MCP_SPEND_TEXT` / `_IMAGE` / `_VIDEO`) | W2b, server-side in `/api/user/mcp-spend/*` |
 
 ## AI/media spend tools (W2b, owner ruling O4)
@@ -274,9 +346,18 @@ NOT check for an earlier refund, so check before refunding:
 
 ## Smoke test — `scripts/mcp_smoke.py`
 
-Read-only before W2. It calls `initialize`, compares `tools/list` with the registry for the
-token's scope, calls every read tool, checks a query-string token is refused (and, with a
-throwaway token, revoked) and a bad bearer is 401, and exits non-zero on any mismatch.
+It calls `initialize`, compares `tools/list` with the registry for the token's scope
+(`lem_approve_item` may be absent on a standard account), calls every READ tool, checks a
+query-string token is refused (and, with a throwaway token, revoked) and a bad bearer is 401, and
+exits non-zero on any mismatch. `--write --recipient <profile URL> --account-kind KIND` (W2,
+`mcp_outreach` token, a fixed test recipient) also queues ONE DM and checks it lands pending with
+`source='mcp'`, that a retry with the same `client_request_id` replays, and that a reused request
+id and an `action` on an edit tool are refused. `KIND` is the operator's statement of the
+account's kind, and decides the approval step: **only `sandbox` approves** (sends there are a dry
+run). `standard` checks that `lem_approve_item` is unlisted and refused; `internal` never
+approves (a REAL send). On every kind but sandbox the DM is then canceled: through the DB with
+`--mint-local-for`, otherwise the script prints `[ACTION] cancel the smoke DM #<id>` for the
+operator to do in LEM -> Content -> DMs.
 
 ```
 # deployed stack: token from LEM -> Agents, kept in the environment, never on the command line
@@ -374,6 +455,47 @@ the `docker` group. `scripts/` there is the checked-out release tag (`scripts/de
 `git checkout --quiet "${TAG}"`), so `scripts/mcp_revoke_all.py` is present on any running release
 that contains P2. A release older than P2 has no MCP tokens to revoke, so step 2 does not apply to it.
 
+### W2-only fast path: the write tools misbehave, the reads are fine
+
+Try this before the full procedure below when only the queue-only writes (W2) are the problem.
+
+- **Turn writes off.** Set `mcp-server-writes` off for the account: remove its distinct-id
+  override in PostHog (the flag is at 0 % otherwise). A write tool then answers `isError`
+  `writes_disabled`. It is live within `POSTHOG_FLAG_POLL_SECONDS` per worker (default 30).
+  `MCP_SERVER_WRITES_ENABLED=false` is only the FALLBACK: the env var decides only when PostHog
+  cannot be read (`docs/feature-flags.md`), so check that it is not `true` on the box, but do not
+  rely on it while PostHog answers. If writes must stop **instantly**, use the kill switch
+  (`mcp:kill`, step 1 below), which stops reads too.
+- **Find what the agents queued.** Every row an agent wrote is marked: `scheduled_dms.source='mcp'`,
+  `connection_requests.source='mcp'`, `outreach_funnel_targets.created_via='mcp'` and
+  `catchup_touches.edited_via='mcp'`. An approval an agent made on an internal or sandbox account
+  is `approved_by LIKE 'mcp:%'`:
+
+  ```bash
+  cd /opt/lem
+  ./scripts/compose.sh exec -T mysql \
+    sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysql -u"$MYSQL_USER" "$MYSQL_DATABASE"' <<'SQL'
+  SELECT 'dm' AS queue, user_id, status, COUNT(*) AS n FROM scheduled_dms
+    WHERE source = 'mcp' GROUP BY user_id, status
+  UNION ALL SELECT 'connection_request', user_id, status, COUNT(*) FROM connection_requests
+    WHERE source = 'mcp' GROUP BY user_id, status
+  UNION ALL SELECT 'outreach_target', user_id, status, COUNT(*) FROM outreach_funnel_targets
+    WHERE created_via = 'mcp' GROUP BY user_id, status
+  UNION ALL SELECT 'catchup_touch', user_id, status, COUNT(*) FROM catchup_touches
+    WHERE edited_via = 'mcp' GROUP BY user_id, status;
+  SQL
+  ```
+
+- **Deal with them in LEM, not in SQL.** A `pending` row sends nothing until a human approves it,
+  so the account owner (or an operator) either rejects or cancels it in the review screens
+  (Content -> DMs, Connections, Outreach, Catch-up, or the Daily review), or simply leaves it
+  PENDING. The exception is an **internal or sandbox account**, where `lem_approve_item` can
+  approve: there, look for `approved_by LIKE 'mcp:%'` rows still `approved` (not yet sent) and
+  cancel them in the same screens before the next send run. On an internal account that send is
+  REAL; on a sandbox account it is a dry run.
+
+If that is not enough, run the full procedure.
+
 1. **Kill switch on.** `./scripts/compose.sh exec -T redis redis-cli -n 0 SET mcp:kill 1`, or
    `POST /api/admin/mcp-kill {"on": true}` (step-up, audited). The next request answers 503
    `mcp_disabled_by_operator` (§ Kill switch, Verify).
@@ -395,6 +517,12 @@ that contains P2. A release older than P2 has no MCP tokens to revoke, so step 2
      P2 stays: the endpoint, the scopes and the mint keep working, with no tools to call.
    - **P2 broken** (scopes and mint, merge `4657be55`): redeploy the release immediately before the
      P2 release. P1 and W1 stay; the endpoint goes back to answering 401 to every request.
+   - **W2 broken** (queue-only write tools and `lem_approve_item`, PR #2731; the W2 merge SHA is
+     filled in here after merge, or read it from that PR's "merged commit"): redeploy the release
+     immediately before the W2 release,
+     `git tag --sort=-v:refname --no-contains <W2 merge commit> | head -1`. P1, W1, P2, P3 and P4
+     stay, and so does W2b (#2730, the spend tools, merged first as `589c00bf`). Try the W2-only fast
+     path above first: it is usually enough.
 
    The newest release WITHOUT a phase is
    `git tag --sort=-v:refname --no-contains <phase merge commit> | head -1`. Deploy it as in
@@ -407,8 +535,14 @@ that contains P2. A release older than P2 has no MCP tokens to revoke, so step 2
    ```
 
    Or use the **Redeploy / Rollback VPS** workflow with that tag and `rollback` ticked
-   (`docs/DEPLOYMENT.md` § "Manual redeploy / rollback"). No MCP phase adds a migration, so the
-   redeploy changes no data.
+   (`docs/DEPLOYMENT.md` § "Manual redeploy / rollback").
+
+   **Data.** P1 to P4 add no migration. W2 adds ONE, `V20261124083939`: two NULLable
+   `VARCHAR(32)` columns, `outreach_funnel_targets.created_via` and `catchup_touches.edited_via`.
+   It is additive, and a rollback does **not** revert it (Flyway only moves forward). It is harmless
+   to an older image, which never names those columns, so no `DROP` is needed and none should be
+   run. The pre-migration safety net is the database backup: `./scripts/backup.sh`, the first
+   command of the redeploy above (run it before the Redeploy / Rollback workflow too).
 4. **Check health.** `curl -fsS https://app.<domain>/health`. `/health` stays 200 even when the MCP
    session manager fails to start, because the MCP lifespan fails open, so a non-200 means
    something other than MCP is wrong. Leave the kill switch on until the fix ships. Removing the
