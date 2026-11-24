@@ -49,7 +49,9 @@ if [ "$WHICH" = claude ] || [ "$WHICH" = both ]; then
   check "claude: exited 0" $?
   _valid_json "$out" 2>/dev/null; check "claude: --output-format json is valid JSON" $?
   grep -qiE 'graft_find_code|mcp__graft' "$out"; check "claude: graft MCP call visible in output" $?
-  ! grep -qiE "^(sure|certainly|of course|i'd be happy)" "$out"; check "claude: caveman terse reply" $?
+  # The reply lives in the JSON `result` field; grepping the raw blob for a line start never matches.
+  python3 -c 'import json,re,sys; r=json.load(open(sys.argv[1])).get("result","").strip(); sys.exit(0 if r and not re.match(r"(?i)(sure|certainly|of course|i.d be happy)", r) else 1)' "$out" 2>/dev/null
+  check "claude: caveman terse reply" $?
   say "claude output: $out"
 fi
 
@@ -59,9 +61,11 @@ if [ "$WHICH" = codex ] || [ "$WHICH" = both ]; then
   bin="${CODEX_BIN:-/home/lem/.npm-global/bin/codex}"
   [ -f "$home/config.toml" ] && grep -q '^\[mcp_servers.graft\]' "$home/config.toml"
   check "codex: $home/config.toml names mcp_servers.graft" $?
+  # The provider is defined inline exactly as lib/run_lane.sh does; config.toml does not carry it.
+  provider="model_providers.cliproxy={name=\"cliproxy\",base_url=\"${CLIPROXY_BASE_URL:?set CLIPROXY_BASE_URL}\",env_key=\"CLIPROXY_AUTH_TOKEN\",wire_api=\"responses\"}"
   ( cd "$WT" && CODEX_HOME="$home" timeout 300 "$bin" exec --json --skip-git-repo-check \
       --sandbox danger-full-access -c 'approval_policy="untrusted"' \
-      -c model_provider=cliproxy -m "${SMOKE_CODEX_MODEL:-codex-auto-review}" -C "$WT" "$PROMPT" ) >"$out" 2>"$out.err"
+      -c model_provider=cliproxy -c "$provider" -m "${SMOKE_CODEX_MODEL:-codex-auto-review}" -C "$WT" "$PROMPT" ) >"$out" 2>"$out.err"
   check "codex: exited 0" $?
   _valid_json "$out" 2>/dev/null; check "codex: --json output is valid JSON lines" $?
   grep -qiE 'graft' "$out"; check "codex: graft MCP call visible in output" $?
