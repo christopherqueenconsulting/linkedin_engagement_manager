@@ -202,6 +202,68 @@ class EngagementSuggestionsDetail(BaseModel):
     suggestions: List[EngagementSuggestion]
 
 
+class ProfileAuditFinding(BaseModel):
+    """One rubric check of the latest audit, with the user's state for it (#2753)."""
+
+    check_id: str
+    status: Literal["pass", "warn", "fail", "unknown"]
+    weight: int
+    detail: str
+    fix_hint: str
+    state: Literal["open", "done", "ignored", "passing", "unknown"]
+    delta: Optional[Literal["closed", "new", "still_open"]]
+
+
+class ProfileAuditLatest(BaseModel):
+    """The newest audit and its findings (#2753)."""
+
+    audit_id: int
+    period_key: str
+    kind: Literal["weekly", "monthly"]
+    score: Optional[int]
+    rubric_version: str
+    created_at: Optional[str]
+    open_count: int
+    findings: List[ProfileAuditFinding]
+
+
+class ProfileAuditTrendPoint(BaseModel):
+    """One audit on the score trend, oldest first (#2753)."""
+
+    period_key: str
+    kind: Literal["weekly", "monthly"]
+    score: Optional[int]
+    opened_count: int
+    closed_count: int
+    created_at: Optional[str]
+
+
+class ProfileAuditCorrelationRow(BaseModel):
+    """An audit beside the audience reading nearest before it. Correlation display only (#2753)."""
+
+    period_key: str
+    score: Optional[int]
+    open_count: int
+    follower_count: Optional[int]
+    profile_views: Optional[int]
+    follower_change: Optional[int]
+
+
+class ProfileAuditCorrelation(BaseModel):
+    """The follower join: a note saying what it does not claim, and the rows (#2753)."""
+
+    note: str
+    rows: List[ProfileAuditCorrelationRow]
+
+
+class ProfileAuditDetail(BaseModel):
+    """`detail` of `GET /user/profile-audit` (#2753): `latest` is None before the first audit."""
+
+    latest: Optional[ProfileAuditLatest]
+    trend: List[ProfileAuditTrendPoint]
+    correlation: ProfileAuditCorrelation
+
+
 class EngagementTarget(BaseModel):
     """One account on the curated engagement roster (#616), as `GET /user/engagement-targets` reads it.
 

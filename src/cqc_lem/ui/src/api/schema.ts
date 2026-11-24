@@ -3555,6 +3555,53 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/user/profile-audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Profile Audit Endpoint
+         * @description The caller's profile audit history: score trend, latest findings, follower join (#2753).
+         *
+         *     Read-only; LEM never edits the LinkedIn profile. A failed read is 503, never an empty answer —
+         *     "no audits yet" (`latest: null`) is only said when it is true. 404 while the flag is off.
+         */
+        get: operations["get_profile_audit_endpoint_api_user_profile_audit_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/user/profile-audit/finding": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Profile Audit Finding Endpoint
+         * @description Mark a finding of the latest audit done, ignore it, or reopen it (#2753).
+         *
+         *     An ignore holds across later audits; a done covers the audit it was pressed on, and the next
+         *     audit re-grades. 404 for an unknown check or before the first audit; 503 if it could not be
+         *     stored — never a success that did not persist.
+         */
+        post: operations["post_profile_audit_finding_endpoint_api_user_profile_audit_finding_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/user/recovery-codes/regenerate": {
         parameters: {
             query?: never;
@@ -6594,6 +6641,133 @@ export interface components {
             /** Total */
             total: number;
         };
+        /**
+         * ProfileAuditActionRequest
+         * @description Body of `POST /user/profile-audit/finding`: what the user says about one finding.
+         *
+         *     `reopen` clears an earlier done or ignore.
+         */
+        ProfileAuditActionRequest: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "done" | "ignored" | "reopen";
+            /** Check Id */
+            check_id: string;
+            /** Session Token */
+            session_token: string;
+        };
+        /**
+         * ProfileAuditCorrelation
+         * @description The follower join: a note saying what it does not claim, and the rows (#2753).
+         */
+        ProfileAuditCorrelation: {
+            /** Note */
+            note: string;
+            /** Rows */
+            rows: components["schemas"]["ProfileAuditCorrelationRow"][];
+        };
+        /**
+         * ProfileAuditCorrelationRow
+         * @description An audit beside the audience reading nearest before it. Correlation display only (#2753).
+         */
+        ProfileAuditCorrelationRow: {
+            /** Follower Change */
+            follower_change: number | null;
+            /** Follower Count */
+            follower_count: number | null;
+            /** Open Count */
+            open_count: number;
+            /** Period Key */
+            period_key: string;
+            /** Profile Views */
+            profile_views: number | null;
+            /** Score */
+            score: number | null;
+        };
+        /**
+         * ProfileAuditDetail
+         * @description `detail` of `GET /user/profile-audit` (#2753): `latest` is None before the first audit.
+         */
+        ProfileAuditDetail: {
+            correlation: components["schemas"]["ProfileAuditCorrelation"];
+            latest: components["schemas"]["ProfileAuditLatest"] | null;
+            /** Trend */
+            trend: components["schemas"]["ProfileAuditTrendPoint"][];
+        };
+        /**
+         * ProfileAuditFinding
+         * @description One rubric check of the latest audit, with the user's state for it (#2753).
+         */
+        ProfileAuditFinding: {
+            /** Check Id */
+            check_id: string;
+            /** Delta */
+            delta: ("closed" | "new" | "still_open") | null;
+            /** Detail */
+            detail: string;
+            /** Fix Hint */
+            fix_hint: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "open" | "done" | "ignored" | "passing" | "unknown";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pass" | "warn" | "fail" | "unknown";
+            /** Weight */
+            weight: number;
+        };
+        /**
+         * ProfileAuditLatest
+         * @description The newest audit and its findings (#2753).
+         */
+        ProfileAuditLatest: {
+            /** Audit Id */
+            audit_id: number;
+            /** Created At */
+            created_at: string | null;
+            /** Findings */
+            findings: components["schemas"]["ProfileAuditFinding"][];
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "weekly" | "monthly";
+            /** Open Count */
+            open_count: number;
+            /** Period Key */
+            period_key: string;
+            /** Rubric Version */
+            rubric_version: string;
+            /** Score */
+            score: number | null;
+        };
+        /**
+         * ProfileAuditTrendPoint
+         * @description One audit on the score trend, oldest first (#2753).
+         */
+        ProfileAuditTrendPoint: {
+            /** Closed Count */
+            closed_count: number;
+            /** Created At */
+            created_at: string | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "weekly" | "monthly";
+            /** Opened Count */
+            opened_count: number;
+            /** Period Key */
+            period_key: string;
+            /** Score */
+            score: number | null;
+        };
         /** ResponseModel[DashboardStats] */
         ResponseModel_DashboardStats_: {
             detail: components["schemas"]["DashboardStats"];
@@ -6684,6 +6858,12 @@ export interface components {
         /** ResponseModel[PostsPage] */
         ResponseModel_PostsPage_: {
             detail: components["schemas"]["PostsPage"];
+            /** Status Code */
+            status_code: number;
+        };
+        /** ResponseModel[ProfileAuditDetail] */
+        ResponseModel_ProfileAuditDetail_: {
+            detail: components["schemas"]["ProfileAuditDetail"];
             /** Status Code */
             status_code: number;
         };
@@ -13651,6 +13831,70 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_profile_audit_endpoint_api_user_profile_audit_get: {
+        parameters: {
+            query: {
+                session_token: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_ProfileAuditDetail_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_profile_audit_finding_endpoint_api_user_profile_audit_finding_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProfileAuditActionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_str_"];
                 };
             };
             /** @description Validation Error */

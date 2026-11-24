@@ -206,6 +206,7 @@ def build_weekly_report(
     assist_activity: Optional[Mapping[str, Sequence[datetime]]] = None,
     outcome_rows: Optional[Sequence[Mapping[str, Any]]] = None,
     conversions: Optional[Mapping[str, int]] = None,
+    profile_audit: Optional[Mapping[str, Any]] = None,
 ) -> dict:
     """The report payload. Pure: no I/O, every unreadable input is None and listed in `not_measured`."""
     this_week = _week_numbers(this_week_rows)
@@ -232,6 +233,8 @@ def build_weekly_report(
     missing.extend(_ALWAYS_NOT_MEASURED)
 
     return {
+        # Absent, not unmeasured, when the audit is off or has not run: no audit is not a zero.
+        "profile_audit": dict(profile_audit) if profile_audit else None,
         "conversions": dict(conversions) if conversions is not None else None,
         "comment_volume": volume,
         "week_start": week_start.isoformat(),
@@ -316,11 +319,24 @@ def send_weekly_reports(now: Optional[datetime] = None) -> dict:
     return result
 
 
+def _profile_audit_line(user_id: int) -> Optional[dict]:
+    """The profile-audit line (#2753), or None when the flag is off, nothing is scored or a read fails."""
+    from cqc_lem.utilities.flags import PROFILE_AUDIT, flag_enabled
+    from cqc_lem.utilities.profile_audit_view import load_audit_view, report_line
+    try:
+        if not flag_enabled(PROFILE_AUDIT, user_id):
+            return None
+        return report_line(load_audit_view(user_id))
+    except Exception:
+        return None
+
+
 def load_weekly_report(user_id: int, now: Optional[datetime] = None) -> dict:
     """Read the inputs for the 7 days ending `now` and build the payload."""
     end = now or datetime.now(timezone.utc)
     start = end - timedelta(days=7)
     return build_weekly_report(
+        profile_audit=_profile_audit_line(user_id),
         week_start=start, week_end=end,
         this_week_rows=get_weekly_post_rows(user_id, start, end),
         last_week_rows=get_weekly_post_rows(user_id, start - timedelta(days=7), start),
