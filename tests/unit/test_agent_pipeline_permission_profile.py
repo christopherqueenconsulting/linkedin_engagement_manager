@@ -49,6 +49,17 @@ GIT_COMMIT_INSTALLED = "/home/lem/agent-pipeline/lib/git_commit.sh"
 MODES = ["start", "fix", "review", "selfreview", "rebase", "revise", "depfix", "depmajor", "docfix",
          "phasefix"]
 
+#: The GENERATED files a rebase may conflict in. Never hand-merged: MODE=rebase takes main's side
+#: with an exact `git checkout --ours -- <path>` and regenerates once the rebase finishes.
+GENERATED_PATHS = (
+    "src/cqc_lem/ui/openapi.json",
+    "src/cqc_lem/ui/src/api/schema.ts",
+    "src/cqc_lem/ui/src/api/schema.stamp.json",
+    "tests/benchmarks/prompts/prompts.lock.json",
+    "tests/benchmarks/prompts/captured/",
+    "docs/prompt-evals/inventory.md",
+)
+
 FAKE_CLAUDE = """#!/bin/sh
 printf '%s\\n' "$@" > "$ARGV_FILE"
 printf 'GIT_EDITOR=%s\\n' "${GIT_EDITOR:-}" > "$ENV_FILE"
@@ -157,6 +168,27 @@ def test_git_rebase_is_allowed_only_in_the_forms_mode_rebase_uses():
     ])
 
 
+def test_git_checkout_is_allowed_only_for_the_generated_paths():
+    """`git checkout` is one exact `--ours -- <path>` rule per generated path, and nothing else.
+
+    A rebase that conflicted in a generated file exhausted the lane's budget three times in one day
+    (PR #2653 twice, #2678): the agent had no allowed way to take a side. Exact rules, never a
+    wildcard: `git checkout *` would reach any path, any branch, and `.`.
+    """
+    checkout = sorted(r for r in _profile()["permissions"]["allow"] if r.startswith("Bash(git checkout"))
+    assert checkout == sorted(f"Bash(git checkout --ours -- {p})" for p in GENERATED_PATHS)
+    assert not [r for r in checkout if "*" in r]
+
+
+def test_every_generated_path_exists_and_the_directory_holds_only_captures():
+    """A renamed generated file would leave a dead allow and the conflict back on the agent."""
+    for rel in GENERATED_PATHS:
+        assert (REPO / rel).exists(), rel
+    captured = REPO / "tests" / "benchmarks" / "prompts" / "captured"
+    assert captured.is_dir()
+    assert [p.name for p in captured.iterdir() if p.suffix != ".json"] == []
+
+
 def test_the_one_graphql_path_is_the_installed_helper():
     allow = _profile()["permissions"]["allow"]
     assert f"Bash({REVIEW_THREADS_INSTALLED} *)" in allow
@@ -250,6 +282,12 @@ def test_matcher_follows_the_documented_examples():
         "git mv compose/local/database/migrations/V20260101000000__a.sql "
         "compose/local/database/migrations/V20261010000000__a.sql",
         GIT_PUSH_INSTALLED + " --force-with-lease",
+        # MODE=rebase: a generated-file conflict takes main's side, then regenerates
+        *(f"git checkout --ours -- {p}" for p in GENERATED_PATHS),
+        "git add src/cqc_lem/ui/openapi.json",
+        "git add tests/benchmarks/prompts/captured/",
+        f"{GIT_COMMIT_INSTALLED} -m \"chore(api): regenerate after rebase\"",
+        "poetry run pytest tests/unit/api/test_openapi_snapshot.py tests/unit/scripts/test_prompt_capture.py -q",
         # MODE=review / revise
         f"{REVIEW_THREADS_INSTALLED} list 2338",
         f"{REVIEW_THREADS_INSTALLED} resolve 2338 PRRT_kwDOabc123",
@@ -476,6 +514,33 @@ def test_every_documented_runbook_command_is_allowed(command):
         "docker ps",
         "git switch main",
         "git checkout main",
+        # git checkout beyond the exact generated-path forms: other sides, paths, trees, branches
+        "git checkout --theirs -- src/",
+        "git checkout --theirs .",
+        "git checkout --ours .",
+        "git checkout .",
+        "git checkout -- .",
+        "git checkout -- any/other/path",
+        "git checkout --ours -- src/",
+        "git checkout --ours -- src/cqc_lem/api/main.py",
+        "git checkout --theirs -- src/cqc_lem/ui/openapi.json",
+        "git checkout --theirs -- tests/benchmarks/prompts/captured/",
+        "git checkout --theirs -- src/cqc_lem/ui/openapi.json other.py",
+        "git checkout --ours -- src/cqc_lem/ui/openapi.json other.py",
+        "git checkout --ours -- src/cqc_lem/ui/openapi.json .",
+        "git checkout --ours -- tests/benchmarks/prompts/captured/../../../src",
+        "git checkout --ours -- tests/benchmarks/prompts/captured/x.json",
+        "git checkout --ours src/cqc_lem/ui/openapi.json",
+        "git checkout src/cqc_lem/ui/openapi.json",
+        "git checkout origin/main -- src/cqc_lem/ui/openapi.json",
+        "git checkout HEAD~3 -- src/cqc_lem/ui/openapi.json",
+        "git checkout -b feature/x",
+        "git checkout -f main",
+        "git checkout --ours -- src/cqc_lem/ui/openapi.json; git checkout .",
+        "git checkout --ours -- src/cqc_lem/ui/openapi.json && git checkout -- src/",
+        "git checkout --ours --pathspec-from-file=list.txt",
+        "git restore --theirs src/cqc_lem/ui/openapi.json",
+        "git restore .",
         "bash -c 'gh api graphql'",
         "PYTHONPATH=src poetry run python -c 'import x'",
         "mv src/cqc_lem/ui/dist /tmp/dist",
@@ -683,6 +748,35 @@ def test_preamble_scopes_local_tests_pushes_per_step_and_regenerates_openapi():
                  "selfreview.md"):
         assert "**Targeted local tests**" in (RUNBOOK_DIR / mode).read_text(encoding="utf-8"), mode
 
+
+
+def test_rebase_runbook_regenerates_generated_files_instead_of_merging_them():
+    """MODE=rebase takes main's side of a generated file, finishes the rebase, then regenerates.
+
+    Every backticked `git checkout` it names must be one the profile allows, and every generated path
+    the profile allows must be named, so the runbook and the profile cannot drift apart.
+    """
+    raw = (RUNBOOK_DIR / "rebase.md").read_text(encoding="utf-8")
+    text = " ".join(raw.split())
+    assert "GENERATED files are never hand-merged." in text
+    assert "**`--ours` is `main`**" in text and "`--theirs` is this PR's commit" in text
+    assert "once `git rebase` has finished, never mid-rebase" in text
+    for rel in GENERATED_PATHS:
+        assert f"`{rel}`" in text, rel
+    named = re.findall(r"`(git checkout [^`<]*)`", text)
+    assert named, "the runbook must name the exact checkout form"
+    for command in named:
+        assert _decide(command) == "allow", command
+    for command in ("poetry run python scripts/dump_openapi.py",
+                    "npm --prefix src/cqc_lem/ui run gen:api-types",
+                    "poetry run python scripts/prompt_capture.py --write",
+                    "poetry run pytest tests/unit/api/test_openapi_snapshot.py "
+                    "tests/unit/scripts/test_prompt_capture.py -q"):
+        assert f"`{command}`" in text, command
+        assert _decide(command) == "allow", command
+    assert "chore(api): regenerate after rebase" in text and "chore(prompts):" in text
+    # regeneration comes after the conflict step, before the push
+    assert raw.index("GENERATED files") < raw.index("Regenerate after") < raw.index("git_push.sh --force")
 
 
 def test_preamble_makes_a_migration_version_the_real_current_second():
@@ -1731,6 +1825,50 @@ def test_git_commit_refuses_every_other_shape(tmp_path, args):
     assert r.returncode == 2, (r.stdout, r.stderr)
     assert msg == "", "nothing may be committed"
     assert "s3cret" not in r.stdout + r.stderr
+
+
+# ---------------------------------------------------------------- generated-file rebase (real git)
+
+
+def test_ours_during_a_rebase_is_mains_side_of_a_generated_file(tmp_path):
+    """The runbook's claim, proven: mid-rebase `--ours` is main, so the lane keeps main's file.
+
+    Walks the runbook's exact commands — `checkout --ours -- <path>` for a file and for the
+    captured directory, `git add`, `rebase --continue` — through a real conflicting rebase.
+    """
+    wt = tmp_path / "wt"
+    env = {**_GIT_ENV, "HOME": str(tmp_path), "GIT_EDITOR": "true",
+           "GIT_AUTHOR_NAME": "a", "GIT_AUTHOR_EMAIL": "a@b", "GIT_COMMITTER_NAME": "a", "GIT_COMMITTER_EMAIL": "a@b"}
+    snapshot, capture = "src/cqc_lem/ui/openapi.json", "tests/benchmarks/prompts/captured/comment.feed.json"
+
+    def git(*args: str, check: bool = True) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", *args], cwd=wt, env=env, check=check, capture_output=True, text=True)
+
+    def write(side: str) -> None:
+        for rel in (snapshot, capture):
+            (wt / rel).parent.mkdir(parents=True, exist_ok=True)
+            (wt / rel).write_text(f'{{"side": "{side}"}}\n', encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-q", "-m", side)
+
+    wt.mkdir()
+    git("init", "-q", "-b", "main")
+    write("base")
+    git("checkout", "-q", "-b", "feature/x")
+    write("pr")
+    git("checkout", "-q", "main")
+    write("main")
+    git("checkout", "-q", "feature/x")
+    assert git("rebase", "main", check=False).returncode != 0, "the fixture must conflict"
+
+    git(*f"checkout --ours -- {snapshot}".split())
+    git(*"checkout --ours -- tests/benchmarks/prompts/captured/".split())
+    git("add", snapshot, "tests/benchmarks/prompts/captured/")
+    git("rebase", "--continue")
+
+    for rel in (snapshot, capture):
+        assert (wt / rel).read_text(encoding="utf-8") == '{"side": "main"}\n', rel
+    assert git("status", "--porcelain").stdout == ""
 
 
 # ---------------------------------------------------------------- MODE=depmajor and the graft MCP
