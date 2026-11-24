@@ -65,6 +65,7 @@ class TestRescoreEndpoint:
         with patch(f"{_API}.get_session_user_id", return_value=1), \
              patch(f"{_USER}.get_post_user_id", return_value=1), \
              patch(f"{_USER}.get_post_status", return_value="pending"), \
+             patch(f"{_USER}.get_post_content", return_value="A written draft."), \
              patch("cqc_lem.app.run_content_plan.rescore_post", return_value=result) as rescore:
             r = api_client.post("/api/user/post/rescore",
                                json={"session_token": "t", "post_id": 42})
@@ -78,6 +79,7 @@ class TestRescoreEndpoint:
         with patch(f"{_API}.get_session_user_id", return_value=1), \
              patch(f"{_USER}.get_post_user_id", return_value=1), \
              patch(f"{_USER}.get_post_status", return_value="pending"), \
+             patch(f"{_USER}.get_post_content", return_value="A written draft."), \
              patch("cqc_lem.app.run_content_plan.rescore_post", return_value=result):
             r = api_client.post("/api/user/post/rescore",
                                json={"session_token": "t", "post_id": 42})
@@ -111,6 +113,7 @@ class TestRescoreEndpoint:
         with patch(f"{_API}.get_session_user_id", return_value=1), \
              patch(f"{_USER}.get_post_user_id", return_value=1), \
              patch(f"{_USER}.get_post_status", return_value="pending"), \
+             patch(f"{_USER}.get_post_content", return_value="A written draft."), \
              patch("cqc_lem.app.run_content_plan.rescore_post", side_effect=RuntimeError("boom")):
             r = api_client.post("/api/user/post/rescore",
                                json={"session_token": "t", "post_id": 42})
