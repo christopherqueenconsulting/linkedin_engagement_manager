@@ -76,6 +76,7 @@ from cqc_lem.utilities.db import (
 from cqc_lem.utilities.env_constants import SESSION_COOKIE_NAME
 from cqc_lem.utilities.flags import MCP_SERVER, flag_enabled
 from cqc_lem.utilities.logger import log_debug, log_info, log_warning
+from cqc_lem.utilities.observability import track_mcp_auth_refused
 from cqc_lem.utilities.observer_access import claim_mcp_access
 
 Scope = MutableMapping[str, Any]
@@ -101,11 +102,36 @@ class _ClientGone(Exception):
     """The client disconnected before its body finished arriving."""
 
 
+# The `mcp_auth_refused.reason` each refusal is reported as (plan §7). A wrong-scope token answers
+# the same 401 body as an invalid one, so its event reason is passed explicitly (`_invalid_token`).
+_EVENT_REASONS = {
+    "mcp_disabled_by_operator": "killed", "mcp_unavailable": "unavailable",
+    "method_not_allowed": "method", "host_not_allowed": "host", "origin_not_allowed": "origin",
+    "unsupported_media_type": "content_type", "request_too_large": "too_large",
+    "invalid_content_length": "bad_request", "client_disconnected": "bad_request",
+    "token_in_url_refused": "query_token", "cookie_only": "cookie_only",
+    "missing_token": "missing", "invalid_token": "invalid", "rate_limited": "rate_limited",
+    "concurrency_limited": "concurrency", "mcp_disabled": "flag_off",
+}
+
+
 def _refusal(status_code: int, reason: str, detail: str,
-             headers: Optional[dict[str, str]] = None) -> JSONResponse:
-    """The gate's one response shape: `{status_code, detail, reason}`, the house refusal body."""
-    return JSONResponse(status_code=status_code, headers=headers,
-                        content={"status_code": status_code, "detail": detail, "reason": reason})
+             headers: Optional[dict[str, str]] = None,
+             event_reason: Optional[str] = None) -> JSONResponse:
+    """The gate's one response shape: `{status_code, detail, reason}`, the house refusal body.
+
+    The response also carries the reason it is reported under, read by `McpGate.dispatch` when it
+    emits `mcp_auth_refused`.
+    """
+    response = JSONResponse(status_code=status_code, headers=headers,
+                            content={"status_code": status_code, "detail": detail, "reason": reason})
+    response.mcp_event_reason = event_reason or _EVENT_REASONS.get(reason, reason)  # type: ignore[attr-defined]
+    return response
+
+
+def _report_refusal(response: JSONResponse) -> None:
+    """Emit `mcp_auth_refused` for a refusal. Never raises (the tracker swallows its own faults)."""
+    track_mcp_auth_refused(getattr(response, "mcp_event_reason", None) or "unknown")
 
 
 def _normalise_host(host: str, state: McpState) -> str:
@@ -322,10 +348,14 @@ def _bearer_refusal(headers: Headers) -> tuple[Optional[str], Optional[JSONRespo
                           headers={"WWW-Authenticate": "Bearer"})
 
 
-def _invalid_token() -> JSONResponse:
-    """The one 401 for a bearer that is not a live MCP session — never says which way it failed."""
+def _invalid_token(event_reason: str = "invalid") -> JSONResponse:
+    """The one 401 for a bearer that is not a live MCP session — never says which way it failed.
+
+    The body is identical either way; only the internal `mcp_auth_refused` reason differs.
+    """
     return _refusal(401, "invalid_token", INVALID_TOKEN_DETAIL,
-                    headers={"WWW-Authenticate": 'Bearer error="invalid_token"'})
+                    headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
+                    event_reason=event_reason)
 
 
 def _unavailable() -> JSONResponse:
@@ -477,7 +507,7 @@ async def _admit(scope: Scope, headers: Headers, token: str,
         # endpoint. No MCP client does that by accident; the answer is the same 401 regardless.
         log_warning("MCP request refused: token is not an MCP session",
                     user_id=resolved.get("user_id"), scope=resolved.get("scope"))
-        return None, _invalid_token()
+        return None, _invalid_token("wrong_scope")
 
     user_id = int(resolved["user_id"])
     if not await run_in_threadpool(flag_enabled, MCP_SERVER, user_id):
@@ -593,7 +623,9 @@ class McpGate:
         if response is None and token is not None:
             admission, response = await _admit(scope, headers, token, _rpc_summary(body))
         if response is not None or admission is None:
-            await (response or _unavailable())(scope, receive, send)
+            response = response or _unavailable()
+            _report_refusal(response)
+            await response(scope, receive, send)
             return
         try:
             await mcp_server.session_manager.handle_request(scope, _replay_receive(body, receive),

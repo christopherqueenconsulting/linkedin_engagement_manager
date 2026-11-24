@@ -1508,6 +1508,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/posts/{post_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Post Endpoint
+         * @description One of the caller's posts, in the same row shape as `GET /posts/` (MCP P3, plan §4 F7).
+         *
+         *     Owner-scoped in the SQL, so a stranger's id and a missing id are the same 404: this route never
+         *     says which ids exist. A database fault is 503, never a 404 that reads as "deleted".
+         */
+        get: operations["get_post_endpoint_api_posts__post_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/review/bulk": {
         parameters: {
             query?: never;
@@ -6381,6 +6404,12 @@ export interface components {
             /** Status Code */
             status_code: number;
         };
+        /** ResponseModel[PostSummary] */
+        ResponseModel_PostSummary_: {
+            detail: components["schemas"]["PostSummary"];
+            /** Status Code */
+            status_code: number;
+        };
         /** ResponseModel[PostsPage] */
         ResponseModel_PostsPage_: {
             detail: components["schemas"]["PostsPage"];
@@ -9651,6 +9680,60 @@ export interface operations {
             };
             /** @description Method Not Allowed */
             405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_post_endpoint_api_posts__post_id__get: {
+        parameters: {
+            query?: {
+                session_token?: string | null;
+            };
+            header?: never;
+            path: {
+                post_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One of the caller's posts */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_PostSummary_"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not Found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

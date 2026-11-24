@@ -83,6 +83,7 @@ index and the `CLAUDE.md` row that points at it, or the pointer becomes a dead e
 
 - ★ [Identity & sessions](identity-and-sessions.md) — `public_uid` as identity, session-token hashing, per-route authorisation, CSRF, session scopes
 - [Machine roles](agent-roles.md) — the `observer`, `agent` and `operator` session scopes side by side: who mints, surface, verbs, TTL, what each cannot do
+- [End-user MCP server](mcp-server.md) — what is built: the gate → SDK → in-process loopback flow, the read tools per scope, third-party text fencing, limits, `mcp_smoke.py`, flags and the rollback order
 - [End-user MCP server plan](agent-mcp-plan.md) — epic #2682: stateless `POST /api/mcp` for a user's own agent; the gate order, `mcp` scopes, queue-only writes, kill switch, PR breakdown and the binding owner rulings at the end
 - ★ [Strong authentication](strong-authentication.md) — passkeys, TOTP, recovery codes, and the step-up contract
 - ★ [Secrets at rest](secrets-at-rest.md) — AES-256-GCM per user+column; the field-name constants are AAD

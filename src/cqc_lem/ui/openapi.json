@@ -6056,6 +6056,23 @@
         "title": "ResponseModel[PlannedTasksDetail]",
         "type": "object"
       },
+      "ResponseModel_PostSummary_": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/PostSummary"
+          },
+          "status_code": {
+            "title": "Status Code",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status_code",
+          "detail"
+        ],
+        "title": "ResponseModel[PostSummary]",
+        "type": "object"
+      },
       "ResponseModel_PostsPage_": {
         "properties": {
           "detail": {
@@ -11219,6 +11236,71 @@
           }
         },
         "summary": "Bulk Update Posts Endpoint"
+      }
+    },
+    "/api/posts/{post_id}": {
+      "get": {
+        "description": "One of the caller's posts, in the same row shape as `GET /posts/` (MCP P3, plan \u00a74 F7).\n\nOwner-scoped in the SQL, so a stranger's id and a missing id are the same 404: this route never\nsays which ids exist. A database fault is 503, never a 404 that reads as \"deleted\".",
+        "operationId": "get_post_endpoint_api_posts__post_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "post_id",
+            "required": true,
+            "schema": {
+              "title": "Post Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "session_token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_PostSummary_"
+                }
+              }
+            },
+            "description": "One of the caller's posts"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Post Endpoint"
       }
     },
     "/api/review/bulk": {

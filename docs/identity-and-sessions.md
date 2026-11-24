@@ -947,11 +947,12 @@ there is no new login and no new credential store. Full plan: `docs/agent-mcp-pl
 
 | Scope | Reaches | Verbs |
 |---|---|---|
-| `mcp` | `_MCP_READ_PATHS`: the user's own settings, automation state, dashboard, posts, plan, generation status, performance, engagement settings, voice kit and newsletter settings/draft | `GET` only, per path (`_SCOPE_PATH_METHODS`) |
-| `mcp_outreach` | `mcp` plus `_MCP_OUTREACH_EXTRA_READ_PATHS`: DMs, connection requests, leads, lead signals, catch-up touches, outreach targets, newsletter subscribers | `GET` only |
+| `mcp` | `_MCP_READ_PATHS`: the user's own settings, automation state, dashboard, posts, plan, generation status, performance, engagement settings, voice kit, newsletter settings/draft and subscriber counts, plus one templated grant, `GET /posts/{post_id}` (`_SCOPE_PATH_PATTERN_METHODS`) | `GET` only, per path (`_SCOPE_PATH_METHODS`) |
+| `mcp_outreach` | `mcp` plus `_MCP_OUTREACH_EXTRA_READ_PATHS`: DMs, connection requests, leads, lead signals, catch-up touches, outreach targets | `GET` only |
 
 `mcp_outreach` is opted into at mint (owner ruling O11), because those lists hold other people's
 data; its rows are cut to `_OBSERVER_ROW_FIELDS` exactly as an observer's are (`_FIELD_FILTERED_SCOPES`).
+What each P3 tool calls, and the drift guard tying those calls to these grants, is in `docs/mcp-server.md`.
 Both scopes are in `FIXED_TTL_SCOPES`, `_QUEUE_ONLY_SCOPES` (so the W2 write tools inherit every
 approval guard and the `auto_approve` downgrade), `_WARN_ON_REFUSAL_SCOPES` and `_SCOPE_REFUSAL_CODE`.
 They are **never** in `_operator_may_approve`: owner ruling O1's internal/sandbox approval lands in W2

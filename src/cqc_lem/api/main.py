@@ -64,6 +64,7 @@ from cqc_lem.api.response_schemas import (
     DashboardStats,
     PlannedTasksDetail,
     PostsPage,
+    PostSummary,
 )
 from cqc_lem.api.spa_assets import (
     NO_STORE_CACHE_CONTROL,
@@ -146,6 +147,7 @@ from cqc_lem.utilities.db import (
     get_member_analytics_token_info,
     get_passkey_by_credential_id,
     get_planned_tasks,
+    get_post_for_user,
     get_post_type,
     get_post_url_from_log_for_user,
     get_post_user_id,
@@ -743,17 +745,31 @@ _MCP_READ_PATHS = frozenset({
     # voice kit: the user's own story bank, lead magnet, groups, skills and profile
     "/user/story-bank", "/user/lead-magnet", "/user/groups", "/user/linkedin-profile-skills",
     "/user/linkedin-profile",
-    # newsletter settings and draft (subscribers are outreach-only, owner ruling O5)
-    "/user/newsletter-settings", "/user/newsletter-draft",
+    # newsletter settings, draft and subscriber COUNT (owner ruling O5). The subscribers route holds
+    # counts only (`newsletter_subscriber_stats`): LEM stores no subscriber identities, so the
+    # latest count is what `lem_get_newsletter` returns, and the paged count history is the
+    # outreach-only `lem_list_newsletter_subscribers` (MCP P3).
+    "/user/newsletter-settings", "/user/newsletter-draft", "/user/newsletter-subscribers",
 })
 # `mcp` plus the lists that hold OTHER people's data: who LEM messages, invites, scores and replies
 # to. Opted into at mint (owner ruling O11). Row fields are cut to `_OBSERVER_ROW_FIELDS`.
 _MCP_OUTREACH_EXTRA_READ_PATHS = frozenset({
     "/dms", "/connection_requests", "/leads", "/lead_signals", "/catchup/touches",
-    "/outreach/targets", "/user/newsletter-subscribers",
+    "/outreach/targets",
 })
 _MCP_OUTREACH_READ_PATHS = _MCP_READ_PATHS | _MCP_OUTREACH_EXTRA_READ_PATHS
 _GET_ONLY = frozenset({"GET"})
+
+# The templated grants of a verb-limited scope: `(anchored pattern, verbs)`. A path parameter cannot
+# be a literal key in `_SCOPE_PATH_METHODS`, so one that a tool needs is listed here instead, and the
+# resolver consults it only when no literal key matched. `[^/]+` crosses no segment, the same rule as
+# `_SCOPE_PATTERNS`; the handler's own `int` parameter and ownership check do the rest.
+#   /posts/{post_id}   lem_get_post and lem://post/{id} (MCP P3): the owner-scoped one-post read
+_MCP_PATTERN_METHODS: tuple = ((re.compile(r"/posts/[^/]+"), _GET_ONLY),)
+_SCOPE_PATH_PATTERN_METHODS: Dict[str, tuple] = {
+    SESSION_SCOPE_MCP: _MCP_PATTERN_METHODS,
+    SESSION_SCOPE_MCP_OUTREACH: _MCP_PATTERN_METHODS,
+}
 
 _SCOPE_PATH_METHODS: Dict[str, Dict[str, frozenset[str]]] = {
     SESSION_SCOPE_ASSIST: {"/assist/queue": frozenset({"GET"}),
@@ -856,6 +872,9 @@ def _scope_allows(scope: Optional[str], path: Optional[str],
         if method is None:
             method = getattr(_request_object.get(None), "method", None)
         allowed = path_verbs.get(key) if key is not None else None
+        if allowed is None and key is not None:
+            allowed = next((verbs for pattern, verbs in _SCOPE_PATH_PATTERN_METHODS.get(effective, ())
+                            if pattern.fullmatch(key)), None)
         return allowed is not None and isinstance(method, str) and method.upper() in allowed
     if key in surface:
         return True
@@ -2959,6 +2978,42 @@ def _curated_summary(post: dict, sources: dict) -> Optional[dict]:
             "link_only": bool(source.get("link_only"))}
 
 
+def _post_row(post: dict, curated_sources: dict) -> dict[str, Any]:
+    """One post as the Content Studio list and the one-post route both return it.
+
+    Args:
+        post: A row with `get_posts`'s columns.
+        curated_sources: `get_curated_summaries` for the page's curated ids.
+
+    Returns:
+        The response row.
+    """
+    return {
+        "post_id": post["id"],
+        "content": post["content"],
+        "video_url": post["video_url"],
+        "image_url": post.get("image_url"),
+        "scheduled_time": _utc_iso(post["scheduled_time"]),
+        "post_type": post["post_type"],
+        "status": post["status"],
+        "carousel_slides": _parse_slides(post.get("carousel_slides")),
+        # The SHAPE this draft was written to (V51 posts.archetype) — the review UI reports it
+        # on post_approved / post_rejected so approval rate can be broken down by archetype.
+        "archetype": post.get("archetype"),
+        # Why a draft is being held, and what to do about it (issue #421).
+        "authenticity_score": post.get("authenticity_score"),
+        "gate_reason": parse_gate_findings(post.get("gate_reason")),
+        # Why the user rejected/deleted this draft (issue #713) — surfaced when regenerating.
+        "rejection_reason": post.get("rejection_reason"),
+        # An occasion draft the author publishes by hand (issue #1074) — the Studio renders a
+        # copy-and-mark-as-posted state for it instead of a schedule.
+        "manual_publish": bool(post.get("manual_publish")),
+        # The source a curated post comments on (docs/curated-sources.md): the approval card
+        # shows it, its treatment and the exact credit line before the owner approves.
+        "curated": _curated_summary(post, curated_sources),
+    }
+
+
 @router.get("/posts/", responses={
     200: {"description": "Posts retrieved successfully", "model": ResponseModel[PostsPage]},
     **{k: v for k, v in error_responses.items() if k in [401, 403]}
@@ -2995,30 +3050,7 @@ def get_posts_for_email(
     curated_ids = sorted({p.get("curated_source_id") for p in posts} - {None})
     curated_sources = get_curated_summaries(user_id, curated_ids) if curated_ids else {}
     posts_list = [
-        {
-            "post_id": post["id"],
-            "content": post["content"],
-            "video_url": post["video_url"],
-            "image_url": post.get("image_url"),
-            "scheduled_time": _utc_iso(post["scheduled_time"]),
-            "post_type": post["post_type"],
-            "status": post["status"],
-            "carousel_slides": _parse_slides(post.get("carousel_slides")),
-            # The SHAPE this draft was written to (V51 posts.archetype) — the review UI reports it
-            # on post_approved / post_rejected so approval rate can be broken down by archetype.
-            "archetype": post.get("archetype"),
-            # Why a draft is being held, and what to do about it (issue #421).
-            "authenticity_score": post.get("authenticity_score"),
-            "gate_reason": parse_gate_findings(post.get("gate_reason")),
-            # Why the user rejected/deleted this draft (issue #713) — surfaced when regenerating.
-            "rejection_reason": post.get("rejection_reason"),
-            # An occasion draft the author publishes by hand (issue #1074) — the Studio renders a
-            # copy-and-mark-as-posted state for it instead of a schedule.
-            "manual_publish": bool(post.get("manual_publish")),
-            # The source a curated post comments on (docs/curated-sources.md): the approval card
-            # shows it, its treatment and the exact credit line before the owner approves.
-            "curated": _curated_summary(post, curated_sources),
-        }
+        _post_row(post, curated_sources)
         for post in posts
     ]
     return ResponseModel(status_code=200, detail={
@@ -3103,6 +3135,29 @@ def get_post_url(post_id: int, session_token: Optional[str] = None,
     # another account's permalink.
     post_url = get_post_url_from_log_for_user(user_id, post_id)
     return ResponseModel(status_code=200, detail={"post_url": post_url})
+
+
+@router.get("/posts/{post_id}", responses={
+    200: {"description": "One of the caller's posts", "model": ResponseModel[PostSummary]},
+    **{k: v for k, v in error_responses.items() if k in [401, 403, 404]}
+})
+def get_post_endpoint(post_id: int, session_token: Optional[str] = None) -> ResponseModel[dict[str, Any]]:
+    """One of the caller's posts, in the same row shape as `GET /posts/` (MCP P3, plan §4 F7).
+
+    Owner-scoped in the SQL, so a stranger's id and a missing id are the same 404: this route never
+    says which ids exist. A database fault is 503, never a 404 that reads as "deleted".
+    """
+    user_id = require_session_user_id(session_token)
+    try:
+        post = get_post_for_user(user_id, post_id)
+    except OwnershipUnprovable:
+        # `get_post_for_user` already logged the fault with the exception attached.
+        raise HTTPException(status_code=503, detail="Could not read the post — try again")
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+    source_id = post.get("curated_source_id")
+    curated_sources = get_curated_summaries(user_id, [source_id]) if source_id else {}
+    return ResponseModel(status_code=200, detail=_post_row(post, curated_sources))
 
 
 @router.post("/update_post/", responses={

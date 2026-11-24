@@ -33,10 +33,12 @@ EXPECTED_MCP_PATHS = frozenset({
     "/user/engagement-suggestions", "/user/story-bank", "/user/lead-magnet", "/user/groups",
     "/user/linkedin-profile-skills", "/user/linkedin-profile", "/user/newsletter-settings",
     "/user/newsletter-draft",
+    # P3: counts only (LEM stores no subscriber identities), so `mcp` reads the latest count.
+    "/user/newsletter-subscribers",
 })
 EXPECTED_OUTREACH_EXTRA = frozenset({
     "/dms", "/connection_requests", "/leads", "/lead_signals", "/catchup/touches",
-    "/outreach/targets", "/user/newsletter-subscribers",
+    "/outreach/targets",
 })
 
 # Plan §4 "never read" and §5 "never exposed", as (method, path): each must be refused to both.

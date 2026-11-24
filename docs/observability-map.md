@@ -26,6 +26,22 @@ A filtered property must also be a DECLARED field: `**extra` is applied after th
 value a call site passes that way reaches PostHog untouched and the contract cannot see it. That is
 why `track_task` names `state` — the Celery-failure alert's filter — as an argument of its own.
 
+## End-user MCP server (epic #2682) — `docs/mcp-server.md`
+Two LEM events through `_emit`: `mcp_tool_call` (one per tool call, on `str(user_id)`; `tool`,
+`outcome`, `client_name` and `scope` are labels, `latency_ms`, `inner_status` and `inner_calls`
+numbers) and `mcp_auth_refused` (one per request the gate turns away, anonymous, `reason` a label).
+Each tool's inner route calls still emit their own `api_call` under the REAL route, so a tool call
+is visible twice, at the MCP level and at the route level, by design.
+
+**The one named exception to the one-`_emit` rule** (owner ruling O8): `capture_mcp_analytics`
+hands each tool call to `posthog.mcp.PostHogMCP.capture_tool_call`, which owns PostHog's `$mcp_*`
+vocabulary and its MCP dashboards. It is held to a stricter contract than `_emit`: `parameters`,
+`response` and `error` are always None (only the tool NAME, duration and outcome code go out),
+the SDK's `instrument()` wrapper is not used (it captures both and injects a `context` argument
+into every tool schema), `mcp_exception_autocapture` is off (a refused call is a result, never an
+`$exception`), and it is off whenever `_emit` is. `tests/unit/api/mcp/test_mcp_analytics.py` puts
+canaries in a tool's arguments and result and proves neither reaches any capture.
+
 ## LLM analytics (issue #647, traces #746) — `docs/llm-analytics.md`
 Two streams, never summed: `llm_call` (app, cost ESTIMATE — every money question reads this) vs
 `$ai_generation`/`$ai_embedding` (proxy-native, post-fallback, provider-priced — latency/error/
