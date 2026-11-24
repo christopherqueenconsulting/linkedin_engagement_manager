@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.214.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.213.0...v0.214.0) (2026-11-24)
+
+
+### Features
+
+* **engagement:** candidate drafts with risk flags in Daily review, Phase 3 (closes [#2647](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2647)) ([#2722](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2722)) ([480b791](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/480b791ae846b0ce12b6c9053df4f3df1677d067))
+* **pipeline:** router phase 4 parity, replay report and rollout docs (refs [#2562](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2562)) ([#2733](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2733)) ([4ce115a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4ce115a5bc2077bcad1e8f79655d160ce72e3341))
+
+
+### Bug Fixes
+
+* **tooling:** graft hook timeouts are seconds, not milliseconds ([#2734](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2734)) ([2369dba](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2369dba0b2655ce2859ed8a9e05cc2bf2191a078))
+* **ui:** give the PowerShell round-trip snippet test an explicit timeout (closes [#2735](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2735)) ([#2738](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2738)) ([b8693e5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b8693e56e9250a8481136ceb333055f15c8df416))
+
 ## [0.213.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.212.0...v0.213.0) (2026-11-24)
 
 
