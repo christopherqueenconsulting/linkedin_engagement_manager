@@ -35,10 +35,6 @@ from cqc_lem.utilities.ai import (
     voice_exemplars as _voice_exemplars,
 )
 from cqc_lem.utilities.ai.client import attribution_metadata, client
-from cqc_lem.utilities.ai.sensitive_info import redact_messages
-
-# Ordered writer tier for third-party-facing text: comments and DMs (#2750). Not latency-routed.
-VOICE_TIER = "lem-voice"
 
 # The ONE alignment core (voice + prefs + LEM purpose + promo policy) shared by newsletters,
 # posts, and comments. The underscore aliases keep this module's long-standing internal API
@@ -69,6 +65,7 @@ from cqc_lem.utilities.ai.outbound_qa import (
     SURFACE_DM as OUTBOUND_SURFACE_DM,
     refusal_reason as outbound_refusal_reason,
 )
+from cqc_lem.utilities.ai.sensitive_info import redact_messages
 from cqc_lem.utilities.ai.tools import search_recent_news
 
 # create_runway_video lives in video_models (model abstraction); re-exported here
@@ -114,6 +111,9 @@ from cqc_lem.utilities.utils import create_folder_if_not_exists, save_video_url_
 
 # Load .env file
 load_dotenv()
+
+# Ordered writer tier for third-party-facing text: comments and DMs (#2750). Not latency-routed.
+VOICE_TIER = "lem-voice"
 
 # Re-exported ON PURPOSE, and declared here rather than suppressed per-line: `ai_helper` aliases
 # these so its long-standing internal API stays stable while the definitions live in exactly one
