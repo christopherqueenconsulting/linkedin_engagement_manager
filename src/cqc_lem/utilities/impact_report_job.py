@@ -53,7 +53,9 @@ def due_releases(releases: Any, now: datetime) -> list[tuple[str, datetime]]:
         if not published or not isinstance(tag, str):
             continue
         age = now - published
-        if timedelta(days=DEFAULT_DAYS) <= age < timedelta(days=DEFAULT_DAYS + GRACE_DAYS):
+        # +1 day: the window's last ET day (deploy + DEFAULT_DAYS) must be COMPLETE, or its
+        # per-day rates divide a partial day by a whole one.
+        if timedelta(days=DEFAULT_DAYS + 1) <= age < timedelta(days=DEFAULT_DAYS + 1 + GRACE_DAYS):
             due.append((tag, published))
     return due
 
@@ -89,8 +91,16 @@ def _send(user_id: int, key: str, label: str, change_at: datetime, days: int,
         _unclaim(client, key)
         log_error("Impact report inputs unreadable", exc=exc, user_id=user_id, task_name=TASK_NAME)
         return "unread"
-    if not send_impact_report_email(to_email, f"Impact report: {label}",
-                                    render_impact_text(report, label)):
+    except Exception:
+        _unclaim(client, key)  # an unexpected fault must not hold the claim for 90 days
+        raise
+    try:
+        delivered = send_impact_report_email(to_email, f"Impact report: {label}",
+                                             render_impact_text(report, label))
+    except Exception:
+        _unclaim(client, key)
+        raise
+    if not delivered:
         _unclaim(client, key)
         return "email_failed"
     return "sent"
@@ -128,7 +138,7 @@ def run_impact_report_sweep(now: Optional[datetime] = None) -> dict[str, Any]:
     if now.day == 1:
         key = f"baseline:{now:%Y-%m}"
         results[key] = _send(user_id, key, f"monthly baseline {now:%Y-%m}",
-                             now - timedelta(days=BASELINE_DAYS), BASELINE_DAYS, to_email, client)
+                             now - timedelta(days=BASELINE_DAYS + 1), BASELINE_DAYS, to_email, client)
     log_info(f"Impact report beat finished: {len(results)} considered", user_id=user_id,
              task_name=TASK_NAME)
     return {"action": "ran", "results": results}

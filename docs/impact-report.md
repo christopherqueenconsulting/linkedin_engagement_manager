@@ -24,7 +24,7 @@ and only for a plain `vX.Y.Z` tag.
 ## Beat
 
 `impact-report` (`run_scheduler.auto_impact_report`, daily 14:30 UTC), default OFF behind
-`impact-report-enabled`. It emails a report for each GitHub release published 14 to 17 days ago
+`impact-report-enabled`. It emails a report for each GitHub release published 15 to 18 days ago (the last window day must be complete)
 (Redis claim `impact_report:sent:<tag>` taken first; a failed send releases it) and, on the 1st, a
 trailing-30-vs-prior-30 baseline (email only, no GitHub note). No Redis means nothing is sent.
 `IMPACT_REPORT_USER_ID` (default 1) picks the user; `IMPACT_REPORT_ISSUE` (default 2643) the note's

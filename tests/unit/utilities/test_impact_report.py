@@ -213,17 +213,17 @@ class TestJob:
     NOW = datetime(2026, 11, 24, 14, 30, tzinfo=timezone.utc)
 
     def test_due_releases_window(self):
-        rels = [{"tag_name": "v1.0.0", "published_at": "2026-11-10T10:00:00Z"},   # 14d: due
-                {"tag_name": "v0.9.0", "published_at": "2026-11-20T10:00:00Z"},   # too new
+        rels = [{"tag_name": "v1.0.0", "published_at": "2026-11-09T10:00:00Z"},   # 15d: due
+                {"tag_name": "v0.9.0", "published_at": "2026-11-10T10:00:00Z"},   # 14d: last day partial
                 {"tag_name": "v0.8.0", "published_at": "2026-11-01T10:00:00Z"},   # too old
-                {"tag_name": "v1.1.0", "published_at": "2026-11-10T10:00:00Z", "draft": True}]
+                {"tag_name": "v1.1.0", "published_at": "2026-11-09T10:00:00Z", "draft": True}]
         assert [t for t, _ in job.due_releases(rels, self.NOW)] == ["v1.0.0"]
         assert job.due_releases(None, self.NOW) == []
 
     def _run(self, flag=True, redis=None, email=True, releases=None, now=None, recipient="o@x.test"):
         redis = redis if redis is not None else MagicMock(**{"set.return_value": True})
         releases = releases if releases is not None else [
-            {"tag_name": "v1.0.0", "published_at": "2026-11-10T10:00:00Z"}]
+            {"tag_name": "v1.0.0", "published_at": "2026-11-09T10:00:00Z"}]
         comment = MagicMock(return_value=True)
         with patch("cqc_lem.utilities.flags.flag_enabled", return_value=flag), \
              patch.object(job, "_recipient", return_value=recipient), \
