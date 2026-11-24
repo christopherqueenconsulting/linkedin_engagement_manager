@@ -86,6 +86,7 @@ from cqc_lem.utilities.ai.outbound_qa import (
     SURFACE_COMMENT as OUTBOUND_SURFACE_COMMENT,
     refusal_reason as outbound_refusal_reason,
 )
+from cqc_lem.utilities.approval_modes import GROUP_POST_MODE, may_auto_approve
 from cqc_lem.utilities.brand_account import held_connect_sources
 from cqc_lem.utilities.comment_candidates import (
     SOURCE_FEED as POOL_SOURCE_FEED,
@@ -4474,6 +4475,7 @@ def auto_draft_group_post(self, user_id: int, group_id: str, group_name: str = N
         log_debug("No cached profile to draft a group post from", user_id=user_id,
                   task_name="auto_draft_group_post")
         return "No cached profile to draft from"
+    prefs = get_engagement_preferences(user_id)
     with llm_attribution(user_id=user_id, feature=FEATURE_CONTENT):
         synthesis = get_or_create_profile_synthesis(user_id, my_profile)
         # The user owns ready/skipped on this draft, never its text, so the draft is what publishes
@@ -4481,7 +4483,7 @@ def auto_draft_group_post(self, user_id: int, group_id: str, group_name: str = N
         # (issue #1529). `strip_non_bmp` is the shared Selenium-typing helper and stays currency-
         # blind: it also runs over comments and invite notes written about someone ELSE's content.
         text = strip_non_bmp(normalize_currency_symbols(generate_group_post(
-            my_profile, group_name=group_name, prefs=get_engagement_preferences(user_id),
+            my_profile, group_name=group_name, prefs=prefs,
             profile_synthesis=synthesis) or ""))
     if not text.strip():
         return "No group post generated"
@@ -4489,7 +4491,11 @@ def auto_draft_group_post(self, user_id: int, group_id: str, group_name: str = N
     # us is stored SKIPPED instead (issue #2098). The studio's "undo skip" is the approval: it puts
     # this same row back in the queue until the slot passes, and nothing ships without it.
     held = unattended_fact_hold(text, "group_post", user_id, voice_reference(my_profile, synthesis))
-    status = GroupPostDraftStatus.SKIPPED if held else GroupPostDraftStatus.READY
+    # `group_post_mode` (issue #2624): under `pre_review` the draft is stored SKIPPED, the same
+    # restorable-but-never-published state a fact hold uses, so nothing ships until the owner
+    # restores it in the studio. `unattended_fact_hold` still wins either way.
+    review = not may_auto_approve(user_id, GROUP_POST_MODE, prefs)
+    status = GroupPostDraftStatus.SKIPPED if (held or review) else GroupPostDraftStatus.READY
     draft_id = create_group_post_draft(user_id, group_id, text, group_name=group_name,
                                        status=status)
     if not draft_id:
@@ -4498,6 +4504,10 @@ def auto_draft_group_post(self, user_id: int, group_id: str, group_name: str = N
         log_info("Group post held for approval — first-person specifics nothing we supplied "
                  "backs: " + ", ".join(held), user_id=user_id, task_name="auto_draft_group_post")
         return f"Held group post {draft_id} for approval"
+    if review:
+        log_info("Group post filed for review (group_post_mode=pre_review)", user_id=user_id,
+                 task_name="auto_draft_group_post")
+        return f"Drafted group post {draft_id} for review"
     log_info("Group post drafted for review", user_id=user_id, task_name="auto_draft_group_post")
     return f"Drafted group post {draft_id}"
 

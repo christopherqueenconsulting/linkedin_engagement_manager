@@ -103,6 +103,7 @@ from cqc_lem.utilities.ai.outbound_qa import (
     SURFACE_DM as OUTBOUND_SURFACE_DM,
     refusal_reason as outbound_refusal_reason,
 )
+from cqc_lem.utilities.approval_modes import NURTURE_DM_MODE, may_auto_approve
 from cqc_lem.utilities.brand_account import (
     ACQUISITION_HOLD_REASON,
     acquisition_outbound_held,
@@ -1438,16 +1439,15 @@ def _nurture_enabled() -> bool:
     return raw.strip().lower() not in ("0", "false", "no", "off")
 
 
-def _nurture_auto_approve() -> bool:
-    """OFF by default — a drafted reply to a real prospect is exactly the thing a human should see
-    before it sends. Turning this on skips the approval queue (the draft goes straight to 'approved'
-    and the scanner delivers it at its slot).
+def _nurture_auto_approve(user_id: int, prefs: dict = None) -> bool:
+    """Per-user `nurture_dm_mode` (issue #2624): `pre_review` by default — a drafted reply to a real
+    prospect is exactly the thing a human should see before it sends. `auto_approve` files the draft
+    straight as 'approved' for the scanner to deliver at its slot.
 
-    Only an explicit affirmative opens the gate: unset, blank/whitespace, and anything unrecognized
-    all keep the human in the loop. This is the one flag where a typo must fail CLOSED.
+    `DM_NURTURE_AUTO_APPROVE=0/false/no/off` force-reviews every user; anything else defers to the
+    per-user mode. Fails CLOSED on an unreadable preference.
     """
-    raw = os.environ.get("DM_NURTURE_AUTO_APPROVE") or ""
-    return raw.strip().lower() in ("1", "true", "yes", "on")
+    return may_auto_approve(user_id, NURTURE_DM_MODE, prefs)
 
 
 def _nurture_max_per_day() -> int:
@@ -1555,7 +1555,7 @@ def _nurture_after_reply(user_id: int, followup: dict, their_message: str,
         due = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=nurture_delay_hours(intent))
         # A blocked draft is filed PENDING even under auto-approve: it waits for the operator's edit
         # and is never sent on its own.
-        status = (ScheduledDmStatus.APPROVED if _nurture_auto_approve() and not blocked
+        status = (ScheduledDmStatus.APPROVED if not blocked and _nurture_auto_approve(user_id, prefs)
                   else ScheduledDmStatus.PENDING)
         if blocked:
             log_info(f"DM nurture: the draft for {first_name or profile_url} failed the content gate "

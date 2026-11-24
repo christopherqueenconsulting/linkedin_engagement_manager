@@ -352,7 +352,8 @@ class TestDraftGroupPost:
         from cqc_lem.app.engagement.feed import auto_draft_group_post
         with patch(f"{_FEED}.get_open_group_post_draft", return_value=None), \
              patch(f"{_FEED}.load_profile_for_user", return_value=MagicMock()), \
-             patch(f"{_FEED}.get_engagement_preferences", return_value={}), \
+             patch(f"{_FEED}.get_engagement_preferences",
+                   return_value={"group_post_mode": "auto_approve"}), \
              patch(f"{_FEED}.get_or_create_profile_synthesis", return_value="synth"), \
              patch(f"{_FEED}.generate_group_post", return_value="A useful insight.") as gen, \
              patch(f"{_FEED}.create_group_post_draft", return_value=11) as create, \
@@ -363,6 +364,29 @@ class TestDraftGroupPost:
         assert gen.call_args.kwargs["group_name"] == "AI Leaders"
         create.assert_called_once_with(1, "g1", "A useful insight.", group_name="AI Leaders",
                                        status=GroupPostDraftStatus.READY)
+
+    @pytest.mark.parametrize("prefs,env,expected", [
+        ({}, None, GroupPostDraftStatus.SKIPPED),
+        ({"group_post_mode": "pre_review"}, None, GroupPostDraftStatus.SKIPPED),
+        ({"group_post_mode": "auto_approve"}, None, GroupPostDraftStatus.READY),
+        ({"group_post_mode": "auto_approve"}, "off", GroupPostDraftStatus.SKIPPED),
+        ({"group_post_mode": "auto_approve"}, "true", GroupPostDraftStatus.READY),
+    ])
+    def test_group_post_mode_decides_ready_or_held(self, monkeypatch, prefs, env, expected):
+        """Issue #2624: pre_review stores the draft SKIPPED (restorable, never published)."""
+        from cqc_lem.app.engagement.feed import auto_draft_group_post
+        if env is None:
+            monkeypatch.delenv("GROUP_POST_AUTO_APPROVE", raising=False)
+        else:
+            monkeypatch.setenv("GROUP_POST_AUTO_APPROVE", env)
+        with patch(f"{_FEED}.get_open_group_post_draft", return_value=None), \
+             patch(f"{_FEED}.load_profile_for_user", return_value=MagicMock()), \
+             patch(f"{_FEED}.get_engagement_preferences", return_value=prefs), \
+             patch(f"{_FEED}.get_or_create_profile_synthesis", return_value="synth"), \
+             patch(f"{_FEED}.generate_group_post", return_value="A useful insight."), \
+             patch(f"{_FEED}.create_group_post_draft", return_value=11) as create:
+            auto_draft_group_post.run(user_id=1, group_id="g1", group_name="AI")
+        assert create.call_args.kwargs["status"] == expected
 
     def test_an_unpublished_draft_is_never_replaced(self):
         """The waiting draft may already carry the user's edits — a second generation would bin them."""

@@ -1,5 +1,6 @@
 import Toggle from '../../../components/Toggle'
 import { CATCHUP_EVENTS } from '../types'
+import AutomationCard from './AutomationCard'
 import CsvInput from './CsvInput'
 import { useEngagementPrefs } from './engagementPrefsCtx'
 import { Advanced, Field, SectionCard, inputClass } from './Field'
@@ -44,6 +45,8 @@ export default function OutreachSection() {
           </Field>
         </Advanced>
       </SectionCard>
+
+      <AutomationCard />
 
       <SectionCard title="Profile viewers" blurb="What happens when someone looks at your profile but has not engaged with you.">
         <Field settingKey="profile_viewer_dm_auto_send">
