@@ -11,8 +11,20 @@ map $http_upgrade $connection_upgrade {
     ''      close;
 }
 
+# The MCP endpoint never takes a credential in its URL and refuses one with 400 (epic #2682,
+# docs/agent-mcp-plan.md decision O15), but by then this proxy has already seen the URL. A
+# query-string request to /api/mcp is therefore kept OUT of the access log, so a token a client
+# misplaced there is not written to disk. Every other request logs exactly as before (the stock
+# image's `main` format and file, which this server-level directive would otherwise replace).
+map $request_uri $lem_access_loggable {
+    ~^/api/mcp/?\?  0;
+    default         1;
+}
+
 server {
     listen __EDGE_PORT__;
+
+    access_log /var/log/nginx/access.log main if=$lem_access_loggable;
 
     # Per-request resolution through Docker's embedded DNS: a recreated backend container gets a
     # new IP, and a variable proxy_pass re-resolves instead of pinning the IP cached at reload.
