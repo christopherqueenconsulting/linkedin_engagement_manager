@@ -187,7 +187,7 @@ class TestPartialUpdateKeepsTheRest:
         "posts_per_week": 5, "posting_days": '[0, 2, 4, 6]',
         "text_post_images": 0,
         "roster_auto_follow": 1, "max_follows_per_day": 4, "roster_auto_connect": 1,
-        "hold_repaired_posts_for_review": 1,
+        "hold_repaired_posts_for_review": 1, "review_digest_enabled": 0,
         "profile_viewer_dm_auto_send": 1,
         "icp_builder_enabled": 1, "icp_definition": '{"segments": [{"id": "ops"}]}',
         "nurture_dm_mode": "auto_approve", "artifact_dm_mode": "auto_approve",

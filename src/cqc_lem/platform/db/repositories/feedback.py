@@ -45,7 +45,7 @@ def count_story_bank_entries(user_id: int, active_only: bool = True) -> int:
         with db_cursor() as cursor:
             sql = "SELECT COUNT(*) FROM story_bank WHERE user_id=%s"
             if active_only:
-                sql += " AND active=1"
+                sql += " AND active=1 AND review_status='accepted'"
             cursor.execute(sql, (user_id,))
             row = cursor.fetchone()
             return int(row[0]) if row else 0
@@ -573,7 +573,8 @@ def get_story_bank_entries(user_id: int, active_only: bool = False) -> list:
         with db_cursor(dictionary=True) as cursor:
             sql = f"SELECT {', '.join(_STORY_BANK_COLS)} FROM story_bank WHERE user_id=%s"
             if active_only:
-                sql += " AND active=1"
+                # The generation selectors read through here: only a reviewed fact is citable.
+                sql += " AND active=1 AND review_status='accepted'"
             sql += " ORDER BY used_count ASC, last_used_at IS NOT NULL, last_used_at ASC, id ASC"
             cursor.execute(sql, (user_id,))
             return [_clean_story_row(r) for r in (cursor.fetchall() or [])]

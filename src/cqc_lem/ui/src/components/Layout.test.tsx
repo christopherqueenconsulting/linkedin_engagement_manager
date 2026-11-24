@@ -12,6 +12,13 @@ const auth = {
   isAdmin: true,
 }
 vi.mock('../contexts/useAuth', () => ({ useAuth: () => auth }))
+// The Agents entry is flag-gated (issue #2687). Off by default here so every geometry test below
+// runs against the nav real users see today; the Agents block flips it.
+const flags = { mcpServer: false }
+vi.mock('../hooks/useFeatureFlags', () => ({
+  FLAGS: { mcpServer: 'mcp-server-enabled' },
+  useFeatureFlag: (key: string) => key === 'mcp-server-enabled' && flags.mcpServer,
+}))
 vi.mock('./AccountReadinessBanner', () => ({ default: () => null }))
 vi.mock('./FeedbackWidget', () => ({ default: () => null }))
 vi.mock('./FloatingDock', () => ({
@@ -23,7 +30,10 @@ vi.mock('./PostHogSurveyModal', () => ({ default: () => null }))
 vi.mock('./ShippedNotice', () => ({ default: () => null }))
 vi.mock('./SurveyModal', () => ({ default: () => null }))
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  flags.mcpServer = false
+})
 
 function harness() {
   return render(
@@ -108,6 +118,27 @@ describe('Layout menu below md', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Menu' }))
     fireEvent.keyDown(window, { key: 'Escape' })
     expect(document.getElementById('app-menu')).toBeNull()
+  })
+})
+
+describe('Layout Agents entry (issue #2687)', () => {
+  it('is absent while mcp-server-enabled is off, inline and in the menu', () => {
+    harness()
+    expect(screen.queryByRole('link', { name: 'Agents' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Menu' }))
+    const menu = document.getElementById('app-menu') as HTMLElement
+    expect(within(menu).queryByRole('link', { name: 'Agents' })).toBeNull()
+  })
+
+  it('appears in both navs when the flag is on, with the same no-wrap geometry as its siblings', () => {
+    flags.mcpServer = true
+    harness()
+    const inline = within(screen.getByTestId('nav-links')).getByRole('link', { name: 'Agents' })
+    expect(inline.getAttribute('href')).toBe('/agents')
+    expect(inline.className).toContain('whitespace-nowrap')
+    fireEvent.click(screen.getByRole('button', { name: 'Menu' }))
+    const menu = document.getElementById('app-menu') as HTMLElement
+    expect(within(menu).getByRole('link', { name: 'Agents' }).getAttribute('href')).toBe('/agents')
   })
 })
 
