@@ -478,7 +478,7 @@ def test_an_unpushed_local_commit_on_the_origin_path_is_never_moved_back(box: Bo
 
 
 def test_a_spent_branch_checked_out_in_another_worktree_is_never_reset(box: Box, tmp_path: Path) -> None:
-    """git 2.43's `checkout -B` does not refuse a branch another worktree holds; the guard must."""
+    """Git 2.43's `checkout -B` does not refuse a branch another worktree holds; the guard must."""
     tip = box.phase_k()
     main = box.squash_merge()
     box.git("fetch", "-q", "origin", cwd=box.repo)
