@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import axios from 'axios'
 import api from '../../api/client'
+import TableScroll from '../../components/TableScroll'
 import { useAuth } from '../../contexts/useAuth'
 import type { GetDetail } from '../../api/types'
 
@@ -168,6 +169,7 @@ export default function ProfileAuditCard() {
             <div className="space-y-1">
               <h3 className="text-sm font-medium text-gray-700">Beside your audience</h3>
               <p className="text-xs text-gray-500">{data.correlation.note}</p>
+              <TableScroll label="Audit score beside audience" minWidth={480} testId="audit-correlation-table">
               <table className="text-xs w-full">
                 <thead>
                   <tr className="text-left text-gray-500">
@@ -188,6 +190,7 @@ export default function ProfileAuditCard() {
                   ))}
                 </tbody>
               </table>
+              </TableScroll>
             </div>
           )}
         </>
