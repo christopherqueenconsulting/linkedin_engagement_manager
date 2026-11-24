@@ -40,6 +40,14 @@ EXPECTED_OUTREACH_EXTRA = frozenset({
     "/dms", "/connection_requests", "/leads", "/lead_signals", "/catchup/touches",
     "/outreach/targets", "/user/engagement-targets", "/user/engagement-suggestions",
 })
+# The ONLY write grants (W2b, owner ruling O4): `POST`, the three narrow AI/media spend routes.
+EXPECTED_SPEND_POSTS = frozenset({
+    "/user/mcp-spend/post", "/user/mcp-spend/post-image", "/user/mcp-spend/post-video",
+})
+
+
+def _get_grants(main_mod: Any, scope: str) -> set:
+    return {p for p, verbs in main_mod._SCOPE_PATH_METHODS[scope].items() if verbs == {"GET"}}
 
 # Plan §4 "never read" and §5 "never exposed", as (method, path): each must be refused to both.
 NEVER_REACHABLE = (
@@ -74,22 +82,26 @@ def get_routes(main_mod: Any) -> set:
 class TestTheSurface:
     def test_mcp_reads_exactly_the_reviewed_paths(self, main_mod: Any) -> None:
         assert main_mod._SCOPE_SURFACES["mcp"] == EXPECTED_MCP_PATHS
-        assert set(main_mod._SCOPE_PATH_METHODS["mcp"]) == EXPECTED_MCP_PATHS
+        assert _get_grants(main_mod, "mcp") == EXPECTED_MCP_PATHS
 
     def test_mcp_outreach_is_mcp_plus_exactly_the_pii_lists(self, main_mod: Any) -> None:
         assert main_mod._SCOPE_SURFACES["mcp_outreach"] == EXPECTED_MCP_PATHS | EXPECTED_OUTREACH_EXTRA
-        assert set(main_mod._SCOPE_PATH_METHODS["mcp_outreach"]) == (
-            EXPECTED_MCP_PATHS | EXPECTED_OUTREACH_EXTRA)
+        assert _get_grants(main_mod, "mcp_outreach") == EXPECTED_MCP_PATHS | EXPECTED_OUTREACH_EXTRA
 
     @pytest.mark.parametrize("scope", MCP_SCOPES)
-    def test_every_grant_is_get_only(self, main_mod: Any, scope: str) -> None:
-        assert {v for v in main_mod._SCOPE_PATH_METHODS[scope].values()} == {frozenset({"GET"})}
+    def test_every_grant_is_a_read_or_exactly_a_spend_post(self, main_mod: Any, scope: str) -> None:
+        grants = main_mod._SCOPE_PATH_METHODS[scope]
+        assert {v for v in grants.values()} == {frozenset({"GET"}), frozenset({"POST"})}
+        assert {p for p, verbs in grants.items() if verbs == {"POST"}} == EXPECTED_SPEND_POSTS
 
     @pytest.mark.parametrize("scope", MCP_SCOPES)
-    def test_every_granted_path_is_a_real_get_route(self, main_mod: Any, get_routes: set,
-                                                    scope: str) -> None:
+    def test_every_granted_path_is_a_real_route_for_its_verb(self, main_mod: Any, get_routes: set,
+                                                             scope: str) -> None:
         """A grant matching no route is a check that cannot fail, and a tool that cannot work."""
-        assert set(main_mod._SCOPE_PATH_METHODS[scope]) - get_routes == set()
+        post_routes = {main_mod._scope_path(r.path) for r in main_mod._walk_routes(main_mod.app.routes)
+                       if "POST" in (getattr(r, "methods", None) or ())}
+        assert _get_grants(main_mod, scope) - get_routes == set()
+        assert EXPECTED_SPEND_POSTS - post_routes == set()
 
     @pytest.mark.parametrize("path", sorted(EXPECTED_OUTREACH_EXTRA))
     def test_mcp_cannot_reach_the_outreach_lists(self, main_mod: Any, path: str) -> None:

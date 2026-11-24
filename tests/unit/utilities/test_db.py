@@ -191,8 +191,9 @@ class TestPostMutationsAreOwnerScoped:
             assert update_db_post("body", None, datetime(2026, 8, 2, 12, 0), PostType.TEXT, 9,
                                   PostStatus.PENDING, user_id=7) is True
         sql, params = mock_database_connection["cursor"].execute.call_args[0]
-        assert sql.rstrip().endswith("AND user_id = %s")
-        assert params[-1] == 7
+        # Owner scope, then the MCP placeholder guard (issue #2689) and its three parameters.
+        assert sql.rstrip().endswith("AND user_id = %s AND (content = %s OR %s <> %s)")
+        assert params[-4] == 7
 
     def test_update_db_post_without_a_user_id_is_unscoped(self, mock_database_connection):
         from cqc_lem.utilities.db import PostStatus, PostType, update_db_post

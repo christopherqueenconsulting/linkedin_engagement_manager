@@ -29,6 +29,7 @@ from cqc_lem.platform.db.enums import (
 )
 from cqc_lem.platform.db.repositories.users import get_user_id
 from cqc_lem.platform.db.shared import (
+    AGENT_POST_PLACEHOLDER,
     DEFAULT_CONTENT_BUFFER_DAYS,
     DEFAULT_CONTENT_BUFFER_MAX_POSTS,
     MAX_CONTENT_BUFFER_DAYS,
@@ -146,6 +147,11 @@ def update_db_post(content: str, video_url: str, scheduled_time: datetime, post_
     """`user_id` scopes the write to one account's row — same reason as `bulk_update_posts`.
 
     `approved_by` is recorded when this write moves the post INTO APPROVED (issue #2116).
+
+    An editor save that still carries an MCP agent's placeholder body (issue #2689) only lands on a
+    row that STILL holds it: a stale tab opened before LEM wrote the draft can never overwrite the
+    written draft with the placeholder. Checked in the same statement, so there is no gap between
+    the check and the write.
     """
     connection = _connection.get_db_connection()
     cursor = connection.cursor()
@@ -164,6 +170,9 @@ def update_db_post(content: str, video_url: str, scheduled_time: datetime, post_
         if user_id is not None:
             owner_clause = " AND user_id = %s"
             params.append(user_id)
+        # A placeholder body may only be written over the placeholder itself (see the docstring).
+        owner_clause += " AND (content = %s OR %s <> %s)"
+        params.extend([AGENT_POST_PLACEHOLDER, (content or "").strip(), AGENT_POST_PLACEHOLDER])
 
         cursor.execute(
             "UPDATE posts SET content = %s, video_url = %s, scheduled_time =%s, post_type = %s, "
@@ -651,10 +660,15 @@ def bulk_update_posts(post_ids: list[int], status: Optional[PostStatus] = None,
                       scheduled_time: Optional[datetime] = None,
                       rejection_reason: Optional[str] = None,
                       user_id: Optional[int] = None,
-                      approved_by: Optional[str] = None) -> bool:
+                      approved_by: Optional[str] = None,
+                      exclude_content: Optional[str] = None) -> bool:
     """`user_id` scopes the WHERE clause to one account's rows (issue #914).
 
     `approved_by` is recorded on every row this write moves INTO APPROVED (issue #2116).
+
+    `exclude_content` leaves every row whose body is exactly that string untouched, in the same
+    statement: the API passes `AGENT_POST_PLACEHOLDER` for a publishing status, so an MCP agent's
+    unwritten draft can never be approved even if it became one after the API looked (#2689).
 
     The API checks ownership before it calls this, so the scope is redundant today — that is the
     point. It closes the window between the check and the write, and it means a future caller that
@@ -699,6 +713,9 @@ def bulk_update_posts(post_ids: list[int], status: Optional[PostStatus] = None,
         if user_id is not None:
             owner_clause = " AND user_id = %s"
             params.append(user_id)
+        if exclude_content is not None:
+            owner_clause += " AND (content IS NULL OR content <> %s)"
+            params.append(exclude_content)
 
         cursor.execute(
             f"UPDATE posts SET {', '.join(sets)} WHERE id IN ({placeholders}){owner_clause}",
@@ -1190,14 +1207,17 @@ def get_ready_to_post_posts(pre_post_time: datetime = None, post_time_delta_minu
             # manual_publish rows are drafted for LinkedIn's native occasion composer, which has no
             # API entity (issue #1074) — the author publishes them by hand, so the scheduler must
             # never see one. Excluding them HERE makes that true for every consumer of this query.
+            # Same for an MCP agent's post still holding its placeholder body (issue #2689): it is
+            # not a draft, so it can never be dispatched, whatever its status says.
             cursor.execute(
                 """SELECT p.id, p.scheduled_time, p.user_id
                     FROM posts AS p
                     WHERE status = 'approved' AND manual_publish = 0
                       AND scheduled_time BETWEEN %s AND %s
+                      AND (p.content IS NULL OR p.content <> %s)
                     ORDER BY scheduled_time ASC
                     """,
-                (yesterday, pre_post_time,))
+                (yesterday, pre_post_time, AGENT_POST_PLACEHOLDER))
             posts = cursor.fetchall()
             # A non-empty poll is a real state transition worth keeping at INFO; an empty one is the
             # scheduler idling and was 220 identical rows in 48h of PostHog Logs.
@@ -2896,3 +2916,174 @@ def get_held_pending_posts(user_id: int) -> list[dict]:
     except mysql.connector.Error as err:
         log_error("Could not list held pending posts", exc=err, user_id=user_id)
         return []
+
+
+
+# --- MCP spend tools (W2b, issue #2689): writes guarded in SQL ------------------------------------
+# The spend tools generate in the background, so a human may edit, approve, reject or publish the
+# post while a render runs. Each write below states, in its WHERE clause, the exact row it is allowed
+# to change, so a late result can never land on a row a human has acted on. Each answers True only
+# when exactly one row matched.
+
+_TEXT_PENDING = "WHERE id = %s AND user_id = %s AND status = %s AND post_type = %s"
+
+
+def _guarded_update(sql: str, params: tuple, what: str, post_id: int, user_id: int) -> bool:
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(sql, params)
+            return cursor.rowcount == 1
+    except mysql.connector.Error as err:
+        log_error(f"Could not {what}", exc=err, user_id=user_id, post_id=post_id)
+        return False
+
+
+def write_agent_post_draft(post_id: int, user_id: int, content: str, placeholder: str) -> bool:
+    """Replace an MCP agent post's placeholder body with the generated draft.
+
+    Only while the row is still PENDING AND still holds exactly `placeholder`: a human edit, a
+    reject, an approve or a publish while the draft was being written leaves the row as the human
+    left it. The status is not written at all; the guard already proves it is PENDING.
+
+    Args:
+        post_id: The agent's post.
+        user_id: Its owner; a row of any other user is never touched.
+        content: The generated draft.
+        placeholder: The body the row was created with.
+
+    Returns:
+        True when exactly one row was updated.
+    """
+    return _guarded_update(
+        "UPDATE posts SET content = %s WHERE id = %s AND user_id = %s AND status = %s "
+        "AND content = %s",
+        (content, post_id, user_id, PostStatus.PENDING.value, placeholder),
+        "write an agent post draft", post_id, user_id)
+
+
+def fail_agent_post_placeholder(post_id: int, user_id: int, placeholder: str) -> bool:
+    """Mark an MCP agent post ERROR when its draft could not be written.
+
+    Only a row still PENDING and still holding exactly `placeholder` is touched, so a row a human
+    edited, approved, rejected or published is never moved, and nothing is ever set back to PENDING.
+
+    Args:
+        post_id: The agent's post.
+        user_id: Its owner.
+        placeholder: The body the row was created with.
+
+    Returns:
+        True when exactly one row was updated.
+    """
+    return _guarded_update(
+        "UPDATE posts SET status = %s WHERE id = %s AND user_id = %s AND status = %s "
+        "AND content = %s",
+        (PostStatus.ERROR.value, post_id, user_id, PostStatus.PENDING.value, placeholder),
+        "mark an agent post placeholder error", post_id, user_id)
+
+
+def attach_image_to_pending_post(post_id: int, user_id: int, image_url: str) -> bool:
+    """Point a PENDING text post of this user, with no image yet, at a newly rendered image.
+
+    A render that lands after the post was approved, rejected, published, converted to video or
+    given an image has nowhere to go: no row matches, and the caller deletes the file.
+
+    Args:
+        post_id: The post to attach the image to.
+        user_id: Its owner; a row of any other user is never touched.
+        image_url: The stored image's public URL.
+
+    Returns:
+        True when exactly one row was updated.
+    """
+    return _guarded_update(
+        f"UPDATE posts SET image_url = %s {_TEXT_PENDING} "
+        "AND (image_url IS NULL OR image_url = '')",
+        (image_url, post_id, user_id, PostStatus.PENDING.value, PostType.TEXT.value),
+        "attach an image to a pending post", post_id, user_id)
+
+
+def convert_pending_post_to_video(post_id: int, user_id: int, content: str, video_url: str,
+                                  caption_text: Optional[str] = None,
+                                  caption_srt_url: Optional[str] = None) -> bool:
+    """Make a PENDING text post of this user a video post, in ONE guarded write.
+
+    The type, caption, `video_url` and burned-caption record are written together and only after
+    the video is stored, never before: a video post with no `video_url` is what
+    `get_unposted_posts_missing_assets` selects, so a type flipped first would let the asset
+    backfill queue a second paid render. A post that left PENDING (or stopped being a text post, or
+    gained a video) while the video rendered matches nothing, and the caller deletes the file.
+
+    Args:
+        post_id: The post to convert.
+        user_id: Its owner; a row of any other user is never touched.
+        content: The caption, with any AI-visuals disclosure applied.
+        video_url: The stored video's public URL.
+        caption_text: The burned-in caption text, when captioning ran.
+        caption_srt_url: The caption sidecar's URL, when one was written.
+
+    Returns:
+        True when exactly one row was updated.
+    """
+    return _guarded_update(
+        "UPDATE posts SET post_type = %s, content = %s, video_url = %s, caption_text = %s, "
+        f"caption_srt_url = %s {_TEXT_PENDING} AND (video_url IS NULL OR video_url = '')",
+        (PostType.VIDEO.value, content, video_url, caption_text, caption_srt_url, post_id, user_id,
+         PostStatus.PENDING.value, PostType.TEXT.value),
+        "convert a pending post to video", post_id, user_id)
+
+
+def get_placeholder_post_ids(user_id: int, post_ids: list[int]) -> list[int]:
+    """Which of these posts of `user_id` still hold an MCP agent's placeholder body (#2689).
+
+    Owner-scoped. A database error RAISES, because the caller uses the answer to decide what a
+    publishing status may touch, and "could not look" must never read as "none".
+
+    Args:
+        user_id: The caller.
+        post_ids: The posts a bulk status change names.
+
+    Returns:
+        The ids still holding `AGENT_POST_PLACEHOLDER`, in ascending order.
+
+    Raises:
+        OwnershipUnprovable: The read failed.
+    """
+    if not user_id or not post_ids:
+        return []
+    marks = ", ".join(["%s"] * len(post_ids))
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                f"SELECT id FROM posts WHERE user_id = %s AND id IN ({marks}) AND content = %s "
+                "ORDER BY id",
+                (int(user_id), *[int(pid) for pid in post_ids], AGENT_POST_PLACEHOLDER))
+            return [int(row[0]) for row in cursor.fetchall() or []]
+    except mysql.connector.Error as err:
+        log_error("Could not read which posts hold the agent placeholder", exc=err,
+                  user_id=user_id)
+        raise OwnershipUnprovable(str(err)) from err
+
+
+def fail_stuck_agent_placeholders() -> int:
+    """Mark ERROR every approved/scheduled post still holding the agent placeholder (#2689).
+
+    Such a row can never publish (the ready-to-post query excludes it and `post_to_linkedin`
+    refuses it), so without this it would sit APPROVED forever and look queued. ERROR is what the
+    Content Studio shows as "needs a fix". PENDING rows are left alone: their draft may still be on
+    its way. Never raises: the publishing beat that calls it must keep running.
+
+    Returns:
+        How many rows were moved; 0 on a fault.
+    """
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE posts SET status = %s WHERE status IN (%s, %s) AND content = %s",
+                (PostStatus.ERROR.value, PostStatus.APPROVED.value, PostStatus.SCHEDULED.value,
+                 AGENT_POST_PLACEHOLDER))
+            return int(cursor.rowcount or 0)
+    except mysql.connector.Error as err:
+        log_error("Could not sweep stuck agent placeholder posts", exc=err,
+                  task_name="auto_check_scheduled_posts")
+        return 0

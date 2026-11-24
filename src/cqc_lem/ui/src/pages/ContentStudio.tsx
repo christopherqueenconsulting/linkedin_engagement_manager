@@ -193,6 +193,12 @@ export default function ContentStudio() {
   // Verdict of the last "Save & re-score" run on the open post (issue #421).
   const [rescoreResult, setRescoreResult] = useState<string | null>(null)
 
+  // Why the last "Save Changes" was refused, and what the last bulk status change skipped. An AI
+  // agent's draft that LEM is still writing (issue #2689) cannot be approved, so the server says so
+  // and the author is told here rather than the click silently doing nothing.
+  const [saveError, setSaveError] = useState<string | null>(null)
+  const [bulkNotice, setBulkNotice] = useState<string | null>(null)
+
   // Image edits on the open post (issue #1030) — upload/generate/remove write straight to the row,
   // so they are deliberately NOT part of "Save Changes".
   const [imageBusy, setImageBusy] = useState<'upload' | 'generate' | 'remove' | null>(null)
@@ -253,6 +259,16 @@ export default function ContentStudio() {
     else capture(EVENTS.postRejected, properties)
   }
 
+  // The server's own words for a refused save/approve of an AI agent's draft (issue #2689), or
+  // undefined for any other failure.
+  const agentDraftMessage = (err: unknown): string | undefined => {
+    const detail = (err as { response?: { data?: { detail?: { code?: string; message?: string } } } })
+      ?.response?.data?.detail
+    const agentCodes = ['agent_draft_not_written', 'agent_placeholder_stale']
+    return detail && typeof detail === 'object' && agentCodes.includes(detail.code ?? '')
+      && typeof detail.message === 'string' ? detail.message : undefined
+  }
+
   const updateMutation = useMutation({
     mutationFn: (post: Post) =>
       api.post(`/update_post/?post_id=${post.post_id}`, {
@@ -263,12 +279,15 @@ export default function ContentStudio() {
         scheduled_datetime: post.scheduled_time,
         status: post.status,
       }),
+    onMutate: () => setSaveError(null),
     onSuccess: (_res, post) => {
       // post_type is editable in this dialog, so report what was SAVED, not the stale list row.
       capturePostDecision(post.post_id, post.status, { source: 'editor', post_type: post.post_type })
       qc.invalidateQueries({ queryKey: ['posts', email] })
       setEditingPost(null)
     },
+    onError: (err) =>
+      setSaveError(agentDraftMessage(err) ?? 'Could not save this post — please try again.'),
   })
 
   // Save the edit, then re-run the quality gates on it (issue #421). Scoring the STORED content
@@ -298,7 +317,8 @@ export default function ContentStudio() {
               authenticity_score: result.authenticity_score } : p)
       qc.invalidateQueries({ queryKey: ['posts', email] })
     },
-    onError: () => setRescoreResult('Could not re-score this post — please try again.'),
+    onError: (err) =>
+      setRescoreResult(agentDraftMessage(err) ?? 'Could not re-score this post — please try again.'),
   })
 
   // Image on an existing post (issue #1030). All three actions land on the row immediately —
@@ -357,6 +377,7 @@ export default function ContentStudio() {
   if (scratchPostId !== editingPostId) {
     setScratchPostId(editingPostId)
     setRescoreResult(null)
+    setSaveError(null)
     setImageError(null)
     setNativeCopied(false)
     setNativeError(null)
@@ -399,16 +420,28 @@ export default function ContentStudio() {
   const bulkUpdateMutation = useMutation({
     mutationFn: (body: { post_ids: number[]; status?: string; scheduled_datetime?: string }) =>
       api.post('/posts/bulk_update/', { ...body, session_token: sessionToken }),
-    onSuccess: (_res, body) => {
+    onMutate: () => setBulkNotice(null),
+    onSuccess: (res, body) => {
+      // Posts the server left alone (an AI agent's draft LEM is still writing) are not decisions.
+      const skipped = new Set(
+        ((res?.data?.skipped ?? []) as { post_id: number }[]).map((s) => s.post_id))
       // One event per post, not one per click — an approval rate broken down by archetype needs
       // the same unit whether the user approved from the editor or from the bulk bar.
       if (body.status) {
-        for (const id of body.post_ids) capturePostDecision(id, body.status, { source: 'bulk' })
+        for (const id of body.post_ids) {
+          if (!skipped.has(id)) capturePostDecision(id, body.status, { source: 'bulk' })
+        }
+      }
+      if (skipped.size > 0) {
+        setBulkNotice(`${skipped.size} post${skipped.size === 1 ? ' was' : 's were'} left unchanged: ` +
+          'LEM is still writing them for your AI agent. Try again in a few minutes.')
       }
       qc.invalidateQueries({ queryKey: ['posts', email] })
       setSelectedIds(new Set())
       setBulkDate('')
     },
+    onError: (err) =>
+      setBulkNotice(agentDraftMessage(err) ?? 'Could not update the selected posts — please try again.'),
   })
 
   const bulkDeleteMutation = useMutation({
@@ -936,6 +969,9 @@ export default function ContentStudio() {
           </button>
         </div>
       )}
+      {bulkNotice && (
+        <p role="status" className="text-xs text-fg-muted">{bulkNotice}</p>
+      )}
 
       {isLoading && <p className="text-fg-muted text-sm">Loading posts…</p>}
 
@@ -1376,6 +1412,9 @@ export default function ContentStudio() {
                     Cancel
                   </button>
                 </div>
+                {saveError && (
+                  <p role="alert" className="text-xs text-danger">{saveError}</p>
+                )}
 
                 {/* Regenerate with suggestions — mirrors the newsletter flow. Runs the generation
                     pipeline server-side (honors saved voice/tone, focus/goals, emoji/hashtag prefs)

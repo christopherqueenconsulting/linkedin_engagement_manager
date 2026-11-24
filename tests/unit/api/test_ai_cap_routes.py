@@ -142,6 +142,7 @@ def test_rescore_is_refused_with_a_429_before_any_judge_call(api_client, signed_
     from tests.unit.api.conftest import SESSION_TOKEN
     with patch(f"{_USER}.get_post_user_id", return_value=capped), \
             patch(f"{_USER}.get_post_status", return_value="pending"), \
+            patch(f"{_USER}.get_post_content", return_value="A written draft."), \
             patch("cqc_lem.app.run_content_plan.rescore_post") as rescore:
         resp = api_client.post("/api/user/post/rescore",
                                json={"session_token": SESSION_TOKEN, "post_id": 5})
@@ -156,6 +157,7 @@ def test_rescore_attributes_its_calls_to_the_session_user(api_client, signed_in)
     seen = []
     with patch(f"{_USER}.get_post_user_id", return_value=SESSION_USER_ID), \
             patch(f"{_USER}.get_post_status", return_value="pending"), \
+            patch(f"{_USER}.get_post_content", return_value="A written draft."), \
             patch("cqc_lem.utilities.db.get_user_subscription_info", return_value=None), \
             patch("cqc_lem.app.run_content_plan.rescore_post",
                   side_effect=lambda post_id: seen.append(current_llm_attribution()) or {}):

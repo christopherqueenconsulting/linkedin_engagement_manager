@@ -97,6 +97,7 @@ from cqc_lem.utilities.auth_factors import (
 from cqc_lem.utilities.content_generation_status import clear_generation_status, get_generation_status, mark_queued
 from cqc_lem.utilities.curated_sources import credit_line
 from cqc_lem.utilities.db import (
+    AGENT_POST_PLACEHOLDER,
     EMAIL_VERIFICATION_REQUIRED_MESSAGE,
     INTERNAL_ACCOUNT_KINDS,
     MCP_SESSION_SCOPES,
@@ -146,6 +147,7 @@ from cqc_lem.utilities.db import (
     get_linkedin_profile_url_by_user_id,
     get_member_analytics_token_info,
     get_passkey_by_credential_id,
+    get_placeholder_post_ids,
     get_planned_tasks,
     get_post_content,
     get_post_for_user,
@@ -762,6 +764,12 @@ _MCP_OUTREACH_EXTRA_READ_PATHS = frozenset({
 })
 _MCP_OUTREACH_READ_PATHS = _MCP_READ_PATHS | _MCP_OUTREACH_EXTRA_READ_PATHS
 _GET_ONLY = frozenset({"GET"})
+# The AI/media spend tools (W2b, owner ruling O4), `POST` only. These three routes serve MCP seats
+# and nobody else, and each refuses media for any post but a pending one this token created; W1's
+# text-only rule on `/schedule_post/` and `/update_post/` is untouched (`api/routers/mcp_spend.py`).
+_MCP_SPEND_PATHS = frozenset({"/user/mcp-spend/post", "/user/mcp-spend/post-image",
+                              "/user/mcp-spend/post-video"})
+_POST_ONLY = frozenset({"POST"})
 
 # The templated grants of a verb-limited scope: `(anchored pattern, verbs)`. A path parameter cannot
 # be a literal key in `_SCOPE_PATH_METHODS`, so one that a tool needs is listed here instead, and the
@@ -778,8 +786,10 @@ _SCOPE_PATH_PATTERN_METHODS: Dict[str, tuple] = {
 _SCOPE_PATH_METHODS: Dict[str, Dict[str, frozenset[str]]] = {
     SESSION_SCOPE_ASSIST: {"/assist/queue": frozenset({"GET"}),
                            "/review/comment-posted": frozenset({"POST"})},
-    SESSION_SCOPE_MCP: {path: _GET_ONLY for path in _MCP_READ_PATHS},
-    SESSION_SCOPE_MCP_OUTREACH: {path: _GET_ONLY for path in _MCP_OUTREACH_READ_PATHS},
+    SESSION_SCOPE_MCP: {**{path: _GET_ONLY for path in _MCP_READ_PATHS},
+                        **{path: _POST_ONLY for path in _MCP_SPEND_PATHS}},
+    SESSION_SCOPE_MCP_OUTREACH: {**{path: _GET_ONLY for path in _MCP_OUTREACH_READ_PATHS},
+                                 **{path: _POST_ONLY for path in _MCP_SPEND_PATHS}},
 }
 
 _SCOPE_SURFACES: Dict[str, frozenset[str]] = {
@@ -2850,6 +2860,10 @@ def schedule_post(post: PostRequest) -> PostScheduledResponse:
                                        approved_by=user_approver(user_id))
     if post_id is None:
         raise HTTPException(status_code=404, detail="Could not schedule post")
+    if _request_session_scope.get() in MCP_SESSION_SCOPES:
+        # The provenance the MCP media tools require: media only for a post THIS token created (W2b).
+        from cqc_lem.api.mcp.spend import mark_created_post
+        mark_created_post(post_id, user_id, get_session_id(current_session_token(post.session_token)))
     return PostScheduledResponse(status_code=200, detail="Post scheduled successfully",
                                  post_id=post_id)
 
@@ -3065,11 +3079,66 @@ def get_posts_for_email(
     })
 
 
+# Statuses that put a post on the road to LinkedIn. A post still holding an MCP agent's placeholder
+# body (issue #2689) was never written, so none of them may be set on it.
+_PUBLISHING_STATUSES = frozenset({PostStatus.APPROVED.value, PostStatus.SCHEDULED.value,
+                                  PostStatus.POSTED.value})
+_AGENT_DRAFT_NOT_WRITTEN = "agent_draft_not_written"
+
+
+class BulkUpdateSkip(BaseModel):
+    """One post a bulk status change left untouched, and why."""
+
+    post_id: int
+    code: str
+
+
+class BulkUpdateResponse(ResponseModel[str]):
+    """`POST /posts/bulk_update/`'s reply: the usual message, plus the posts it left alone.
+
+    `skipped` is empty unless a publishing status named an MCP agent's draft that LEM is still
+    writing (issue #2689): those keep their status and every other id is updated.
+    """
+
+    skipped: List[BulkUpdateSkip] = []
+
+
+def _is_publishing(status: Any) -> bool:
+    return getattr(status, "value", status) in _PUBLISHING_STATUSES
+
+
+def _refuse_placeholder_approval(status: Any, contents: List[Optional[str]], *,
+                                 user_id: Optional[int]) -> None:
+    """409 `agent_draft_not_written` when a publishing status would land on a placeholder body.
+
+    Args:
+        status: The status the caller asked for (enum or string); anything else passes.
+        contents: The body each target post will carry after the write.
+        user_id: The caller, for the log line.
+
+    Raises:
+        HTTPException: 409 when any target still holds `AGENT_POST_PLACEHOLDER`.
+    """
+    if getattr(status, "value", status) not in _PUBLISHING_STATUSES:
+        return
+    if any((content or "").strip() == AGENT_POST_PLACEHOLDER for content in contents):
+        # DEBUG: the designed answer to a click on a draft that is still being written.
+        log_debug("Refused to approve an MCP agent post that was never written", user_id=user_id,
+                  action_type="post")
+        raise HTTPException(status_code=409, detail={
+            "code": _AGENT_DRAFT_NOT_WRITTEN,
+            "message": "LEM is still writing this draft for your AI agent; it cannot be approved "
+                       "yet.",
+        })
+
+
 @router.post("/posts/bulk_update/", responses={
-    200: {"description": "Posts updated successfully"},
-    **{k: v for k, v in error_responses.items() if k in [400, 401, 403, 405]}
+    200: {"description": "Posts updated; `skipped` lists any left untouched"},
+    **{k: v for k, v in error_responses.items() if k in [400, 401, 403, 405]},
+    409: {"description": "Every post named is an AI agent's draft LEM is still writing"},
+    503: {"description": "Could not read which posts are still being written"},
 })
-def bulk_update_posts_endpoint(request: BulkUpdateRequest) -> ResponseModel[str]:
+def bulk_update_posts_endpoint(request: BulkUpdateRequest) -> BulkUpdateResponse:
     """Restatus and/or reschedule a batch of the caller's posts, all-or-nothing.
 
     Ownership is proved for EVERY id before anything is written, and the update is additionally
@@ -3088,14 +3157,38 @@ def bulk_update_posts_endpoint(request: BulkUpdateRequest) -> ResponseModel[str]
         raise HTTPException(status_code=400, detail="post_ids is required")
     _require_own_posts(user_id, request.post_ids)
 
+    # An MCP agent's draft LEM is still writing (issue #2689) cannot take a publishing status. The
+    # rest of the batch still goes through: those ids are named back as `skipped`, and the UPDATE
+    # itself excludes the placeholder too, so a row that became one after this read is safe.
+    post_ids, skipped, exclude = list(request.post_ids), [], None
+    if _is_publishing(request.status):
+        try:
+            held = set(get_placeholder_post_ids(user_id, post_ids))
+        except OwnershipUnprovable:
+            raise HTTPException(status_code=503, detail="Could not read the posts — try again")
+        skipped = [BulkUpdateSkip(post_id=pid, code=_AGENT_DRAFT_NOT_WRITTEN)
+                   for pid in post_ids if pid in held]
+        post_ids = [pid for pid in post_ids if pid not in held]
+        exclude = AGENT_POST_PLACEHOLDER
+        if not post_ids:
+            log_debug("Refused to approve MCP agent posts that were never written",
+                      user_id=user_id, action_type="post")
+            raise HTTPException(status_code=409, detail={
+                "code": _AGENT_DRAFT_NOT_WRITTEN,
+                "message": "LEM is still writing these drafts for your AI agent; they cannot be "
+                           "approved yet.",
+                "post_ids": sorted(held),
+            })
+
     _warn_if_naive_schedule(request.scheduled_datetime, "/posts/bulk_update/", user_id=user_id)
 
     # `user_id=` scopes the WHERE clause as well as the check in front of it — the check is the
     # gate, the scope is what makes forgetting it harmless (issue #914).
-    if bulk_update_posts(request.post_ids, status=request.status,
+    if bulk_update_posts(post_ids, status=request.status,
                          scheduled_time=request.scheduled_datetime, user_id=user_id,
-                         approved_by=user_approver(user_id)):
-        return ResponseModel(status_code=200, detail="Posts updated successfully")
+                         approved_by=user_approver(user_id), exclude_content=exclude):
+        return BulkUpdateResponse(status_code=200, detail="Posts updated successfully",
+                                  skipped=skipped)
     else:
         raise HTTPException(status_code=405, detail="Posts could not be updated")
 
@@ -3165,9 +3258,39 @@ def get_post_endpoint(post_id: int, session_token: Optional[str] = None) -> Resp
     return ResponseModel(status_code=200, detail=_post_row(post, curated_sources))
 
 
+def _refuse_placeholder_save(post_id: int, post: "PostRequest", *, user_id: int) -> None:
+    """Refuse an editor save that carries an MCP agent's placeholder body (issue #2689).
+
+    `update_db_post` writes the body it is sent, so the body a save sends IS the body the row will
+    carry, and the approve check needs no read. With a publishing status it is a 409
+    `agent_draft_not_written`. With any other status it is allowed only while the stored row still
+    holds the placeholder: otherwise it is a tab opened before LEM wrote the draft, and saving it
+    would overwrite the written draft (409 `agent_placeholder_stale`). An unreadable stored body is
+    a 503, never a guess. `update_db_post` repeats that last check in its WHERE clause.
+
+    Raises:
+        HTTPException: 409 or 503 as above.
+    """
+    if (post.content or "").strip() != AGENT_POST_PLACEHOLDER:
+        return
+    _refuse_placeholder_approval(post.status, [post.content], user_id=user_id)
+    stored = get_post_content(post_id)
+    if stored is None:
+        raise HTTPException(status_code=503, detail="Could not read the post — try again")
+    if stored.strip() != AGENT_POST_PLACEHOLDER:
+        log_debug("Refused a stale save over a written MCP agent draft", user_id=user_id,
+                  post_id=post_id, action_type="post")
+        raise HTTPException(status_code=409, detail={
+            "code": "agent_placeholder_stale",
+            "message": "LEM has written this draft since you opened it. Reload it before saving.",
+        })
+
+
 @router.post("/update_post/", responses={
     200: {"description": "Post updated successfully"},
-    **{k: v for k, v in error_responses.items() if k in [401, 403, 405]}
+    **{k: v for k, v in error_responses.items() if k in [401, 403, 405]},
+    409: {"description": "An AI agent's draft LEM is still writing, or a stale save over it"},
+    503: {"description": "Could not read the stored post"},
 })
 def update_post(post_id: int, post: PostRequest) -> ResponseModel[str]:
     """Edit one of the caller's posts in place.
@@ -3179,6 +3302,7 @@ def update_post(post_id: int, post: PostRequest) -> ResponseModel[str]:
     _reject_foreign_email(user_id, post.email)
     _require_own_posts(user_id, [post_id])
     _refuse_agent_approved_status(post.status)
+    _refuse_placeholder_save(post_id, post, user_id=user_id)
 
     _warn_if_naive_schedule(post.scheduled_datetime, "/update_post/", post_id=post_id,
                             user_id=user_id)
@@ -4739,6 +4863,7 @@ from cqc_lem.api.routers import (  # noqa: E402
     avatar as _avatar_router,
     billing as _billing_router,
     curated as _curated_router,
+    mcp_spend as _mcp_spend_router,
     mcp_tokens as _mcp_tokens_router,
     outreach as _outreach_router,
     review as _review_router,
@@ -4751,6 +4876,7 @@ app.include_router(_auth_router.router)
 app.include_router(_avatar_router.router)
 app.include_router(_billing_router.router)
 app.include_router(_curated_router.router)
+app.include_router(_mcp_spend_router.router)
 app.include_router(_mcp_tokens_router.router)
 app.include_router(_outreach_router.router)
 app.include_router(_review_router.router)

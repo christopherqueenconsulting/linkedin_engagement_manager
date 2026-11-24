@@ -68,6 +68,7 @@ from cqc_lem.utilities.db import (
     count_catchup_touches_sent_today,
     count_invites_sent_today,
     count_pending_catchup_touches,
+    fail_stuck_agent_placeholders,
     get_active_user_ids,
     get_approved_catchup_touches,
     get_approved_connection_requests,
@@ -241,6 +242,13 @@ _OCCASION_CLAIM_ORPHAN_LOOKBACK_HOURS = 2
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True, }, reject_on_worker_lost=True)
 def auto_check_scheduled_posts(self):
     """Checks if there are any posts to publish."""
+    # An MCP agent's post approved while still a placeholder (issue #2689) can never publish — the
+    # query below excludes it — so it is moved to ERROR here, where the author sees it needs a fix,
+    # instead of sitting APPROVED forever. INFO only when it found one: an empty sweep is the norm.
+    stuck = fail_stuck_agent_placeholders()
+    if stuck:
+        log_info(f"Moved {stuck} never-written agent post(s) from approved/scheduled to error",
+                 task_name="auto_check_scheduled_posts")
     # Get post that should have run between yesterday and in the next 20 minutes
     posts = get_ready_to_post_posts(post_time_delta_minutes=CQC_LEM_POST_TIME_DELTA_MINUTES)
     # Fetch active users only when there are posts (avoids a DB round-trip when idle).

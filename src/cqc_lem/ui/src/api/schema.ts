@@ -2937,6 +2937,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/user/mcp-spend/post": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mcp Generate Post
+         * @description Create a PENDING text post and queue LEM's own writer to draft it from `topic`.
+         */
+        post: operations["mcp_generate_post_api_user_mcp_spend_post_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/user/mcp-spend/post-image": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mcp Generate Post Image
+         * @description Queue LEM's gated post-image engine for a pending post this MCP token created.
+         */
+        post: operations["mcp_generate_post_image_api_user_mcp_spend_post_image_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/user/mcp-spend/post-video": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mcp Generate Post Video
+         * @description Queue LEM's post-video pipeline for a pending post this MCP token created.
+         */
+        post: operations["mcp_generate_post_video_api_user_mcp_spend_post_video_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/user/mcp-token": {
         parameters: {
             query?: never;
@@ -4497,6 +4557,34 @@ export interface components {
             status?: components["schemas"]["PostStatus"] | null;
         };
         /**
+         * BulkUpdateResponse
+         * @description `POST /posts/bulk_update/`'s reply: the usual message, plus the posts it left alone.
+         *
+         *     `skipped` is empty unless a publishing status named an MCP agent's draft that LEM is still
+         *     writing (issue #2689): those keep their status and every other id is updated.
+         */
+        BulkUpdateResponse: {
+            /** Detail */
+            detail: string;
+            /**
+             * Skipped
+             * @default []
+             */
+            skipped: components["schemas"]["BulkUpdateSkip"][];
+            /** Status Code */
+            status_code: number;
+        };
+        /**
+         * BulkUpdateSkip
+         * @description One post a bulk status change left untouched, and why.
+         */
+        BulkUpdateSkip: {
+            /** Code */
+            code: string;
+            /** Post Id */
+            post_id: number;
+        };
+        /**
          * CallBulkAcceptRequest
          * @description Body of `POST /user/call-ingest/accept-bulk`.
          */
@@ -5975,6 +6063,34 @@ export interface components {
          *     regardless of whether a row was found to delete.
          */
         LogoutRequest: {
+            /** Session Token */
+            session_token?: string | null;
+        };
+        /**
+         * McpGeneratePostRequest
+         * @description Body of `POST /user/mcp-spend/post`.
+         */
+        McpGeneratePostRequest: {
+            /**
+             * Scheduled Datetime
+             * @description When the post should publish once approved (ISO 8601 with an offset). Default: 24h out.
+             */
+            scheduled_datetime?: string | null;
+            /** Session Token */
+            session_token?: string | null;
+            /**
+             * Topic
+             * @description What the post is about and any direction for it, in the user's own terms.
+             */
+            topic: string;
+        };
+        /**
+         * McpPostMediaRequest
+         * @description Body of `POST /user/mcp-spend/post-image` and `/post-video`.
+         */
+        McpPostMediaRequest: {
+            /** Post Id */
+            post_id: number;
             /** Session Token */
             session_token?: string | null;
         };
@@ -10145,13 +10261,13 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Posts updated successfully */
+            /** @description Posts updated; `skipped` lists any left untouched */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ResponseModel_str_"];
+                    "application/json": components["schemas"]["BulkUpdateResponse"];
                 };
             };
             /** @description Bad Request */
@@ -10182,6 +10298,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Every post named is an AI agent's draft LEM is still writing */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -10190,6 +10313,13 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
+            };
+            /** @description Could not read which posts are still being written */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -10727,6 +10857,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description An AI agent's draft LEM is still writing, or a stale save over it */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -10735,6 +10872,13 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
+            };
+            /** @description Could not read the stored post */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -12610,6 +12754,204 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
+            };
+        };
+    };
+    mcp_generate_post_api_user_mcp_spend_post_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["McpGeneratePostRequest"];
+            };
+        };
+        responses: {
+            /** @description Generation queued; the post is pending review */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                };
+            };
+            /** @description Not an MCP seat, writes off, or not this token's post */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Post not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The post is not a pending text draft */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid arguments */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Daily AI cap or MCP spend cap reached */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Spend limits unreadable, or the job could not be queued */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    mcp_generate_post_image_api_user_mcp_spend_post_image_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["McpPostMediaRequest"];
+            };
+        };
+        responses: {
+            /** @description Generation queued; the post is pending review */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                };
+            };
+            /** @description Not an MCP seat, writes off, or not this token's post */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Post not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The post is not a pending text draft */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid arguments */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Daily AI cap or MCP spend cap reached */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Spend limits unreadable, or the job could not be queued */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    mcp_generate_post_video_api_user_mcp_spend_post_video_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["McpPostMediaRequest"];
+            };
+        };
+        responses: {
+            /** @description Generation queued; the post is pending review */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                };
+            };
+            /** @description Not an MCP seat, writes off, or not this token's post */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Post not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The post is not a pending text draft */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid arguments */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Daily AI cap or MCP spend cap reached */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Spend limits unreadable, or the job could not be queued */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

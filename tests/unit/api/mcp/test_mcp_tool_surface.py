@@ -91,7 +91,7 @@ def test_the_resolver_agrees_for_every_tool_call(main_mod: Any, scope: str) -> N
     for verb, path in registry.registry_grants(scope):
         concrete = path.replace("{post_id}", "12")
         assert main_mod._scope_allows(scope, f"/api{concrete}", verb), (scope, verb, path)
-        for other in ("POST", "PUT", "PATCH", "DELETE"):
+        for other in {"GET", "POST", "PUT", "PATCH", "DELETE"} - {verb}:
             assert not main_mod._scope_allows(scope, f"/api{concrete}", other), (scope, other, path)
 
 
@@ -110,12 +110,22 @@ def test_the_post_pattern_crosses_no_segment(main_mod: Any) -> None:
         assert not main_mod._scope_allows(scope, "/api/posts/bulk_update", "POST")
 
 
-def test_every_tool_call_resolves_to_a_real_get_route(main_mod: Any) -> None:
-    """A call whose path is no GET route would 404 (or 307) on every use."""
-    templates = {main_mod._scope_path(r.path) for r in main_mod._walk_routes(main_mod.app.routes)
-                 if "GET" in (getattr(r, "methods", None) or ())}
+def test_every_tool_call_resolves_to_a_real_route_for_its_verb(main_mod: Any) -> None:
+    """A call whose path is no route for its verb would 404/405 (or 307) on every use."""
+    routes = {(verb, main_mod._scope_path(r.path))
+              for r in main_mod._walk_routes(main_mod.app.routes)
+              for verb in (getattr(r, "methods", None) or ())}
     for spec in registry.TOOLS:
-        for _verb, path in spec.calls:
-            assert path in templates, (spec.name, path)
-            if "{" not in path:
+        for verb, path in spec.calls:
+            assert (verb, path) in routes, (spec.name, verb, path)
+            if verb == "GET" and "{" not in path:
                 assert route_path(path).startswith("/api/"), path
+
+
+def test_only_the_write_tools_call_anything_but_get() -> None:
+    for spec in registry.TOOLS:
+        verbs = {verb for verb, _path in spec.calls}
+        if spec.write:
+            assert verbs == {"POST"}, spec.name
+        else:
+            assert verbs <= {"GET"}, spec.name

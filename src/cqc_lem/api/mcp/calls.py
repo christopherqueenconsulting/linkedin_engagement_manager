@@ -42,6 +42,7 @@ from cqc_lem.api.mcp.loopback import (
     OK,
     REFUSED,
     TIMEOUT,
+    UNKNOWN,
     UPSTREAM_ERROR,
     Loopback,
     ToolFailure,
@@ -78,8 +79,8 @@ def mcp_tool(spec: registry.ToolSpec) -> Tool:
     """One registry entry as the MCP `Tool` a client lists."""
     return Tool(name=spec.name, title=spec.title, description=spec.description,
                 input_schema=_input_schema(spec),
-                annotations=ToolAnnotations(title=spec.title, read_only_hint=True,
-                                            destructive_hint=False, idempotent_hint=True,
+                annotations=ToolAnnotations(title=spec.title, read_only_hint=not spec.write,
+                                            destructive_hint=False, idempotent_hint=not spec.write,
                                             open_world_hint=spec.open_world))
 
 
@@ -117,7 +118,12 @@ def _ok(spec: registry.ToolSpec, payload: Any) -> CallToolResult:
 
 
 def _error(failure: ToolFailure) -> CallToolResult:
-    body = {"error": {"code": failure.code, "outcome": failure.outcome, "message": failure.message}}
+    body: dict[str, Any] = {"error": {"code": failure.code, "outcome": failure.outcome,
+                                      "message": failure.message}}
+    retry_after = getattr(failure, "retry_after", None)
+    if isinstance(retry_after, int):
+        # Seconds until the refusal lifts (a 429's `Retry-After`, e.g. `daily_ai_cap`).
+        body["error"]["retry_after"] = retry_after
     return CallToolResult(content=[TextContent(type="text", text=f"{failure.code}: {failure.message}")],
                           structured_content=body, is_error=True)
 
@@ -171,11 +177,18 @@ async def call_tool(request: Optional[Request], name: str,
         outcome = failure.outcome
         result = _error(failure)
     except asyncio.TimeoutError:
-        # Every v1 tool is a read, so a call that ran out of time changed nothing: `timeout`, and
-        # safe to retry. (A write would be `unknown`, plan §5.)
-        outcome = TIMEOUT
-        result = _error(ToolFailure(TIMEOUT, "timeout",
-                                    "LEM took too long to answer. Try again, or ask for less."))
+        if spec is not None and spec.write:
+            # A write may have landed after the budget ran out: `unknown`, never a safe retry
+            # (plan §5), or a retry could queue the spend twice.
+            outcome = UNKNOWN
+            result = _error(ToolFailure(UNKNOWN, "unknown",
+                                        "LEM did not confirm this in time and it may have been "
+                                        "queued. Check lem_list_posts before retrying."))
+        else:
+            # A read that ran out of time changed nothing: `timeout`, and safe to retry.
+            outcome = TIMEOUT
+            result = _error(ToolFailure(TIMEOUT, "timeout",
+                                        "LEM took too long to answer. Try again, or ask for less."))
     except Exception as exc:  # noqa: BLE001 — a tool must answer, never crash the MCP request.
         outcome = UPSTREAM_ERROR
         log_error("MCP tool failed unexpectedly", exc=exc, tool=tool_label,
