@@ -161,14 +161,6 @@ from cqc_lem.platform.db.repositories.avatar import (
     update_avatar_samples,
     update_avatar_training_status,
 )
-from cqc_lem.platform.db.repositories.booking import (
-    CALENDLY_TOKEN_FIELD,
-    apply_booking,
-    get_calendly_token,
-    get_calendly_user_ids,
-    touch_calendly_polled,
-    upsert_calendly_token,
-)
 from cqc_lem.platform.db.repositories.billing import (
     COST_ROLLUP_COLUMNS,
     EARLY_ADOPTER_COHORTS,
@@ -197,6 +189,14 @@ from cqc_lem.platform.db.repositories.billing import (
     revoke_affiliate_enrollment_bonus,
     set_affiliate_promo_opt_in,
     set_affiliate_status,
+)
+from cqc_lem.platform.db.repositories.booking import (
+    CALENDLY_TOKEN_FIELD,
+    apply_booking,
+    get_calendly_token,
+    get_calendly_user_ids,
+    touch_calendly_polled,
+    upsert_calendly_token,
 )
 from cqc_lem.platform.db.repositories.comment_candidates import (
     claim_approved_candidate_posted,
@@ -249,8 +249,8 @@ from cqc_lem.platform.db.repositories.engagement import (
     count_invites_sent_today,
     count_user_comments_on_post_url,
     get_comment_followup,
-    get_comment_outcome_backfill_targets,
     get_comment_log_times,
+    get_comment_outcome_backfill_targets,
     get_comment_outcome_targets,
     get_comment_outcomes,
     get_daily_action_counts,
