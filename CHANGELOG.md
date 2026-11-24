@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.222.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.221.0...v0.222.0) (2026-11-24)
+
+
+### Features
+
+* **engagement:** per-user session windows and timezone in preferences (refs [#2767](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2767)) ([#2777](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2777)) ([fbe219f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/fbe219f50ed2977a22ab19162d55e618e90492d6))
+* **voice:** multi-candidate comments with cross-family judge (refs [#2751](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2751)) ([#2779](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2779)) ([e7b4a9b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e7b4a9b8dd8cd95e4c10d7dca17ce67f1798cab3))
+
 ## [0.221.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.220.0...v0.221.0) (2026-11-24)
 
 
