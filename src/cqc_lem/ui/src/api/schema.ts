@@ -6339,6 +6339,44 @@ export interface components {
          */
         PostType: "text" | "carousel" | "video" | "document";
         /**
+         * PostUpdateRequest
+         * @description Body of `POST /update_post/`: `PostRequest`, with `content` and the slot optional.
+         *
+         *     A human session still sends both and is refused 422 without either, exactly as before. A
+         *     queue-only seat (MCP W2) sends ONLY the field it is revising, and the pending-only write touches
+         *     only the fields sent, so a content-only revise can never write back a slot someone moved
+         *     meanwhile.
+         */
+        PostUpdateRequest: {
+            /** Carousel Slides */
+            carousel_slides?: string[] | null;
+            /** Content */
+            content?: string | null;
+            /** Email */
+            email?: string | null;
+            /** Image Url */
+            image_url?: string | null;
+            /** @default text */
+            post_type: components["schemas"]["PostType"] | null;
+            /** Rejection Reason */
+            rejection_reason?: string | null;
+            /** Scheduled Datetime */
+            scheduled_datetime?: string | null;
+            /** Session Token */
+            session_token?: string | null;
+            /** @default pending */
+            status: components["schemas"]["PostStatus"] | null;
+            /** Use Avatar */
+            use_avatar?: boolean | null;
+            /**
+             * Video Quality
+             * @default standard
+             */
+            video_quality: string | null;
+            /** Video Url */
+            video_url?: string | null;
+        };
+        /**
          * PostsPage
          * @description `detail` of `GET /posts/` — one page of the caller's own posts, plus the paging context.
          */
@@ -10225,7 +10263,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["PostRequest"];
+                "application/json": components["schemas"]["PostUpdateRequest"];
             };
         };
         responses: {

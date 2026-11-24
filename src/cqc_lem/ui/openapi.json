@@ -5814,6 +5814,152 @@
         "title": "PostType",
         "type": "string"
       },
+      "PostUpdateRequest": {
+        "description": "Body of `POST /update_post/`: `PostRequest`, with `content` and the slot optional.\n\nA human session still sends both and is refused 422 without either, exactly as before. A\nqueue-only seat (MCP W2) sends ONLY the field it is revising, and the pending-only write touches\nonly the fields sent, so a content-only revise can never write back a slot someone moved\nmeanwhile.",
+        "properties": {
+          "carousel_slides": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Carousel Slides"
+          },
+          "content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "image_url": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Url"
+          },
+          "post_type": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PostType"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "text"
+          },
+          "rejection_reason": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rejection Reason"
+          },
+          "scheduled_datetime": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scheduled Datetime"
+          },
+          "session_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Token"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PostStatus"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "pending"
+          },
+          "use_avatar": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Use Avatar"
+          },
+          "video_quality": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": "standard",
+            "title": "Video Quality"
+          },
+          "video_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Video Url"
+          }
+        },
+        "title": "PostUpdateRequest",
+        "type": "object"
+      },
       "PostsPage": {
         "description": "`detail` of `GET /posts/` \u2014 one page of the caller's own posts, plus the paging context.",
         "properties": {
@@ -11849,7 +11995,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/PostRequest"
+                "$ref": "#/components/schemas/PostUpdateRequest"
               }
             }
           },
