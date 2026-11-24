@@ -83,6 +83,33 @@ class TestConnectionRequestDb:
             assert update_connection_request_status(7, ConnectionRequestStatus.SENT) is True
         assert "UPDATE connection_requests SET status" in cur.execute.call_args[0][0]
 
+    def test_update_status_counts_the_attempt_only_when_asked(self, fake_cursor):
+        # Issue #2658: a SENT row read attempts = 0; only a real dispatch passes count_attempt.
+        from cqc_lem.utilities.db import ConnectionRequestStatus, update_connection_request_status
+        conn, cur = fake_cursor(lastrowid=7)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            update_connection_request_status(7, ConnectionRequestStatus.SENT, count_attempt=True)
+            assert "attempts = LEAST(255, attempts + 1)" in cur.execute.call_args[0][0]
+            update_connection_request_status(7, ConnectionRequestStatus.SENT)
+            assert "attempts" not in cur.execute.call_args[0][0]
+
+    def test_record_connection_accepted_flips_a_sent_row_by_slug(self, fake_cursor):
+        from cqc_lem.utilities.db import record_connection_accepted
+        conn, cur = fake_cursor(lastrowid=7)
+        cur.rowcount = 1
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            assert record_connection_accepted(1, "https://www.linkedin.com/in/Jane-Doe/?x=1") == 1
+        sql, params = cur.execute.call_args[0]
+        assert "accepted = 1, accepted_at = NOW()" in sql and "accepted = 0" in sql
+        assert params == (1, "sent", "%/in/jane-doe%")
+
+    def test_record_connection_accepted_without_a_slug_writes_nothing(self, fake_cursor):
+        from cqc_lem.utilities.db import record_connection_accepted
+        conn, cur = fake_cursor(lastrowid=7)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            assert record_connection_accepted(1, "https://example.com/company/x") == 0
+        cur.execute.assert_not_called()
+
     def test_update_status_to_terminal_clears_recipient_email(self, fake_cursor):
         # Issue #1836 — the bounded-exposure half of the storage decision: an email held for a
         # request that just went SENT/FAILED/CANCELED will never be used again.

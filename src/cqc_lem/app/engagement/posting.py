@@ -136,6 +136,7 @@ from cqc_lem.utilities.db import (
     update_db_post_content,
     update_db_post_first_comment_link,
     update_db_post_status,
+    record_connection_accepted,
     upsert_engager,
 )
 from cqc_lem.utilities.demo_mode import DemoModeError
@@ -193,7 +194,7 @@ from cqc_lem.utilities.linkedin.composer import (
     _type_and_submit_reply,
     comment_author_identity,
 )
-from cqc_lem.utilities.linkedin.helper import can_open_dm_thread
+from cqc_lem.utilities.linkedin.helper import can_open_dm_thread, is_first_degree
 from cqc_lem.utilities.linkedin.member_post_analytics import (
     fetch_member_post_analytics,
     get_member_post_analytics_access_token,
@@ -1296,6 +1297,10 @@ def _reply_to_comments_on_open_post(driver, wait, user_id: int, post_id: int, my
                           user_id=user_id, post_id=post_id, comment_text=short_comment_text)
             elif _ename.lower() != (my_profile.full_name or "").lower():
                 upsert_engager(user_id, _ename, _eprofile, connection_degree=_edegree)
+                if _eprofile and is_first_degree(_edegree or ""):
+                    # Opportunistic acceptance (#2658): the badge was already on this card, so a
+                    # sent invite to this person is accepted. No navigation is added for it.
+                    record_connection_accepted(user_id, _eprofile)
                 # Inbound intent (#483): this commenter may be raising their hand — flag + draft.
                 if leads_flagged < _MAX_LEAD_FLAGS_PER_SWEEP and _flag_lead_signal(
                         user_id, comment_text, LeadSignalSource.POST_COMMENT, f"post:{post_id}",

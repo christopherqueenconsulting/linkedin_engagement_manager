@@ -1973,7 +1973,8 @@ def send_connection_request(self, request_id: int):
         update_connection_request_status(request_id, ConnectionRequestStatus.PENDING)
         return f"Connection request {request_id} held at pending (DEMO_MODE)"
     if sent:
-        update_connection_request_status(request_id, ConnectionRequestStatus.SENT)
+        update_connection_request_status(request_id, ConnectionRequestStatus.SENT,
+                                         count_attempt=True)
         track_invite_outcome(user_id, INVITE_RESULT_SENT, _invite_outcome_reason(reason),
                              attempts_before + 1)
         return f"Connection request {request_id} -> sent"

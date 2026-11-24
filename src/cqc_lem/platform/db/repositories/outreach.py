@@ -615,26 +615,57 @@ def list_connection_requests_for_audit() -> Optional[list]:
         log_error("Could not list connection requests for audit", exc=err)
         return None
 def update_connection_request_status(request_id: int, status: "ConnectionRequestStatus",
-                                     failure_reason: str = None) -> bool:
+                                     failure_reason: str = None,
+                                     count_attempt: bool = False) -> bool:
     """Move a request to `status`. `failure_reason` records WHY a send failed (issue #623) — it is
     written on every call, so a request that later succeeds or is deferred clears the stale reason
     instead of showing yesterday's failure next to today's status.
+
+    `count_attempt` (issue #2658) charges the real dispatch that just SENT to `attempts`, which only
+    the failure path used to count — a sent row read `attempts = 0`. Only the caller that reached
+    LinkedIn passes it; a sandbox dry run never does.
 
     A move into a TERMINAL status (issue #1836) also clears `recipient_email` — the bounded-exposure
     half of the storage decision in the migration comment: nothing more will ever be done with the
     address once the row can no longer be dispatched.
     """
     clear_email = ", recipient_email = NULL" if _is_terminal_connection_request_status(status) else ""
+    bump = ", attempts = LEAST(255, attempts + 1)" if count_attempt else ""
     try:
         with db_cursor(commit=True) as cursor:
             cursor.execute(
-                f"UPDATE connection_requests SET status = %s, failure_reason = %s{clear_email} "
+                f"UPDATE connection_requests SET status = %s, failure_reason = %s{clear_email}{bump} "
                 "WHERE id = %s",
                 (str(status), (str(failure_reason)[:512] if failure_reason else None), request_id))
             return cursor.rowcount > 0
     except mysql.connector.Error as err:
         log_error(f"Could not update connection request {request_id} status", exc=err)
         return False
+def record_connection_accepted(user_id: int, person_profile_url: str) -> int:
+    """Mark this user's SENT invite to `person_profile_url` accepted; returns rows flipped.
+
+    Opportunistic (issue #2658): called only where a visit ALREADY read a 1st-degree badge for the
+    person, never from a navigation of its own. Matched on the profile slug, so a tracking-query or
+    trailing-slash variant of the URL still finds the row. Idempotent: `accepted_at` is set once and
+    an already-accepted row is not touched. 0 for no sent invite, no slug, or a failed write.
+    """
+    from cqc_lem.utilities.lead_scoring import profile_slug
+    slug = profile_slug(person_profile_url)
+    if not slug:
+        return 0
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE connection_requests SET accepted = 1, accepted_at = NOW() "
+                "WHERE user_id = %s AND status = %s AND accepted = 0 "
+                "AND LOWER(recipient_profile_url) LIKE %s ESCAPE '!'",
+                (user_id, ConnectionRequestStatus.SENT.value, f"%/in/{_like_literal(slug)}%"))
+            return int(cursor.rowcount or 0)
+    except mysql.connector.Error as err:
+        log_error("Could not record connection accepted", exc=err, user_id=user_id)
+        return 0
+
+
 def record_connection_request_attempt(request_id: int, failure_reason: str,
                                       terminal: bool = False) -> "tuple[bool, int]":
     """Record ONE real dispatch attempt that reached LinkedIn and did not send (issue #1814).
