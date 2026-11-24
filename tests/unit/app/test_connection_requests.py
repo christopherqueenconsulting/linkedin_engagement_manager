@@ -30,7 +30,7 @@ class TestSendConnectionRequest:
             out = ra.send_connection_request(3)
         send.assert_called_once_with(1, "https://x/in/jane", "hi jane", recipient_email=None)
         from cqc_lem.utilities.db import ConnectionRequestStatus
-        upd.assert_called_once_with(3, ConnectionRequestStatus.SENT)
+        upd.assert_called_once_with(3, ConnectionRequestStatus.SENT, count_attempt=True)
         rec.assert_not_called()  # a sent invite is terminal already, no attempt bookkeeping needed
         assert "sent" in out
 

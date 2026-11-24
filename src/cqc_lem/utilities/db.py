@@ -161,14 +161,6 @@ from cqc_lem.platform.db.repositories.avatar import (
     update_avatar_samples,
     update_avatar_training_status,
 )
-from cqc_lem.platform.db.repositories.booking import (
-    CALENDLY_TOKEN_FIELD,
-    apply_booking,
-    get_calendly_token,
-    get_calendly_user_ids,
-    touch_calendly_polled,
-    upsert_calendly_token,
-)
 from cqc_lem.platform.db.repositories.billing import (
     COST_ROLLUP_COLUMNS,
     EARLY_ADOPTER_COHORTS,
@@ -197,6 +189,14 @@ from cqc_lem.platform.db.repositories.billing import (
     revoke_affiliate_enrollment_bonus,
     set_affiliate_promo_opt_in,
     set_affiliate_status,
+)
+from cqc_lem.platform.db.repositories.booking import (
+    CALENDLY_TOKEN_FIELD,
+    apply_booking,
+    get_calendly_token,
+    get_calendly_user_ids,
+    touch_calendly_polled,
+    upsert_calendly_token,
 )
 from cqc_lem.platform.db.repositories.comment_candidates import (
     claim_approved_candidate_posted,
@@ -494,6 +494,7 @@ from cqc_lem.platform.db.repositories.outreach import (
     list_existing_double_sent_catchups,
     list_scheduled_dms_for_audit,
     mark_followup,
+    record_connection_accepted,
     record_connection_request_attempt,
     record_derived_stage_changes,
     record_lead_magnet_sent,
@@ -1481,6 +1482,7 @@ __all__ = [
     "record_auth_event",
     "record_comment_followup",
     "record_comment_outcome",
+    "record_connection_accepted",
     "record_connection_request_attempt",
     "record_content_quality_score",
     "record_faq_entry_version",

@@ -740,7 +740,7 @@ class TestTheProactiveRowAndTheEvent:
              patch("cqc_lem.utilities.db.update_connection_request_status") as status, \
              patch(f"{_INV}.track_invite_outcome") as track:
             ra.send_connection_request(9)
-        status.assert_called_once_with(9, ConnectionRequestStatus.SENT)
+        status.assert_called_once_with(9, ConnectionRequestStatus.SENT, count_attempt=True)
         # `sent`, with its own word: the operator can still tell a confirmed dispatch from a row
         # closed by evidence found on a later visit.
         assert track.call_args.args[1:3] == ("sent", "already_pending")

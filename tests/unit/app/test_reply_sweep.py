@@ -433,6 +433,31 @@ class TestReplyToCommentsOnOpenPost:
                                        connection_degree="2nd")
         flag.assert_called_once()   # the lead-signal half rode the same dead read (#483)
 
+    @pytest.mark.parametrize("badge,expected_calls", [("1st", 1), ("2nd", 0)])
+    def test_a_first_degree_badge_marks_a_sent_invite_accepted(self, badge, expected_calls):
+        """#2658 P3: the badge is already on the card, so acceptance is read with no navigation."""
+        from cqc_lem.app.engagement.posting import _reply_to_comments_on_open_post
+        driver = _sweep_driver()
+        card = _FakeComment("Nice post", author=f"Jane Doe Verified Profile {badge}",
+                            href="https://www.linkedin.com/in/jane")
+        with patch(f"{_POST}.get_post_url_from_log_for_user", return_value="https://li/feed/update/urn:li:share:1/"), \
+             patch(f"{_POST}.get_post_content", return_value="post body"), \
+             patch(f"{_POST}.click_first", return_value=None), \
+             patch(f"{_POST}._comment_items_from_thread", return_value=[card]), \
+             patch(f"{_POST}.get_lead_magnet_settings", return_value={"enabled": False}), \
+             patch(f"{_POST}.upsert_engager"), \
+             patch(f"{_POST}.record_connection_accepted") as accepted, \
+             patch(f"{_POST}.generate_thread_reply", return_value="Thanks!"), \
+             patch(f"{_POST}.get_engagement_preferences", return_value={}), \
+             patch(f"{_POST}._flag_lead_signal", return_value=None), \
+             patch(f"{_POST}._reply_to_comment_inline", return_value=True), \
+             patch(f"{_POST}._react_to_comment_inline", return_value=True), \
+             patch(f"{_POST}.insert_new_log"):
+            _reply_to_comments_on_open_post(driver, MagicMock(), 1, 9, self._profile(), "synth")
+        assert accepted.call_count == expected_calls
+        if expected_calls:
+            accepted.assert_called_once_with(1, "https://www.linkedin.com/in/jane")
+
     def test_unnamed_commenter_is_a_countable_debug_skip_not_a_crash(self):
         """A card where nothing is name-like has no key for a name-keyed capture.
 
