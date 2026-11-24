@@ -27,6 +27,9 @@ const navLinks: { to: string; label: string; end?: boolean }[] = [
 // when it is off, so a hidden entry and an unreachable page always agree.
 const agentsNavLink: { to: string; label: string; end?: boolean } = { to: '/agents', label: 'Agents' }
 
+// Shown only while `weekly-report-enabled` is on (issue #2667); the page redirects home when off.
+const reportNavLink: { to: string; label: string; end?: boolean } = { to: '/report', label: 'Report' }
+
 // One link style for every nav item: a full-height row with a 2px primary bar under the active
 // page (the marketing nav's hairline chrome, carried into the app).
 function navLinkClass({ isActive }: { isActive: boolean }): string {
@@ -46,7 +49,8 @@ const adminNavLinks = [
 export default function Layout() {
   const { user, logout, openLoginModal, isAdmin, enrollmentRequired } = useAuth()
   const agentsEnabled = useFeatureFlag(FLAGS.mcpServer, false)
-  const links = agentsEnabled ? [...navLinks, agentsNavLink] : navLinks
+  const reportEnabled = useFeatureFlag(FLAGS.weeklyReport, false)
+  const links = [...navLinks, ...(reportEnabled ? [reportNavLink] : []), ...(agentsEnabled ? [agentsNavLink] : [])]
   const navigate = useNavigate()
   const location = useLocation()
   const showReadiness = !!user && AUTOMATION_PATHS.some((p) => location.pathname.startsWith(p))

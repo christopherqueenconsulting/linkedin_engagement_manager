@@ -34,6 +34,7 @@ const AdminFeedbackPage = lazyWithChunkRecovery(() => import('./pages/AdminFeedb
 const AdminUsersPage = lazyWithChunkRecovery(() => import('./pages/AdminUsersPage'))
 const AdminAuditLogPage = lazyWithChunkRecovery(() => import('./pages/AdminAuditLogPage'))
 const AgentsPage = lazyWithChunkRecovery(() => import('./pages/AgentsPage'))
+const WeeklyReportPage = lazyWithChunkRecovery(() => import('./pages/WeeklyReportPage'))
 
 const queryClient = new QueryClient()
 
@@ -106,6 +107,11 @@ function AppRoutes() {
               <Route
                 path="agents"
                 element={<ProtectedRoute><AgentsPage /></ProtectedRoute>}
+              />
+              {/* Flag-gated inside the page (issue #2667): flag off redirects home. */}
+              <Route
+                path="report"
+                element={<ProtectedRoute><WeeklyReportPage /></ProtectedRoute>}
               />
               <Route
                 path="admin/users"

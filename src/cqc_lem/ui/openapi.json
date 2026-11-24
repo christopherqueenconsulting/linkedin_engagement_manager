@@ -13595,6 +13595,46 @@
         "summary": "Update User Groups Endpoint"
       }
     },
+    "/api/user/icp-audience-report": {
+      "get": {
+        "description": "Return who engages with the caller's posts versus who they want (issue #2667).\n\nOn demand and in-app only. Reads the caller's own rows; 404 while `weekly-report-enabled` is off.",
+        "operationId": "icp_audience_report_endpoint_api_user_icp_audience_report_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "session_token",
+            "required": true,
+            "schema": {
+              "title": "Session Token",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Icp Audience Report Endpoint"
+      }
+    },
     "/api/user/icp-definition": {
       "get": {
         "description": "The caller's ICP definition, builder flag and a roster/leads pre-fill draft (issue #2655).",
