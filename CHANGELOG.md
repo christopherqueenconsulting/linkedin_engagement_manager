@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.225.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.224.0...v0.225.0) (2026-11-24)
+
+
+### Features
+
+* **mcp:** queue-only write tools + internal/sandbox lem_approve_item ([#2731](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2731)) ([05ec292](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/05ec29288f8a481aca2edc4829b1c67619540fe8))
+* **ui:** authenticity score and override prompt for held DM drafts (refs [#2786](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2786)) ([#2789](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2789)) ([6ba1e8d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6ba1e8d21e40e851675d70f179df91693985d118))
+
+
+### Bug Fixes
+
+* **ui:** bulk approve names the authenticity floor refusal (closes [#2786](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2786)) ([#2791](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2791)) ([b2c6f04](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b2c6f04133045928874316d3b1c1b5677f47097e))
+
 ## [0.224.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.223.0...v0.224.0) (2026-11-24)
 
 
