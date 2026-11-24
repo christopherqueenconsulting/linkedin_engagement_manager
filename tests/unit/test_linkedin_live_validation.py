@@ -5519,7 +5519,7 @@ class TestRecentActivityLocatorCounts:
     def _driver(self, counts: dict) -> MagicMock:
         driver = MagicMock()
         driver.find_elements.side_effect = lambda _by, sel: [object()] * counts.get(sel, 0)
-        driver.execute_script.side_effect = [3, "<div>card</div>"]
+        driver.execute_script.side_effect = [3, ["<div>card</div>"]]
         driver.page_source = _ACTIVITY_PAGE_HTML
         return driver
 
@@ -5541,6 +5541,7 @@ class TestRecentActivityLocatorCounts:
         assert set(reading["locator_counts"].values()) == {None}
         assert reading["distinct_attr_urns"] is None
         assert reading["sample_card_html"] is None
+        assert reading["sample_cards_html"] == []
 
     def test_reports_the_deployed_chains_own_parse(self):
         reading = llv.recent_activity_locator_counts(self._driver({}))
@@ -5554,9 +5555,51 @@ class TestRecentActivityLocatorCounts:
 
     def test_the_sample_is_bounded(self):
         driver = self._driver({})
-        driver.execute_script.side_effect = [0, "x" * (llv._RECENT_ACTIVITY_SAMPLE_CHARS + 50)]
+        driver.execute_script.side_effect = [0, ["x" * (llv._RECENT_ACTIVITY_SAMPLE_CHARS + 50)]]
         reading = llv.recent_activity_locator_counts(driver)
         assert len(reading["sample_card_html"]) == llv._RECENT_ACTIVITY_SAMPLE_CHARS
+
+    def test_a_non_list_sample_reads_as_none(self):
+        driver = self._driver({})
+        driver.execute_script.side_effect = [0, None]
+        reading = llv.recent_activity_locator_counts(driver)
+        assert reading["sample_card_html"] is None
+        assert reading["sample_cards_html"] == []
+
+    def test_svg_path_data_is_stripped_before_the_cap(self):
+        icon = '<svg><path fill="none" d="' + "M0 0 " * 3000 + '" stroke="x"/></svg>'
+        card = "<div>" + icon + "<span data-testid='expandable-text-box'>body</span></div>"
+        driver = self._driver({})
+        driver.execute_script.side_effect = [0, [card]]
+        html = llv.recent_activity_locator_counts(driver)["sample_card_html"]
+        assert " d=" not in html and "fill=\"none\"" in html
+        assert "expandable-text-box" in html and html.endswith("</div>")
+
+    def test_samples_up_to_three_cards_including_a_bare_one(self):
+        with_urn = "<div><a href='/feed/update/urn:li:activity:1/'>a</a></div>"
+        attr_urn = "<div data-urn='urn:li:activity:2'>b</div>"
+        bare = "<div componentkey='k'><span>c</span></div>"
+        other = "<div><a href='/feed/update/urn:li:activity:4/'>d</a></div>"
+        picked = llv._select_activity_samples([with_urn, attr_urn, other, bare])
+        assert picked == [with_urn, bare, attr_urn]
+
+    def test_no_bare_card_means_page_order(self):
+        cards = [f"<div><a href='/feed/update/urn:li:activity:{i}/'>x</a></div>" for i in range(5)]
+        assert llv._select_activity_samples(cards) == cards[:3]
+
+    def test_first_card_that_is_bare_is_not_duplicated(self):
+        bare = "<div>b</div>"
+        other = "<div data-urn='urn:li:activity:9'>o</div>"
+        assert llv._select_activity_samples([bare, other]) == [bare, other]
+
+    def test_empty_and_junk_inputs_yield_nothing(self):
+        assert llv._select_activity_samples([]) == []
+        assert llv._select_activity_samples([None, "", 5]) == []
+        assert llv._select_activity_samples(["<div/>"], limit=0) == []
+
+    def test_the_sampler_js_walks_every_text_box(self):
+        assert "querySelectorAll(sel)" in llv._RECENT_ACTIVITY_SAMPLE_JS
+        assert "seen" in llv._RECENT_ACTIVITY_SAMPLE_JS
 
     def test_probe_roster_follow_carries_it(self, monkeypatch):
         monkeypatch.setattr("cqc_lem.app.engagement.feed._resolve_follow_control",
