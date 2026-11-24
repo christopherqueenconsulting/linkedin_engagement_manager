@@ -499,6 +499,7 @@ EVENTS = {spec.event: spec for spec in (
         count("own_comment_skipped"),
     )),
     EventSpec("pre_post_engagement", (prop("post_id"), prop("user_id"), label("status"))),
+    EventSpec("session_window_shadow", (prop("user_id"), label("reason"), label("lane"), label("window"))),
     # ONE proactive connection-request dispatch, whatever it did (issue #1813). `result` says
     # sent / failed / deferred and `reason` says which door it went out of, both `label()` so a
     # tile can filter and break down on them. `attempts` is the denominator that makes a run of
@@ -1723,6 +1724,12 @@ def track_pre_post_engagement(post_id: int, user_id: Optional[int], status: str,
     """
     _emit(EVENTS["pre_post_engagement"],
           {"post_id": post_id, "user_id": user_id, "status": status}, extra)
+
+
+def track_session_window_shadow(user_id: Optional[int], reason: str, lane: str, window: str) -> None:
+    """Emit one session the window gate would have deferred (issue #2628, shadow mode only)."""
+    _emit(EVENTS["session_window_shadow"],
+          {"user_id": user_id, "reason": reason, "lane": lane, "window": window}, {})
 
 
 def track_company_page_invite_run(user_id: Optional[int], report: Optional[dict] = None,

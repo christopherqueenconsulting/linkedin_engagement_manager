@@ -4122,6 +4122,13 @@ def create_carousel_slide_images(
             "accents_skipped": marks["accents_skipped"],
         })
 
+    if deck_rhythm.get("cover_treatment") == DECK_COVER_CONCEPT:
+        # The shipped carousel is a PDF, which carries no metadata (#2634); the slide PNGs are
+        # the last image form of the AI cover art, so they are signed at their final write.
+        from cqc_lem.utilities.c2pa_helper import sign_ai_image
+        for slide_path in image_paths:
+            sign_ai_image(slide_path)
+
     write_deck_render_receipt(output_dir, post_id, template_key, slide_receipts,
                               extra={"user_id": user_id,
                                      "cover_treatment": deck_rhythm.get("cover_treatment"),

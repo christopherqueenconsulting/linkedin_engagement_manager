@@ -127,6 +127,11 @@ app.conf.update(
             'task': 'cqc_lem.app.run_curated_sources.collect_curated_sources',
             'schedule': crontab(hour='0', minute='45')
         },
+        # Call-ingest hard cap (#2629): nulls transcripts past purge_after. Ignores the ingest flag.
+        'purge-call-transcripts': {
+            'task': 'cqc_lem.app.run_call_ingest.purge_expired_call_transcripts',
+            'schedule': crontab(hour='3', minute='20')
+        },
         'create-content-from-plan': {
             'task': 'cqc_lem.app.run_content_plan.auto_create_weekly_content',
             'schedule': crontab(hour='1', minute='30')  # Run every day at 1:30 AM
@@ -197,6 +202,13 @@ app.conf.update(
             # Hourly at :20. The task itself opens only inside each user's own weekday 09:00-16:59
             # window and claims one crawl a day, so the other hours are cheap no-ops (issue #2647).
             'schedule': crontab(minute='20')
+        },
+        'candidate-drafts': {
+            'task': 'cqc_lem.app.run_scheduler.auto_draft_comment_candidates',
+            # Hourly at :50, after the :20 crawl has had its window. LLM-only; each user's run is
+            # capped by a batch size and a review-backlog ceiling, and a no-op unless
+            # COMMENT_CANDIDATE_DRAFTS_ENABLED (issue #2647).
+            'schedule': crontab(minute='50')
         },
         'suppression-tripwire': {
             'task': 'cqc_lem.app.run_scheduler.auto_suppression_tripwire',

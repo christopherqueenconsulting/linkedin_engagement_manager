@@ -158,6 +158,11 @@ def _read_unreadable_followups(user_id: int, now: datetime) -> list[dict]:
             for r in rows]
 
 
+def _read_comment_candidates(user_id: int, now: datetime) -> list[dict]:
+    from cqc_lem.utilities.comment_candidate_drafts import review_items
+    return review_items(user_id, now)
+
+
 @dataclass(frozen=True)
 class Lane:
     """One approval lane: its id and the adapter onto the common item shape."""
@@ -175,8 +180,7 @@ LANES: tuple[Lane, ...] = (
     Lane("newsletter_editions", _read_newsletter_draft),
     Lane("group_posts", _read_group_post_draft),
     Lane("stopped_followups", _read_unreadable_followups),
-    # Hook for the comment-draft lane (#2647 P3): it has not merged, so there is no reader yet.
-    # Landing it is one `Lane(...)` row here plus a label below.
+    Lane("comment_candidates", _read_comment_candidates),
 )
 LANE_IDS = tuple(lane.id for lane in LANES)
 LANE_LABELS = {
@@ -184,6 +188,7 @@ LANE_LABELS = {
     "outreach_funnel_targets": "Funnel targets", "catchup_touches": "Catch-up touches",
     "posts": "Held posts", "newsletter_editions": "Newsletter draft",
     "group_posts": "Group post", "stopped_followups": "Stopped follow-ups",
+    "comment_candidates": "Comment drafts",
 }
 
 

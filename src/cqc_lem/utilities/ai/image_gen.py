@@ -426,9 +426,10 @@ def render_image_from_prompt(prompt: str, *, ratio: str = "1:1",
 
     ``surface`` is threaded from the caller for media-cost attribution (issue #1291).
     """
-    return _render_with_backend(prompt, ratio=ratio, quality=quality, user_id=user_id,
+    path = _render_with_backend(prompt, ratio=ratio, quality=quality, user_id=user_id,
                                 post_id=post_id, image_model=image_model,
                                 surface=surface)[0]
+    return _sign_final(path, post_id)
 
 
 _VISION_GATE_PROMPT = """You are grading ONE AI-generated image intended as professional \
@@ -1641,6 +1642,18 @@ def render_avatar_image_gated(prompt: str, *, avatar: dict, user_id: Optional[in
                       enforce=enforce, panel=panel, feed_context=feed_context)
 
 
+def _sign_final(path: Any, post_id: Optional[int]) -> Any:
+    """Sign the file that ships — after every crop, composite and repair re-save (#2634).
+
+    Only the non-avatar renderer calls this: avatar likeness keeps its own visible disclosure and
+    ``_record_avatar_media`` signing. Best-effort and a no-op for a non-path result.
+    """
+    if isinstance(path, str) and path:
+        from cqc_lem.utilities.c2pa_helper import sign_ai_image
+        sign_ai_image(path, post_id=post_id)
+    return path
+
+
 def render_image_gated(prompt: str, *, surface: str, ratio: str = "1:1",
                        focal_concept: Optional[str] = None,
                        quality: Optional[str] = None,
@@ -1680,7 +1693,7 @@ def render_image_gated(prompt: str, *, surface: str, ratio: str = "1:1",
                               post_id=post_id, render_info=render_info, enforce=enforce,
                               panel=panel)
     if drawn:
-        return drawn
+        return _sign_final(drawn, post_id)
     concept = _as_ai_render(concept, render_info)
 
     def render_once(current_prompt: str) -> tuple:
@@ -1696,8 +1709,9 @@ def render_image_gated(prompt: str, *, surface: str, ratio: str = "1:1",
                                              scene=prompt)
         return path, backend, {}
 
-    return _gate_loop(render_once, prompt=prompt, surface=surface, focal_concept=focal_concept,
-                      concept=concept, hook_text=hook_text, user_id=user_id, post_id=post_id,
-                      render_info=render_info, log_message="Image failed the quality gate",
-                      layout=layout, brand_kit=brand_kit, signature=signature,
-                      enforce=enforce, panel=panel, feed_context=feed_context)
+    final = _gate_loop(render_once, prompt=prompt, surface=surface, focal_concept=focal_concept,
+                       concept=concept, hook_text=hook_text, user_id=user_id, post_id=post_id,
+                       render_info=render_info, log_message="Image failed the quality gate",
+                       layout=layout, brand_kit=brand_kit, signature=signature,
+                       enforce=enforce, panel=panel, feed_context=feed_context)
+    return _sign_final(final, post_id)

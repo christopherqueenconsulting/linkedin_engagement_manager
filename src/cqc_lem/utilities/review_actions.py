@@ -18,6 +18,8 @@ from cqc_lem.utilities.db import (
     ConnectionRequestStatus,
     OutreachStatus,
     ScheduledDmStatus,
+    approve_comment_candidate,
+    cancel_comment_candidate,
     get_catchup_touch,
     get_connection_request_user_id,
     get_outreach_target_user_id,
@@ -124,11 +126,26 @@ def cancel_catchup_touch(user_id: int, item_id: int) -> Optional[str]:
     return None if update_catchup_touch_status(item_id, CatchupTouchStatus.CANCELED) else WRITE_FAILED
 
 
+def approve_candidate_draft(user_id: int, item_id: int) -> Optional[str]:
+    """Approve a drafted comment; it posts only through the automated lane or Assist, never here.
+
+    The move is one UPDATE conditioned on `drafted` and the caller's id, so a foreign, canceled or
+    already-approved row is `NOT_FOUND` and nothing changes.
+    """
+    return None if approve_comment_candidate(user_id, item_id) else NOT_FOUND
+
+
+def cancel_candidate_draft(user_id: int, item_id: int) -> Optional[str]:
+    """Cancel a drafted comment; the row stays as the dedupe tombstone."""
+    return None if cancel_comment_candidate(user_id, item_id) else NOT_FOUND
+
+
 ACTION_LANES: dict[str, dict[str, Callable[[int, int], Optional[str]]]] = {
     "scheduled_dms": {"approve": approve_scheduled_dm, "cancel": cancel_scheduled_dm},
     "connection_requests": {"approve": approve_connection_request, "cancel": cancel_connection_request},
     "outreach_funnel_targets": {"approve": approve_funnel_target, "cancel": cancel_funnel_target},
     "catchup_touches": {"approve": approve_catchup_touch, "cancel": cancel_catchup_touch},
+    "comment_candidates": {"approve": approve_candidate_draft, "cancel": cancel_candidate_draft},
 }
 
 

@@ -128,8 +128,12 @@ def _public_url(batch_id: str, file_name: str) -> str:
     return f"{API_URL_FINAL}/api/assets?file_name=variants/{batch_id}/{file_name}"
 
 
-def _sign_best_effort(file_path: str) -> None:
+def _sign_best_effort(file_path: str, image: bool = False) -> None:
     try:
+        if image:  # IPTC source type first, then C2PA (#2634)
+            from cqc_lem.utilities.c2pa_helper import sign_ai_image
+            sign_ai_image(file_path)
+            return
         from cqc_lem.utilities.c2pa_helper import add_ai_content_credentials
         add_ai_content_credentials(file_path)
     except Exception as e:  # never let provenance break variant generation
@@ -190,7 +194,7 @@ def _generate_one_variant(idx: int, combo: dict, source_text: str, profile, user
     img_name = f"variant_{idx}_image{img_ext}"
     dest_img = os.path.join(batch_dir, img_name)
     shutil.copy2(image_path, dest_img)
-    _sign_best_effort(dest_img)
+    _sign_best_effort(dest_img, image=True)
     result["image_url"] = _public_url(batch_id, img_name)
     result["estimated_cost_usd"] = _image_cost(image_model)
 

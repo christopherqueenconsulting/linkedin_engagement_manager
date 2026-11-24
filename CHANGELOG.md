@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.214.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.213.0...v0.214.0) (2026-11-24)
+
+
+### Features
+
+* **engagement:** candidate drafts with risk flags in Daily review, Phase 3 (closes [#2647](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2647)) ([#2722](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2722)) ([480b791](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/480b791ae846b0ce12b6c9053df4f3df1677d067))
+* **pipeline:** router phase 4 parity, replay report and rollout docs (refs [#2562](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2562)) ([#2733](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2733)) ([4ce115a](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4ce115a5bc2077bcad1e8f79655d160ce72e3341))
+
+
+### Bug Fixes
+
+* **tooling:** graft hook timeouts are seconds, not milliseconds ([#2734](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2734)) ([2369dba](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2369dba0b2655ce2859ed8a9e05cc2bf2191a078))
+* **ui:** give the PowerShell round-trip snippet test an explicit timeout (closes [#2735](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2735)) ([#2738](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2738)) ([b8693e5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/b8693e56e9250a8481136ceb333055f15c8df416))
+
+## [0.213.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.212.0...v0.213.0) (2026-11-24)
+
+
+### Features
+
+* **auth:** mcp session scopes, read-only surface, dispatch binding, token mint ([#2712](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2712)) ([4657be5](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4657be5513b8577e460298859f1bc7302a29f7ab))
+* **content:** metadata-first AI disclosure decision, Phase 1 (refs [#2634](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2634)) ([#2719](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2719)) ([8148dcb](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8148dcbc475bc759e860fa419aa3a85ede47b455))
+* **review:** digest opt-out toggle and stopped-follow-up lane, final phase (closes [#2669](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2669)) ([#2717](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2717)) ([336c902](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/336c902f4b46addd420d5ea07667e2f7b56cabec))
+* **targeting:** ICP outcome report, exploration slice and back-test, Phase 5 (closes [#2655](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2655)) ([#2726](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2726)) ([c351bec](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c351bec339819c30fc16fc1df5fb81b608d93644))
+* **ui:** Agents tab with per-client connect commands ([#2713](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2713)) ([04cfede](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/04cfedebec1603a2dd6cdeeac4ac98a910f73529))
+* **voice:** call-ingest backend, Phase 1a (refs [#2629](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2629)) ([#2720](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2720)) ([4ec61a1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4ec61a1892f46382de51af75de116e4f90c74380))
+
+
+### Bug Fixes
+
+* **pipeline:** start a phased issue's next phase from main, not its merged branch ([#2710](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2710)) ([c91c392](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c91c3920c6a1e5cf121f5ce1f23c93791c892bcf))
+
 ## [0.212.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.211.0...v0.212.0) (2026-11-24)
 
 

@@ -147,8 +147,18 @@ visible "(Visuals created with AI)" line stays for avatar likeness, read with
 `post_avatar_media_state` so an unreadable flag DISCLOSES. Any other AI video drops it only when
 `add_ai_content_credentials` signed THIS asset in this run (`_store_video_asset(signing=...)`); a
 signing failure keeps it with one WARNING. Carousels ship as a Pillow PDF that cannot carry C2PA,
-so a non-avatar AI carousel has no embedded or visible disclosure (owner-accepted). IPTC and signing
-at every image surface are Phase 2.
+so a non-avatar AI carousel has no embedded or visible disclosure (owner-accepted).
+
+**Phase 2 (images).** `c2pa_helper.sign_ai_image` is the ONE final-write signer for a non-avatar AI
+image: `write_ai_source_metadata` embeds the IPTC `DigitalSourceType = trainedAlgorithmicMedia` XMP
+property (PNG iTXt, JPEG APP1, WEBP lossless re-save; no certificate needed) BEFORE C2PA, so the
+manifest hashes it. It runs on the file that ships, after the last crop, composite or copy
+(a Pillow re-save strips both layers): `image_gen._sign_final` at the end of `render_image_gated`
+and `render_image_from_prompt` (the newsletter cover is a byte copy of that file, never re-signed), the `generate_variants` image copy, and
+the carousel slide PNGs when the cover art is AI. With `post_id` and `C2PA_ENABLED` it persists
+`posts.c2pa_signed` (1 signed, 0 attempted and failed, NULL never recorded). `read_ai_source_type`
+re-reads it; `tests/unit/utilities/test_c2pa_iptc.py` holds the per-format fixture. The avatar
+renderer is untouched. Live validator check and flipping the mode remain Phase 3 (owner).
 
 Pexels survives only behind `VIDEO_PEXELS_FALLBACK_ENABLED` (default off), and then only with a
 query from Stage 1's concrete visual anchors (`stock_query_from_concept`): an anchor carrying a

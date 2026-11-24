@@ -21,6 +21,15 @@ _COLUMNS = ("c.id, c.user_id, c.post_key, c.post_url, c.author, c.source, c.scor
             "c.score_components, c.scanned_at, c.status")
 
 
+_POST_TEXT_MAX = 8000
+
+STATUS_NEW = "new"
+STATUS_DRAFTED = "drafted"
+STATUS_APPROVED = "approved"
+STATUS_CANCELED = "canceled"
+STATUS_SKIPPED = "skipped"
+
+
 def _day_bounds(day: Optional[date]) -> tuple:
     day = day or datetime.now(timezone.utc).date()
     start = datetime(day.year, day.month, day.day)
@@ -29,11 +38,13 @@ def _day_bounds(day: Optional[date]) -> tuple:
 
 def insert_comment_candidate(user_id: int, post_key: str, source: str, score: float,
                              post_url: Optional[str] = None, author: Optional[str] = None,
-                             components: Optional[dict] = None) -> bool:
+                             components: Optional[dict] = None,
+                             post_text: Optional[str] = None) -> bool:
     """Record one scored candidate. True only when a NEW row was written.
 
     `INSERT IGNORE` on (user_id, post_key): a post seen again by a later scan is a no-op, so the
-    first score stands and the pool never holds a post twice.
+    first score stands and the pool never holds a post twice. `post_text` is what a later draft is
+    written from (Phase 3).
     """
     if not post_key:
         return False
@@ -41,10 +52,11 @@ def insert_comment_candidate(user_id: int, post_key: str, source: str, score: fl
         with db_cursor(commit=True) as cursor:
             cursor.execute(
                 "INSERT IGNORE INTO comment_candidates (user_id, post_key, post_url, author, source, "
-                "score, score_components) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                "score, score_components, post_text) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
                 (user_id, str(post_key)[:255], post_url[:1024] if post_url else None,
                  author[:255] if author else None, source[:16], float(score),
-                 json.dumps(components) if components else None))
+                 json.dumps(components) if components else None,
+                 post_text[:_POST_TEXT_MAX] if post_text else None))
             return cursor.rowcount >= 1
     except mysql.connector.Error as err:
         log_error("Could not record a comment candidate", exc=err, user_id=user_id)
@@ -118,6 +130,88 @@ def get_approved_comment_candidates(user_id: int, limit: int = 150) -> Optional[
     except mysql.connector.Error as err:
         log_error("Could not read approved comment candidates", exc=err, user_id=user_id)
         return None
+
+
+def get_candidates_to_draft(user_id: int, limit: int = 50) -> Optional[list]:
+    """Open candidates with saved post text and no draft yet, best score first. None on a fault.
+
+    Posts already in the `commented_posts` ledger are excluded, as in the other readers.
+    """
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT c.id, c.post_key, c.post_url, c.author, c.score, c.post_text "
+                "FROM comment_candidates c WHERE c.user_id = %s AND c.status = 'new' "
+                "AND c.draft_text IS NULL AND c.post_text IS NOT NULL AND c.post_text <> '' "
+                "AND NOT EXISTS (SELECT 1 FROM commented_posts p WHERE p.user_id = c.user_id "
+                "AND p.post_key = c.post_key) "
+                "ORDER BY c.score DESC, c.id ASC LIMIT %s",
+                (user_id, int(limit)))
+            return list(cursor.fetchall() or [])
+    except mysql.connector.Error as err:
+        log_error("Could not read candidates to draft", exc=err, user_id=user_id)
+        return None
+
+
+def get_drafted_comment_candidates(user_id: int, limit: int = 500) -> Optional[list]:
+    """Candidates holding a draft that waits on the author's review, oldest first. None on a fault."""
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT c.id, c.post_key, c.post_url, c.author, c.score, c.draft_text, c.scanned_at "
+                "FROM comment_candidates c WHERE c.user_id = %s AND c.status = 'drafted' "
+                "AND NOT EXISTS (SELECT 1 FROM commented_posts p WHERE p.user_id = c.user_id "
+                "AND p.post_key = c.post_key) "
+                "ORDER BY c.scanned_at ASC, c.id ASC LIMIT %s",
+                (user_id, int(limit)))
+            return list(cursor.fetchall() or [])
+    except mysql.connector.Error as err:
+        log_error("Could not read drafted comment candidates", exc=err, user_id=user_id)
+        return None
+
+
+def _move_candidate(user_id: int, candidate_id: int, to_status: str, from_status: str,
+                    draft_text: Optional[str] = None, stamp_approval: bool = False) -> bool:
+    """One conditional UPDATE: True only when this call moved the row out of `from_status`."""
+    sets = ["status = %s"]
+    params: list = [to_status]
+    if draft_text is not None:
+        sets.append("draft_text = %s")
+        params.append(draft_text)
+    if stamp_approval:
+        sets.append("approved_at = CURRENT_TIMESTAMP")
+    params += [int(candidate_id), user_id, from_status]
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                f"UPDATE comment_candidates SET {', '.join(sets)} "
+                "WHERE id = %s AND user_id = %s AND status = %s", tuple(params))
+            return cursor.rowcount >= 1
+    except mysql.connector.Error as err:
+        log_error("Could not move a comment candidate", exc=err, user_id=user_id)
+        return False
+
+
+def save_candidate_draft(user_id: int, candidate_id: int, draft_text: str) -> bool:
+    """Store a draft and move the row `new` -> `drafted`; False when it was not still `new`."""
+    return bool(draft_text and draft_text.strip()) and _move_candidate(
+        user_id, candidate_id, STATUS_DRAFTED, STATUS_NEW, draft_text=draft_text.strip())
+
+
+def skip_candidate(user_id: int, candidate_id: int) -> bool:
+    """Retire a `new` candidate the generator declined, so the next run does not re-pay for it."""
+    return _move_candidate(user_id, candidate_id, STATUS_SKIPPED, STATUS_NEW)
+
+
+def approve_comment_candidate(user_id: int, candidate_id: int) -> bool:
+    """Approve a `drafted` candidate (stamps `approved_at`); False for any other state or owner."""
+    return _move_candidate(user_id, candidate_id, STATUS_APPROVED, STATUS_DRAFTED,
+                           stamp_approval=True)
+
+
+def cancel_comment_candidate(user_id: int, candidate_id: int) -> bool:
+    """Cancel a `drafted` candidate; the row stays as the dedupe tombstone."""
+    return _move_candidate(user_id, candidate_id, STATUS_CANCELED, STATUS_DRAFTED)
 
 
 def get_assist_activity(user_id: int, start: datetime, end: datetime) -> Optional[dict]:

@@ -488,3 +488,31 @@ Knobs (all optional, defaults in `route.DEFAULTS`): `LEM_REVIEW_MODEL` (`codex-a
 `LEM_ROUTER_OPUS_THRESHOLD`. Per-dispatch facts reach `lane_for.py` as `LEM_ROUTE_*` variables
 (`LABELS`, `BODY_CHARS`, `FILES`, `ATTEMPT`, `CI_FAILURES`, `CONFLICTS`, `PROTECTED`, `BAD_MODELS`,
 `PROXY_DOWN`); one `gh issue view` fills labels, body size and file count when they are unset.
+
+### Harness parity, review replay and rollout (#2562, phase 4)
+
+**Parity.** Both harnesses get the same three MCP servers the Claude profile allows (`graft`,
+`playwright`, `perplexity`). Claude gets them from `config/claude-headless.json` and
+`mcp/mcp-config.json`; Codex from `config/codex-pipeline.config.toml`, which `run_lane.sh`
+(`_install_codex_config`) installs as `$CODEX_HOME/config.toml` only when that file is absent or still
+carries its `lem-pipeline-managed` marker line. Caveman reaches Codex through the repo's `AGENTS.md`.
+`looot` is on neither harness until the owner asks for it in a comment on #2562. `seed_graft`
+(`lib/guards.sh`) gives every new worktree a graft index.
+
+**Subagent aliases.** The Ollama lane exports `ANTHROPIC_DEFAULT_{SONNET,OPUS,HAIKU}_MODEL` as the
+lane's tier, so a runbook subagent with `model: sonnet` resolves to a name LiteLLM serves instead of
+the 400 recorded above. The never-pin rule still holds; this is the backstop.
+
+**Smoke.** `v2/smoke_parity.sh <worktree> [claude|codex|both]` (owner-run) checks the graft index, one
+tool call, one graft MCP call, a terse caveman reply and valid JSON on each harness.
+
+**Review replay.** Run about 20 past `selfreview` PRs (the 2522 and 2523 commits plus PRs with seeded
+defects that need repo access) on `codex-auto-review`, `gpt-5.6-luna` and Sonnet, write one ndjson row
+per review, then `v2/review_replay.py seeds.json results.ndjson`. It reports per-model verdict
+agreement with Sonnet, seeded-defect recall, false positives, tokens, estimated cost and the model mix
+against today. It prints numbers only; the recall bar is the owner's.
+
+**Rollout and rollback.** `LEM_ROUTER=shadow` for a few days, then `reviews`, then `full`; each step is
+the owner's call after the replay. Rollback is one flag: set `LEM_ROUTER=off` in `config.env` and
+restart `lem-agentd`. Only the daemon reads the proxy quota, and only its read-only `auth-files`
+listing; `test_agent_pipeline_usage_signal.py` fails the build if anything names the draining queue.

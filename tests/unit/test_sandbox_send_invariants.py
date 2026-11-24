@@ -554,7 +554,9 @@ _NO_LINKEDIN_ACTION = {
     "collect_curated_sources": "reads public sources; publishes nothing",
     "dispatch_golden_hour_engagement": "only enqueues the gated reply-sweep tasks",
     "auto_weekly_comment_quality": "analytics over stored comments",
-    "auto_comment_ramp": "moves a stored daily-comment ceiling in Redis; sends nothing",
+    "auto_draft_comment_candidates": "drafts comment text with an LLM and stores it for review; "
+                                     "posts nothing and opens no browser",
+    "auto_comment_ramp":"moves a stored daily-comment ceiling in Redis; sends nothing",
     "auto_suppression_tripwire": "analytics over stored impressions; pauses, never sends",
     "auto_nightly_content_quality": "analytics over stored posts",
     "auto_weekly_content_quality": "analytics over stored posts",
@@ -592,6 +594,8 @@ _NO_LINKEDIN_ACTION = {
     "auto_produce_feature_tutorial": "renders our own SPA; DEMO_MODE-gated, no account",
     "auto_weekly_youtube_token_check": "YouTube token health check",
     "auto_poll_calendly_bookings": "reads Calendly and labels leads; sends nothing",
+    "ingest_call_transcript": "LLM extraction over an uploaded transcript; stores review candidates, sends nothing",
+    "purge_expired_call_transcripts": "retention purge of stored transcripts in our own DB",
 }
 
 

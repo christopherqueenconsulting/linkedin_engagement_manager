@@ -347,6 +347,8 @@ def get_docker_driver(headless: bool = True, session_name: str = "ChromeTests", 
         # whose mode cannot be read, never gets a browser — raised BEFORE the pool is touched.
         from cqc_lem.utilities.engagement_mode import require_browser_automation
         require_browser_automation(user_id, session_name)
+        from cqc_lem.utilities.engagement_window import observe_session_window
+        observe_session_window(user_id, session_name)  # shadow only: never refuses (#2628)
 
     if debug is None:
         debug = isTrue(os.getenv("SELENIUM_DEBUG_NODE", "False"))
