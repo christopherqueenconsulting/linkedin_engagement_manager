@@ -76,6 +76,21 @@ def test_repository_scopes_every_statement_by_user_id():
         assert "user_id=%s" in sql and params[0] == 42
 
 
+def test_repository_unidentifiable_engager_matches_nothing():
+    cur = MagicMock()
+    cur.fetchall.side_effect = [
+        [{"engager_name": None, "engager_profile_url": None,
+          "last_engaged_at": dt.datetime(2026, 11, 2)}],
+        [{"person_key": "", "icp_score": 90}],
+        [{"recipient_profile_url": "", "segment_id": "cto"}],
+    ]
+    ctx = MagicMock()
+    ctx.__enter__.return_value = cur
+    with patch(_CUR, return_value=ctx):
+        rows = repo.get_icp_audience_rows(1, dt.datetime(2026, 6, 1), dt.datetime(2026, 11, 24))
+    assert rows == [{"engaged_at": dt.datetime(2026, 11, 2), "icp_score": None, "segment_id": None}]
+
+
 def test_repository_none_on_db_fault():
     import mysql.connector
     with patch(_CUR, side_effect=mysql.connector.Error("boom")):

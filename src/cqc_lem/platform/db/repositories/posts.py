@@ -2785,8 +2785,9 @@ def get_icp_audience_rows(user_id: int, start: datetime, end: datetime) -> Optio
         rows = []
         for e in engagers:
             key = person_key(e.get("engager_name"), e.get("engager_profile_url"))
-            rows.append({"engaged_at": e.get("last_engaged_at"), "icp_score": scores.get(key),
-                         "segment_id": segments.get(key)})
+            rows.append({"engaged_at": e.get("last_engaged_at"),
+                         "icp_score": scores.get(key) if key else None,
+                         "segment_id": segments.get(key) if key else None})
         return rows
     except mysql.connector.Error as err:
         log_error("Could not read ICP audience rows", exc=err, user_id=user_id)
