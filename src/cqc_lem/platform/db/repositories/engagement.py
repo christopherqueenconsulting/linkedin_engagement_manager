@@ -595,7 +595,8 @@ def get_reader_disagreements(user_id: int, days: int = 14) -> dict:
     """Posts where the follow-up sweep saw a reply but the latest v2 outcome says `reply_count = 0`.
 
     Returns `{"followup_posts": n, "disagreeing_posts": m}` over comments with follow-up evidence
-    from the last `days`. Only a CHECKED v2 reading can disagree: a v1 row's zero is unscored (the
+    from the last `days`. A follow-up row created AFTER the reading is no evidence (the reply may have
+    arrived later, and a v2 row is never re-read, so it would warn daily). Only a CHECKED v2 reading can disagree: a v1 row's zero is unscored (the
     v1 reader's zeros were wrong) and a skipped row read nothing, so neither is counted.
     """
     out = {"followup_posts": 0, "disagreeing_posts": 0}
@@ -607,7 +608,8 @@ def get_reader_disagreements(user_id: int, days: int = 14) -> dict:
                 "JOIN logs l ON l.user_id = cf.user_id AND l.post_url = cf.post_key "
                 "  AND l.action_type IN (%s, %s) AND l.result=%s "
                 "JOIN comment_outcomes co ON co.log_id = l.id AND co.user_id = l.user_id "
-                "WHERE cf.user_id=%s AND cf.created_at >= (NOW() - INTERVAL %s DAY)",
+                "WHERE cf.user_id=%s AND cf.created_at >= (NOW() - INTERVAL %s DAY) "
+                "  AND cf.created_at <= co.checked_at",
                 (*COMMENT_LOG_ACTION_TYPES, LogResultType.SUCCESS.value, user_id, max(1, int(days))))
             rows = list(cursor.fetchall() or [])
     except mysql.connector.Error as err:

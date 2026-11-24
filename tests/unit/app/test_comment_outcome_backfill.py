@@ -49,6 +49,12 @@ class TestReaderDisagreements:
     def test_skipped_v2_is_not_a_disagreement(self):
         assert self._run([_row(1, 2, 0, status="skipped")])["disagreeing_posts"] == 0
 
+    def test_followup_after_the_reading_is_not_evidence(self):
+        ctx, cur = _ctx([])
+        with patch(CUR, return_value=ctx):
+            repo.get_reader_disagreements(1)
+        assert "cf.created_at <= co.checked_at" in cur.execute.call_args[0][0]
+
     def test_db_fault_reads_as_no_disagreement(self):
         with patch(CUR, side_effect=mysql.connector.Error("boom")):
             assert repo.get_reader_disagreements(1) == {"followup_posts": 0, "disagreeing_posts": 0}
