@@ -103,7 +103,7 @@
   },
   "comment.feed": {
     "changed_in": null,
-    "content_hash": "sha256:711fcc01e64664d272d6f1530c6977b1a970e53b0f6074ebaa454cfe210fa973",
+    "content_hash": "sha256:ca7d7a15be1125367e05e6ebe2b0092d0dd7b0a9a60dd86a51e44b2f965287d2",
     "dataset_hash": "sha256:2877f830d7acfceb88b6b09d850bbd4ced10155195600bc3c59936c714374e82",
     "dataset_history": [
       {
@@ -123,10 +123,15 @@
         "hash": "sha256:ec029bd5f0634ddae75cd1b8a375c7123002f4db15ceb9bff4eef80b2360cfbd",
         "retired": "2026-11-24",
         "version": 2
+      },
+      {
+        "hash": "sha256:711fcc01e64664d272d6f1530c6977b1a970e53b0f6074ebaa454cfe210fa973",
+        "retired": "2026-11-24",
+        "version": 3
       }
     ],
-    "source_hash": "sha256:4c3a5310eca67f797787eac3bb8c7393869a74fad80f739d6fd77b8d815c68a6",
-    "version": 3
+    "source_hash": "sha256:8caa50d6501bfdca584c0af5272924658b7ab086fc690e5198e022f755aef3c3",
+    "version": 4
   },
   "comment.reply_followup": {
     "changed_in": null,
@@ -136,10 +141,15 @@
         "hash": "sha256:4c71fe66d08f65d3f6e90d35da0e8a4184d21adb2e6a453c644fa8b39305fd69",
         "retired": "2026-11-24",
         "version": 1
+      },
+      {
+        "hash": "sha256:0925f60676834cb672e7676f05bd174fedb675620beebdf5189e078f26751f0c",
+        "retired": "2026-11-24",
+        "version": 2
       }
     ],
-    "source_hash": "sha256:0925f60676834cb672e7676f05bd174fedb675620beebdf5189e078f26751f0c",
-    "version": 2
+    "source_hash": "sha256:4a4691cc0606a1e32df43b82580bc793bd7bdbe35e7d92d51af36624bd78bd16",
+    "version": 3
   },
   "comment.second_wave": {
     "changed_in": null,
@@ -149,14 +159,19 @@
         "hash": "sha256:ad55816f509ad09da059cb9ae276ce625b8a0f38114abae8dbccc238d29a62e3",
         "retired": "2026-11-24",
         "version": 1
+      },
+      {
+        "hash": "sha256:fbe28994e0094fe62617d4fdf1c6c6f2a2a1074ab463820c5137a3ff64f3fadc",
+        "retired": "2026-11-24",
+        "version": 2
       }
     ],
-    "source_hash": "sha256:fbe28994e0094fe62617d4fdf1c6c6f2a2a1074ab463820c5137a3ff64f3fadc",
-    "version": 2
+    "source_hash": "sha256:f5047fb7673dd78b51f868d0ce1cf5e02c87136660556eff0ecb6c1722f94008",
+    "version": 3
   },
   "comment.seed": {
     "changed_in": null,
-    "content_hash": "sha256:e14be47042517f98ef542cdbabd1e8e02a5fcdab41b1fde79c4e2ab39a8ed209",
+    "content_hash": "sha256:8845f92642b4a9bd9a4391455b7dbaffd1e819c479ab4f9bece244cef6ded8a7",
     "dataset_hash": "sha256:f1bc8e4c29e4a2ff60075cd2ecfcf7e10b82aa41d1bc09aaa7d840bef49fc9db",
     "dataset_history": [],
     "dataset_version": 1,
@@ -165,10 +180,15 @@
         "hash": "sha256:b8a78a2131b07c7fe62a0a176f481b1805d7903add3242f8c7519faff780ff33",
         "retired": "2026-11-24",
         "version": 1
+      },
+      {
+        "hash": "sha256:e14be47042517f98ef542cdbabd1e8e02a5fcdab41b1fde79c4e2ab39a8ed209",
+        "retired": "2026-11-24",
+        "version": 2
       }
     ],
-    "source_hash": "sha256:bc2c10a409dd485971a4dde08d5ba078635d3e949dded45a0734d0de479d975c",
-    "version": 2
+    "source_hash": "sha256:aa4c20b907a306fe95c8e0a06fed4a98a745d566bf41f858b3ea49c5572bf104",
+    "version": 3
   },
   "comment.thread_reply": {
     "changed_in": null,
@@ -178,10 +198,15 @@
         "hash": "sha256:39369f30040d258ff785a3f4db0428153a55ebd88444a59b203f396e015c84e1",
         "retired": "2026-11-24",
         "version": 1
+      },
+      {
+        "hash": "sha256:95ca5f354adb17cfc852334164d21f02cda8f736d7caaea2c8f3a71b9c2b4d10",
+        "retired": "2026-11-24",
+        "version": 2
       }
     ],
-    "source_hash": "sha256:95ca5f354adb17cfc852334164d21f02cda8f736d7caaea2c8f3a71b9c2b4d10",
-    "version": 2
+    "source_hash": "sha256:ad0f060e7acc7c4f3e79423a95dd95726eb3090c9383c75350245d2a23b46898",
+    "version": 3
   },
   "curated.audience_fit": {
     "changed_in": null,
@@ -224,10 +249,15 @@
         "hash": "sha256:13dcf461ef1d834666eeb0184be521f8a768132866e9583d68c840ff6de86788",
         "retired": "2026-11-24",
         "version": 1
+      },
+      {
+        "hash": "sha256:41099358b1e17b4e73010c5231984131f14bd3d719d1b2cc8f12c09c7fc991da",
+        "retired": "2026-11-24",
+        "version": 2
       }
     ],
-    "source_hash": "sha256:41099358b1e17b4e73010c5231984131f14bd3d719d1b2cc8f12c09c7fc991da",
-    "version": 2
+    "source_hash": "sha256:d45442c1550b5f5e03854ebc3f44a1a4eabe1d3df3dab713ba47812383b48342",
+    "version": 3
   },
   "dm.message_history_check": {
     "changed_in": null,
@@ -238,7 +268,7 @@
   },
   "dm.nurture": {
     "changed_in": null,
-    "content_hash": "sha256:466dbad6d63ffc4546cd9597855f786ecdb6b82ca6376b6a66eb7fb71ca1df89",
+    "content_hash": "sha256:950b3fc49eec9a576bee28b3fc74c8727c1bc76ddb58e3c01eb090639bcea199",
     "dataset_hash": "sha256:9da0e7a58e8bff8f273e5c910e821dc99f9160f3a5e7533fa729d235a084d525",
     "dataset_history": [],
     "dataset_version": 1,
@@ -252,10 +282,15 @@
         "hash": "sha256:b5932e295973598871abe392f889af96be63e266bb632b029eb2b7a4af5eb2f1",
         "retired": "2026-11-24",
         "version": 2
+      },
+      {
+        "hash": "sha256:466dbad6d63ffc4546cd9597855f786ecdb6b82ca6376b6a66eb7fb71ca1df89",
+        "retired": "2026-11-24",
+        "version": 3
       }
     ],
-    "source_hash": "sha256:132b7aff49e30a24d40933c74b4b0f91c0fd19b3b069b01e60ebefa8c263a3b1",
-    "version": 3
+    "source_hash": "sha256:d8c4bcf38181ff8e151a7046057c44845d959feec0e50143edb408151a5011af",
+    "version": 4
   },
   "dm.refine": {
     "changed_in": null,

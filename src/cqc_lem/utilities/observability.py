@@ -625,6 +625,7 @@ _DEFAULT_COST_PER_1K = {
     "lem-simple": (0.00015, 0.00060),
     "lem-medium": (0.00060, 0.00240),
     "lem-complex": (0.00300, 0.01500),
+    "lem-voice": (0.00060, 0.00240),
     "lem-router": (0.00060, 0.00240),
     # Perplexity's `fast` preset (#2255): $0.20/$1.20 per 1M tokens plus a $0.0025 search fee per
     # call, amortised over the ~1K input tokens a research call sends.
