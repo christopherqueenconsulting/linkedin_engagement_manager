@@ -198,6 +198,13 @@ app.conf.update(
             # window and claims one crawl a day, so the other hours are cheap no-ops (issue #2647).
             'schedule': crontab(minute='20')
         },
+        'candidate-drafts': {
+            'task': 'cqc_lem.app.run_scheduler.auto_draft_comment_candidates',
+            # Hourly at :50, after the :20 crawl has had its window. LLM-only; each user's run is
+            # capped by a batch size and a review-backlog ceiling, and a no-op unless
+            # COMMENT_CANDIDATE_DRAFTS_ENABLED (issue #2647).
+            'schedule': crontab(minute='50')
+        },
         'suppression-tripwire': {
             'task': 'cqc_lem.app.run_scheduler.auto_suppression_tripwire',
             # Daily 09:15 UTC — after the 08:00 comment-outcome sweep (so the demotion signal is

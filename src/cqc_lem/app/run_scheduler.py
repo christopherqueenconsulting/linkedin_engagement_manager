@@ -833,6 +833,25 @@ def dispatch_comment_candidate_crawls():
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})
+def auto_draft_comment_candidates(self):
+    """Beat (hourly): draft the pooled comment candidates into Daily review (#2647, Phase 3).
+
+    LLM-only: no browser opens and nothing is posted. A no-op per user unless the drafts and pool
+    flags are on; each user's run is bounded by a batch size and a review-backlog ceiling.
+    """
+    from cqc_lem.utilities.comment_candidate_drafts import draft_candidates
+    users = get_active_user_ids()
+    if not users:
+        return "No active users"
+    drafted = skipped = 0
+    for user_id in users:
+        result = draft_candidates(user_id)
+        drafted += result["drafted"]
+        skipped += result["skipped"]
+    return f"Comment drafts: {drafted} drafted, {skipped} skipped across {len(users)} user(s)"
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})
 def auto_comment_ramp(self):
     """Daily comment-volume ramp evaluation for the brand account (#2647, Phase 5).
 

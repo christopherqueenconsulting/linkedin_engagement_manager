@@ -226,12 +226,18 @@ from cqc_lem.platform.db.repositories.call_ingest import (
     review_candidate,
 )
 from cqc_lem.platform.db.repositories.comment_candidates import (
+    approve_comment_candidate,
+    cancel_comment_candidate,
     claim_approved_candidate_posted,
     count_comment_candidates,
     get_approved_comment_candidates,
     get_assist_activity,
+    get_candidates_to_draft,
     get_comment_candidates,
+    get_drafted_comment_candidates,
     insert_comment_candidate,
+    save_candidate_draft,
+    skip_candidate,
 )
 from cqc_lem.platform.db.repositories.curated_sources import (
     attach_curated_source_to_post,
@@ -1187,6 +1193,12 @@ __all__ = [
     "purge_call_transcripts",
     "purge_reviewed_call_transcripts",
     "review_candidate",
+    "approve_comment_candidate",
+    "cancel_comment_candidate",
+    "get_candidates_to_draft",
+    "get_drafted_comment_candidates",
+    "save_candidate_draft",
+    "skip_candidate",
     "claim_approved_candidate_posted",
     "get_approved_comment_candidates",
     "get_assist_activity",

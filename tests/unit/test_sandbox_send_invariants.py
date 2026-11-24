@@ -554,7 +554,9 @@ _NO_LINKEDIN_ACTION = {
     "collect_curated_sources": "reads public sources; publishes nothing",
     "dispatch_golden_hour_engagement": "only enqueues the gated reply-sweep tasks",
     "auto_weekly_comment_quality": "analytics over stored comments",
-    "auto_comment_ramp": "moves a stored daily-comment ceiling in Redis; sends nothing",
+    "auto_draft_comment_candidates": "drafts comment text with an LLM and stores it for review; "
+                                     "posts nothing and opens no browser",
+    "auto_comment_ramp":"moves a stored daily-comment ceiling in Redis; sends nothing",
     "auto_suppression_tripwire": "analytics over stored impressions; pauses, never sends",
     "auto_nightly_content_quality": "analytics over stored posts",
     "auto_weekly_content_quality": "analytics over stored posts",
