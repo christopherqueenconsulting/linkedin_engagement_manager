@@ -352,10 +352,18 @@ def insert_call_audio_ingest(user_id: int, audio_hash: str, audio_path: str,
     stamp = now or datetime.utcnow()
     try:
         with db_cursor(commit=True) as cursor:
-            cursor.execute("SELECT id FROM call_ingest WHERE user_id=%s AND content_hash=%s",
+            cursor.execute("SELECT id, status FROM call_ingest WHERE user_id=%s AND content_hash=%s",
                            (user_id, audio_hash))
             existing = cursor.fetchone()
             if existing:
+                if existing[1] == "failed":
+                    # A failed attempt deleted its audio, so a re-upload is a retry, not a duplicate.
+                    cursor.execute(
+                        "UPDATE call_ingest SET status='received', audio_path=%s, "
+                        "audio_purge_after=%s WHERE id=%s AND user_id=%s AND status='failed' "
+                        "AND transcript_enc IS NULL",
+                        (audio_path, stamp + timedelta(hours=AUDIO_FAILURE_CAP_HOURS),
+                         int(existing[0]), user_id))
                 return int(existing[0])
             cursor.execute(
                 "INSERT INTO call_ingest (user_id, source_id, title, content_hash, audio_path, "

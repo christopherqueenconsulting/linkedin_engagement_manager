@@ -283,10 +283,15 @@ class TestAudioRepository:
             assert repo.insert_call_audio_ingest(3, "h" * 64, "/a/x.m4a", 4, "t", now=now) == 7
         params = cur.execute.call_args_list[-1][0][1]
         assert params[-2] == datetime(2026, 1, 2) and params[-1] == datetime(2026, 1, 8)
-        cur, ctx = _cursor(one=(42,))
+        cur, ctx = _cursor(one=(42, "received"))
         with patch(_CUR, return_value=ctx):
             assert repo.insert_call_audio_ingest(3, "h", "/a") == 42
         assert cur.execute.call_count == 1
+        cur, ctx = _cursor(one=(43, "failed"))
+        with patch(_CUR, return_value=ctx):
+            assert repo.insert_call_audio_ingest(3, "h", "/a/y.m4a", now=now) == 43
+        assert cur.execute.call_count == 2
+        assert "status='received'" in _sql(cur) and cur.execute.call_args[0][1][0] == "/a/y.m4a"
         with patch(_CUR, side_effect=_ERR):
             assert repo.insert_call_audio_ingest(3, "h", "/a") is None
 
