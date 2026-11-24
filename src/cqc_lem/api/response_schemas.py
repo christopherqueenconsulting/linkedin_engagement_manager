@@ -46,6 +46,7 @@ __all__ = [
     "GateFinding",
     "GmailForwardConfirmation",
     "GroupPostDraftDetail",
+    "IcpDefinitionDetail",
     "LeadMagnetDetail",
     "NewsletterDraftDetail",
     "NewsletterEdition",
@@ -257,6 +258,19 @@ class EngagementTargetsDetail(BaseModel):
 
     targets: List[EngagementTarget]
     suggestions: List[EngagementTargetSuggestion]
+
+
+class IcpDefinitionDetail(BaseModel):
+    """`detail` of `GET`/`PUT /user/icp-definition` (#2655).
+
+    `draft` is a suggestion built from the roster and best leads, present only while no definition
+    is saved; it is never stored until the user confirms it.
+    """
+
+    icp_builder_enabled: bool
+    icp_definition: Optional[Dict[str, Any]]
+    draft: Optional[Dict[str, Any]]
+    draft_sample_size: int
 
 
 class StoryEntry(BaseModel):

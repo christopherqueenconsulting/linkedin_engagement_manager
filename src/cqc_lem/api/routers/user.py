@@ -51,6 +51,7 @@ from cqc_lem.api.response_schemas import (
     GateDefaults,
     GmailForwardConfirmation,
     GroupPostDraftDetail,
+    IcpDefinitionDetail,
     LeadMagnetDetail,
     NewsletterDraftDetail,
     NewsletterSettingsDetail,
@@ -154,6 +155,8 @@ from cqc_lem.utilities.db import (
     get_engagement_preferences,
     get_engagement_suggestions,
     get_engagement_targets,
+    get_leads,
+    get_profile_facts,
     get_follower_stats,
     get_latest_edition_scheduled_for,
     get_lead_magnet_settings,
@@ -1045,6 +1048,37 @@ class EngagementTargetsRequest(BaseModel):
 
     session_token: str
     targets: List[EngagementTargetItem] = []
+
+
+class IcpDefinitionRequest(BaseModel):
+    """Body of `PUT /user/icp-definition` (#2655). Omitted fields keep what is stored.
+
+    A definition is checked against the rubric's own model, so what saves is what the scan reads:
+    `{}` clears it, anything else must parse and carry at least one segment with a unique id.
+    """
+
+    session_token: str
+    icp_builder_enabled: Optional[bool] = None
+    icp_definition: Optional[Dict[str, Any]] = None
+
+    @field_validator("icp_definition")
+    @classmethod
+    def _valid_definition(cls, v: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not v:
+            return v
+        from pydantic import ValidationError
+
+        from cqc_lem.utilities.icp_rubric import IcpDefinition
+        try:
+            parsed = IcpDefinition.model_validate(v)
+        except ValidationError as err:
+            raise ValueError(f"invalid ICP definition: {err.errors()[0]['msg']}") from err
+        ids = [s.id for s in parsed.segments]
+        if not ids:
+            raise ValueError("an ICP definition needs at least one segment (send {} to clear)")
+        if len(set(ids)) != len(ids):
+            raise ValueError("segment ids must be unique")
+        return parsed.model_dump(exclude_none=True)
 
 
 class EngagementTargetDeleteRequest(BaseModel):
@@ -3697,6 +3731,51 @@ def delete_engagement_target_endpoint(request: EngagementTargetDeleteRequest) ->
     if not delete_engagement_target(user_id, request.profile_url):
         raise HTTPException(status_code=500, detail="Could not remove roster target")
     return ResponseModel(status_code=200, detail="Roster target removed")
+
+
+def _icp_definition_detail(user_id: int) -> dict[str, Any]:
+    """The saved ICP state, plus a draft to confirm while nothing is saved yet."""
+    from cqc_lem.utilities.icp_prefill import draft_icp_definition, seed_profile_urls
+    from cqc_lem.utilities.icp_rubric import parse_icp_definition
+
+    prefs = get_engagement_preferences(user_id)
+    saved = prefs.get("icp_definition") or None
+    draft, sample = None, 0
+    if parse_icp_definition(saved) is None:
+        try:
+            urls = seed_profile_urls(get_engagement_targets(user_id),
+                                     get_leads(user_id, page_size=200).get("leads", []))
+            built = draft_icp_definition(urls, get_profile_facts(urls)) if urls else None
+        except Exception as err:  # the draft is a convenience; it must never fail the editor
+            log_warning("Could not build the ICP draft", exc=err, user_id=user_id)
+            built = None
+        if built:
+            draft, sample = built["definition"], built["sample_size"]
+    return {"icp_builder_enabled": bool(prefs.get("icp_builder_enabled")),
+            "icp_definition": saved, "draft": draft, "draft_sample_size": sample}
+
+
+@router.get("/icp-definition",
+            responses={200: {"model": ResponseModel[IcpDefinitionDetail]}})
+def get_icp_definition_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
+    """The caller's ICP definition, builder flag and a roster/leads pre-fill draft (issue #2655)."""
+    user_id = _main.get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    return ResponseModel(status_code=200, detail=_icp_definition_detail(user_id))
+
+
+@router.put("/icp-definition",
+            responses={200: {"model": ResponseModel[IcpDefinitionDetail]}})
+def update_icp_definition_endpoint(request: IcpDefinitionRequest) -> ResponseModel[dict[str, Any]]:
+    """Save the caller's ICP definition and/or builder flag; omitted fields are left as stored."""
+    user_id = _main.get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    changes = request.model_dump(exclude={"session_token"}, exclude_none=True)
+    if changes and not update_engagement_preferences(user_id, changes):
+        raise HTTPException(status_code=500, detail="Could not update the ICP definition")
+    return ResponseModel(status_code=200, detail=_icp_definition_detail(user_id))
 
 
 @router.get("/story-bank", responses={200: {"model": ResponseModel[StoryBankDetail]}})
