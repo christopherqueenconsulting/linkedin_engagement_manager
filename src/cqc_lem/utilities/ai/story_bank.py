@@ -655,6 +655,71 @@ def strip_unsourced_sentences(content: Optional[str], tokens: Optional[list]) ->
     return stripped if removed and stripped else None
 
 
+# --- Comment claims gate (#2665) --------------------------------------------------------------
+CLAIMS_GATE_OFF = "off"
+CLAIMS_GATE_SHADOW = "shadow"
+CLAIMS_GATE_ENFORCE = "enforce"
+_CLAIMS_GATE_MODES = (CLAIMS_GATE_OFF, CLAIMS_GATE_SHADOW, CLAIMS_GATE_ENFORCE)
+
+_EVENT_VERBS = (
+    r"led|cut|built|ran|saw|made|grew|found|shipped|took|got|had|went|did|wrote|drove|saved|lost|"
+    r"won|spent|sat|began|rebuilt|cost|unwound|kept|told|taught|brought|paid|sold|bought|left|met|"
+    r"chose|broke|hit|put|set|thought|knew|felt|\w+ed"
+)
+# "I led", "we cut", "in a rollout I once led" — a first-person subject within two words of a
+# past-tense verb. Deliberately loose: the LLM entailment call decides, this only picks who is asked.
+_FIRST_PERSON_EVENT_RE = re.compile(
+    rf"\b(?:i|we|i've|we've)\s+(?:\w+\s+){{0,2}}?(?:{_EVENT_VERBS})\b", re.IGNORECASE)
+
+
+def claims_gate_mode() -> str:
+    """The `COMMENT_CLAIMS_GATE` mode: off, shadow (default) or enforce. Read at call time."""
+    raw = (os.environ.get("COMMENT_CLAIMS_GATE") or "").strip().lower()
+    return raw if raw in _CLAIMS_GATE_MODES else CLAIMS_GATE_SHADOW
+
+
+def first_person_claim_sentences(content: Optional[str], post_text: Optional[str] = None) -> list:
+    """Sentences of a comment that claim something about the author's own history.
+
+    A claim is a first-person past-tense event ("I led", "we cut"), or a first-person sentence
+    stating a number, fraction or vague count that the target post does not itself contain. Pure and
+    deterministic: a comment with none returns [] and the caller makes no LLM call.
+
+    Args:
+        content: The finished comment.
+        post_text: The target post, which grounds a number the sentence merely echoes back.
+
+    Returns:
+        The claim sentences in order of appearance.
+    """
+    post_sets = [comment_specific_tokens(s) for s in _CLAIM_SENTENCE_SPLIT.split(post_text or "")
+                 if s.strip()]
+    out = []
+    for sentence in _CLAIM_SENTENCE_SPLIT.split(content or ""):
+        sentence = sentence.strip()
+        if not sentence or not _FIRST_PERSON_RE.search(sentence):
+            continue
+        tokens = comment_specific_tokens(sentence)
+        number_claim = bool(tokens) and not any(tokens <= known for known in post_sets)
+        if number_claim or _FIRST_PERSON_EVENT_RE.search(sentence):
+            out.append(sentence)
+    return out
+
+
+def drop_sentences(content: Optional[str], doomed: Optional[list]) -> str:
+    """The comment without the exact sentences in `doomed`, original spacing kept."""
+    gone = {s.strip() for s in doomed or []}
+    parts = _SENTENCE_SPLIT_KEEP.split(content or "")
+    out = []
+    for i in range(0, len(parts), 2):
+        if parts[i].strip() in gone:
+            continue
+        out.append(parts[i])
+        if i + 1 < len(parts):
+            out.append(parts[i + 1])
+    return "".join(out).strip()
+
+
 # Severity of the unsourced-specific check, PER SURFACE — the `slop_lint.SURFACE_SEVERITIES`
 # pattern, and the same vocabulary, because the question is the same one: how often is this check
 # WRONG about a good draft, and what does a wrong verdict cost on THIS surface?

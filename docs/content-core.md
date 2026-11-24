@@ -101,6 +101,18 @@ the paragraph that follows records the pre-#1971 reasoning. Posts stayed WARN â€
 the draft at PENDING for a human. The bank is read only once a draft has claimed something the post
 and the findings do not cover, so a comment with no numbers costs no query.
 
+### Claims gate (#2665)
+
+Feed `comment` surface only (`_gated_comment`; the second wave is out of scope). A first-person
+past-tense event or a number the post does not contain (`story_bank.first_person_claim_sentences`)
+must be entailed by an active story-bank entry, judged by one `lem-simple` JSON call
+(`ai_helper._unbacked_claims`, prompt id `judge.comment_claims`); a draft with no such sentence
+makes no call. `COMMENT_CLAIMS_GATE=off|shadow|enforce`, default `shadow`: shadow logs
+`would_strip` counts and changes no output; enforce strips the unbacked sentences, rejects the
+draft (retry, then skip) when too few sentences remain, and fails closed on an unreadable verdict.
+`specific_tokens` is untouched. Rollback: `COMMENT_CLAIMS_GATE=off`. Batch lint (P3) is #2665's
+remaining phase.
+
 ### Similarity gate
 
 Must not near-duplicate the user's last 50 posted comments. `COMMENT_SIMILARITY_MAX` is compared

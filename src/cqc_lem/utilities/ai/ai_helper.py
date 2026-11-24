@@ -890,6 +890,52 @@ GROUNDING_UNGROUNDED = "ungrounded"
 GROUNDING_STRIPPED = "stripped"
 GROUNDING_UNCHECKED = "unchecked"
 
+_CLAIMS_JUDGE_MAX_TOKENS = 1024
+_CLAIMS_BANK_FACTS_MAX = 20
+_CLAIMS_BANK_FACT_CHARS = 600
+_CLAIMS_JUDGE_SYSTEM = (
+    "You check whether first-person claims in a LinkedIn comment are backed by the author's own "
+    "fact list. For each numbered claim, answer entailed=true ONLY when the fact list states "
+    "that event or number about the author. A claim the facts do not mention, or contradict, is "
+    "entailed=false. Never use outside knowledge and never guess in the author's favour. Reply "
+    'with ONE JSON object and nothing else: {"verdicts": [{"n": 1, "entailed": true}]} with one '
+    "verdict per claim.")
+
+
+def _unbacked_claims(claims: list, user_id: "int | None") -> "list | None":
+    """The claim sentences the user's story bank does not entail, judged by one `lem-simple` call.
+
+    Args:
+        claims: First-person claim sentences from `story_bank.first_person_claim_sentences`.
+        user_id: Whose active story bank is the only evidence.
+
+    Returns:
+        The claims that fail (all of them, with no call, when the bank has no facts), or None when
+        the verdict is unreadable — the caller decides whether that fails closed.
+    """
+    facts = [f[:_CLAIMS_BANK_FACT_CHARS] for f in _story_bank_sources(user_id)][:_CLAIMS_BANK_FACTS_MAX]
+    if not facts:
+        return list(claims)
+    listing = "\n".join(f"{i}. {c}" for i, c in enumerate(claims, 1))
+    user_prompt = "Author's facts:\n" + "\n".join(f"- {f}" for f in facts) + f"\n\nClaims:\n{listing}"
+    try:
+        resp = _call_llm(model="lem-simple", temperature=0, max_tokens=_CLAIMS_JUDGE_MAX_TOKENS,
+                         messages=[{"role": "system", "content": _CLAIMS_JUDGE_SYSTEM},
+                                   {"role": "user", "content": user_prompt}])
+        parsed = _loads_json_object(resp.choices[0].message.content)
+    except Exception as exc:
+        log_debug(f"Claims judge call failed: {type(exc).__name__}", user_id=user_id,
+                  action_type="comment")
+        return None
+    verdicts = (parsed or {}).get("verdicts")
+    if not isinstance(verdicts, list):
+        return None
+    entailed = {v.get("n") for v in verdicts if isinstance(v, dict) and v.get("entailed") is True}
+    answered = {v.get("n") for v in verdicts if isinstance(v, dict)}
+    if not all(i in answered for i in range(1, len(claims) + 1)):
+        return None
+    return [c for i, c in enumerate(claims, 1) if i not in entailed]
+
 
 def _gated_comment(draft, post_content, recent_comments: list = None,
                    user_id: int = None, ground_specifics: bool = False,
@@ -991,6 +1037,42 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
             found += _slop.violation_reasons(slop["hard"])
         return found, blocking, similar, checks, invented
 
+    claims_mode = (_story_bank.claims_gate_mode()
+                   if ground_specifics and surface == "comment" else _story_bank.CLAIMS_GATE_OFF)
+
+    def _review_claims(candidate: str) -> tuple:
+        """Claims gate (#2665) on a draft that cleared every other check: (text to ship, failure).
+
+        Shadow counts what enforce would strip and ships the draft untouched. Enforce strips each
+        sentence the story bank does not entail and ships the rest only when the rest still clears
+        every gate on its own; an unreadable verdict fails closed.
+        """
+        if claims_mode == _story_bank.CLAIMS_GATE_OFF:
+            return candidate, None
+        post_text = _story_bank.without_own_text(str(post_content or ""), recent_comments)
+        claims = _story_bank.first_person_claim_sentences(candidate, post_text)
+        if not claims:
+            return candidate, None
+        bad = _unbacked_claims(claims, user_id)
+        if claims_mode == _story_bank.CLAIMS_GATE_SHADOW:
+            log_info(f"Claims gate shadow: would_strip={len(bad or [])} of {len(claims)} "
+                     f"first-person claim sentence(s), verdict_readable={bad is not None}",
+                     user_id=user_id, action_type="comment")
+            return candidate, None
+        if bad is None:
+            return None, ("first-person claims could not be checked against the author's story "
+                          "bank — state no event or number about yourself")
+        if not bad:
+            return candidate, None
+        stripped = _story_bank.drop_sentences(candidate, bad)
+        kept = [s for s in re.split(r"(?<=[.!?])\s+|\n+", stripped) if s.strip()]
+        if len(kept) >= _framework.COMMENT_MIN_SENTENCES and not _grade(stripped)[0]:
+            log_info(f"Claims gate stripped {len(bad)} unbacked first-person sentence(s)",
+                     user_id=user_id, action_type="comment")
+            return stripped, None
+        return None, ("states first-person events or numbers the author's story bank does not "
+                      "back — write the comment without any claim about yourself")
+
     ungrounded_attempts = 0
     last = {"checks": [], "invented": None}
 
@@ -1014,16 +1096,22 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
         ungrounded_attempts += bool(invented)
         last.update(checks=checks, invented=invented if checking_specifics else None)
         if not failures:
-            _track(GATE_SHIPPED, attempt)
-            return candidate
+            shipped, claim_failure = _review_claims(candidate)
+            if shipped is not None:
+                _track(GATE_SHIPPED if shipped == candidate else GATE_STRIPPED, attempt)
+                return shipped
+            failures = [claim_failure]
+            last["checks"] = ["claims"]
         # Rewrite without the claim (issue #2136): drop the sentences carrying the invented
         # numbers and post the rest, when the rest clears every gate on its own.
         stripped = _story_bank.strip_unsourced_sentences(candidate, blocking) if blocking else None
         if stripped is not None and not _grade(stripped)[0]:
-            log_debug(f"Comment draft shipped without its invented specifics "
-                      f"({', '.join(blocking)})", user_id=user_id, action_type="comment")
-            _track(GATE_STRIPPED, attempt, grounding=GROUNDING_STRIPPED)
-            return stripped
+            shipped, _ = _review_claims(stripped)
+            if shipped is not None:
+                log_debug(f"Comment draft shipped without its invented specifics "
+                          f"({', '.join(blocking)})", user_id=user_id, action_type="comment")
+                _track(GATE_STRIPPED, attempt, grounding=GROUNDING_STRIPPED)
+                return shipped
         log_debug(f"Comment draft rejected (attempt {attempt}/{attempts}): {'; '.join(failures)}",
                   user_id=user_id, action_type="comment")
         if attempt < attempts:

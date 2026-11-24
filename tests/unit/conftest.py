@@ -72,6 +72,17 @@ def _no_real_llm_calls():
 
 
 @pytest.fixture(autouse=True)
+def _claims_gate_off_by_default(monkeypatch):
+    """The claims gate defaults to shadow in production, where it spends an extra `lem-simple` call.
+
+    Tests that script `_call_llm` draft-by-draft must not have that call consumed from under them,
+    so it starts OFF here; the claims-gate tests turn it on explicitly.
+    """
+    monkeypatch.setenv("COMMENT_CLAIMS_GATE", "off")
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _fresh_health_deep_cache():
     """Start every test with an empty `/health/deep` Celery cache.
 
