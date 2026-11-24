@@ -129,8 +129,70 @@ def test_load_reads_both_windows_and_builds():
     with patch.object(wr, "get_weekly_post_rows", return_value=[_row()]) as rows, \
          patch.object(wr, "get_follower_stats", return_value=[]), \
          patch.object(wr, "get_weekly_engager_icp_scores", return_value=[80]), \
-         patch.object(wr, "count_pending_drafts", return_value=3):
+         patch.object(wr, "count_pending_drafts", return_value=3), \
+         patch.object(wr, "get_comment_log_times", return_value=[_END]), \
+         patch.object(wr, "get_assist_activity",
+                      return_value={"approved_at": [], "posted_at": []}), \
+         patch.object(wr, "get_comment_outcomes", return_value=[]):
         r = wr.load_weekly_report(1, now=_END)
     assert rows.call_count == 2
     assert r["numbers"]["posts_published"] == 1
     assert r["actions"][0]["text"] == "3 drafts waiting: review"
+    assert r["comment_volume"]["automated_total"] == 1
+    assert r["comment_volume"]["outcomes"] is None
+
+
+def _t(minutes=0, seconds=0, day=0):
+    return _START + dt.timedelta(days=day, minutes=minutes, seconds=seconds)
+
+
+class TestCommentVolume:
+    def test_split_by_mode_per_day(self):
+        # day 0: 3 logged, 1 of them Assist; day 1: 2 logged, none Assist
+        logged = [_t(1), _t(2), _t(3), _t(day=1), _t(1, day=1)]
+        assist = {"approved_at": [], "posted_at": [_t(3)]}
+        v = wr.comment_volume(logged, assist, None)
+        assert v["per_day"] == [{"date": _t().date().isoformat(), "assist": 1, "automated": 2},
+                                {"date": _t(day=1).date().isoformat(), "assist": 0, "automated": 2}]
+        assert (v["automated_total"], v["assist_total"]) == (4, 1)
+
+    def test_unreadable_split_is_none_not_zero(self):
+        for logged, assist in ((None, {"approved_at": [], "posted_at": []}), ([_t()], None)):
+            v = wr.comment_volume(logged, assist, None)
+            assert v["per_day"] is None and v["automated_total"] is None
+            assert v["assist_total"] is None
+
+    def test_empty_week_is_known_zero(self):
+        v = wr.comment_volume([], {"approved_at": [], "posted_at": []}, None)
+        assert v["per_day"] == [] and v["automated_total"] == 0
+
+    def test_review_median_drops_sitting_breaks(self):
+        approvals = [_t(seconds=s) for s in (0, 10, 30, 60)] + [_t(minutes=120)]
+        # gaps 10, 20, 30 kept; the 2 h gap is a new sitting
+        assert wr.review_seconds_median(approvals) == 20
+
+    @pytest.mark.parametrize("approvals", [None, [], [_t(), _t(seconds=5)]])
+    def test_review_median_thin_is_none(self, approvals):
+        assert wr.review_seconds_median(approvals) is None
+
+    def test_outcome_rates_come_from_checked_rows(self):
+        rows = [{"status": "checked", "reply_count": 1, "author_replied": 1, "like_count": 0,
+                 "visible_most_relevant": 1},
+                {"status": "checked", "reply_count": 0, "author_replied": 0, "like_count": 2,
+                 "visible_most_relevant": None}]
+        o = wr.comment_volume([], None, rows)["outcomes"]
+        assert o["checked"] == 2 and o["reply_rate"] == 0.5 and o["demotion_rate"] == 0.0
+
+    def test_all_skipped_outcomes_are_unknown(self):
+        rows = [{"status": "skipped"}]
+        assert wr.comment_volume([], None, rows)["outcomes"] is None
+
+    def test_not_measured_names_each_unknown(self):
+        keys = _keys(_build())
+        assert {"comment_volume", "review_seconds", "comment_outcomes"} <= keys
+
+    def test_report_carries_volume_and_numbers_budget_holds(self):
+        r = _build(comment_log_times=[_t()], assist_activity={"approved_at": [], "posted_at": []})
+        assert r["comment_volume"]["automated_total"] == 1
+        assert "comment_volume" not in _keys(r)
+        assert len(r["numbers"]) <= 5
