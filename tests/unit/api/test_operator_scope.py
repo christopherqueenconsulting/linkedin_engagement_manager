@@ -23,7 +23,7 @@ _ADMIN = "cqc_lem.api.routers.admin"
 
 _UID = 41
 _TOKEN = "operator-token"
-_PROFILE = "https://example.com/in/someone"
+_PROFILE = "https://www.linkedin.com/in/someone"
 
 
 @pytest.fixture(scope="module")

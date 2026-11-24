@@ -621,6 +621,49 @@ approval modes above and every per-day cap. A token that cannot approve one item
 configure the account into approving all of them. **This is the general hazard of a path-scoped
 surface: granting a path grants every method on it.** Check the verbs before adding an entry.
 
+### A queue-only seat edits only what is still pending (issue #2684, MCP W1)
+
+The approval guards stop a machine moving a draft INTO approved. They did not stop it editing a row a
+human had already acted on: an agent could rewrite an approved DM's text before it sent, or cancel
+an approved invite. So every edit route a queue-only seat can reach, or will reach once the MCP
+seats land, is **pending-only, in SQL**:
+`PUT /dm`, `PUT /connection_request`, `PUT /lead_signal`, `PUT /catchup/touch`,
+`PUT /outreach/target`, `PUT /curated/source` (reject) and `POST /update_post/`.
+
+- `update_pending_row` (`platform/db/repositories/pending_edits.py`) locks the row with
+  `SELECT … FOR UPDATE` and writes `UPDATE … WHERE id = %s AND user_id = %s AND status IN (…)`, so a
+  status that moves between the check and the write still refuses the write. A row that has left
+  pending is a **409 `edit_requires_pending`** and nothing is written. The locked read, not
+  `rowcount`, decides the answer: the connection does not set `CLIENT.FOUND_ROWS`, so an identical
+  re-save changes zero rows and is still a success. "Pending" is per queue: `new` for a lead signal,
+  `new`/`drafted` for a curated source, `pending` everywhere else.
+- It covers `cancel` and `dismiss` too, not only field saves. A machine never stamps `approved_by`.
+- **Who is held:** `_edits_pending_only()` is `_agent_scoped() and not _operator_may_approve()`. The
+  operator exemption (an `operator` on an internal or sandbox account) keeps the human edit path,
+  exactly as it keeps the approval verbs and the `operator_approval` audit row. A full session is
+  untouched.
+
+Three more rules ride the same seats:
+
+- **No media spend before approval.** `POST /schedule_post/` and `POST /update_post/` hold a
+  queue-only seat to a PENDING text post: `post_type` becomes `text` and `video_url`,
+  `carousel_slides`, `use_avatar`, `video_quality` and `image_url` are dropped (`_text_only_draft`).
+  `status="approved"` is a 403 on both. `auto_backfill_missing_assets` selects only video and
+  carousel/document rows, so a text draft is never the post it spends media on
+  (`tests/integration/test_queue_only_edits_db.py`). `POST /posts/bulk_update/` refuses every
+  queue-only seat. None of these four post routes is on a machine surface today; the guards are in
+  place before one is.
+- **A recipient is a LinkedIn profile.** Any recipient or target URL a queue-only seat names
+  (`/schedule_dm`, `/connection_request` create and edit, `PUT /dm`, `/outreach/target` create) must
+  match `^https://www\.linkedin\.com/in/[A-Za-z0-9\-_%]+/?$`, else **422
+  `linkedin_profile_url_required`**. That includes the exempt operator; a human is not held to it.
+- **The inbound address stays with the human.** `GET /user/engagement-preferences` neither calls
+  `get_or_create_reply_inbound_token` nor returns `reply_inbound_address` for any non-human scope
+  (agent, operator, observer). The address embeds a bearer secret, and the read MINTS one for an
+  account that has none.
+
+`POST /schedule_post/` now also returns the new row's `post_id`, for every caller.
+
 ### The TTL is fixed at mint, and never slid
 
 `create_session(ttl_hours=...)` grants an agent session a long life (`ttl_days`, default 90) because
@@ -653,7 +696,9 @@ That is why the surface list above is a **contract, not an internal detail**. Ad
 route on `_AGENT_SESSION_SURFACE` changes what an external system may send us — the live example is
 `recipient_email` on `/connection_request` (#1836, paired with
 `christopherqueenconsulting/backfill#44`), where a machine supplies a third party's address but a
-human still approves every send.
+human still approves every send. Since #2684 that supplier's `recipient_profile_url` must be a
+canonical `https://www.linkedin.com/in/<slug>` URL (no query string, no other host), and a
+field-only PUT reaches only a `pending` request — attaching an address to a `failed` one is a 409.
 
 ## The `observer` scope — a read-only seat for an operations agent
 

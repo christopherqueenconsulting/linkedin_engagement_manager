@@ -152,6 +152,8 @@ def act_on_curated_source(request: CuratedSourceActionRequest) -> ResponseModel[
     if context and context.get("unreadable"):
         raise HTTPException(status_code=503, detail="Could not read the curated post")
     owned = bool(context) and context.get("post_user_id") == user_id
+    if _main._edits_pending_only():
+        return _queue_only_reject(source, post_id if owned else None, user_id)
     if request.action == "approve":
         if source.get("status") != STATUS_DRAFTED or not owned:
             raise HTTPException(status_code=409, detail="This source has no draft to approve")
@@ -171,6 +173,24 @@ def act_on_curated_source(request: CuratedSourceActionRequest) -> ResponseModel[
                           rejection_reason="curated source rejected", user_id=user_id)
     if not update_curated_source_status(source["id"], STATUS_REJECTED):
         raise HTTPException(status_code=500, detail="Could not reject the curated source")
+    return ResponseModel(status_code=200, detail={"source_id": source["id"], "post_id": post_id,
+                                                  "status": "rejected"})
+
+
+def _queue_only_reject(source: dict, post_id: Optional[int], user_id: int
+                       ) -> ResponseModel[dict[str, Any]]:
+    """A queue-only seat's reject: only a source, and a draft post, no human has acted on yet.
+
+    Approve never reaches here (`_refuse_agent_approval` refused it). The human's reject also
+    withdraws an APPROVED post; this one may not (issue #2684), so both writes are pending-only in
+    SQL and either one that finds the row already decided is a 409.
+    """
+    if post_id:
+        _main._pending_edit_or_raise("post", post_id, user_id, {
+            "status": PostStatus.REJECTED, "rejection_reason": "curated source rejected",
+        }, "Could not reject the curated post")
+    _main._pending_edit_or_raise("curated_source", source["id"], user_id,
+                                 {"status": STATUS_REJECTED}, "Could not reject the curated source")
     return ResponseModel(status_code=200, detail={"source_id": source["id"], "post_id": post_id,
                                                   "status": "rejected"})
 
