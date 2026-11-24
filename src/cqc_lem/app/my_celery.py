@@ -410,6 +410,17 @@ app.conf.update(
             # WEEKLY_REPORT_ENABLED; idempotent per user per ISO week.
             'schedule': crontab(hour='13', minute='0', day_of_week='friday')
         },
+        'profile-audit-weekly': {
+            'task': 'cqc_lem.app.run_scheduler.auto_profile_audit_weekly',
+            # Mondays 05:30 UTC (issue #2631), after the 04:30 profile synthesis refresh. Browser-free;
+            # off unless PROFILE_AUDIT_ENABLED; idempotent per user per ISO week.
+            'schedule': crontab(hour='5', minute='30', day_of_week='monday')
+        },
+        'profile-audit-monthly': {
+            'task': 'cqc_lem.app.run_scheduler.auto_profile_audit_monthly',
+            # 1st of the month 06:00 UTC (issue #2631). Idempotent per user per month.
+            'schedule': crontab(hour='6', minute='0', day_of_month='1')
+        },
         'file-feedback-issues': {
             'task': 'cqc_lem.app.run_scheduler.auto_file_feedback_issues',
             # Every 30 min — captured feedback becomes a pipeline-ready issue the same hour it lands

@@ -694,6 +694,12 @@ from cqc_lem.platform.db.repositories.posts import (
     user_approver,
     user_owns_posts,
 )
+from cqc_lem.platform.db.repositories.profile_audit import (
+    get_latest_profile_audit,
+    get_profile_audit_findings,
+    insert_profile_audit,
+    profile_audit_exists,
+)
 from cqc_lem.platform.db.repositories.users import (
     _ADMIN_USER_DETAIL_FIELDS,
     _ADMIN_USER_DETAIL_FROM,
@@ -1198,6 +1204,10 @@ __all__ = [
     "get_curated_source",
     "count_comment_candidates",
     "accept_candidates_above",
+    "get_latest_profile_audit",
+    "get_profile_audit_findings",
+    "insert_profile_audit",
+    "profile_audit_exists",
     "create_call_source",
     "get_candidates_for_call",
     "list_call_ingests",

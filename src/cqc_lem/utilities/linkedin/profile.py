@@ -109,6 +109,14 @@ class LinkedInProfile(BaseModel):
     password: Optional[str] = None
     email: Optional[str] = None
 
+    # Profile-audit fields (#2631). Read from the OWN profile only (`is_main_user`), never stored
+    # for a third party. None / "unknown" means the page did not answer — never "absent".
+    headline: Optional[str] = None
+    about: Optional[str] = None
+    featured_count: Optional[int] = None
+    banner_state: Optional[str] = None  # "custom" | "default" | "unknown"
+    custom_url: Optional[str] = None  # the /in/<slug> part
+
     # Activity and Engagement
     recent_activities: Optional[List[LinkedInActivity]] = Field(default_factory=list)
 
