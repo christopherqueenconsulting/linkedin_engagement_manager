@@ -74,13 +74,23 @@ def get_comment_candidates(user_id: int, day: Optional[date] = None,
         return None
 
 
-def count_comment_candidates(user_id: int, day: Optional[date] = None) -> Optional[int]:
-    """How many candidates were scanned for the user on `day` (UTC, default today). None on error."""
+def count_comment_candidates(user_id: int, day: Optional[date] = None,
+                             source: Optional[str] = None) -> Optional[int]:
+    """How many candidates were scanned for the user on `day` (UTC, default today). None on error.
+
+    `source` narrows the count to one lane (`feed` / `roster` / `crawl`); the crawl's daily cap
+    reads its own lane so a busy feed scan never spends it.
+    """
     start, end = _day_bounds(day)
+    sql = ("SELECT COUNT(*) FROM comment_candidates WHERE user_id = %s "
+           "AND scanned_at >= %s AND scanned_at < %s")
+    params: tuple = (user_id, start, end)
+    if source:
+        sql += " AND source = %s"
+        params += (source[:16],)
     try:
         with db_cursor() as cursor:
-            cursor.execute("SELECT COUNT(*) FROM comment_candidates WHERE user_id = %s "
-                           "AND scanned_at >= %s AND scanned_at < %s", (user_id, start, end))
+            cursor.execute(sql, params)
             row = cursor.fetchone()
             return int(row[0]) if row else 0
     except mysql.connector.Error as err:

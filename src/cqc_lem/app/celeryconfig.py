@@ -228,6 +228,7 @@ task_default_queue = 'celery'
 task_routes = {
     # --- se_engage: long commenting loops --------------------------------
     'cqc_lem.app.run_automation.automate_commenting': {'queue': 'se_engage'},
+    'cqc_lem.app.run_automation.crawl_comment_candidates': {'queue': 'se_engage'},
     'cqc_lem.app.run_automation.automate_reply_commenting': {'queue': 'se_engage'},
     'cqc_lem.app.run_automation.comment_on_post': {'queue': 'se_engage'},
     'cqc_lem.app.run_automation.auto_comment_in_groups': {'queue': 'se_engage'},

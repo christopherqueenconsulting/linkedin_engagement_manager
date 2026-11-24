@@ -55,6 +55,7 @@ FROZEN_TASK_NAMES = frozenset({
     "cqc_lem.app.run_automation.auto_draft_group_post",
     "cqc_lem.app.run_automation.auto_post_to_group",
     "cqc_lem.app.run_automation.automate_commenting",
+    "cqc_lem.app.run_automation.crawl_comment_candidates",
     # posting + the post-publish sweeps -> app.engagement.posting (#1154 step 4)
     "cqc_lem.app.run_automation.post_to_linkedin",
     "cqc_lem.app.run_automation.auto_publish_occasion_post",

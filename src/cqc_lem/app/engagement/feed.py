@@ -88,9 +88,12 @@ from cqc_lem.utilities.ai.outbound_qa import (
 )
 from cqc_lem.utilities.approval_modes import GROUP_POST_MODE, may_auto_approve
 from cqc_lem.utilities.brand_account import held_connect_sources
+from cqc_lem.utilities.comment_candidate_crawl import crawl_budget, crawl_enabled
 from cqc_lem.utilities.comment_candidates import (
+    SOURCE_CRAWL as POOL_SOURCE_CRAWL,
     SOURCE_FEED as POOL_SOURCE_FEED,
     SOURCE_ROSTER as POOL_SOURCE_ROSTER,
+    count_comment_candidates,
     pool_enabled,
     record_comment_candidate,
     report_candidate_pool,
@@ -261,6 +264,7 @@ from cqc_lem.utilities.observability import (
     FEATURE_COMMENT,
     FEATURE_CONTENT,
     llm_attribution,
+    track_comment_candidates,
     track_feed_scan,
     track_selector_evidence,
 )
@@ -3010,6 +3014,137 @@ def comment_on_roster_posts(ctx: FeedRunContext, max_posts: int) -> dict:
 def _count_drop(drops: dict, reason: str) -> None:
     """Count one post removed by `reason` into a run's per-filter drop tally (issue #2102)."""
     drops[reason] = drops.get(reason, 0) + 1
+
+
+_CRAWL_POSTS_PER_AUTHOR = 5
+_CRAWL_MAX_SECONDS = 25 * 60
+
+
+def crawl_roster_candidates(driver: WebDriver, user_id: int, prefs: dict, budget: int,
+                            deadline_ts: Optional[float] = None) -> dict:
+    """Read the roster's recent posts into the candidate pool as source `crawl` (issue #2647).
+
+    Read-only: it opens each target's activity page and records what it reads, never a comment,
+    reaction or follow. Every post goes through `record_comment_candidate`, so the safety gate,
+    `min_reactions` and the two commented-post readers are the feed scan's own. Stops at `budget`
+    new rows or the deadline. Returns {"written", "targets_visited", "examined"}.
+    """
+    stats = {"written": 0, "targets_visited": 0, "examined": 0}
+    if budget <= 0:
+        return stats
+    targets = get_engagement_targets(user_id, active_only=True)
+    for target in select_roster_targets(targets or [], budget):
+        if stats["written"] >= budget or (deadline_ts and time.time() >= deadline_ts):
+            break
+        url = _roster_activity_url(target.get("profile_url"))
+        if not url:
+            continue
+        try:
+            driver.get(url)
+            wait_for_ajax(driver)
+        except Exception as e:
+            if is_session_lost(e) or is_tab_crashed(e):
+                raise
+            log_warning("Could not open roster target's activity page for the crawl", exc=e,
+                        user_id=user_id, action_type="scrape", task_name="crawl_comment_candidates")
+            continue
+        time.sleep(random.uniform(3, 6))
+        stats["targets_visited"] += 1
+        # No record_roster_visit: the crawl must not advance the commenting rotation, or every
+        # target it reads looks freshly visited to the comment pass while nothing reads the pool yet.
+        read_here = 0
+        for box in driver.find_elements(By.CSS_SELECTOR, _FEED_POST_TEXT_SEL):
+            if (read_here >= _CRAWL_POSTS_PER_AUTHOR or stats["written"] >= budget
+                    or (deadline_ts and time.time() >= deadline_ts)):
+                break
+            try:
+                content = (box.text or "").strip()
+            except StaleElementReferenceException:
+                continue
+            if len(content) < 20:
+                continue
+            card = _card_for_textbox(driver, box)
+            if card is None:
+                continue
+            read_here += 1
+            stats["examined"] += 1
+            author = _post_author_from_card(card) or (target.get("name") or "")
+            key, _source = _feed_post_identity(card, author, content, driver=driver)
+            if not _passes_hard_excludes(content, author, prefs):
+                continue
+            if record_comment_candidate(
+                    user_id, key, content, author, POOL_SOURCE_CRAWL, prefs=prefs,
+                    reactions=_post_social_counts(card)["reactions"],
+                    age_minutes=_post_age_minutes(driver, card),
+                    relevant=_literal_relevant(content, author, prefs),
+                    focus_affinity=focus_affinity(content, prefs),
+                    post_url=_post_permalink_from_card(card)):
+                stats["written"] += 1
+    return stats
+
+
+@shared_task.task(name='cqc_lem.app.run_automation.crawl_comment_candidates',
+                  bind=True, base=QueueOnce, once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
+                  queue='se_engage')
+def crawl_comment_candidates(self, user_id: int):
+    """Nightly roster crawl that fills the comment-candidate pool (issue #2647, Phase 2).
+
+    Flag-gated (`COMMENT_CANDIDATE_CRAWL_ENABLED` plus the pool flag), capped per day, and
+    read-only. The dispatcher only fires it inside the user's weekday daytime window.
+    """
+    if skip_browser_lane(user_id, "crawl_comment_candidates"):
+        return SUGGEST_ONLY_SKIP_MESSAGE
+    if not crawl_enabled(user_id):
+        log_debug("Comment-candidate crawl is off for this user", user_id=user_id,
+                  task_name="crawl_comment_candidates")
+        return "Skipped: comment-candidate crawl is off"
+    budget = crawl_budget(user_id)
+    if budget <= 0:
+        log_debug("Comment-candidate crawl cap already reached today", user_id=user_id,
+                  task_name="crawl_comment_candidates")
+        return "Skipped: daily crawl cap reached"
+    lock_name = f"crawl_comment_candidates:{user_id}"
+    lock_token = acquire_run_lock(lock_name, ttl_seconds=1800)
+    if lock_token is None:
+        log_debug("Another comment-candidate crawl is running", user_id=user_id,
+                  task_name="crawl_comment_candidates")
+        return "Skipped: another crawl in progress"
+    try:
+        driver, _wait, _email, _profile = get_current_profile(
+            user_id=user_id, session_name="Candidate Crawl", needs_images=True)
+    except LinkedInRateLimited as e:
+        log_warning("Candidate crawl skipped — LinkedIn rate-limited or cooling down", exc=e,
+                    user_id=user_id, task_name="crawl_comment_candidates")
+        release_run_lock(lock_name, lock_token)
+        return f"Skipped — rate limited: {e}"
+    except Exception as e:
+        if not note_tab_crash(e, task_name="crawl_comment_candidates", crash_logged_upstream=True,
+                              user_id=user_id):
+            log_error("Error starting the candidate crawl", exc=e, user_id=user_id,
+                      task_name="crawl_comment_candidates")
+        release_run_lock(lock_name, lock_token)
+        return lane_result(TaskOutcome.FAILED, f"Failed to start candidate crawl: {e}", cause=e)
+    try:
+        stats = crawl_roster_candidates(driver, user_id, get_engagement_preferences(user_id),
+                                        budget, deadline_ts=time.time() + _CRAWL_MAX_SECONDS)
+        # Emitted on EVERY run, zero included: a crawl that keeps writing nothing is the tell
+        # that a card locator drifted, and report_candidate_pool stays silent on zero.
+        track_comment_candidates(user_id, POOL_SOURCE_CRAWL, stats["written"],
+                                 count_comment_candidates(user_id) or 0)
+        return lane_result(
+            TaskOutcome.LANDED if stats["written"] else TaskOutcome.NO_OP,
+            f"Candidate crawl: wrote {stats['written']} from {stats['targets_visited']} "
+            f"target(s), examined {stats['examined']}")
+    except Exception as e:
+        if note_tab_crash(e, task_name="crawl_comment_candidates", user_id=user_id):
+            return lane_result(TaskOutcome.NO_OP, "Candidate crawl stopped — the browser tab crashed")
+        log_error("Error while crawling comment candidates", exc=e, user_id=user_id,
+                  task_name="crawl_comment_candidates")
+        return lane_result(TaskOutcome.FAILED, f"Error while crawling comment candidates: {e}",
+                           cause=e)
+    finally:
+        quit_gracefully(driver)
+        release_run_lock(lock_name, lock_token)
 
 
 def _record_blocked_visits(user_id: int, blocked_visits: list, targets_visited: int) -> None:
