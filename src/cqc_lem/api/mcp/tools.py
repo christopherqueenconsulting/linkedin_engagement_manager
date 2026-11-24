@@ -276,8 +276,8 @@ async def _health(lb: Loopback) -> dict[str, Any]:
         "linkedin_signin": _section(signin),
         "account_readiness": _section(readiness),
         "notes": [
-            "The automation pause and the 429 breaker are FLEET-GLOBAL: they stop every account, "
-            "not just this one.",
+            ("The automation pause and the 429 breaker are FLEET-GLOBAL: they stop every account, "
+             "not just this one."),
             "`unknown` means LEM could not read that signal; it does not mean anything is broken.",
         ],
     }

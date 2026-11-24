@@ -710,6 +710,7 @@ slid, revocable per device, cannot mint a successor).
 - **Audit events:** `mcp_token_minted`, `mcp_token_rotated`, `mcp_token_exposed`, `mcp_access` (the
   first gate request of each UTC day, per session), `mcp_kill_toggled`, `mcp_sessions_revoked`.
 - **Rollback, owner-run, in this order:** kill on (`POST /api/admin/mcp-kill {"on": true}` with
-  step-up, or `scripts/mcp_kill.py on`); revoke all (`scripts/mcp_revoke_all.py --reason …`, one audit
-  row per user); then revert code. Revoking before the revert means old code never meets an `mcp`
-  scope it does not know.
+  step-up, or `scripts/mcp_kill.py on`); revoke all, one audit row per user:
+  `sudo docker exec -i celery_worker python - --reason incident-2026-11 --yes < scripts/mcp_revoke_all.py`
+  (`--yes` is required there: STDIN is the script, so no prompt can be answered); then revert code.
+  Revoking before the revert means old code never meets an `mcp` scope it does not know.
