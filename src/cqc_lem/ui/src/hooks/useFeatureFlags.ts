@@ -28,6 +28,8 @@ export const FLAGS = {
   // The Agents tab + MCP token mint (issue #2687). Read with fallback FALSE: an unreachable API
   // must never show a nav entry whose every call would 404.
   mcpServer: 'mcp-server-enabled',
+  // The in-app weekly report page (issue #2667); the API answers 404 behind it.
+  weeklyReport: 'weekly-report-enabled',
 } as const
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS]
