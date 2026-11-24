@@ -3500,7 +3500,7 @@ def scan_connection_candidates(self, user_id: int, max_new: int = None):
         touched = recently_touched_slugs(get_lead_activity(user_id, days=COOLDOWN_DAYS))
         candidates, rubric_scores, held = apply_icp_rubric(
             ranked_all, icp_definition, facts_by_url=facts_by_url, min_score=min_icp, limit=budget,
-            touched_slugs=touched)
+            touched_slugs=touched, user_id=user_id)
         if held:
             # Never scored blind, never dropped: parked for the paced scrape (#2655).
             held_urls = [u for u in held_candidate_urls(ranked_all, facts_by_url)

@@ -673,6 +673,26 @@ def record_connection_accepted(user_id: int, person_profile_url: str) -> int:
         return 0
 
 
+def get_icp_outcome_rows(user_id: int, days: int = 90) -> Optional[list]:
+    """SENT invites from the last `days`, with the ICP provenance and the accepted reading.
+
+    Read-only, for the #2655 outcome report and back-test. None on a failed read, never an empty
+    list, so the caller can answer 503 instead of a report that says nothing happened.
+    """
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT recipient_profile_url, status, icp_score, segment_id, icp_rubric_version, "
+                "icp_reason, accepted, accepted_at, created_at FROM connection_requests "
+                "WHERE user_id = %s AND status = %s AND created_at >= NOW() - INTERVAL %s DAY "
+                "ORDER BY id ASC",
+                (user_id, ConnectionRequestStatus.SENT.value, int(days)))
+            return list(cursor.fetchall() or [])
+    except mysql.connector.Error as err:
+        log_error("Could not read ICP outcome rows", exc=err, user_id=user_id)
+        return None
+
+
 def record_connection_request_attempt(request_id: int, failure_reason: str,
                                       terminal: bool = False) -> "tuple[bool, int]":
     """Record ONE real dispatch attempt that reached LinkedIn and did not send (issue #1814).
