@@ -46,6 +46,7 @@ from pydantic import BaseModel, Field, field_validator
 from starlette.routing import Route
 
 from cqc_lem import assets_dir
+from cqc_lem.api.mcp.dispatch import DISPATCH_HEADER, dispatch_header_valid
 from cqc_lem.api.mcp.gate import McpGate
 from cqc_lem.api.mcp.lifespan import MCP_PATH, mcp_lifespan
 
@@ -97,11 +98,14 @@ from cqc_lem.utilities.curated_sources import credit_line
 from cqc_lem.utilities.db import (
     EMAIL_VERIFICATION_REQUIRED_MESSAGE,
     INTERNAL_ACCOUNT_KINDS,
+    MCP_SESSION_SCOPES,
     SESSION_SCOPE_AGENT,
     SESSION_SCOPE_ASSIST,
     SESSION_SCOPE_ENROLL,
     SESSION_SCOPE_EXTENSION,
     SESSION_SCOPE_FULL,
+    SESSION_SCOPE_MCP,
+    SESSION_SCOPE_MCP_OUTREACH,
     SESSION_SCOPE_OBSERVER,
     SESSION_SCOPE_OPERATOR,
     SESSION_SCOPE_RECOVERY,
@@ -712,12 +716,55 @@ _SCOPE_PATTERNS: Dict[str, tuple] = {
 # LEM Assist (#2647 P4): read the approved queue, report one comment posted. Each path takes ONE verb
 # (`_SCOPE_PATH_METHODS`), so the extension can neither write the queue nor read through the done path.
 _ASSIST_SESSION_SURFACE = frozenset({"/assist/queue", "/review/comment-posted"})
+
+# The end-user MCP seats (epic #2682, `docs/agent-mcp-plan.md` §3.2). Read-only in P2: every path is
+# granted `GET` and nothing else. They are reached ONLY through the in-process loopback behind
+# `POST /api/mcp` — `_scope_checked` refuses an mcp session without this worker's dispatch secret —
+# so this list is what a P3 tool may call, and a tool that needs a path not listed here cannot work.
+# Each entry is the user's OWN data. Deliberately absent: every credential, factor, step-up and
+# recovery route; session revoke and every token mint (including `/user/mcp-token`); billing,
+# `/user/affiliate`, `/user/security`, `/user/token_status` and `/user/posthog-stats` (three
+# sequential HogQL calls, plan §4); every `/admin/*` route; and `/review/*`, which lands with the
+# review-queue tool after #2653.
+_MCP_READ_PATHS = frozenset({
+    # who am I, and the state that decides whether automation is running safely
+    "/user/settings", "/user/automation-status", "/user/linkedin-signin-status",
+    "/user/account-readiness",
+    # dashboard, posts, plan and generation status
+    "/dashboard/stats", "/dashboard/planned-tasks", "/posts", "/post_url",
+    "/content_generation_status", "/activity",
+    # performance
+    "/user/post-stats", "/user/engagement-analytics", "/user/audience-growth",
+    "/user/weekly-report", "/leads/funnel",
+    # engagement settings (the prefs GET never mints or returns `reply_inbound_address` for a
+    # machine seat, MCP W1)
+    "/user/engagement-preferences", "/user/engagement-targets", "/user/dm-templates",
+    "/user/engagement-suggestions",
+    # voice kit: the user's own story bank, lead magnet, groups, skills and profile
+    "/user/story-bank", "/user/lead-magnet", "/user/groups", "/user/linkedin-profile-skills",
+    "/user/linkedin-profile",
+    # newsletter settings and draft (subscribers are outreach-only, owner ruling O5)
+    "/user/newsletter-settings", "/user/newsletter-draft",
+})
+# `mcp` plus the lists that hold OTHER people's data: who LEM messages, invites, scores and replies
+# to. Opted into at mint (owner ruling O11). Row fields are cut to `_OBSERVER_ROW_FIELDS`.
+_MCP_OUTREACH_EXTRA_READ_PATHS = frozenset({
+    "/dms", "/connection_requests", "/leads", "/lead_signals", "/catchup/touches",
+    "/outreach/targets", "/user/newsletter-subscribers",
+})
+_MCP_OUTREACH_READ_PATHS = _MCP_READ_PATHS | _MCP_OUTREACH_EXTRA_READ_PATHS
+_GET_ONLY = frozenset({"GET"})
+
 _SCOPE_PATH_METHODS: Dict[str, Dict[str, frozenset[str]]] = {
     SESSION_SCOPE_ASSIST: {"/assist/queue": frozenset({"GET"}),
                            "/review/comment-posted": frozenset({"POST"})},
+    SESSION_SCOPE_MCP: {path: _GET_ONLY for path in _MCP_READ_PATHS},
+    SESSION_SCOPE_MCP_OUTREACH: {path: _GET_ONLY for path in _MCP_OUTREACH_READ_PATHS},
 }
 
 _SCOPE_SURFACES: Dict[str, frozenset[str]] = {
+    SESSION_SCOPE_MCP: _MCP_READ_PATHS,
+    SESSION_SCOPE_MCP_OUTREACH: _MCP_OUTREACH_READ_PATHS,
     SESSION_SCOPE_ASSIST: _ASSIST_SESSION_SURFACE,
     SESSION_SCOPE_EXTENSION: _EXTENSION_SESSION_SURFACE,
     SESSION_SCOPE_ENROLL: _ENROLL_SESSION_SURFACE,
@@ -747,6 +794,8 @@ _SCOPE_REFUSAL_CODE = {
     SESSION_SCOPE_OBSERVER: "session_scope_forbidden",
     SESSION_SCOPE_OPERATOR: "session_scope_forbidden",
     SESSION_SCOPE_ASSIST: "session_scope_forbidden",
+    SESSION_SCOPE_MCP: "session_scope_forbidden",
+    SESSION_SCOPE_MCP_OUTREACH: "session_scope_forbidden",
     # The SPA reads this one and renders the enrolment gate instead of a dead page.
     SESSION_SCOPE_ENROLL: "enrollment_required",
 }
@@ -1046,13 +1095,18 @@ _OBSERVER_ROW_FIELDS: Dict[str, frozenset] = {
 }
 
 
-def _observer_rows(kind: str, rows: Any) -> Any:
-    """Reduce an observer's list rows to the whitelisted fields; every other scope is untouched.
+# The read-only seats whose list rows are cut to `_OBSERVER_ROW_FIELDS`: the observer, and both MCP
+# seats (an `mcp` token never reaches these lists; an `mcp_outreach` one does).
+_FIELD_FILTERED_SCOPES = frozenset({SESSION_SCOPE_OBSERVER, *MCP_SESSION_SCOPES})
 
-    For an observer each row keeps only the fields `_OBSERVER_ROW_FIELDS[kind]` names. A non-list is
-    returned as it came.
+
+def _observer_rows(kind: str, rows: Any) -> Any:
+    """Reduce a read-only seat's list rows to the whitelisted fields; every other scope is untouched.
+
+    For an observer or MCP seat (`_FIELD_FILTERED_SCOPES`) each row keeps only the fields
+    `_OBSERVER_ROW_FIELDS[kind]` names. A non-list is returned as it came.
     """
-    if _request_session_scope.get() != SESSION_SCOPE_OBSERVER or not isinstance(rows, list):
+    if _request_session_scope.get() not in _FIELD_FILTERED_SCOPES or not isinstance(rows, list):
         return rows
     allowed = _OBSERVER_ROW_FIELDS[kind]
     return [{k: v for k, v in row.items() if k in allowed} if isinstance(row, dict) else row
@@ -1119,13 +1173,34 @@ def _record_observer_access(user_id: int, token: Optional[str], path: Optional[s
 # Machine seats whose refusal is a WARNING: a held token of one of these only reaches a path it was
 # not given when its holder is misconfigured or the token is stolen, so each refusal is worth seeing.
 _WARN_ON_REFUSAL_SCOPES = frozenset({SESSION_SCOPE_AGENT, SESSION_SCOPE_OBSERVER,
-                                     SESSION_SCOPE_OPERATOR, SESSION_SCOPE_ASSIST})
+                                     SESSION_SCOPE_OPERATOR, SESSION_SCOPE_ASSIST,
+                                     *MCP_SESSION_SCOPES})
+
+
+def _mcp_dispatch_bound() -> bool:
+    """Does THIS request carry the worker's MCP dispatch secret (`api/mcp/dispatch.py`)?
+
+    Read off the request ContextVar. No request object means no header, so the answer is False.
+    """
+    http_request = _request_object.get(None)
+    headers = getattr(http_request, "headers", None)
+    return dispatch_header_valid(headers.get(DISPATCH_HEADER) if headers is not None else None)
 
 
 def _scope_checked(resolved: Dict[str, Any], token: Optional[str]) -> int:
     scope = resolved.get("scope") or SESSION_SCOPE_FULL
     path = _request_path.get()
     user_id = resolved["user_id"]
+
+    if scope in MCP_SESSION_SCOPES and not _mcp_dispatch_bound():
+        # The audience binding (docs/agent-mcp-plan.md §3.4). An MCP token is only ever served
+        # through the gate's in-process loopback, which sends this worker's dispatch secret. Without
+        # it the token was taken to raw `/api`, around the kill switch, the rollout flag and every
+        # limit, so it is refused BEFORE the path check and before anything is written. WARNING:
+        # an MCP client never does this, so a holder that does is misusing or has stolen the token.
+        log_warning("MCP session refused without the dispatch binding", user_id=user_id,
+                    scope=scope, path=_scope_path(path), session=_session_log_id(token))
+        raise _scope_refusal(scope)
 
     if scope == SESSION_SCOPE_ENROLL and not enrollment_required(user_id):
         # **The hold belongs to the ACCOUNT, not to this session row.** Deciding it from the row
@@ -3155,11 +3230,16 @@ def _challenge_expiry() -> datetime:
     return datetime.now(timezone.utc) + timedelta(seconds=AUTH_CHALLENGE_TTL_SECONDS)
 
 
-_QUEUE_ONLY_SCOPES = frozenset({SESSION_SCOPE_AGENT, SESSION_SCOPE_OPERATOR})
+# The MCP seats are queue-only from their first phase (docs/agent-mcp-plan.md §3.2). In P2 they reach
+# no write verb at all, so this changes nothing they can do today; it is in place so the W2 write
+# tools inherit every approval guard below, the `auto_approve` downgrade and `agent_may_not_configure`
+# without a second list to remember. They are NEVER added to `_operator_may_approve`: owner ruling
+# O1's internal/sandbox approval lands in W2 as its own mcp branch mirroring the operator exemption.
+_QUEUE_ONLY_SCOPES = frozenset({SESSION_SCOPE_AGENT, SESSION_SCOPE_OPERATOR, *MCP_SESSION_SCOPES})
 
 
 def _agent_scoped() -> bool:
-    """Is THIS request being served on a queue-only machine seat (`agent` or `operator`)?
+    """Is THIS request being served on a queue-only machine seat (`agent`, `operator` or an MCP seat)?
 
     Read off the ContextVar the resolver stamped, never a fresh lookup — same argument as
     `_enrollment_held`. The name is kept because every guard below calls it; for an `agent` it is
@@ -4535,6 +4615,7 @@ from cqc_lem.api.routers import (  # noqa: E402
     avatar as _avatar_router,
     billing as _billing_router,
     curated as _curated_router,
+    mcp_tokens as _mcp_tokens_router,
     outreach as _outreach_router,
     review as _review_router,
     user as _user_router,
@@ -4546,6 +4627,7 @@ app.include_router(_auth_router.router)
 app.include_router(_avatar_router.router)
 app.include_router(_billing_router.router)
 app.include_router(_curated_router.router)
+app.include_router(_mcp_tokens_router.router)
 app.include_router(_outreach_router.router)
 app.include_router(_review_router.router)
 app.include_router(_user_router.router)

@@ -14,27 +14,69 @@ steps 1-6, with the kill switch split so every check that needs no I/O runs befo
    Redis -> 503 `mcp_unavailable` (fails closed). Before the body and before any auth step.
 6. A streamed body over 256 KB -> 413; a client gone mid-body still gets a (400) response.
 7. A token in the query string (`token`, `session_token`, `access_token`) -> 400
-   `token_in_url_refused`. The value is never logged.
+   `token_in_url_refused`. A value that resolves to ANY session is revoked at once, audited as
+   `mcp_token_exposed` and its owner emailed (WARNING); one that resolves to nothing is INFO.
 8. Only `Authorization: Bearer` is read; an outer `lem_session` cookie is ignored, and a cookie with
    no bearer -> 401 `cookie_only`.
+9. Pre-auth failure bucket, per (client address, token digest): 30 failures a minute -> 429.
+10. Resolve: a database fault -> 503 `mcp_unavailable`; unknown, expired or revoked -> 401
+   `invalid_token` (DEBUG); a live session of any other scope -> the same 401 (WARNING).
+11. Rollout flag `mcp-server-enabled` off for the user -> 403 `mcp_disabled`.
+12. Concurrency: 2 in flight per user (Redis), 8 per worker (in process) -> 429 with `Retry-After`.
+13. Budget: each JSON-RPC `tools/call` spends the per-user tool-call budget -> 429 when exhausted.
+     The inner-read budgets are spent by the loopback (P3), the write budgets by the write tools (W2).
+14. Principal: `McpPrincipal` into `scope["state"]["mcp_principal"]`.
+15. Access: the once-a-day `mcp_access` audit row, and the Agents tab's activity counts.
 
-Phase P1 stops there: no `mcp`-scoped session can exist yet, so every bearer that reaches the auth
-step gets 401 `invalid_token`. Resolve, scope, rollout flag and limits are the plan's §3.3 steps 7+
-and land in P2.
+Steps 9-15 are the plan's §3.3 steps 7-13 (P2).
 
-The token is never logged, put in a response or put in exception text.
+Then the request goes to the SDK's session manager with the body the gate already read. Every
+blocking call (resolve, Redis, flag, audit) runs in the thread pool.
+
+This is the ONE public `/api` path that resolves a session, and it admits only the two MCP scopes
+(`docs/identity-and-sessions.md`, the MCP carve-out). The token is never logged, put in a response
+or put in exception text.
 """
 
+import json
+import re
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Awaitable, Callable, Generator, MutableMapping, Optional
 
 from fastapi.concurrency import run_in_threadpool
 from starlette.datastructures import Headers, QueryParams
+from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from cqc_lem.api.mcp.lifespan import MAX_REQUEST_BODY_BYTES, McpState, mcp_state
-from cqc_lem.api.mcp.limits import KillState, kill_env_set, read_kill_key
+from cqc_lem.api.mcp.lifespan import MAX_REQUEST_BODY_BYTES, MCP_PATH, McpState, mcp_state
+from cqc_lem.api.mcp.limits import (
+    TOOL_CALLS_PER_MIN,
+    KillState,
+    LimitsUnavailable,
+    acquire_user_slot,
+    auth_failures_exceeded,
+    consume_budgets,
+    kill_env_set,
+    read_kill_key,
+    record_activity,
+    record_auth_failure,
+    release_user_slot,
+    worker_slots,
+)
+from cqc_lem.api.mcp.server import mcp_server
+from cqc_lem.utilities.db import (
+    MCP_SESSION_SCOPES,
+    AuthAuditEvent,
+    SessionStoreUnavailable,
+    record_auth_event,
+    resolve_session_checked,
+    revoke_session_by_token,
+)
 from cqc_lem.utilities.env_constants import SESSION_COOKIE_NAME
-from cqc_lem.utilities.logger import log_debug, log_info
+from cqc_lem.utilities.flags import MCP_SERVER, flag_enabled
+from cqc_lem.utilities.logger import log_debug, log_info, log_warning
+from cqc_lem.utilities.observer_access import claim_mcp_access
 
 Scope = MutableMapping[str, Any]
 Message = MutableMapping[str, Any]
@@ -198,30 +240,295 @@ def _http_refusal(scope: Scope, headers: Headers, state: McpState) -> Optional[J
     return None
 
 
-def _auth_refusal(scope: Scope, headers: Headers) -> JSONResponse:
-    """Steps 5-6, and P1's end of the line: no bearer can resolve to an MCP session yet."""
+def _client_ip(scope: Scope) -> Optional[str]:
+    """The caller's address, by the same CF-Connecting-IP-first rule every `/api` route uses."""
+    from cqc_lem.api.main import _client_ip as main_client_ip  # lazy: main imports this module
+
+    return main_client_ip(Request(scope))
+
+
+def _user_agent(scope: Scope) -> Optional[str]:
+    return Headers(scope=scope).get("user-agent")
+
+
+# --- step 5: a token in the query string ----------------------------------------------------------
+
+# A request carrying more than this many candidate values is not a client mistake; the rest are
+# refused with the same 400 and not looked up, so one request cannot become a query storm.
+_MAX_EXPOSED_VALUES = 4
+
+
+def _revoke_exposed(scope: Scope, query: QueryParams, params: list[str]) -> list[dict[str, Any]]:
+    """Revoke every live session a query-string value names, and audit and email each. Blocking.
+
+    A token in a URL is in a log somewhere already (a proxy, a terminal, shell history), so it is
+    treated as exposed whatever its scope: revoked at once, audited as `mcp_token_exposed`, and its
+    owner emailed. Never logs or returns the value.
+    """
+    from cqc_lem.api.mcp.notify import notify_token_event
+
+    values = [(name, v.strip()) for name in params for v in query.getlist(name) if v.strip()]
+    revoked: list[dict[str, Any]] = []
+    for param, value in values[:_MAX_EXPOSED_VALUES]:
+        found = revoke_session_by_token(value)
+        if not found:
+            continue
+        record_auth_event(AuthAuditEvent.MCP_TOKEN_EXPOSED, user_id=found["user_id"],
+                          session_id=found["session_id"], ip=_client_ip(scope),
+                          user_agent=_user_agent(scope),
+                          details={"scope": found["scope"], "param": param})
+        notify_token_event(found["user_id"], "exposed", label=found.get("label"),
+                           scope=found["scope"])
+        revoked.append({"user_id": found["user_id"], "scope": found["scope"]})
+    return revoked
+
+
+async def _query_token_refusal(scope: Scope) -> Optional[JSONResponse]:
+    """Step 5. Any token parameter is refused; one that resolves is revoked on the spot."""
     query = QueryParams(scope.get("query_string", b"").decode("latin-1"))
-    if any(name in query for name in QUERY_TOKEN_PARAMS):
-        # INFO, never the value. Revoking a token that resolves (and auditing it as exposed) needs
-        # the resolve step, which lands in P2 with the `mcp` scopes.
-        log_info("MCP request refused: token in query string",
-                 params=sorted(name for name in QUERY_TOKEN_PARAMS if name in query))
-        return _refusal(400, "token_in_url_refused",
-                        "Never put a token in a URL. Send it as `Authorization: Bearer`, and "
-                        "rotate it in LEM → Agents if it was ever shared.")
+    params = sorted(name for name in QUERY_TOKEN_PARAMS if name in query)
+    if not params:
+        return None
+    revoked = await run_in_threadpool(_revoke_exposed, scope, query, params)
+    if revoked:
+        # WARNING, never the value: a live credential was sent in a URL, and its owner has to
+        # create a new one. Unlike a typo'd parameter, this is worth a grouped issue if it recurs.
+        log_warning("MCP request refused: exposed token in query string was revoked",
+                    params=params, revoked=len(revoked),
+                    user_ids=sorted({r["user_id"] for r in revoked}),
+                    scopes=sorted({r["scope"] for r in revoked}))
+    else:
+        log_info("MCP request refused: token in query string", params=params)
+    return _refusal(400, "token_in_url_refused",
+                    "Never put a token in a URL. Send it as `Authorization: Bearer`, and "
+                    "rotate it in LEM → Agents if it was ever shared.")
+
+
+# --- step 6: the bearer ---------------------------------------------------------------------------
+
+
+def _bearer_refusal(headers: Headers) -> tuple[Optional[str], Optional[JSONResponse]]:
+    """Step 6. Return `(token, None)`, or `(None, refusal)` when there is no bearer."""
     token = _bearer(headers.get("authorization"))
-    if token is None:
-        cookies = [c.split("=", 1)[0].strip() for c in (headers.get("cookie") or "").split(";")]
-        if SESSION_COOKIE_NAME in cookies:
-            log_debug("MCP request refused: browser cookie without a bearer")
-            return _refusal(401, "cookie_only", COOKIE_ONLY_DETAIL,
-                            headers={"WWW-Authenticate": "Bearer"})
-        log_debug("MCP request refused: no bearer token")
-        return _refusal(401, "missing_token", MISSING_TOKEN_DETAIL,
-                        headers={"WWW-Authenticate": "Bearer"})
-    log_debug("MCP request refused: bearer does not resolve to an MCP session")
+    if token is not None:
+        return token, None
+    cookies = [c.split("=", 1)[0].strip() for c in (headers.get("cookie") or "").split(";")]
+    if SESSION_COOKIE_NAME in cookies:
+        log_debug("MCP request refused: browser cookie without a bearer")
+        return None, _refusal(401, "cookie_only", COOKIE_ONLY_DETAIL,
+                              headers={"WWW-Authenticate": "Bearer"})
+    log_debug("MCP request refused: no bearer token")
+    return None, _refusal(401, "missing_token", MISSING_TOKEN_DETAIL,
+                          headers={"WWW-Authenticate": "Bearer"})
+
+
+def _invalid_token() -> JSONResponse:
+    """The one 401 for a bearer that is not a live MCP session — never says which way it failed."""
     return _refusal(401, "invalid_token", INVALID_TOKEN_DETAIL,
                     headers={"WWW-Authenticate": 'Bearer error="invalid_token"'})
+
+
+def _unavailable() -> JSONResponse:
+    return _refusal(503, "mcp_unavailable",
+                    "The LEM MCP server is unavailable right now. Try again shortly.")
+
+
+def _rate_limited(reason: str, retry_after: int) -> JSONResponse:
+    return _refusal(429, reason, "Too many requests to the LEM MCP server. Slow down and retry.",
+                    headers={"Retry-After": str(max(1, int(retry_after)))})
+
+
+# --- the JSON-RPC body, read only for what the gate needs ------------------------------------------
+
+_CLIENT_NAME_CHARS = re.compile(r"[^A-Za-z0-9 ._/()\-]")
+_TOOL_NAME_CHARS = re.compile(r"[^A-Za-z0-9_.\-]")
+_METHOD_CHARS = re.compile(r"[^A-Za-z0-9_./\-]")
+CLIENT_NAME_MAX = 40
+
+
+def _clean(value: Any, pattern: "re.Pattern[str]", length: int) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    cleaned = pattern.sub("", value).strip()[:length].strip()
+    return cleaned or None
+
+
+@dataclass(frozen=True)
+class RpcSummary:
+    """What the gate reads out of a JSON-RPC body: never arguments, never results."""
+
+    tool_calls: int = 0
+    first_tool: Optional[str] = None
+    first_method: Optional[str] = None
+    client_info_name: Optional[str] = None
+
+
+def _rpc_summary(body: bytes) -> RpcSummary:
+    """Count `tools/call` messages and pick out the client's self-reported name, if any.
+
+    The SDK validates the body properly; this only has to be safe on anything, so a body that is
+    not JSON-RPC is simply an empty summary and the SDK answers it.
+    """
+    try:
+        parsed = json.loads(body or b"null")
+    except (ValueError, UnicodeDecodeError):
+        return RpcSummary()
+    messages = parsed if isinstance(parsed, list) else [parsed]
+    tool_calls, first_tool, first_method, client_name = 0, None, None, None
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        method = message.get("method")
+        params = message.get("params") if isinstance(message.get("params"), dict) else {}
+        if first_method is None and isinstance(method, str):
+            first_method = _clean(method, _METHOD_CHARS, 64)
+        if method == "tools/call":
+            tool_calls += 1
+            first_tool = first_tool or _clean(params.get("name"), _TOOL_NAME_CHARS, 64)
+        elif method == "initialize":
+            info = params.get("clientInfo")
+            if isinstance(info, dict):
+                client_name = client_name or _clean(info.get("name"), _CLIENT_NAME_CHARS,
+                                                    CLIENT_NAME_MAX)
+    return RpcSummary(tool_calls, first_tool, first_method, client_name)
+
+
+def _client_name(summary: RpcSummary, headers: Headers) -> Optional[str]:
+    """`clientInfo.name` on an initialize, else a sanitised User-Agent (at most 40 characters).
+
+    Stateless calls after `initialize` carry no `clientInfo`, so the User-Agent is what names the
+    client on every other request.
+    """
+    return summary.client_info_name or _clean(headers.get("user-agent"), _CLIENT_NAME_CHARS,
+                                              CLIENT_NAME_MAX)
+
+
+# --- steps 7-13: who is calling, and may they -------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class McpPrincipal:
+    """The authenticated caller of one MCP request, put in `scope["state"]["mcp_principal"]`.
+
+    Carries no token. The P3 tools read it to dispatch the loopback and to label results.
+    """
+
+    user_id: int
+    session_id: Optional[int]
+    scope: str
+    expires_at: Optional[datetime]
+    client_name: Optional[str]
+
+
+@dataclass
+class _Admission:
+    """An admitted request: who it is, and the concurrency slots it holds until it finishes."""
+
+    principal: McpPrincipal
+    holds_user_slot: bool = False
+    holds_worker_slot: bool = False
+
+
+async def _release(admission: _Admission) -> None:
+    if admission.holds_worker_slot:
+        worker_slots.release()
+        admission.holds_worker_slot = False
+    if admission.holds_user_slot:
+        await run_in_threadpool(release_user_slot, admission.principal.user_id)
+        admission.holds_user_slot = False
+
+
+def _record_access(principal: McpPrincipal, token: str, summary: RpcSummary) -> None:
+    """Step 13: the once-a-day `mcp_access` row and the Agents tab's activity counts. Never raises."""
+    from cqc_lem.api.main import _record_daily_access  # lazy: main imports this module
+
+    _record_daily_access(AuthAuditEvent.MCP_ACCESS, principal.scope, claim_mcp_access,
+                         principal.user_id, token, MCP_PATH,
+                         {"path": MCP_PATH, "tool": summary.first_tool or summary.first_method,
+                          "client_name": principal.client_name})
+    record_activity(principal.session_id, principal.client_name, summary.tool_calls > 0)
+
+
+async def _admit(scope: Scope, headers: Headers, token: str,
+                 summary: RpcSummary) -> tuple[Optional[_Admission], Optional[JSONResponse]]:
+    """Steps 7-13. Return `(admission, None)`, or `(None, refusal)` with nothing left held."""
+    client_ip = _client_ip(scope)
+    try:
+        if await run_in_threadpool(auth_failures_exceeded, client_ip, token):
+            log_debug("MCP request refused: too many failed attempts")
+            return None, _rate_limited("rate_limited", 60)
+    except LimitsUnavailable:
+        log_debug("MCP request refused: endpoint unavailable", cause="limits_unreadable")
+        return None, _unavailable()
+
+    try:
+        resolved = await run_in_threadpool(resolve_session_checked, token)
+    except SessionStoreUnavailable:
+        # The repository already logged the fault at ERROR. 503, never "create a new token".
+        log_debug("MCP request refused: endpoint unavailable", cause="session_store")
+        return None, _unavailable()
+    if not resolved:
+        await run_in_threadpool(record_auth_failure, client_ip, token)
+        log_debug("MCP request refused: bearer does not resolve to an MCP session")
+        return None, _invalid_token()
+    if resolved.get("scope") not in MCP_SESSION_SCOPES:
+        await run_in_threadpool(record_auth_failure, client_ip, token)
+        # WARNING: a live NON-MCP credential (a browser session, an agent seat) was sent to the MCP
+        # endpoint. No MCP client does that by accident; the answer is the same 401 regardless.
+        log_warning("MCP request refused: token is not an MCP session",
+                    user_id=resolved.get("user_id"), scope=resolved.get("scope"))
+        return None, _invalid_token()
+
+    user_id = int(resolved["user_id"])
+    if not await run_in_threadpool(flag_enabled, MCP_SERVER, user_id):
+        log_debug("MCP request refused: rollout flag off", user_id=user_id)
+        return None, _refusal(403, "mcp_disabled",
+                              "The LEM MCP server is not enabled for this account yet.")
+
+    principal = McpPrincipal(user_id=user_id, session_id=resolved.get("session_id"),
+                             scope=resolved["scope"], expires_at=resolved.get("expires_at"),
+                             client_name=_client_name(summary, headers))
+    admission = _Admission(principal)
+    if not worker_slots.try_acquire():
+        log_debug("MCP request refused: worker concurrency", user_id=user_id)
+        return None, _rate_limited("concurrency_limited", 1)
+    admission.holds_worker_slot = True
+    try:
+        admission.holds_user_slot = await run_in_threadpool(acquire_user_slot, user_id)
+        if not admission.holds_user_slot:
+            await _release(admission)
+            log_debug("MCP request refused: user concurrency", user_id=user_id)
+            return None, _rate_limited("concurrency_limited", 1)
+        retry_after = None
+        if summary.tool_calls:
+            retry_after = await run_in_threadpool(
+                consume_budgets, user_id, [TOOL_CALLS_PER_MIN] * summary.tool_calls)
+        if retry_after is not None:
+            await _release(admission)
+            log_debug("MCP request refused: tool-call budget", user_id=user_id)
+            return None, _rate_limited("rate_limited", retry_after)
+    except LimitsUnavailable:
+        await _release(admission)
+        log_debug("MCP request refused: endpoint unavailable", cause="limits_unreadable")
+        return None, _unavailable()
+
+    scope.setdefault("state", {})["mcp_principal"] = principal
+    await run_in_threadpool(_record_access, principal, token, summary)
+    return admission, None
+
+
+def _replay_receive(body: bytes, receive: Receive) -> Receive:
+    """A receive channel that hands the SDK the body the gate already read, then the real one."""
+    replayed = False
+
+    async def _receive() -> Message:
+        nonlocal replayed
+        if not replayed:
+            replayed = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        return await receive()
+
+    return _receive
 
 
 class McpGate:
@@ -232,6 +539,9 @@ class McpGate:
     keeps `route.endpoint` something `inspect.getsource` can read, which the route-table guards
     (`test_api_route_identity.py` and its siblings) do for every route. `mcp_state` is read per
     request, never at import.
+
+    This is the ONE public `/api` path that resolves a session, and it admits only the two MCP
+    scopes (`docs/identity-and-sessions.md`, the MCP carve-out).
     """
 
     def __init__(self, scope: Scope, receive: Receive, send: Send) -> None:
@@ -251,7 +561,7 @@ class McpGate:
         return self.dispatch().__await__()
 
     async def dispatch(self) -> None:
-        """Run the checks in order and answer the first refusal as JSON.
+        """Run the checks in order, answer the first refusal as JSON, else hand to the SDK.
 
         Every path SENDS a response, the disconnect included. Returning without one makes
         `BaseHTTPMiddleware` raise "No response returned.", and `observability_middleware` would
@@ -262,9 +572,10 @@ class McpGate:
         headers = Headers(scope=scope)
         response = (_local_kill_refusal(state) or _http_refusal(scope, headers, state)
                     or await _redis_kill_refusal())
+        body = b""
         if response is None:
             try:
-                await _read_body(receive)
+                body = await _read_body(receive)
             except _BodyTooLarge:
                 log_debug("MCP request refused: body too large", declared=False)
                 response = _refusal(413, "request_too_large", "The request body is over 256 KB.")
@@ -274,5 +585,18 @@ class McpGate:
                 response = _refusal(400, "client_disconnected",
                                     "The client disconnected before the request body arrived.")
         if response is None:
-            response = _auth_refusal(scope, headers)
-        await response(scope, receive, send)
+            response = await _query_token_refusal(scope)
+        token: Optional[str] = None
+        if response is None:
+            token, response = _bearer_refusal(headers)
+        admission: Optional[_Admission] = None
+        if response is None and token is not None:
+            admission, response = await _admit(scope, headers, token, _rpc_summary(body))
+        if response is not None or admission is None:
+            await (response or _unavailable())(scope, receive, send)
+            return
+        try:
+            await mcp_server.session_manager.handle_request(scope, _replay_receive(body, receive),
+                                                            send)
+        finally:
+            await _release(admission)

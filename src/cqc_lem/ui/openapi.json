@@ -4111,6 +4111,76 @@
         "title": "LogoutRequest",
         "type": "object"
       },
+      "McpTokenRequest": {
+        "description": "Body of `POST /user/mcp-token`.",
+        "properties": {
+          "label": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "pattern": "^[A-Za-z0-9 ._:\\-]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "outreach": {
+            "default": false,
+            "description": "Also grant the outreach and leads lists (other people's data): scope `mcp_outreach`.",
+            "title": "Outreach",
+            "type": "boolean"
+          },
+          "session_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Token"
+          },
+          "ttl_days": {
+            "default": 30,
+            "maximum": 90.0,
+            "minimum": 1.0,
+            "title": "Ttl Days",
+            "type": "integer"
+          }
+        },
+        "title": "McpTokenRequest",
+        "type": "object"
+      },
+      "McpTokenRotateRequest": {
+        "description": "Body of `POST /user/mcp-token/rotate`.",
+        "properties": {
+          "session_id": {
+            "minimum": 1.0,
+            "title": "Session Id",
+            "type": "integer"
+          },
+          "session_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Token"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "McpTokenRotateRequest",
+        "type": "object"
+      },
       "NewsletterCoverDecisionRequest": {
         "description": "The human review verdict on a generated cover \u2014 the ONE thing that lets one reach LinkedIn.",
         "properties": {
@@ -13564,6 +13634,170 @@
           }
         },
         "summary": "Set User Location By City Endpoint"
+      }
+    },
+    "/api/user/mcp-token": {
+      "post": {
+        "description": "Mint an MCP token for the user's own coding agent, shown exactly once in the response.\n\nScope `mcp` reads the account's own content, analytics, plan and settings; `outreach=true` mints\n`mcp_outreach`, which adds the lists holding other people's data. Neither can approve, send or\nconfigure anything, nor reach raw `/api` without the gate (`docs/identity-and-sessions.md`).",
+        "operationId": "mint_mcp_token_api_user_mcp_token_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpTokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Token minted; shown once"
+          },
+          "401": {
+            "description": "Invalid or expired session"
+          },
+          "403": {
+            "description": "Step-up required, or no strong factor enrolled"
+          },
+          "404": {
+            "description": "The MCP server is not enabled for this account"
+          },
+          "409": {
+            "description": "Already at the active-token limit"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too many mints this hour"
+          },
+          "503": {
+            "description": "The active-token count could not be read"
+          }
+        },
+        "summary": "Mint Mcp Token"
+      }
+    },
+    "/api/user/mcp-token/info": {
+      "get": {
+        "description": "The Agents tab's read: enabled, the URL to connect to, and every MCP token on the account.\n\nToken-free: rows carry their id, label and dates, never a token or a hash. `calls_7d` and\n`last_client_name` come from Redis and are null when it cannot be read: unknown, never 0.\nAnswered even when the rollout flag is off (`enabled: false`), so tokens minted before a\nrollback stay visible and revocable.",
+        "operationId": "get_mcp_info_api_user_mcp_token_info_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "session_token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Whether the MCP server is enabled, its URL, and this account's tokens"
+          },
+          "401": {
+            "description": "Invalid or expired session"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "description": "The token list could not be read"
+          }
+        },
+        "summary": "Get Mcp Info"
+      }
+    },
+    "/api/user/mcp-token/rotate": {
+      "post": {
+        "description": "Replace one of the caller's MCP tokens with a new one: same label, scope and TTL.\n\nThe old token is revoked FIRST. Rotation is what someone does when a token may have leaked, so\na failure part-way must leave no live old token behind; the cost is that a failed mint leaves\nthe user with none, and they mint again.",
+        "operationId": "rotate_mcp_token_api_user_mcp_token_rotate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpTokenRotateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Old token revoked, new token minted; shown once"
+          },
+          "401": {
+            "description": "Invalid or expired session"
+          },
+          "403": {
+            "description": "Step-up required, or no strong factor enrolled"
+          },
+          "404": {
+            "description": "No such live agent token on this account, or the server is not enabled"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too many mints this hour"
+          },
+          "503": {
+            "description": "The token could not be read"
+          }
+        },
+        "summary": "Rotate Mcp Token"
       }
     },
     "/api/user/member-post-analytics-connection": {

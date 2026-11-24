@@ -285,6 +285,45 @@ def admin_resume_automation(x_admin_secret: Optional[str] = Header(default=None)
     return ResponseModel(status_code=200, detail={"resumed": resume_automation()})
 
 
+class McpKillRequest(BaseModel):
+    """Body of `POST /api/admin/mcp-kill`."""
+
+    session_token: Optional[str] = None
+    on: bool
+
+
+@router.post("/mcp-kill", responses={
+    200: {"description": "Kill switch set"},
+    401: {"description": "Invalid or expired session"},
+    403: {"description": "Admin access required, or step-up required"},
+    503: {"description": "Redis did not take the write; the switch is unchanged"},
+})
+def admin_mcp_kill(request: McpKillRequest,
+                   http_request: Request = None) -> ResponseModel[dict[str, Any]]:  # type: ignore[assignment]
+    """Turn the end-user MCP server's kill switch on or off (epic #2682, plan §3.5 and §10).
+
+    The Redis key `mcp:kill`: on, every `POST /api/mcp` answers 503 `mcp_disabled_by_operator` from
+    the next request, on every worker. An admin human session only, step-up gated and audited
+    (`mcp_kill_toggled`, keyed on the acting admin). No machine seat reaches it — the operator's
+    admin reach is the reviewed list in `ALLOWED_ADMIN_REACH`, and this is not on it. The deploy-time
+    fallback is the `MCP_SERVER_KILL` env var; `scripts/mcp_kill.py` sets the same key from a shell.
+    """
+    actor_id = _require_user_admin(request.session_token)
+    from cqc_lem.api.routers.user import _require_step_up
+    _require_step_up(actor_id, request.session_token, "admin_mcp_kill", http_request=http_request)
+
+    from cqc_lem.api.mcp.limits import set_kill_key
+    if not set_kill_key(request.on):
+        raise HTTPException(status_code=503,
+                            detail="Could not reach Redis; the MCP kill switch is unchanged.")
+    record_auth_event(AuthAuditEvent.MCP_KILL_TOGGLED, user_id=actor_id, success=True,
+                      ip=_main._client_ip(http_request), user_agent=_main._user_agent(http_request),
+                      details={"on": request.on, "via": "admin_route"})
+    # INFO: setting a switch is doing what was asked, not a degraded path (utilities/CLAUDE.md).
+    log_info("MCP kill switch set", user_id=actor_id, task_name="admin_mcp_kill", on=request.on)
+    return ResponseModel(status_code=200, detail={"on": request.on})
+
+
 @router.get("/automation-status", responses={200: {"description": "Automation status"},
                                                    403: {"description": "Forbidden"}})
 def admin_automation_status(x_admin_secret: Optional[str] = Header(default=None),

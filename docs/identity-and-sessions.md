@@ -175,15 +175,14 @@ public at the edge by exact match only (`_PUBLIC_API_EXACT` in `api/main.py`, ne
 
 - **Bearer only.** It reads `Authorization: Bearer` and nothing else. A `lem_session` cookie is
   ignored, and a cookie with no bearer is 401 `cookie_only`. A token in the query string is 400.
-- **`mcp` scopes only, from P2.** P2 resolves the bearer as an ordinary `sessions` row and accepts
+- **`mcp` scopes only.** The gate resolves the bearer as an ordinary `sessions` row and accepts
   only `mcp` / `mcp_outreach`. Any other scope, `full` included, is the same 401 as an unknown token.
-- **P1 is inert.** No `mcp`-scoped session can exist yet, so every bearer gets 401 `invalid_token`.
 
 The tools still call the real routes, so every other route keeps resolving through
-`get_session_user_id()`. The carve-out is the gate and nothing behind it. P2 extends this section:
-the in-process loopback, the per-worker dispatch secret that makes an `mcp` token useless against
-raw `/api`, and the test pinning the carve-out (`test_api_route_identity.py` skips public paths, so
-it cannot).
+`get_session_user_id()`. The carve-out is the gate and nothing behind it. The scopes, the
+per-worker dispatch secret that makes an `mcp` token useless against raw `/api`, and the test that
+pins the carve-out (`test_mcp_identity_carveout.py`; `test_api_route_identity.py` skips public
+paths, so it cannot) are in [§ The `mcp` scopes](#the-mcp-scopes--the-users-own-coding-agent-behind-one-gate-epic-2682).
 
 ## The `/api` bearer token is a non-browser credential (issue #950)
 
@@ -939,6 +938,85 @@ of the session, never the token), not an audit row.
 log. `GET /admin/task-status/{id}` **withholds the task's result text from an operator**
 (`result_withheld: true`): a task's return value can carry whatever the task touched, and an operator
 needs to know the job finished, not what it returned. The owner's bearer + secret pair still gets it.
+
+## The `mcp` scopes — the user's own coding agent, behind one gate (epic #2682)
+
+A user's own coding agent (Claude Code, Codex, Cursor, …) connects to `POST /api/mcp` with a URL and
+a bearer token. The token is an ordinary `sessions` row, scope **`mcp`** or **`mcp_outreach`**, so
+there is no new login and no new credential store. Full plan: `docs/agent-mcp-plan.md` §3.
+
+| Scope | Reaches | Verbs |
+|---|---|---|
+| `mcp` | `_MCP_READ_PATHS`: the user's own settings, automation state, dashboard, posts, plan, generation status, performance, engagement settings, voice kit and newsletter settings/draft | `GET` only, per path (`_SCOPE_PATH_METHODS`) |
+| `mcp_outreach` | `mcp` plus `_MCP_OUTREACH_EXTRA_READ_PATHS`: DMs, connection requests, leads, lead signals, catch-up touches, outreach targets, newsletter subscribers | `GET` only |
+
+`mcp_outreach` is opted into at mint (owner ruling O11), because those lists hold other people's
+data; its rows are cut to `_OBSERVER_ROW_FIELDS` exactly as an observer's are (`_FIELD_FILTERED_SCOPES`).
+Both scopes are in `FIXED_TTL_SCOPES`, `_QUEUE_ONLY_SCOPES` (so the W2 write tools inherit every
+approval guard and the `auto_approve` downgrade), `_WARN_ON_REFUSAL_SCOPES` and `_SCOPE_REFUSAL_CODE`.
+They are **never** in `_operator_may_approve`: owner ruling O1's internal/sandbox approval lands in W2
+as its own branch that mirrors the operator exemption. In P2 neither scope reaches a write verb;
+`test_role_surface_invariants.py` holds them in `READ_ONLY_ROLES`, and `FORBIDDEN_ROLE_ROUTES` now
+also lists `/user/mcp-token`, its `rotate` and `/admin/mcp-kill`. Never reachable either:
+`/user/token_status`, `/user/security`, `/user/posthog-stats`, `/user/affiliate`, billing, every
+`/admin/*` route, `/user/mcp-token/info` (`tests/unit/api/mcp/test_mcp_scope.py`).
+
+### The audience binding — an MCP token is dead on raw `/api`
+
+The tools (P3) call LEM's real routes through an in-process ASGI loopback, so those routes see an
+ordinary cookie request. A stolen `mcp` token sent straight at `/api` would otherwise skip the kill
+switch, the rollout flag, every limit and the access record. So each worker draws a random secret at
+import (`api/mcp/dispatch.py`), the loopback sends it as `X-LEM-MCP-Dispatch`, and `_scope_checked`
+refuses an mcp-scoped session without it: **403 `session_scope_forbidden` and a WARNING, before the
+path check and before anything is written.** The secret never leaves the process (the loopback's
+transport is `ASGITransport`, never a network one) and a restarted worker draws a new one.
+
+### The identity carve-out — the gate resolves its own bearer
+
+Every `/api` route learns its caller through `get_session_user_id()` (#914). `POST /api/mcp` is the
+**one** exception. It is public at the edge by exact match (`_PUBLIC_API_EXACT`, never a prefix, so
+`/api/mcp/x` stays gated), reads only `Authorization: Bearer` (an outer `lem_session` cookie is
+ignored; a cookie with no bearer is 401 `cookie_only`), and resolves the token itself with
+`resolve_session_checked`, imported through the `cqc_lem.utilities.db` facade. It admits **only**
+the two MCP scopes: any other live session is the same 401 `invalid_token` and a WARNING. This is
+the only path in `api/` other than `get_session_user_id` that calls a session resolver directly, and
+`tests/unit/api/mcp/test_mcp_identity_carveout.py` fails the build on a third
+(`test_api_route_identity.py` skips public paths, so it cannot see this one).
+
+`resolve_session_checked` exists because `resolve_session` answers None for a database fault, which
+for the gate would read as "invalid token, create a new one". It raises `SessionStoreUnavailable`
+instead, and the gate answers **503 `mcp_unavailable`**. It also returns the row id and expiry for
+the request's `McpPrincipal`. For the mcp scopes only, `last_seen_at` is written at most once every
+60 seconds (`MCP_LAST_SEEN_THROTTLE_SECONDS`), because one tool call resolves its token at the gate
+and again on every inner call; every other seat is unchanged.
+
+The gate's order after the HTTP checks (`api/mcp/gate.py`): a token in the query string is 400, and
+one that resolves to **any** session is revoked on the spot, audited `mcp_token_exposed` and its owner
+emailed (WARNING, never the value); then a per-(address, token digest) failure bucket (30 a minute);
+resolve; the `mcp-server-enabled` flag (403 `mcp_disabled`); concurrency (2 per user, 8 per worker);
+the per-user tool-call budget; the principal; and the once-a-day `mcp_access` row. Every Redis-backed
+limit fails CLOSED (503); `MCP_RATE_*` set to 0 refuses all.
+
+### Minting, rotating, revoking
+
+`POST /api/user/mcp-token {label, ttl_days, outreach}` (`api/routers/mcp_tokens.py`) is the observer
+mint tightened: 404 while the rollout flag is off for the account; a human session; **a strong factor
+first** (403 `mcp_needs_strong_factor`, owner ruling O3 — the check runs before the ceremony); then
+`_require_step_up` with `extension_scope_ok` **not** passed; `ttl_days` 1–90, default 30, fixed at
+mint (O2); at most 10 live MCP tokens (409 `mcp_token_limit`) and 10 mints an hour (429). The token
+is `lem_mcp_` + 64 hex, so a leaked one is recognisable; the stored hash covers the whole string.
+Every mint is audited `mcp_token_minted` and emailed to the owner; a failed email never fails the
+mint. `POST /api/user/mcp-token/rotate {session_id}` runs the same ceremony, checks ownership and
+scope in SQL (`get_owned_session`), **revokes the old token first**, then mints one with the same
+label, scope and TTL (`mcp_token_rotated`, emailed). `GET /api/user/mcp-token/info` lists the account's MCP
+tokens with no token or hash, plus Redis activity counts that are null, never 0, when unreadable.
+Revoking one is `POST /user/sessions/revoke`, as for every session.
+
+Fleet-wide controls are owner-run: `POST /api/admin/mcp-kill {on}` (admin human session, step-up,
+audited `mcp_kill_toggled`, hidden from the schema) or `scripts/mcp_kill.py on|off|status` sets the
+`mcp:kill` key; `scripts/mcp_revoke_all.py --reason …` revokes every MCP session with one
+`mcp_sessions_revoked` row per user, in the same transaction. `sessions.scope` is `VARCHAR(32)` and
+`auth_audit_log.event` `VARCHAR(50)`, so none of this needed a migration.
 
 ## The docs surface lives inside `/api` (issue #1020)
 

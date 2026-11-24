@@ -4,11 +4,22 @@ Two switches, either one stops the endpoint: the `MCP_SERVER_KILL` env var (ship
 deploy) and the `mcp:kill` Redis key (takes effect on the next request). It is a SAFETY control,
 so it is never a feature flag, and it fails CLOSED: a Redis it cannot read means the endpoint is
 unavailable, not that the switch is off. `docs/agent-mcp-plan.md` §3.3 step 1.
+
+The rest of this module is the gate's later limits (§3.3 steps 7, 10, 11), all in Redis except the
+per-worker concurrency cap: the pre-auth failure bucket, in-flight concurrency, fixed-window budgets
+and the per-session activity counts the Agents tab shows. Each Redis-backed limit fails CLOSED by
+raising `LimitsUnavailable` (the gate answers 503), with two exceptions that fail OPEN because
+losing them costs a number, never a control: the activity counts and the mint-rate limiter, whose
+backstop is the database-enforced cap of 10 active tokens.
 """
 
+import hashlib
 import os
+import time
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 from cqc_lem.utilities.logger import log_debug
 
@@ -70,3 +81,353 @@ def read_kill_key() -> KillState:
                   error_type=type(exc).__name__)
         return KillState.UNREADABLE
     return KillState.OFF if value is None else KillState.ON
+
+
+def set_kill_key(on: bool) -> bool:
+    """Turn the Redis kill switch on (store the key) or off (delete it). Blocking.
+
+    Args:
+        on: True stores `mcp:kill`; False deletes it.
+
+    Returns:
+        True when Redis took the write, False when there is no handle or the write raised.
+    """
+    client = _redis()
+    if client is None:
+        return False
+    try:
+        if on:
+            client.set(KILL_REDIS_KEY, "1")
+        else:
+            client.delete(KILL_REDIS_KEY)
+    except Exception as exc:  # noqa: BLE001 — the caller reports the failed toggle.
+        log_debug("MCP kill key write failed", key=KILL_REDIS_KEY, error_type=type(exc).__name__)
+        return False
+    return True
+
+
+class LimitsUnavailable(Exception):
+    """A fail-closed limit could not read or write Redis. The gate answers 503 `mcp_unavailable`."""
+
+
+# --- environment-tunable limits (plan §3.3 steps 7, 10, 11; owner ruling O10 defaults) ----------
+#
+# Read at call time. A value that is not a non-negative integer falls back to the default; 0 is
+# honoured and means REFUSE ALL, so an operator can close one budget without the kill switch.
+
+ENV_FAILURES_PER_MIN = "MCP_AUTH_FAILURES_PER_MIN"
+ENV_INFLIGHT_PER_USER = "MCP_MAX_INFLIGHT_PER_USER"
+ENV_INFLIGHT_PER_WORKER = "MCP_MAX_INFLIGHT_PER_WORKER"
+ENV_TOOL_CALLS_PER_MIN = "MCP_RATE_TOOL_CALLS_PER_MIN"
+ENV_READS_PER_MIN = "MCP_RATE_READS_PER_MIN"
+ENV_READS_PER_DAY = "MCP_RATE_READS_PER_DAY"
+ENV_WRITES_PER_HOUR = "MCP_RATE_WRITES_PER_HOUR"
+ENV_WRITES_PER_DAY = "MCP_RATE_WRITES_PER_DAY"
+ENV_MINTS_PER_HOUR = "MCP_TOKEN_MINTS_PER_HOUR"
+
+_DEFAULTS = {
+    ENV_FAILURES_PER_MIN: 30,
+    ENV_INFLIGHT_PER_USER: 2,
+    ENV_INFLIGHT_PER_WORKER: 8,
+    ENV_TOOL_CALLS_PER_MIN: 60,
+    ENV_READS_PER_MIN: 240,
+    ENV_READS_PER_DAY: 4000,
+    ENV_WRITES_PER_HOUR: 30,
+    ENV_WRITES_PER_DAY: 150,
+    ENV_MINTS_PER_HOUR: 10,
+}
+
+MINUTE = 60
+HOUR = 60 * 60
+DAY = 24 * 60 * 60
+# A crashed worker never runs its `release`, so the in-flight counter expires on its own. Longer
+# than the 20s tool budget with room for a slow inner call, short enough to self-heal quickly.
+_INFLIGHT_TTL_SECONDS = 120
+_ACTIVITY_TTL_SECONDS = 8 * DAY
+_CLIENT_NAME_TTL_SECONDS = 90 * DAY
+
+
+def limit(env_var: str) -> int:
+    """The configured value of one limit, or its default when unset or malformed.
+
+    Args:
+        env_var: One of the `ENV_*` names above.
+
+    Returns:
+        A non-negative integer; 0 means the limit refuses everything.
+    """
+    raw = (os.getenv(env_var) or "").strip()
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            value = -1
+        if value >= 0:
+            return value
+    return _DEFAULTS[env_var]
+
+
+def _require_redis() -> Any:
+    client = _redis()
+    if client is None:
+        raise LimitsUnavailable()
+    return client
+
+
+def _digest(value: str, length: int = 16) -> str:
+    return hashlib.sha256(value.encode("utf-8", "replace")).hexdigest()[:length]
+
+
+# --- step 7: the pre-auth failure bucket ---------------------------------------------------------
+
+
+def _failure_key(client_ip: Optional[str], token: str) -> str:
+    """Keyed on the client address AND a short digest of the token presented.
+
+    Keying on the address alone would let one bad token on a shared egress IP (an office, a CI
+    runner, a VPN) lock every other user of that address out; the token digest keeps each
+    presented credential in its own bucket. Neither value is stored in the clear.
+    """
+    window = int(time.time() // MINUTE)
+    return f"mcp:authfail:{_digest(client_ip or '-')}:{_digest(token, 8)}:{window}"
+
+
+def auth_failures_exceeded(client_ip: Optional[str], token: str) -> bool:
+    """Has this (address, token) pair already failed auth the configured times this minute?
+
+    Raises:
+        LimitsUnavailable: Redis could not be read.
+    """
+    cap = limit(ENV_FAILURES_PER_MIN)
+    if cap == 0:
+        return True
+    client = _require_redis()
+    try:
+        raw = client.get(_failure_key(client_ip, token))
+    except Exception as exc:  # noqa: BLE001 — every Redis fault fails closed here.
+        raise LimitsUnavailable() from exc
+    try:
+        return int(raw or 0) >= cap
+    except (TypeError, ValueError):
+        return True
+
+
+def record_auth_failure(client_ip: Optional[str], token: str) -> None:
+    """Count one failed auth for this (address, token) pair. Best effort: a lost count is harmless.
+
+    The next request's `auth_failures_exceeded` is the control and fails closed on its own.
+    """
+    client = _redis()
+    if client is None:
+        return
+    key = _failure_key(client_ip, token)
+    try:
+        if client.incr(key) == 1:
+            client.expire(key, MINUTE + 5)
+    except Exception as exc:  # noqa: BLE001
+        log_debug("MCP auth-failure count not recorded", error_type=type(exc).__name__)
+
+
+# --- step 10: concurrency -------------------------------------------------------------------------
+
+
+class WorkerSlots:
+    """The per-worker in-flight cap. One event loop per worker, so a plain counter is exact."""
+
+    def __init__(self) -> None:
+        """Start with nothing in flight."""
+        self.in_flight = 0
+
+    def try_acquire(self) -> bool:
+        """Take a slot when one is free; never waits."""
+        if self.in_flight >= limit(ENV_INFLIGHT_PER_WORKER):
+            return False
+        self.in_flight += 1
+        return True
+
+    def release(self) -> None:
+        """Give a slot back."""
+        self.in_flight = max(0, self.in_flight - 1)
+
+
+worker_slots = WorkerSlots()
+
+
+def _inflight_key(user_id: int) -> str:
+    return f"mcp:inflight:{int(user_id)}"
+
+
+def acquire_user_slot(user_id: int) -> bool:
+    """Take one of this user's in-flight slots, across every worker. Blocking.
+
+    Returns:
+        True when a slot was taken (the caller MUST `release_user_slot`), False when the user is
+        already at the cap.
+
+    Raises:
+        LimitsUnavailable: Redis could not be read or written.
+    """
+    cap = limit(ENV_INFLIGHT_PER_USER)
+    if cap == 0:
+        return False
+    client = _require_redis()
+    key = _inflight_key(user_id)
+    try:
+        current = int(client.incr(key))
+        client.expire(key, _INFLIGHT_TTL_SECONDS)
+        if current > cap:
+            client.decr(key)
+            return False
+    except Exception as exc:  # noqa: BLE001
+        raise LimitsUnavailable() from exc
+    return True
+
+
+def release_user_slot(user_id: int) -> None:
+    """Give back a slot `acquire_user_slot` took. Best effort; the key's TTL is the backstop."""
+    client = _redis()
+    if client is None:
+        return
+    try:
+        if int(client.decr(_inflight_key(user_id))) < 0:
+            client.delete(_inflight_key(user_id))
+    except Exception as exc:  # noqa: BLE001
+        log_debug("MCP in-flight slot not released", error_type=type(exc).__name__)
+
+
+# --- step 11: fixed-window budgets ---------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Budget:
+    """One fixed-window budget: `limit_env` calls per `window_seconds`, per user."""
+
+    name: str
+    limit_env: str
+    window_seconds: int
+
+
+TOOL_CALLS_PER_MIN = Budget("tool_calls_min", ENV_TOOL_CALLS_PER_MIN, MINUTE)
+READS_PER_MIN = Budget("reads_min", ENV_READS_PER_MIN, MINUTE)
+READS_PER_DAY = Budget("reads_day", ENV_READS_PER_DAY, DAY)
+WRITES_PER_HOUR = Budget("writes_hour", ENV_WRITES_PER_HOUR, HOUR)
+WRITES_PER_DAY = Budget("writes_day", ENV_WRITES_PER_DAY, DAY)
+
+# Who consumes which: the GATE spends a tool-call unit per JSON-RPC `tools/call`; the in-process
+# loopback (P3) spends the read budgets once per INNER call; the write tools (W2) spend the write
+# budgets once per write. All are per user, across every token that user holds.
+READ_BUDGETS = (READS_PER_MIN, READS_PER_DAY)
+WRITE_BUDGETS = (WRITES_PER_HOUR, WRITES_PER_DAY)
+
+
+def consume_budgets(user_id: int, budgets: Iterable[Budget]) -> Optional[int]:
+    """Spend one unit of every budget in `budgets`, refusing if any is exhausted. Blocking.
+
+    Returns:
+        None when the call is within every budget, otherwise the `Retry-After` seconds of the
+        first exhausted one. A budget configured to 0 refuses at once.
+
+    Raises:
+        LimitsUnavailable: Redis could not be read or written.
+    """
+    now = time.time()
+    for budget in budgets:
+        cap = limit(budget.limit_env)
+        retry_after = max(1, int(budget.window_seconds - (now % budget.window_seconds)))
+        if cap == 0:
+            return retry_after
+        client = _require_redis()
+        key = f"mcp:budget:{budget.name}:{int(user_id)}:{int(now // budget.window_seconds)}"
+        try:
+            used = int(client.incr(key))
+            if used == 1:
+                client.expire(key, budget.window_seconds + 5)
+        except Exception as exc:  # noqa: BLE001
+            raise LimitsUnavailable() from exc
+        if used > cap:
+            return retry_after
+    return None
+
+
+# --- activity counts for the Agents tab (fail OPEN: a lost count is a number, not a control) -----
+
+
+def _day(offset: int = 0) -> str:
+    return (datetime.now(timezone.utc) - timedelta(days=offset)).strftime("%Y%m%d")
+
+
+def record_activity(session_id: Optional[int], client_name: Optional[str],
+                    tool_call: bool) -> None:
+    """Count a tool call against its session for today, and remember the client's name.
+
+    Args:
+        session_id: The MCP session row id.
+        client_name: The sanitised client name, or None.
+        tool_call: Whether this request was a JSON-RPC `tools/call`.
+    """
+    client = _redis()
+    if client is None or session_id is None:
+        return
+    try:
+        if tool_call:
+            key = f"mcp:calls:{int(session_id)}:{_day()}"
+            if client.incr(key) == 1:
+                client.expire(key, _ACTIVITY_TTL_SECONDS)
+        if client_name:
+            client.set(f"mcp:client:{int(session_id)}", client_name, ex=_CLIENT_NAME_TTL_SECONDS)
+    except Exception as exc:  # noqa: BLE001
+        log_debug("MCP activity not recorded", error_type=type(exc).__name__)
+
+
+def read_activity(session_ids: Iterable[int]) -> Optional[dict[int, dict[str, Any]]]:
+    """`{session_id: {calls_7d, last_client_name}}` for the Agents tab, or None when unreadable.
+
+    None, never zeros: an unreadable count is unknown, and the tab shows it as unknown.
+    """
+    client = _redis()
+    ids = [int(s) for s in session_ids]
+    if client is None:
+        return None
+    out: dict[int, dict[str, Any]] = {}
+    try:
+        for sid in ids:
+            calls = 0
+            for offset in range(7):
+                raw = client.get(f"mcp:calls:{sid}:{_day(offset)}")
+                calls += int(raw or 0)
+            name = client.get(f"mcp:client:{sid}")
+            if isinstance(name, bytes):
+                name = name.decode("utf-8", "replace")
+            out[sid] = {"calls_7d": calls, "last_client_name": name or None}
+    except Exception as exc:  # noqa: BLE001
+        log_debug("MCP activity unreadable", error_type=type(exc).__name__)
+        return None
+    return out
+
+
+# --- token mint rate (fail OPEN; the 10-active-token cap in the database is the backstop) --------
+
+
+def claim_mint(user_id: int) -> bool:
+    """Spend one of this user's mints for the hour. True when allowed.
+
+    Fails open: with Redis unreachable the mint proceeds, because it is already behind a human
+    step-up ceremony and the active-token cap, both of which hold without Redis.
+    """
+    cap = limit(ENV_MINTS_PER_HOUR)
+    if cap == 0:
+        return False
+    client = _redis()
+    if client is None:
+        log_debug("MCP mint limiter unavailable — allowing the mint", user_id=user_id)
+        return True
+    key = f"mcp:mints:{int(user_id)}:{int(time.time() // HOUR)}"
+    try:
+        used = int(client.incr(key))
+        if used == 1:
+            client.expire(key, HOUR + 5)
+    except Exception as exc:  # noqa: BLE001
+        log_debug("MCP mint limiter failed — allowing the mint", user_id=user_id,
+                  error_type=type(exc).__name__)
+        return True
+    return used <= cap
