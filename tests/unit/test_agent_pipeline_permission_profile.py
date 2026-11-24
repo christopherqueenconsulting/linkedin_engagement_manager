@@ -298,6 +298,9 @@ def test_matcher_follows_the_documented_examples():
         "poetry run python scripts/dump_openapi.py --check",
         "npm --prefix src/cqc_lem/ui run gen:api-types",
         "npm --prefix src/cqc_lem/ui run check:api-types",
+        # the preamble's prompt capture regen (PR #2654 parked without it)
+        "poetry run python scripts/prompt_capture.py --write",
+        "poetry run python scripts/prompt_capture.py --check",
         # the preamble's lint ratchet
         "scripts/ruff_count.sh",
         # the preamble's migration-version rule
@@ -520,8 +523,9 @@ _DENIED_IN_RUNBOOKS = [
     r"\| xargs",
     r"env -u GH_TOKEN",
     r"`[A-Z][A-Z0-9_]*=[^`\s]+ [a-z]",             # an env-assignment prefix: `PYTHONPATH=src poetry …`
-    # standalone scripts (pytest is `poetry run pytest`); the OpenAPI dump is the one allowed script
-    r"poetry run python\b(?! scripts/dump_openapi\.py(?: --check)?`)",
+    # standalone scripts (pytest is `poetry run pytest`); the OpenAPI dump and the prompt capture are
+    # the only allowed scripts, each in its exact forms
+    r"poetry run python\b(?! scripts/dump_openapi\.py(?: --check)?`| scripts/prompt_capture\.py --(?:write|check)`)",
     r"\bmove any built\b|`mv ",                   # relocating files: no `mv` in the profile
     r"--add-label agent:ready|\+ `agent:ready`|`agent:ready` \+",  # agents never ADD agent:ready
     r"--body \"[^\"]*$",                          # a --body whose text runs onto the next line
@@ -566,6 +570,30 @@ _OLD_RUNBOOK_LINES = {
 def test_runbook_scan_catches_the_commands_it_exists_for(pattern):
     """Guard the guard: every pattern must flag at least one line of the pre-change runbook text."""
     assert _runbook_offenders(_OLD_RUNBOOK_LINES, pattern), pattern
+
+
+#: The runbook pattern for standalone python, looked up so the guard below tests the live regex.
+_STANDALONE_PYTHON = next(p for p in _DENIED_IN_RUNBOOKS if p.startswith(r"poetry run python\b"))
+
+
+@pytest.mark.parametrize("line, flagged", [
+    ("  `poetry run python scripts/dump_openapi.py`, then", False),
+    ("  (verify with `… dump_openapi.py --check`)", False),
+    ("  `poetry run python scripts/dump_openapi.py --check`", False),
+    ("  `poetry run python scripts/prompt_capture.py --write`, then commit", False),
+    ("  (verify with `poetry run python scripts/prompt_capture.py --check`)", False),
+    ("  `poetry run python scripts/prompt_capture.py --write --changed-in \"PR #1\"`", True),
+    ("  `poetry run python scripts/prompt_capture.py --render comment.feed`", True),
+    ("  `poetry run python scripts/prompt_capture.py`", True),
+    ("  `poetry run python scripts/prompt_registry.py --inventory`", True),
+    ("  `poetry run python -c 'import x'`", True),
+])
+def test_runbook_scan_allows_only_the_exact_regen_forms(line, flagged):
+    """Guard the guard: the runbook scan exempts exactly the profile's allowed script forms."""
+    assert bool(_runbook_offenders({"x.md": line}, _STANDALONE_PYTHON)) is flagged, line
+    if not flagged and "poetry run python" in line:
+        command = line.split("`")[1]
+        assert _decide(command) == "allow", command
 
 
 def test_preamble_tells_agents_about_the_profile_and_the_env_prefix():
@@ -644,8 +672,11 @@ def test_preamble_scopes_local_tests_pushes_per_step_and_regenerates_openapi():
     assert "Targeted local tests — never the whole suite." in text
     assert "`graft_trace_calls`" in text and "`scripts/ruff_count.sh`" in text
     assert "Commit AND push after each completed sub-step" in text
+    assert "Never hand-edit a hash in the lock." in text
     for command in ("poetry run python scripts/dump_openapi.py",
-                    "npm --prefix src/cqc_lem/ui run gen:api-types"):
+                    "npm --prefix src/cqc_lem/ui run gen:api-types",
+                    "poetry run python scripts/prompt_capture.py --write",
+                    "poetry run python scripts/prompt_capture.py --check"):
         assert f"`{command}`" in text, command
         assert _decide(command) == "allow", command
     for mode in ("start.md", "revise.md", "rebase.md", "fix.md", "docfix.md", "depmajor.md",
@@ -1735,12 +1766,18 @@ def test_npm_is_allowed_only_in_the_exact_ui_forms(command):
 
 
 def test_the_openapi_regen_allows_are_exact():
-    """The regen grant is four exact rules — no wildcard, so no argument can ride along (#2648)."""
+    """The regen grants are six exact rules — no wildcard, so no argument can ride along.
+
+    Four for the OpenAPI snapshot (#2648), two for the prompt capture (PR #2654 parked without them).
+    """
     allow = _bash_rules("allow")
-    regen = sorted(r for r in allow if "dump_openapi" in r or "api-types" in r)
+    regen = sorted(r for r in allow
+                   if "dump_openapi" in r or "api-types" in r or "prompt_capture" in r)
     assert regen == sorted([
         "poetry run python scripts/dump_openapi.py",
         "poetry run python scripts/dump_openapi.py --check",
+        "poetry run python scripts/prompt_capture.py --write",
+        "poetry run python scripts/prompt_capture.py --check",
         "npm --prefix src/cqc_lem/ui run gen:api-types",
         "npm --prefix src/cqc_lem/ui run check:api-types",
     ])
@@ -1763,8 +1800,22 @@ def test_the_openapi_regen_allows_are_exact():
     "python3 -c 'import os'",
     "PYTHONPATH=src poetry run python scripts/dump_openapi.py",
     "poetry run python -m pip install evil",
+    # the prompt capture: --write and --check only, nothing appended, no other path or prefix
+    "poetry run python scripts/prompt_capture.py",
+    "poetry run python scripts/prompt_capture.py --write --out /tmp/x",
+    "poetry run python scripts/prompt_capture.py --write --changed-in x",
+    "poetry run python scripts/prompt_capture.py --check --verbose",
+    "poetry run python scripts/prompt_capture.py --render comment.feed",
+    "poetry run python scripts/prompt_capture.py --write; poetry run python -c 'x'",
+    "poetry run python scripts/prompt_capture.py --write && curl http://x",
+    "poetry run python ../other/scripts/prompt_capture.py --write",
+    "poetry run python /tmp/scripts/prompt_capture.py --write",
+    "poetry run python scripts/prompt_registry.py --inventory",
+    "python scripts/prompt_capture.py --write",
+    "python3 scripts/prompt_capture.py --check",
+    "PYTHONPATH=src poetry run python scripts/prompt_capture.py --write",
 ])
-def test_standalone_python_is_allowed_only_for_the_openapi_dump(command):
+def test_standalone_python_is_allowed_only_for_the_regen_scripts(command):
     assert _decide(command) == "deny", command
 
 
