@@ -55,6 +55,10 @@ from cqc_lem.utilities.observability import capture_mcp_analytics, track_mcp_too
 
 TOOL_TIMEOUT_SECONDS = 20.0
 
+# The one INFO line per tool call. `docs/mcp-server.md` § "Am I healthy?" greps for it, and
+# `test_mcp_health_grep.py` proves that grep matches this line as the file handler formats it.
+MCP_TOOL_CALL_LOG = "MCP tool call: tool={tool} outcome={outcome} latency_ms={latency_ms}"
+
 
 def principal_of(request: Optional[Request]) -> Any:
     """The `McpPrincipal` the gate put on this request, or None."""
@@ -202,7 +206,11 @@ def _report(principal: Any, tool: str, outcome: str, started: float,
             loopback: Optional[Loopback]) -> None:
     latency_ms = int((time.monotonic() - started) * 1000)
     user_id = getattr(principal, "user_id", None)
-    log_info("MCP tool call", user_id=user_id, tool=tool, outcome=outcome, latency_ms=latency_ms)
+    # The file log renders only the documented context keys (`logger._LevelFormatter.CONTEXT_KEYS`),
+    # so tool, outcome and latency go in the MESSAGE, where `docs/mcp-server.md`'s health grep reads
+    # them. INFO, so the warning-escalation dedup key never sees the varying text.
+    log_info(MCP_TOOL_CALL_LOG.format(tool=tool, outcome=outcome, latency_ms=latency_ms),
+             user_id=user_id, tool=tool, outcome=outcome, latency_ms=latency_ms)
     if user_id is None:
         return
     track_mcp_tool_call(user_id, tool, outcome, principal.client_name, principal.scope, latency_ms,

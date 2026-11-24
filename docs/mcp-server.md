@@ -98,10 +98,41 @@ and spends a tool call, like the tool.
 through `posthog.mcp` with NO arguments or results: the one named exception to the one-`_emit` rule,
 documented in `utilities/observability.py` and [observability-map.md](observability-map.md).
 
-Each tool call logs ONE INFO line, `MCP tool call` with `user_id`, `tool`, `outcome`,
-`latency_ms`; never arguments, results or the token (a caplog test pins the token in no record).
+Each tool call logs ONE INFO line (`calls.MCP_TOOL_CALL_LOG`); never arguments, results or the token
+(a caplog test pins the token in no record). In `/opt/lem/logs/cqc_lem_YYYY_MM_DD.log` (UTC date) it
+reads:
+
+```
+2026-11-24 07:09:51Z MCP tool call: tool=lem_whoami outcome=ok latency_ms=42 | user_id=39
+```
+
 Outcomes: `ok`, `refused`, `invalid_args`, `upstream_error`, `rate_limited`, `timeout`, and
-`unknown` for a write tool that timed out (W2b's spend tools).
+`unknown` for a write tool that timed out (W2b's spend tools; it may have been queued, so it is never
+a safe retry).
+
+### Am I healthy?
+
+1. **Logs, today (UTC).** On the box, from `/opt/lem`:
+
+   ```bash
+   grep -E 'MCP tool call: .* outcome=(upstream_error|timeout) ' logs/cqc_lem_$(date -u +%Y_%m_%d).log
+   ```
+
+   Nothing printed means no tool call failed upstream or timed out today. Each line names the tool
+   and the `user_id`. `refused`, `invalid_args` and `rate_limited` are answers to the caller, not
+   faults. `tests/unit/api/mcp/test_mcp_health_grep.py` runs this exact pattern against a line the
+   real file formatter produced, so a change to the line breaks the build, not the runbook.
+2. **PostHog.** The `mcp_tool_call` event, filtered on its `outcome` property (a string label):
+
+   ```sql
+   SELECT properties.tool AS tool, properties.outcome AS outcome, count() AS calls
+   FROM events
+   WHERE event = 'mcp_tool_call' AND properties.outcome IN ('upstream_error', 'timeout')
+     AND timestamp > now() - INTERVAL 1 DAY
+   GROUP BY tool, outcome ORDER BY calls DESC
+   ```
+
+   Gate refusals are the separate `mcp_auth_refused` event, filtered on `reason`.
 
 ## Limits (owner ruling O10, env `MCP_*`, 0 = refuse all)
 
@@ -264,39 +295,60 @@ Check `/opt/lem/logs/cqc_lem_YYYY_MM_DD.log` for `MCP endpoint unavailable`.
 
 ## Rollback (owner-run, Tier 2)
 
-In this order. Revoking before reverting means old code never meets an `mcp` scope it does not know.
+ONE procedure, whichever phase broke. Run it from `/opt/lem`; prefix `sudo` from a login outside
+the `docker` group. `scripts/` there is the checked-out release tag (`scripts/deploy.sh:383`,
+`git checkout --quiet "${TAG}"`), so `scripts/mcp_revoke_all.py` is present on any running release
+that contains P2. A release older than P2 has no MCP tokens to revoke, so step 2 does not apply to it.
 
-1. **Kill**: the Redis key or the admin route (§ Kill switch). Takes effect on the next request.
-2. **Narrow**: remove the flag overrides in PostHog (not instant: up to `POSTHOG_FLAG_POLL_SECONDS`
-   per worker).
-3. **Revoke all**: `sudo docker exec -i celery_worker python - --reason <why> --yes < scripts/mcp_revoke_all.py`
-   (`--yes` is required: STDIN is the script, so no prompt can be answered)
-   (one `mcp_sessions_revoked` audit row per affected account).
-4. **Redeploy** the release before the change (below); revert P4/P3, then P2.
+1. **Kill switch on.** `./scripts/compose.sh exec -T redis redis-cli -n 0 SET mcp:kill 1`, or
+   `POST /api/admin/mcp-kill {"on": true}` (step-up, audited). The next request answers 503
+   `mcp_disabled_by_operator` (§ Kill switch, Verify).
+2. **Revoke every MCP token, exactly once, before any redeploy.** It writes one
+   `mcp_sessions_revoked` audit row per affected account:
 
-No MCP phase adds a migration, so the redeploy itself changes no data. Since P2 tokens exist, which
-is why step 3 comes first.
+   ```bash
+   cd /opt/lem
+   ./scripts/compose.sh exec -T celery_worker python - --reason <why> --yes < scripts/mcp_revoke_all.py
+   ```
 
-1. **First, stop it with the Redis key** (above). This is instant, and often all you need.
-2. **Redeploy the previous release.** `scripts/deploy.sh` records the last healthy tag in
-   `/opt/lem/.last_good_tag`. If the P1 deploy itself failed its health check, `deploy.sh` has
-   already rolled back to that tag. If P1 deployed cleanly, that file now names the P1 release, so
-   roll back to the release BEFORE it. The invocation is from `docs/DEPLOYMENT.md`
-   § "Deploying from the box as the owner":
+   `celery_worker` is the Compose service (`docker-compose.yml`, `docker-compose.prod.yml`). `--yes`
+   is required, because STDIN is the script, so no prompt can be answered. Revoking first means the
+   code you roll back to never meets an `mcp` scope it does not know.
+3. **Redeploy the release immediately before the broken phase's release.** Name the target by phase:
+   - **P4 broken** (Agents tab, merge `04cfedeb`): redeploy the release immediately before the P4
+     release. P1, W1, P2 and P3 stay.
+   - **P3 broken** (read tools, this PR): redeploy the release immediately before the P3 release.
+     P2 stays: the endpoint, the scopes and the mint keep working, with no tools to call.
+   - **P2 broken** (scopes and mint, merge `4657be55`): redeploy the release immediately before the
+     P2 release. P1 and W1 stay; the endpoint goes back to answering 401 to every request.
+
+   The newest release WITHOUT a phase is
+   `git tag --sort=-v:refname --no-contains <phase merge commit> | head -1`. Deploy it as in
+   `docs/DEPLOYMENT.md` § "Deploying from the box as the owner":
 
    ```bash
    cd /opt/lem && sudo ./scripts/backup.sh
-   cat .last_good_tag                                   # the tag deploy.sh last marked healthy
-   git tag --sort=-v:refname | head -5                  # pick the release before P1
    sudo env DOCKER_CONFIG=/home/deploy/.docker bash ./scripts/deploy.sh vX.Y.Z
    sudo chown -R deploy:deploy /opt/lem/.git
    ```
 
    Or use the **Redeploy / Rollback VPS** workflow with that tag and `rollback` ticked
-   (`docs/DEPLOYMENT.md` § "Manual redeploy / rollback").
-3. **Check health:** `curl -fsS https://app.<domain>/health`. `/health` stays 200 even when the MCP
-   session manager fails to start, because the MCP lifespan fails open. A non-200 `/health` is not
-   caused by MCP being down; it means something else is wrong.
+   (`docs/DEPLOYMENT.md` § "Manual redeploy / rollback"). No MCP phase adds a migration, so the
+   redeploy changes no data.
+4. **Check health.** `curl -fsS https://app.<domain>/health`. `/health` stays 200 even when the MCP
+   session manager fails to start, because the MCP lifespan fails open, so a non-200 means
+   something other than MCP is wrong. Leave the kill switch on until the fix ships. Removing the
+   PostHog flag overrides is a slower, optional extra (up to `POSTHOG_FLAG_POLL_SECONDS` per worker).
+
+### Historical: rolling back P1 alone (before any MCP token existed)
+
+Kept from the P1 runbook. It applied only while P1 was the newest MCP phase deployed:
+- P1 added no migration and created no tokens or sessions, so its rollback was the kill switch,
+  then a redeploy of the release immediately before the P1 release.
+- If the P1 deploy itself failed its health check, `deploy.sh` had already rolled back to
+  `.last_good_tag`.
+
+With P2 deployed, use the procedure above instead.
 
 ## Leaked tokens
 

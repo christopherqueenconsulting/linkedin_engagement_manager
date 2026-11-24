@@ -131,8 +131,8 @@ the PR either way.
   Inside it is ONE `posthog.capture`, in `_emit()`; a new event is an `EventSpec` in `EVENTS` (#1218).
   ONE named exception: `capture_mcp_analytics` (`posthog.mcp`, O8), never tool args or results.
   **`label()` forces a property a dashboard or ALERT filters on to a string**: PostHog matches the
-  ingested type, so one boolean row silently stops the alert (`docs/kpi-dashboards.md`). `count()` floors to 0, `count_or_none()` keeps None because the
-  absence is the reading, `flag()` is a genuine boolean nothing filters on, and a number an alert
+  ingested type, so one boolean row silently stops the alert (`docs/kpi-dashboards.md`).
+  `count()` floors to 0, `count_or_none()` keeps None because the absence is the reading, `flag()` is a genuine boolean nothing filters on, and a number an alert
   COMPARES stays `prop()`. Full posture: `docs/observability-map.md`.
 - **`human_pacing.py` is the ONE cadence engine**; `linkedin/rate_limit.py` owns the 429 breaker and
   the shared Redis handle (`shared_redis_client()`) that other runtime-state helpers reuse.
