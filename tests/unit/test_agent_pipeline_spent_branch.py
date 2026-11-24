@@ -163,8 +163,12 @@ class Box:
         gh_fails: bool = False,
         prefetch: bool = True,
         hook: str | None = None,
+        refused: bool = False,
     ) -> tuple[str, Path]:
-        """Source guards.sh and run add_worktree. Returns (stderr, worktree)."""
+        """Source guards.sh and run add_worktree. Returns (stderr, worktree).
+
+        `refused` expects add_worktree to fail closed: rc 1, nothing on stdout, no worktree built.
+        """
         self.prs.write_text(json.dumps(prs or []), encoding="utf-8")
         fail = self.tmp / "gh-fail"
         if gh_fails:
@@ -189,9 +193,14 @@ class Box:
             "GH_EXPECT_HEAD": BRANCH,
         }
         r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env, timeout=60)
-        assert r.returncode == 0, r.stderr
         assert not self.badargs.exists(), self.badargs.read_text(encoding="utf-8")
         wt = self.work / BRANCH
+        if refused:
+            assert r.returncode == 1, r.stderr
+            assert r.stdout == "", "a refused add_worktree must hand its caller no path"
+            assert not wt.exists(), "a refused add_worktree must leave no worktree behind"
+            return r.stderr, wt
+        assert r.returncode == 0, r.stderr
         assert r.stdout == f"{wt}\n", "add_worktree's stdout is its return value — exactly the path"
         return r.stderr, wt
 
@@ -206,6 +215,16 @@ class Box:
             ["git", "rev-parse", "--abbrev-ref", "@{upstream}"], cwd=wt, env=self.env, capture_output=True, text=True
         )
         return r.stdout.strip() if r.returncode == 0 else None
+
+    def holders(self) -> list[str]:
+        """Every worktree (the main checkout included) whose HEAD is refs/heads/<BRANCH>."""
+        out, path = [], ""
+        for line in self.git("worktree", "list", "--porcelain", cwd=self.repo).splitlines():
+            if line.startswith("worktree "):
+                path = line[len("worktree ") :]
+            elif line == f"branch refs/heads/{BRANCH}":
+                out.append(path)
+        return out
 
     def unique(self, wt: Path) -> list[str]:
         """Commit subjects the worktree's branch carries beyond main."""
@@ -477,20 +496,106 @@ def test_an_unpushed_local_commit_on_the_origin_path_is_never_moved_back(box: Bo
     assert "reattaching existing" not in err, "took add_worktree's origin path"
 
 
-def test_a_spent_branch_checked_out_in_another_worktree_is_never_reset(box: Box, tmp_path: Path) -> None:
-    """Git 2.43's `checkout -B` does not refuse a branch another worktree holds; the guard must."""
+# --- A branch another worktree holds is REFUSED (fail closed), never moved or attached ------------
+# git 2.43 (prod) lets `checkout -B` move a branch checked out in another worktree; 2.44 refuses.
+# These run under the box's own git, so they pin the guard on the version that needs it.
+
+
+def _hold_elsewhere(box: Box, tmp_path: Path, at: str | None = None) -> Path:
+    """Check BRANCH out in another worktree of REPO (creating the local ref at `at` if given)."""
+    if at is not None:
+        box.git("branch", "-q", "-f", BRANCH, at, cwd=box.repo)
+    other = tmp_path / "other-wt"
+    box.git("worktree", "add", "-q", str(other), BRANCH, cwd=box.repo)
+    return other
+
+
+def test_s1_local_behind_tracking_held_elsewhere_is_refused(box: Box, tmp_path: Path) -> None:
+    """S1: the origin path's `checkout -B <b> origin/<b>` would fast-forward the OTHER worktree's HEAD."""
+    behind = box.phase_k()
+    box.git("checkout", "-q", BRANCH)
+    tip = box.commit("later.py", "L = 1\n", msg="later")
+    box.git("push", "-q", "origin", BRANCH)
+    box.git("fetch", "-q", "origin", cwd=box.repo)
+    other = _hold_elsewhere(box, tmp_path, at=behind)
+    assert box.git("rev-parse", f"refs/remotes/origin/{BRANCH}", cwd=box.repo) == tip
+    err, _ = box.run(prs=[pr("OPEN", tip)], prefetch=False, refused=True)
+    assert box.head(other) == behind, "the other worktree's HEAD moved under it"
+    assert box.git("rev-parse", f"refs/heads/{BRANCH}", cwd=box.repo) == behind
+    assert box.origin(f"refs/heads/{BRANCH}") == tip, "nothing pushed"
+    assert box.holders() == [str(other)]
+    assert err.count("WARNING") == 1 and "(checked-out-elsewhere)" in err and str(other) in err
+
+
+def test_s2_local_equal_to_tracking_held_elsewhere_is_refused(box: Box, tmp_path: Path) -> None:
+    """S2: a no-op `checkout -B` still put a SECOND worktree on the branch; exactly one may hold it."""
+    tip = box.phase_k()
+    box.git("fetch", "-q", "origin", cwd=box.repo)
+    other = _hold_elsewhere(box, tmp_path, at=f"origin/{BRANCH}")
+    err, _ = box.run(prs=[pr("OPEN", tip)], prefetch=False, refused=True)
+    assert box.holders() == [str(other)], "exactly one worktree holds the branch"
+    assert box.head(other) == tip
+    assert box.origin(f"refs/heads/{BRANCH}") == tip, "nothing pushed"
+    assert err.count("WARNING") == 1 and str(other) in err
+
+
+def test_a_spent_branch_held_elsewhere_is_refused_not_attached(box: Box, tmp_path: Path) -> None:
+    """The spent path used to 'attach' here, which still left two worktrees on one branch."""
     tip = box.phase_k()
     main = box.squash_merge()
     box.git("fetch", "-q", "origin", cwd=box.repo)
-    other = tmp_path / "other-wt"
-    box.git("worktree", "add", "-q", str(other), BRANCH, cwd=box.repo)
-    assert box.head(other) == tip
-    err, wt = box.run(prs=[pr("MERGED", tip, merge=main)], prefetch=False)
+    other = _hold_elsewhere(box, tmp_path, at=f"origin/{BRANCH}")
+    err, _ = box.run(prs=[pr("MERGED", tip, merge=main)], prefetch=False, refused=True)
     assert box.head(other) == tip, "the other worktree's HEAD moved under it"
     assert box.git("rev-parse", f"refs/heads/{BRANCH}", cwd=box.repo) == tip
     assert box.origin(f"refs/heads/{BRANCH}") == tip, "nothing pushed over the held branch"
-    assert "(checked-out-elsewhere:" in err and str(other) in err
-    assert "restarted from" not in err
+    assert box.holders() == [str(other)]
+    assert "(checked-out-elsewhere)" in err and str(other) in err
+    assert "restarted from" not in err and "attaching" not in err
+
+
+def test_a_spent_branch_local_only_held_elsewhere_is_refused(box: Box, tmp_path: Path) -> None:
+    """The local-only path (origin deleted the branch on merge) refuses the same way."""
+    tip = box.phase_k()
+    main = box.squash_merge()
+    box.delete_on_merge(keep_tracking=False)
+    other = _hold_elsewhere(box, tmp_path)
+    err, _ = box.run(prs=[pr("MERGED", tip, merge=main)], prefetch=False, refused=True)
+    assert box.head(other) == tip
+    assert box.holders() == [str(other)]
+    assert "(checked-out-elsewhere)" in err and "restarted from" not in err
+
+
+def test_a_branch_taken_elsewhere_mid_restart_is_refused_and_torn_down(box: Box, tmp_path: Path) -> None:
+    """Another worktree takes the branch during the gh call: the reset re-checks and refuses."""
+    tip = box.phase_k()
+    main = box.squash_merge()
+    other = tmp_path / "late-wt"
+    hook = f'git -C "{box.repo}" worktree add -q -f "{other}" {BRANCH} >/dev/null 2>&1\nrm -f "$GH_HOOK"\n'
+    err, _ = box.run(prs=[pr("MERGED", tip, merge=main)], hook=hook, refused=True)
+    assert box.head(other) == tip, "the reset must not move the late worktree's HEAD"
+    assert box.git("rev-parse", f"refs/heads/{BRANCH}", cwd=box.repo) == tip
+    assert box.origin(f"refs/heads/{BRANCH}") == tip, "nothing pushed"
+    assert box.holders() == [str(other)]
+    assert "(checked-out-elsewhere)" in err and "restarted from" not in err
+
+
+def test_an_unreadable_worktree_list_is_refused(box: Box) -> None:
+    """Cannot prove the branch is free, so fail closed rather than risk moving it."""
+    tip = box.phase_k()
+    box.git("fetch", "-q", "origin", cwd=box.repo)
+    wrapper = box.bin / "git"
+    wrapper.write_text(
+        '#!/usr/bin/env bash\nfor a in "$@"; do [ "$a" = list ] && exit 128; done\nexec /usr/bin/git "$@"\n',
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+    try:
+        err, _ = box.run(prs=[pr("OPEN", tip)], prefetch=False, refused=True)
+    finally:
+        wrapper.unlink()
+    assert box.holders() == []
+    assert err.count("WARNING") == 1 and "(worktree-list-unreadable)" in err
 
 
 def test_a_lease_refusal_attaches_and_never_overwrites_origin(box: Box, tmp_path: Path) -> None:
@@ -534,3 +639,69 @@ def test_no_grep_q_reads_a_pipe_in_guards() -> None:
         if not line.lstrip().startswith("#") and re.search(r"\|\s*grep\s+-q", line)
     ]
     assert piped == []
+
+
+# --- agent_run.sh: the refusal is EX_SETUP, BEFORE the budget charge --------------------------------
+
+AGENT_RUN = PIPELINE / "v2" / "actions" / "agent_run.sh"
+LEDGER = PIPELINE / "lib" / "ledger.sh"
+
+#: Stands in for v2/actions/common.sh up to the launch, with the REAL ledger and guards libraries;
+#: only the trust walk and the branch flock are stubbed.
+_STUB_COMMON = f"""
+BASE="$TEST_BASE"; REPO="$TEST_REPO"; WORKROOT="$TEST_WORKROOT"; SLUG=o/r; ASSIGNEE=o
+LOGDIR="$BASE/logs"; mkdir -p "$LOGDIR" "$BASE/locks"
+log() {{ echo "LOG: $*"; }}
+EX_TRUST=70; EX_BUDGET=71; EX_BUSY=72; EX_SETUP=73
+DRY_RUN="${{DRY_RUN:-0}}"; RUNBOOK="$BASE/RUNBOOK.md"; V2_DIR="$BASE/v2"
+. "{LEDGER}"
+. "{GUARDS}"
+v2_paused() {{ return 1; }}; v2_hold_present() {{ return 1; }}; v2_trust_ok() {{ return 0; }}
+issue_for_pr() {{ :; }}; claim_branch() {{ return 0; }}
+"""
+
+
+def _agent_run(box: Box, tmp_path: Path) -> tuple[subprocess.CompletedProcess, Path]:
+    """Run the shipped agent_run.sh (DRY_RUN, so it stops right after the charge)."""
+    actions = tmp_path / "actions"
+    actions.mkdir()
+    (actions / "agent_run.sh").write_text(AGENT_RUN.read_text(encoding="utf-8"), encoding="utf-8")
+    (actions / "common.sh").write_text(_STUB_COMMON, encoding="utf-8")
+    base = tmp_path / "base"
+    env = {
+        **box.env,
+        "TEST_BASE": str(base),
+        "TEST_REPO": str(box.repo),
+        "TEST_WORKROOT": str(box.work),
+        "DRY_RUN": "1",
+    }
+    r = subprocess.run(
+        ["bash", str(actions / "agent_run.sh"), "fix", "pr", "4242", BRANCH],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+    )
+    return r, base / "state" / "ledger" / "pr-4242.tsv"
+
+
+def test_agent_run_refuses_a_branch_held_elsewhere_with_ex_setup_before_charging(box: Box, tmp_path: Path) -> None:
+    """A retry on the next observation (EX_SETUP), never a budget charge or an exhausted park."""
+    tip = box.phase_k()
+    box.git("fetch", "-q", "origin", cwd=box.repo)
+    other = _hold_elsewhere(box, tmp_path, at=f"origin/{BRANCH}")
+    r, ledger = _agent_run(box, tmp_path)
+    assert r.returncode == 73, r.stdout + r.stderr
+    assert "before charging budget (EX_SETUP)" in r.stdout
+    assert str(other) in r.stdout + r.stderr
+    assert not ledger.exists(), "a refused dispatch must not consume a run"
+    assert box.holders() == [str(other)] and box.head(other) == tip
+
+
+def test_agent_run_charges_when_the_branch_is_free(box: Box, tmp_path: Path) -> None:
+    """Guard the guard: the same harness reaches the charge when nothing else holds the branch."""
+    box.phase_k()
+    box.git("fetch", "-q", "origin", cwd=box.repo)
+    r, ledger = _agent_run(box, tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert ledger.read_text(encoding="utf-8").split("\t")[:2] == ["fix", "1"]

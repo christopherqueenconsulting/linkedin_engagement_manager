@@ -124,7 +124,7 @@ merge moves the tip off the merged head, so it attaches. No data loss by constru
 |---|---|
 | `git fetch origin main` failed, or `ls-remote` of origin unreadable | attach |
 | the tip, the tracking ref and origin's ref (where each exists) disagree | attach (`refs-disagree`), no reset. `refs/heads/<branch>` never moves backwards: a local ref NOT an ancestor of the tracking ref (unpushed or diverged commits) is attached as-is (`attaching local <branch>`), and only a local ref equal to or behind it is fast-forwarded onto the tracking ref first |
-| the branch is checked out in ANOTHER worktree (`git worktree list --porcelain`), or that list is unreadable | attach (`checked-out-elsewhere` / `worktree-list-unreadable`), no reset: git 2.43's `checkout -B` does not refuse a branch held elsewhere, and would move that worktree's HEAD under it |
+| the branch is checked out in ANOTHER worktree (`git worktree list --porcelain`, the main checkout included), or that list is unreadable — on ANY path, spent or not | **refused, fail closed**: `add_worktree` returns 1 with ONE `WARNING refusing <branch>` naming the other worktree (`checked-out-elsewhere` / `worktree-list-unreadable`) and builds, moves, attaches and pushes nothing. Checked right after the stale-worktree prune, before every branch-moving command: git 2.43's `checkout -B` does not refuse a branch held elsewhere, so the origin path would move that worktree's HEAD (local behind tracking) or put a second worktree on the branch (local == tracking). The spent reset re-checks; a branch taken during the gh call is refused and the half-built tree torn down. `agent_run.sh` runs the same check BEFORE the budget charge and exits `EX_SETUP`: re-observed next pass, nothing charged, nothing parked (only that race window, after the charge, costs a run) |
 | PR list unreadable | attach |
 | an OPEN PR into ANY base | attach (a fix/review/rebase lane works that head). The PR list is therefore not `--base main` |
 | SPENT, origin has no `<branch>` (deleted on merge) | **fresh** from `origin/main`, push NOTHING (the lane's first push creates it); the stale tracking ref is dropped, as a prune would |
@@ -1173,7 +1173,8 @@ the profile is fixed; every dispatch under `off` logs `PERMISSION PROFILE OFF`.
 
 **A refusal never spends budget.** v2's `agent_run.sh` checks `permission_profile_ready` before
 `ledger_charge` and exits `EX_SETUP`, which the daemon treats as a refusal (retry on the next
-observation, nothing parked). v1's `tick.sh` wraps `ledger_charge` once
+observation, nothing parked). A branch held by another worktree is refused the same way, before
+the charge (`branch_held_elsewhere_refusal`, `lib/guards.sh`). v1's `tick.sh` wraps `ledger_charge` once
 (`guard_ledger_charge_with_profile`) so its six charge sites charge nothing for an agent MODE that
 would be refused. `run_lane` itself also returns 73 on the refusal.
 

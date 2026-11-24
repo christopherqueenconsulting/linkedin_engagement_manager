@@ -80,6 +80,16 @@ if command -v permission_profile_ready >/dev/null 2>&1 && ! permission_profile_r
   exit "$EX_SETUP"
 fi
 
+# A branch checked out in ANOTHER worktree, before the budget for the same reason. add_worktree
+# refuses it (git 2.43's `checkout -B` would move that worktree's HEAD), and that refusal sits
+# AFTER the charge below, so without this pre-check a held branch would spend a run per observation
+# and then park as exhausted. EX_SETUP = retried on the next observation, nothing charged or parked.
+if command -v branch_held_elsewhere_refusal >/dev/null 2>&1 \
+   && ! branch_held_elsewhere_refusal "$BRANCH" "$WORKROOT/$BRANCH"; then
+  log "refusing $MODE for $KIND #$NUMBER before charging budget (EX_SETUP): $BRANCH not free."
+  exit "$EX_SETUP"
+fi
+
 # Budget. The reset key must never be derivable from something an agent can produce: agents push
 # heads, so keying on the head SHA refills the meter on the agent's own commits (finding H1). `-`
 # means "spans the item's lifetime until an owner event resets it".

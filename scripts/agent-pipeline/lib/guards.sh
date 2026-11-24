@@ -594,10 +594,10 @@ branch_checked_out_elsewhere() {  # $1=branch $2=worktree -> other path on stdou
   return 1
 }
 
-restart_spent_branch() {  # $1=worktree (on $4) $2=branch $3=base $4=tip -> always 0, no stdout
+restart_spent_branch() {  # $1=worktree (on $4) $2=branch $3=base $4=tip -> no stdout; rc 1 = refused (held elsewhere)
   # $4 is the branch's tip as add_worktree found it: the local ref, else the remote-tracking ref.
   # Restarts the worktree's branch from $base when spent; otherwise leaves the attach untouched.
-  local wt="$1" branch="$2" base="$3" tip="$4" head tracking remote="" rc prs hit pr_no upstream new other
+  local wt="$1" branch="$2" base="$3" tip="$4" head tracking remote="" rc prs hit pr_no upstream new
   case "$base" in
     origin/?*) ;;
     *) log "add_worktree: attaching $branch (base $base is not an origin ref)." >&2; return 0 ;;
@@ -637,16 +637,10 @@ restart_spent_branch() {  # $1=worktree (on $4) $2=branch $3=base $4=tip -> alwa
     return 0
   }
   pr_no="${hit%% *}"
-  # git 2.43 (prod) lets `checkout -B` reset a branch another worktree has checked out (2.44 began
-  # refusing), which would rewrite that worktree's HEAD under it. Never reset a branch held elsewhere.
-  rc=0
-  other="$(branch_checked_out_elsewhere "$branch" "$wt")" || rc=$?
-  case "$rc" in
-    0) log "add_worktree: attaching $branch (checked-out-elsewhere: $other; spent, merged PR #$pr_no)." >&2
-       return 0 ;;
-    1) ;;
-    *) log "add_worktree: attaching $branch (worktree-list-unreadable)." >&2; return 0 ;;
-  esac
+  # add_worktree refused a branch held elsewhere before building $wt; re-checked here because the
+  # reset below is the one-way step, and another worktree may have taken the branch since. Refused
+  # (rc 1), never reset: add_worktree then tears $wt down and fails closed.
+  branch_held_elsewhere_refusal "$branch" "$wt" || return 1
   upstream="$(git -C "$wt" rev-parse --abbrev-ref --symbolic-full-name "$branch@{upstream}" 2>/dev/null)" \
     || upstream=""
   # --no-track: a branch restarted from origin/main must never take origin/main as its upstream.
@@ -687,7 +681,33 @@ restart_spent_branch() {  # $1=worktree (on $4) $2=branch $3=base $4=tip -> alwa
   return 0
 }
 
-add_worktree() {  # $1=branch  $2=base(ref)  -> path on stdout
+branch_held_elsewhere_refusal() {  # $1=branch $2=worktree -> 0 = free; 1 = refused (one WARNING logged)
+  # git 2.43 (prod) lets `checkout -B` move a branch another worktree has checked out (2.44 began
+  # refusing): that worktree's HEAD moves under it, and two worktrees end up on one branch. So a
+  # branch held by ANY other worktree (the main checkout included), or a worktree list we cannot
+  # read, is refused before any command that could move or attach it. Fail closed: the caller
+  # returns non-zero, which agent_run.sh reports as EX_SETUP (retried on the next observation).
+  local other rc=0
+  other="$(branch_checked_out_elsewhere "$1" "$2")" || rc=$?
+  case "$rc" in
+    0) log "add_worktree: WARNING refusing $1: it is checked out in another worktree ($other);" \
+           "nothing moved, attached or pushed (checked-out-elsewhere)." >&2
+       return 1 ;;
+    1) return 0 ;;
+    *) log "add_worktree: WARNING refusing $1: git worktree list is unreadable, so the branch cannot" \
+           "be proven free of another worktree; nothing moved (worktree-list-unreadable)." >&2
+       return 1 ;;
+  esac
+}
+
+drop_refused_worktree() {  # $1=worktree -> always 0. Undo the tree a refused add_worktree built.
+  git -C "$REPO" worktree remove --force "$1" >/dev/null 2>&1 || true
+  rm -rf "$1"
+  git -C "$REPO" worktree prune >/dev/null 2>&1
+  return 0
+}
+
+add_worktree() {  # $1=branch  $2=base(ref)  -> path on stdout; rc 1 = not built (refused or failed)
   local branch="$1" base="$2" wt="$WORKROOT/$1" tip
   # The branch's tip, read BEFORE anything below moves a ref: the local ref, else the
   # remote-tracking one. restart_spent_branch judges exactly this commit.
@@ -697,6 +717,9 @@ add_worktree() {  # $1=branch  $2=base(ref)  -> path on stdout
   git -C "$REPO" worktree remove --force "$wt" >/dev/null 2>&1 || true
   rm -rf "$wt"
   git -C "$REPO" worktree prune >/dev/null 2>&1
+  # Every path below can move refs/heads/$branch (origin path `checkout -B`, the spent reset) or
+  # attach it, so a branch another worktree holds is refused HERE, before any of them runs.
+  branch_held_elsewhere_refusal "$branch" "$wt" || return 1
   if git -C "$REPO" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
     if git -C "$REPO" show-ref --verify --quiet "refs/heads/$branch" \
        && ! git -C "$REPO" merge-base --is-ancestor "refs/heads/$branch" "refs/remotes/origin/$branch" 2>/dev/null; then
@@ -711,7 +734,10 @@ add_worktree() {  # $1=branch  $2=base(ref)  -> path on stdout
     fi
     # A phased issue's merged branch is SPENT: restart it from $base rather than build the next
     # phase on commits main already carries. Never discards work; see restart_spent_branch.
-    [ -d "$wt" ] && restart_spent_branch "$wt" "$branch" "$base" "$tip"
+    if [ -d "$wt" ] && ! restart_spent_branch "$wt" "$branch" "$base" "$tip"; then
+      drop_refused_worktree "$wt"
+      return 1
+    fi
   else
     # Origin ref missing, so there are three cases and only one of them wants `-b`.
     if git -C "$REPO" show-ref --verify --quiet "refs/heads/$branch"; then
@@ -728,7 +754,10 @@ add_worktree() {  # $1=branch  $2=base(ref)  -> path on stdout
         git -C "$REPO" worktree add "$wt" "$branch" >/dev/null 2>&1
         # ...unless those commits ARE a merged phase whose origin branch was deleted on merge: the
         # usual shape of the incident. The same single rule decides; anything else stays attached.
-        [ -d "$wt" ] && restart_spent_branch "$wt" "$branch" "$base" "$tip"
+        if [ -d "$wt" ] && ! restart_spent_branch "$wt" "$branch" "$base" "$tip"; then
+          drop_refused_worktree "$wt"
+          return 1
+        fi
       fi
     fi
     # Only create the branch if the reattach above didn't already produce the worktree.
