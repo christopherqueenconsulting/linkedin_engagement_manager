@@ -295,6 +295,12 @@ app.conf.update(
             # is actually engaging. Files a few targets a day; sending stays daily-capped + approved.
             'schedule': crontab(hour='4', minute='0')
         },
+        'scrape-held-icp-candidates': {
+            'task': 'cqc_lem.app.run_scheduler.auto_scrape_held_icp_candidates',
+            # Weekday 11:00 UTC, a fixed daytime hour until #2628's session windows land; each task
+            # re-checks the user's own local 09:00-17:00 weekday window and a per-day cap.
+            'schedule': crontab(hour='11', minute='0', day_of_week='mon-fri')
+        },
         'scan-outreach-funnel-targets': {
             'task': 'cqc_lem.app.run_scheduler.auto_scan_outreach_funnel_targets',
             # Daily at 4:20 AM — after the 4:00 connection-candidate scan, so anyone already filed

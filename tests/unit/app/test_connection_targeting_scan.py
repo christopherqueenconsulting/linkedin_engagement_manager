@@ -27,7 +27,7 @@ def _prefs(**over):
 
 
 def _scan(prefs=None, engagers=None, requested=None, open_reqs=0, sent_today=0, facts=None,
-          insert_id=7, max_new=None, adjacent=None, user_id=2):
+          insert_id=7, max_new=None, adjacent=None, user_id=2, lead_activity=None):
     """Run the scan with every I/O boundary mocked; returns (result, insert_mock).
 
     Defaults to user 2: user 1 is the brand account, whose targets are always drafts (#2376).
@@ -40,16 +40,20 @@ def _scan(prefs=None, engagers=None, requested=None, open_reqs=0, sent_today=0, 
         "get_engager_candidates": _ENGAGERS if engagers is None else engagers,
         "get_requested_person_keys": requested or set(),
         "get_profile_facts": facts or {},
+        "get_lead_activity": lead_activity or [],
     }
     with patch.multiple(_OUT, **{k: MagicMock(return_value=v) for k, v in patches.items()}), \
          patch(f"{_DM}.get_ai_message_refinement", return_value="Refined note"), \
+         patch(f"{_OUT}.enqueue_held") as enqueue, \
          patch(f"{_OUT}.insert_connection_request", return_value=insert_id) as insert, \
          patch(f"{_OUT}._adjacent_author_signals", return_value=adjacent or []), \
          patch(f"{_OUT}.get_current_profile") as profile, \
          patch(f"{_OUT}.quit_gracefully"):
         profile.return_value = (MagicMock(), MagicMock(), "me@x.com",
                                MagicMock(full_name="Me Myself"))
-        return ra.scan_connection_candidates.run(user_id=user_id, max_new=max_new), insert
+        out = ra.scan_connection_candidates.run(user_id=user_id, max_new=max_new)
+        insert.enqueue = enqueue
+        return out, insert
 
 
 class TestScanGating:
@@ -431,6 +435,25 @@ class TestIcpRubricFlag:
                             facts={})
         insert.assert_not_called()
         assert "No new connection candidates" in out
+
+    def test_held_candidate_is_queued_for_scrape(self):
+        _out, insert = _scan(prefs=_prefs(icp_builder_enabled=True, icp_definition=_ICP_DEF),
+                             facts={})
+        insert.enqueue.assert_called_once_with(2, [_JANE])
+
+    def test_recently_touched_candidate_is_neither_filed_nor_queued(self):
+        facts = {_JANE: {"job_title": "Head of Operations", "company_name": "Initech"}}
+        activity = [{"kind": "dm", "person_profile_url": _JANE}]
+        out, insert = _scan(prefs=_prefs(icp_builder_enabled=True, icp_definition=_ICP_DEF,
+                                         min_connection_icp_score=0),
+                            facts=facts, lead_activity=activity)
+        insert.assert_not_called()
+        insert.enqueue.assert_not_called()
+        assert "No new connection candidates" in out
+
+    def test_flag_off_never_queues(self):
+        _out, insert = _scan(prefs=_prefs(icp_builder_enabled=False, icp_definition=_ICP_DEF))
+        insert.enqueue.assert_not_called()
 
     def test_flag_on_without_definition_keeps_legacy_scoring(self):
         _out, insert = _scan(prefs=_prefs(icp_builder_enabled=True, icp_definition=None))
