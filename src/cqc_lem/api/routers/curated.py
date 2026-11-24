@@ -188,7 +188,7 @@ def _queue_only_reject(source: dict, post_id: Optional[int], user_id: int
     """
     _main._raise_unless_updated(
         reject_pending_curated_source(source["id"], post_id, user_id, "curated source rejected"),
-        "Could not reject the curated source")
+        "Could not reject the curated source", user_id=user_id, action_type="curated_source")
     return ResponseModel(status_code=200, detail={"source_id": source["id"], "post_id": post_id,
                                                   "status": "rejected"})
 

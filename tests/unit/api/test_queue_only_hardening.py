@@ -606,9 +606,11 @@ class TestMachineSeatsNameOnlyLinkedInProfiles:
              patch(f"{_M}.insert_connection_request", return_value=1) as conn, \
              patch(f"{_M}.insert_scheduled_dm", return_value=2) as dm, \
              patch(f"{_OUTREACH}.get_outreach_target_by_url", return_value=None) as dup, \
+             patch(f"{_OUTREACH}.get_outreach_target_by_profile", return_value=None) as by_profile, \
              patch(f"{_OUTREACH}.insert_outreach_target", return_value=3) as target:
             resp = api_client.post(path, json=body, headers=headers)
-        return resp, {"conn": conn, "dm": dm, "target": target, "dup": dup}
+        return resp, {"conn": conn, "dm": dm, "target": target, "dup": dup,
+                      "by_profile": by_profile}
 
     @staticmethod
     def _stored(path: str, mocks: dict) -> str:
@@ -640,7 +642,35 @@ class TestMachineSeatsNameOnlyLinkedInProfiles:
         resp, mocks = self._create(api_client, "agent", "/api/outreach/target",
                                    "https://linkedin.com/in/jane-doe?trk=x")
         assert resp.status_code == 200, resp.text
-        assert mocks["dup"].call_args.args == (_UID, "https://www.linkedin.com/in/jane-doe/")
+        assert mocks["by_profile"].call_args.args == (_UID, "https://www.linkedin.com/in/jane-doe/")
+        mocks["dup"].assert_not_called()
+
+    def test_a_legacy_spelling_row_is_a_duplicate_not_a_second_row(self, api_client: Any,
+                                                                  fake_cursor: Any) -> None:
+        """An old row stored as the scraper saw it still blocks a normalised create (409).
+
+        Drives the REAL `get_outreach_target_by_profile` over a fake cursor holding that row.
+        """
+        conn, cur = fake_cursor(fetch_all=[{"id": 77, "target_profile_url":
+                                            "https://linkedin.com/in/jane-doe"}])
+        with _session("agent"), \
+             patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
+             patch(f"{_OUTREACH}.insert_outreach_target", return_value=3) as insert:
+            resp = api_client.post("/api/outreach/target", json={
+                "session_token": _TOKEN,
+                "target_profile_url": "https://www.linkedin.com/in/Jane-Doe?originalSubdomain=uk"})
+        assert resp.status_code == 409, resp.text
+        insert.assert_not_called()
+        sql, params = cur.execute.call_args.args
+        assert "LOWER(target_profile_url) LIKE %s" in sql
+        assert params[0] == _UID and "%/in/jane-doe%" in params
+
+    def test_a_human_create_keeps_the_exact_match(self, api_client: Any) -> None:
+        resp, mocks = self._create(api_client, "full", "/api/outreach/target",
+                                   "https://linkedin.com/in/jane-doe", headers=_SPA)
+        assert resp.status_code == 200, resp.text
+        assert mocks["dup"].call_args.args == (_UID, "https://linkedin.com/in/jane-doe")
+        mocks["by_profile"].assert_not_called()
 
     @pytest.mark.parametrize("path", _CREATE_PATHS)
     def test_a_human_is_neither_held_to_it_nor_rewritten(self, api_client: Any, path: str) -> None:
@@ -680,27 +710,33 @@ class TestThePreferencesReadNeverMintsTheInboundAddressForAMachine:
                    return_value={"reply_check_mode": "event"}), \
              patch(f"{_USER}.has_engagement_preferences", return_value=True), \
              patch(f"{_USER}.get_or_create_reply_inbound_token", return_value="tok9") as mint, \
-             patch(f"{_M}.get_gmail_forward_confirmation", return_value=None), \
+             patch(f"{_M}.get_gmail_forward_confirmation",
+                   return_value={"auto_confirmed": False, "code": "123456"}) as gmail, \
              patch(f"{_USER}.max_catchup_touches_allowed", return_value=3), \
              patch("cqc_lem.app.engagement.feed.get_feed_funnel", return_value=None), \
              patch.dict("os.environ", {"LINKEDIN_PARSE_DOMAIN": "parse.example.com"}):
             resp = api_client.get("/api/user/engagement-preferences",
                                   params={"session_token": _TOKEN}, headers=headers)
-        return resp, mint
+        return resp, mint, gmail
 
     @pytest.mark.parametrize("scope", ["agent", "operator", "observer"])
     def test_a_machine_seat_gets_no_address_and_none_is_created(self, api_client: Any,
                                                                 scope: str) -> None:
-        resp, mint = self._get(api_client, scope)
+        resp, mint, gmail = self._get(api_client, scope)
         assert resp.status_code == 200, resp.text
         assert "reply_inbound_address" not in resp.json()["detail"]
+        assert "gmail_forward_confirmation" not in resp.json()["detail"]
         mint.assert_not_called()
+        gmail.assert_not_called()
 
     def test_a_human_still_gets_it(self, api_client: Any) -> None:
-        resp, mint = self._get(api_client, "full", headers=_SPA)
+        resp, mint, gmail = self._get(api_client, "full", headers=_SPA)
         assert resp.status_code == 200, resp.text
         assert resp.json()["detail"]["reply_inbound_address"] == "reply+tok9@parse.example.com"
+        assert resp.json()["detail"]["gmail_forward_confirmation"] == {"auto_confirmed": False,
+                                                                       "code": "123456"}
         mint.assert_called_once_with(_UID)
+        gmail.assert_called_once_with(_UID)
 
 
 class TestTheGuardsStayInTheHandlers:
@@ -713,9 +749,9 @@ class TestTheGuardsStayInTheHandlers:
 
     @pytest.mark.parametrize("handler,guards", [
         ("schedule_post", ("_refuse_agent_approved_status(post.status)", "_edits_pending_only()",
-                           "_refuse_machine_media(post)")),
+                           "_refuse_machine_media(post, user_id=user_id)")),
         ("update_post", ("_refuse_agent_approved_status(post.status)", "_edits_pending_only()",
-                         "_refuse_machine_media(post)", '_pending_edit_or_raise("post"')),
+                         "_refuse_machine_media(post, user_id=user_id)", '_pending_edit_or_raise("post"')),
         ("bulk_update_posts_endpoint", ("_agent_scoped()",)),
         ("update_scheduled_dm_endpoint", ('_pending_edit_or_raise("scheduled_dm"', _URL)),
         ("delete_scheduled_dm_endpoint", ('_pending_edit_or_raise("scheduled_dm"',)),
@@ -744,7 +780,8 @@ class TestTheGuardsStayInTheHandlers:
         assert '_pending_edit_or_raise("outreach_target"' in inspect.getsource(
             outreach.delete_outreach_target_endpoint)
         create = inspect.getsource(outreach.create_outreach_target_endpoint)
-        assert create.index(self._URL) < create.index("get_outreach_target_by_url(")
+        assert create.index(self._URL) < create.index("lookup(user_id")
+        assert "get_outreach_target_by_profile if _main._agent_scoped()" in create
         assert "_edits_pending_only()" in inspect.getsource(curated.act_on_curated_source)
         assert "reject_pending_curated_source(" in inspect.getsource(curated._queue_only_reject)
 
@@ -765,14 +802,16 @@ class TestTheGuardsStayInTheHandlers:
         main = _kernel()
         reset = main._request_session_scope.set(main.SESSION_SCOPE_AGENT)
         try:
-            assert main._linkedin_profile_url_for_seat(None) is None
+            assert main._linkedin_profile_url_for_seat(None, user_id=_UID,
+                                                       action_type="x") is None
         finally:
             main._request_session_scope.reset(reset)
 
     def test_a_plain_text_body_passes_the_media_check(self) -> None:
         main = _kernel()
         main._refuse_machine_media(main.PostRequest(content="c",
-                                                    scheduled_datetime=datetime(2099, 1, 1)))
+                                                    scheduled_datetime=datetime(2099, 1, 1)),
+                                   user_id=_UID)
 
     def test_every_media_field_is_named_in_one_refusal(self) -> None:
         from fastapi import HTTPException
@@ -782,7 +821,7 @@ class TestTheGuardsStayInTheHandlers:
                                 post_type="video", video_url="v", use_avatar=False,
                                 video_quality="premium", image_url="i", carousel_slides=["s"])
         with pytest.raises(HTTPException) as exc:
-            main._refuse_machine_media(post)
+            main._refuse_machine_media(post, user_id=_UID)
         assert exc.value.status_code == 422
         assert exc.value.detail["fields"] == ["post_type", "video_url", "carousel_slides",
                                               "image_url", "use_avatar", "video_quality"]
@@ -815,3 +854,177 @@ class TestEveryAgentWriteIsClassified:
                         main._scope_allows(main.SESSION_SCOPE_AGENT, path, method):
                     reached.add((method, path))
         assert reached == self.PENDING_ONLY | self.CREATES | self.EXCEPTIONS
+
+
+@pytest.fixture
+def lem_log(caplog: Any) -> Iterator[Any]:
+    """caplog, wired to the `cqc-lem` logger, which does not propagate to the root handler."""
+    import logging
+
+    lem = logging.getLogger("cqc-lem")
+    previous = lem.level
+    caplog.handler.setLevel(logging.INFO)
+    lem.addHandler(caplog.handler)
+    lem.setLevel(logging.INFO)
+    try:
+        yield caplog
+    finally:
+        lem.removeHandler(caplog.handler)
+        lem.setLevel(previous)
+
+
+class TestEveryRefusalLeavesOneInfoLine:
+    """`Queue-only seat refused: <code> | user_id=… action_type=…`, and no URL or email in it."""
+
+    _URLISH = ("http", "linkedin.com", "@", "evil.example")
+
+    def _refusals(self, caplog: Any, code: str) -> list:
+        return [r for r in caplog.records if r.getMessage() == f"Queue-only seat refused: {code}"]
+
+    def _assert_clean(self, record: Any, action_type: str) -> None:
+        import logging
+
+        assert record.levelno == logging.INFO
+        assert record.user_id == _UID
+        assert record.action_type == action_type
+        text = [record.getMessage()] + [v for v in vars(record).values() if isinstance(v, str)]
+        leaked = [t for t in text for needle in self._URLISH if needle in t]
+        assert leaked == [], f"a refusal line carried a URL or an email: {leaked}"
+
+    def test_edit_requires_pending(self, api_client: Any, lem_log: Any) -> None:
+        with _session("agent"), _pending("NOT_PENDING"), \
+             patch(f"{_M}.get_connection_request_user_id", return_value=_UID):
+            resp = api_client.put("/api/connection_request", json={
+                "session_token": _TOKEN, "request_id": 5, "message": "hi",
+                "recipient_profile_url": _LI, "recipient_email": "jane@example.com"})
+        assert resp.status_code == 409
+        (record,) = self._refusals(lem_log, "edit_requires_pending")
+        self._assert_clean(record, "connection_request")
+
+    def test_machine_seat_text_only(self, api_client: Any, lem_log: Any) -> None:
+        with _session("agent"), _widened(), \
+             patch(f"{_M}.get_user_email", return_value="jane@example.test"), \
+             patch(f"{_M}.insert_post_returning_id", return_value=1) as insert:
+            resp = api_client.post("/api/schedule_post/", json={
+                "session_token": _TOKEN, "content": "c", "scheduled_datetime": "2099-01-01T09:00:00Z",
+                "video_url": "https://evil.example/x.mp4"})
+        assert resp.status_code == 422
+        insert.assert_not_called()
+        (record,) = self._refusals(lem_log, "machine_seat_text_only")
+        self._assert_clean(record, "post")
+
+    def test_linkedin_profile_url_required(self, api_client: Any, lem_log: Any) -> None:
+        with _session("agent"), \
+             patch(f"{_M}.insert_connection_request", return_value=1) as insert:
+            resp = api_client.post("/api/connection_request", json={
+                "session_token": _TOKEN, "recipient_profile_url": "https://evil.example/jane@example.com",
+                "recipient_email": "jane@example.com"})
+        assert resp.status_code == 422
+        insert.assert_not_called()
+        (record,) = self._refusals(lem_log, "linkedin_profile_url_required")
+        self._assert_clean(record, "connection_request")
+
+    def test_agent_may_not_bulk_update(self, api_client: Any, lem_log: Any) -> None:
+        with _session("agent"), _widened():
+            resp = api_client.post("/api/posts/bulk_update/", json={
+                "session_token": _TOKEN, "post_ids": [1], "status": "rejected"})
+        assert resp.status_code == 403
+        (record,) = self._refusals(lem_log, "agent_may_not_bulk_update")
+        self._assert_clean(record, "post")
+
+    def test_a_human_request_logs_no_refusal(self, api_client: Any, lem_log: Any) -> None:
+        with _session("full"), \
+             patch(f"{_M}.get_engagement_preferences", return_value={}), \
+             patch(f"{_M}.insert_connection_request", return_value=1):
+            resp = api_client.post("/api/connection_request", headers=_SPA, json={
+                "session_token": _TOKEN, "recipient_profile_url": "https://example.com/in/x"})
+        assert resp.status_code == 200, resp.text
+        assert not [r for r in lem_log.records
+                    if r.getMessage().startswith("Queue-only seat refused")]
+
+    def test_the_documented_grep_matches_the_real_file_line(self, api_client: Any,
+                                                            lem_log: Any) -> None:
+        """`docs/identity-and-sessions.md` "Healthy or broken" greps this line; hold it to that."""
+        import re
+
+        from cqc_lem.utilities.logger import _LevelFormatter
+
+        with _session("agent"), _widened():
+            api_client.post("/api/posts/bulk_update/", json={
+                "session_token": _TOKEN, "post_ids": [1], "status": "rejected"})
+        (record,) = self._refusals(lem_log, "agent_may_not_bulk_update")
+        line = _LevelFormatter().format(record)
+        assert "Queue-only seat refused: " in line
+        # The doc's `grep -o` pattern, in basic-regex terms (`|` is a literal there).
+        found = re.search(r"Queue-only seat refused: [a-z_]* \| user_id=[0-9]*", line)
+        assert found and found.group(0) == f"Queue-only seat refused: agent_may_not_bulk_update | user_id={_UID}"
+        assert "action_type=post" in line
+
+
+class TestTheDraftSlotCanNeverBeBlanked:
+    """A queue-only `update_post` never writes NULL into `content` or `scheduled_time`."""
+
+    def test_omitting_the_slot_is_a_422_before_any_write(self, api_client: Any) -> None:
+        with _session("agent"), _widened(), _pending() as pending, \
+             patch(f"{_M}.user_owns_posts", return_value=True):
+            resp = api_client.post("/api/update_post/?post_id=9", json={
+                "session_token": _TOKEN, "content": "c"})
+        assert resp.status_code == 422
+        pending.assert_not_called()
+
+    @staticmethod
+    def _call_handler(**body: Any) -> Any:
+        main = _kernel()
+        reset = main._request_session_scope.set(main.SESSION_SCOPE_AGENT)
+        try:
+            with patch.object(main, "require_session_user_id", return_value=_UID), \
+                 patch.object(main, "_require_own_posts"), \
+                 _pending() as pending:
+                # model_construct skips validation: the defensive filter must hold even when a
+                # None slips past the model.
+                outcome = None
+                try:
+                    main.update_post(9, main.PostRequest.model_construct(session_token="t", **body))
+                except Exception as exc:  # noqa: BLE001 - the HTTPException is the outcome
+                    outcome = exc
+        finally:
+            main._request_session_scope.reset(reset)
+        return pending, outcome
+
+    def test_a_none_slot_is_dropped_not_written_as_null(self) -> None:
+        pending, outcome = self._call_handler(content="revised", scheduled_datetime=None)
+        assert outcome is None
+        assert pending.call_args.args[3] == {"content": "revised"}
+
+    def test_nothing_left_to_write_is_a_422(self) -> None:
+        pending, outcome = self._call_handler(content=None, scheduled_datetime=None)
+        assert getattr(outcome, "status_code", None) == 422
+        pending.assert_not_called()
+
+
+class TestTheCarveOutEmailIsValidated:
+    """The backfill#44 attach writes a third party's address, so it must look like one."""
+
+    @pytest.mark.parametrize("email", ["not-an-email", "jane@", "@example.com", "jane example@x.com",
+                                       "a" * 250 + "@example.com"])
+    def test_a_malformed_or_overlong_address_is_a_422_and_nothing_is_written(
+            self, api_client: Any, email: str) -> None:
+        with _session("agent"), \
+             patch(f"{_M}.get_connection_request_user_id", return_value=_UID), \
+             patch(f"{_M}.attach_email_to_connection_request") as attach:
+            resp = api_client.put("/api/connection_request", json={
+                "session_token": _TOKEN, "request_id": 5, "recipient_email": email})
+        assert resp.status_code == 422, resp.text
+        attach.assert_not_called()
+
+    def test_surrounding_whitespace_is_trimmed_before_it_is_stored(self, api_client: Any) -> None:
+        from cqc_lem.utilities.db import PendingEdit
+
+        with _session("agent"), \
+             patch(f"{_M}.get_connection_request_user_id", return_value=_UID), \
+             patch(f"{_M}.attach_email_to_connection_request",
+                   return_value=PendingEdit.UPDATED) as attach:
+            resp = api_client.put("/api/connection_request", json={
+                "session_token": _TOKEN, "request_id": 5, "recipient_email": "  jane@example.com "})
+        assert resp.status_code == 200, resp.text
+        attach.assert_called_once_with(5, _UID, "jane@example.com")
