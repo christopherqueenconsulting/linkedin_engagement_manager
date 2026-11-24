@@ -1177,6 +1177,16 @@ What the profile allows each mode, and the calls that are narrower than they loo
   execution; the exact allow list is the control, and the `--ex*` / `-x*` / `-i*` / `--interactive*`
   denies are belt-and-braces against a broader allow merged from another settings source.
   `run_lane.sh` sets `GIT_EDITOR=true` on the launch so `--continue` never waits on an editor.
+- **`git checkout`** — only `--ours -- <path>`, one exact rule per GENERATED path a rebase conflicts
+  in: `src/cqc_lem/ui/openapi.json`, `src/cqc_lem/ui/src/api/schema.ts`,
+  `src/cqc_lem/ui/src/api/schema.stamp.json`, `tests/benchmarks/prompts/prompts.lock.json`,
+  `tests/benchmarks/prompts/captured/` and `docs/prompt-evals/inventory.md` (MODE=rebase). A
+  hand-merged generated file exhausted the rebase lane's budget three times on 2026-11-24 (PR #2653
+  twice, #2678), so the runbook takes `main`'s side (`--ours` during a rebase) and regenerates with
+  the exact regen forms below once the rebase finishes. `main`'s side, not the PR's: `prompt_capture.py
+  --write` bumps relative to the lock it starts from, and the snapshot test compares against `main`'s.
+  No `--theirs`, no other path, no `.`, no branch switch, no second path —
+  `test_git_checkout_is_allowed_only_for_the_generated_paths` pins it.
 - **Standalone python / npm** — exact forms only, for the committed OpenAPI snapshot (#2648):
   `poetry run python scripts/dump_openapi.py` (± `--check`) and
   `npm --prefix src/cqc_lem/ui run gen:api-types` / `… run check:api-types` (openapi-typescript is
