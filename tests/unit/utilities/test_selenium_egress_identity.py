@@ -152,6 +152,8 @@ class TestNeedsImagesExemptionIsScoped:
         ("app/engagement/feed.py", "auto_comment_in_groups"),
         ("app/engagement/feed.py", "auto_post_to_group"),
         ("app/engagement/feed.py", "automate_commenting"),
+        # #2647 — roster crawl reads post permalinks for candidate harvesting.
+        ("app/engagement/feed.py", "crawl_comment_candidates"),
         # #2020 — post permalink (`/feed/update/*`) readers.
         ("app/engagement/posting.py", "auto_scrape_post_stats"),
         ("app/engagement/posting.py", "_swap_post_stats_session"),  # #2112 — the same sweep's reopen.

@@ -46,6 +46,7 @@ _SKIP_LANES = [
     (_FEED, "auto_comment_in_groups", {"user_id": 1}, {}),
     (_FEED, "auto_post_to_group", {"user_id": 1, "group_id": "g1"}, {}),
     (_FEED, "automate_commenting", {"user_id": 1}, {}),
+    (_FEED, "crawl_comment_candidates", {"user_id": 1}, {}),
     (_INV, "clean_stale_invites", {"user_id": 1}, {}),
     (_INV, "invite_to_connect", {"user_id": 1, "profile_url": "https://www.linkedin.com/in/x/"}, {}),
     (_INV, "send_roster_connect_invite",

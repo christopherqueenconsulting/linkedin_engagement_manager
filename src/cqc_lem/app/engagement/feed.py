@@ -92,6 +92,7 @@ from cqc_lem.utilities.comment_candidates import (
     SOURCE_CRAWL as POOL_SOURCE_CRAWL,
     SOURCE_FEED as POOL_SOURCE_FEED,
     SOURCE_ROSTER as POOL_SOURCE_ROSTER,
+    count_comment_candidates,
     pool_enabled,
     record_comment_candidate,
     report_candidate_pool,
@@ -262,6 +263,7 @@ from cqc_lem.utilities.observability import (
     FEATURE_COMMENT,
     FEATURE_CONTENT,
     llm_attribution,
+    track_comment_candidates,
     track_feed_scan,
     track_selector_evidence,
 )
@@ -3119,19 +3121,25 @@ def crawl_comment_candidates(self, user_id: int):
             log_error("Error starting the candidate crawl", exc=e, user_id=user_id,
                       task_name="crawl_comment_candidates")
         release_run_lock(lock_name, lock_token)
-        return f"Failed to start candidate crawl: {e}"
+        return lane_result(TaskOutcome.FAILED, f"Failed to start candidate crawl: {e}", cause=e)
     try:
         stats = crawl_roster_candidates(driver, user_id, get_engagement_preferences(user_id),
                                         budget, deadline_ts=time.time() + _CRAWL_MAX_SECONDS)
-        report_candidate_pool(user_id, POOL_SOURCE_CRAWL, stats["written"])
-        return (f"Candidate crawl: wrote {stats['written']} from {stats['targets_visited']} "
-                f"target(s), examined {stats['examined']}")
+        # Emitted on EVERY run, zero included: a crawl that keeps writing nothing is the tell
+        # that a card locator drifted, and report_candidate_pool stays silent on zero.
+        track_comment_candidates(user_id, POOL_SOURCE_CRAWL, stats["written"],
+                                 count_comment_candidates(user_id) or 0)
+        return lane_result(
+            TaskOutcome.LANDED if stats["written"] else TaskOutcome.NO_OP,
+            f"Candidate crawl: wrote {stats['written']} from {stats['targets_visited']} "
+            f"target(s), examined {stats['examined']}")
     except Exception as e:
         if note_tab_crash(e, task_name="crawl_comment_candidates", user_id=user_id):
-            return "Candidate crawl stopped — the browser tab crashed"
+            return lane_result(TaskOutcome.NO_OP, "Candidate crawl stopped — the browser tab crashed")
         log_error("Error while crawling comment candidates", exc=e, user_id=user_id,
                   task_name="crawl_comment_candidates")
-        return f"Error while crawling comment candidates: {e}"
+        return lane_result(TaskOutcome.FAILED, f"Error while crawling comment candidates: {e}",
+                           cause=e)
     finally:
         quit_gracefully(driver)
         release_run_lock(lock_name, lock_token)

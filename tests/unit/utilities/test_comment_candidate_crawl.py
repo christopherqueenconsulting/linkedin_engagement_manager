@@ -156,11 +156,12 @@ def test_task_runs_walk_reports_and_closes():
             patch.object(feed, "get_engagement_preferences", return_value={}), \
             patch.object(feed, "crawl_roster_candidates",
                          return_value={"written": 7, "targets_visited": 3, "examined": 9}), \
-            patch.object(feed, "report_candidate_pool") as report, \
+            patch.object(feed, "count_comment_candidates", return_value=12), \
+            patch.object(feed, "track_comment_candidates") as report, \
             patch.object(feed, "quit_gracefully") as quit_:
         out = feed.crawl_comment_candidates.run(1)
     assert "wrote 7" in out
-    report.assert_called_once_with(1, "crawl", 7)
+    report.assert_called_once_with(1, "crawl", 7, 12)
     quit_.assert_called_once_with(driver)
     release.assert_called_once()
 
