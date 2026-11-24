@@ -14,7 +14,7 @@ from typing import Any, Optional
 import httpx2
 import pytest
 
-from cqc_lem.api.mcp.tools import tools_for_scope
+from cqc_lem.api.mcp.tools import TOOLS_BY_NAME, tools_for_scope
 
 pytestmark = pytest.mark.unit
 
@@ -50,6 +50,8 @@ def _server(scope: str = "mcp", tools: Optional[list[str]] = None, failing: str 
             result = {"structuredContent": {"scope": scope, "account_name": "jane"}}
         elif params.get("name") == "lem_list_posts":
             result = {"structuredContent": {"posts": [{"post_id": 4}]}}
+        elif params.get("name") in _WRITE_ANSWERS:
+            result = _WRITE_ANSWERS[params["name"]](params.get("arguments") or {}, names, seen)
         else:
             result = {"structuredContent": {}}
         return httpx2.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
@@ -57,9 +59,38 @@ def _server(scope: str = "mcp", tools: Optional[list[str]] = None, failing: str 
     return httpx2.Client(transport=httpx2.MockTransport(handle)), seen
 
 
-def _run(client: httpx2.Client, *extra: str) -> tuple[int, str]:
+def _error(code: str) -> dict:
+    return {"isError": True, "structuredContent": {"error": {"code": code}}}
+
+
+def _queue_dm(args: dict, _names: list, seen: list) -> dict:
+    first = next((b["params"]["arguments"] for b in seen
+                  if b.get("params", {}).get("name") == "lem_queue_dm"), None)
+    if first is not None and first is not args and first.get("client_request_id") == args.get(
+            "client_request_id"):
+        if first != args:
+            return _error("client_request_id_reused")
+        return {"structuredContent": {"id": 5, "status": "pending", "source": "mcp",
+                                      "replayed": True}}
+    return {"structuredContent": {"id": 5, "status": "pending", "source": "mcp"}}
+
+
+def _approve(_args: dict, names: list, _seen: list) -> dict:
+    if "lem_approve_item" in names:
+        return {"structuredContent": {"status": "approved"}}
+    return _error("agent_may_not_approve")
+
+
+_WRITE_ANSWERS = {
+    "lem_queue_dm": _queue_dm,
+    "lem_edit_lead_signal_draft": lambda a, n, s: _error("invalid_arguments"),
+    "lem_approve_item": _approve,
+}
+
+
+def _run(client: httpx2.Client, *extra: str, mode: str = "--read-only") -> tuple[int, str]:
     out = io.StringIO()
-    code = smoke.main(["--read-only", "--base", "https://lem.example", "--token", _TOKEN, *extra],
+    code = smoke.main([mode, "--base", "https://lem.example", "--token", _TOKEN, *extra],
                       out=out, client=client)
     return code, out.getvalue()
 
@@ -70,7 +101,7 @@ def test_a_healthy_server_passes_and_every_read_tool_is_called(scope: str) -> No
     code, text = _run(client)
     assert code == 0, text
     called = [b["params"]["name"] for b in seen if b["method"] == "tools/call"]
-    assert set(called) == {s.name for s in tools_for_scope(scope)}
+    assert set(called) == {s.name for s in tools_for_scope(scope) if not s.write}
     assert {"name": "lem_get_post", "arguments": {"post_id": 4}} in [
         b["params"] for b in seen if b["method"] == "tools/call"]
     if scope == "mcp_outreach":
@@ -106,3 +137,55 @@ def test_no_token_is_bad_usage(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LEM_MCP_TOKEN", raising=False)
     out = io.StringIO()
     assert smoke.main(["--base", "https://lem.example"], out=out) == 2
+
+
+def test_a_standard_account_may_omit_the_approval_tool() -> None:
+    client, _ = _server("mcp_outreach", tools=[s.name for s in tools_for_scope("mcp_outreach")
+                                               if not s.approval])
+    code, text = _run(client)
+    assert code == 0, text
+
+
+_RECIPIENT = "https://www.linkedin.com/in/smoke-test/"
+
+
+@pytest.mark.parametrize("approval_listed", [True, False])
+def test_the_write_checks_pass_on_a_healthy_server(approval_listed: bool) -> None:
+    names = [s.name for s in tools_for_scope("mcp_outreach") if approval_listed or not s.approval]
+    client, seen = _server("mcp_outreach", tools=names)
+    code, text = _run(client, "--recipient", _RECIPIENT, mode="--write")
+    assert code == 0, text
+    assert "[PASS] lem_queue_dm lands pending with source=mcp" in text
+    assert "[PASS] a retried write replays instead of writing twice" in text
+    assert "[PASS] a reused request id is refused" in text
+    label = ("lem_approve_item approves (sandbox)" if approval_listed
+             else "approve is refused on a standard account")
+    assert f"[PASS] {label}" in text
+    queued = [b for b in seen if b.get("params", {}).get("name") == "lem_queue_dm"]
+    assert queued[0]["params"]["arguments"]["recipient_profile_url"] == _RECIPIENT
+    assert TOOLS_BY_NAME["lem_queue_dm"].write
+
+
+def test_an_approval_that_lands_on_a_standard_account_fails() -> None:
+    names = [s.name for s in tools_for_scope("mcp_outreach") if not s.approval]
+    client, _ = _server("mcp_outreach", tools=names)
+    _WRITE_ANSWERS["lem_approve_item"], saved = (
+        lambda a, n, s: {"structuredContent": {"status": "approved"}}), _WRITE_ANSWERS[
+        "lem_approve_item"]
+    try:
+        code, text = _run(client, "--recipient", _RECIPIENT, mode="--write")
+    finally:
+        _WRITE_ANSWERS["lem_approve_item"] = saved
+    assert code == 1 and "[FAIL] approve is refused on a standard account" in text
+
+
+def test_the_write_checks_skip_without_an_outreach_token() -> None:
+    client, _ = _server("mcp")
+    code, text = _run(client, "--recipient", _RECIPIENT, mode="--write")
+    assert code == 0 and "[SKIP] write checks" in text
+
+
+def test_write_needs_a_recipient() -> None:
+    client, _ = _server("mcp_outreach")
+    code, text = _run(client, mode="--write")
+    assert code == 2 and "--write needs --recipient" in text

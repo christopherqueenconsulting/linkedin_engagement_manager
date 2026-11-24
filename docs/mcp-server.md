@@ -4,8 +4,9 @@ The runbook and posture for LEM's MCP server: a user's own coding agent (Claude 
 ...) connects with a URL plus a bearer token and reads their LEM account. The design, with every
 owner ruling, is [agent-mcp-plan.md](agent-mcp-plan.md); the token scopes are in
 [agent-roles.md](agent-roles.md) and the identity carve-out in
-[identity-and-sessions.md](identity-and-sessions.md). This page is what is BUILT, as of phase P3
-(read-only tools, epic #2682, issue #2686).
+[identity-and-sessions.md](identity-and-sessions.md). This page is what is BUILT, as of phase W2
+(read tools #2686, queue-only write tools and the internal/sandbox `lem_approve_item` #2688, epic
+#2682).
 
 ## How a call flows
 
@@ -76,7 +77,68 @@ subscriber-identity table is ever added, its rows belong in that tool, outreach-
 
 **Resources**: `lem://guide/how-lem-works`, `lem://policy/write-rules` (static), `lem://account/overview`,
 `lem://plan/upcoming`, and the template `lem://post/{post_id}`; each reads through its tool's runner.
-**Prompts**: `weekly_review`, `whats_wrong`, `explain_my_performance(post_id?)`.
+**Prompts**: `weekly_review`, `whats_wrong`, `explain_my_performance(post_id?)`, and (W2)
+`fill_my_content_plan(weeks=1)` and the outreach-only `prepare_outreach_batch` (neither listed nor
+served to an `mcp` token).
+
+## The write tools (W2)
+
+Every write CREATES or EDITS an item that lands in, and stays in, **pending**. Nothing reaches
+LinkedIn until the user approves it in LEM and a beat task runs it. The routes enforce that, not the
+tools: an MCP seat is queue-only (`_QUEUE_ONLY_SCOPES`), so a create asking for `approved` is 403
+`agent_may_not_approve`, a connection request never takes the passive `auto_approve` default, every
+edit is SQL pending-only (409 `edit_requires_pending`, W1), and a post is a TEXT draft with no media.
+The tools live in `api/mcp/tools_write.py` (`ToolSpec.write=True`); no write tool has a `status` or
+`action` argument, and a recipient or target must be a `https://www.linkedin.com/in/<handle>/` URL,
+checked by the argument model and again by the route. Each answer carries `review_url` and
+"Pending your approval in LEM".
+
+| Tool | `mcp` | `mcp_outreach` | Call | Lands as |
+|---|---|---|---|---|
+| `lem_draft_post` | yes | yes | `POST /schedule_post/` | PENDING text post |
+| `lem_revise_post_draft` | yes | yes | `GET /posts/{id}`, `POST /update_post/` | a pending post's text/slot only |
+| `lem_queue_dm` | no | yes | `POST /schedule_dm` | PENDING DM, `source='mcp'` |
+| `lem_queue_connection_request` | no | yes | `POST /connection_request` | PENDING request, `source='mcp'` |
+| `lem_add_outreach_target` | no | yes | `POST /outreach/target` | PENDING target (create only) |
+| `lem_edit_lead_signal_draft` | no | yes | `PUT /lead_signal` | a pending signal's draft |
+| `lem_edit_catchup_draft` | no | yes | `PUT /catchup/touch` | a pending touch's message/name |
+| `lem_update_lead` | no | yes | `PUT /lead` | note, stage, deal value, dismiss/restore (sends nothing) |
+| `lem_approve_item` | no | internal/sandbox only | `PUT /dm`, `/connection_request`, `/lead_signal`, `/catchup/touch`, `/outreach/target` with `action=approve` | APPROVED (owner ruling O1) |
+
+The scope grants are exactly these verbs (`_MCP_WRITE_METHODS` / `_MCP_OUTREACH_WRITE_METHODS` in
+`api/main.py`), pinned by `test_mcp_scope.py` and tied to the registry by the drift guard. Two paths
+carry two verbs, `/connection_request` and `/outreach/target`, because the create POSTs them and
+`lem_approve_item` PUTs them; `PUT /dm` is the approval and nothing else. No DELETE, no PATCH, no
+`/posts/bulk_update`, no `/review/bulk`, no curated sources.
+
+**`lem_approve_item` (owner ruling O1).** It is listed in `tools/list` ONLY when the account's
+`account_kind` is `internal` or `sandbox`, the same set `_operator_may_approve()` reads, and the tool
+refuses it on every other account. The route decides again: `_refuse_agent_approval` has an MCP
+branch, `_mcp_may_approve()`, that mirrors the operator exemption for the approval verb and writes an
+`mcp_approval` audit row (the `operator_approval` twin). A standard account is refused 403
+`agent_may_not_approve` by both, and never approves anything. Unlike the operator, a CREATE asking
+for `approved` is refused on every account kind, and only the approval request itself leaves the
+pending-only edit path, so an edit tool stays pending-only on an internal account too. It never
+approves a post.
+
+**The write path** (`api/mcp/writes.py`, in order): the `mcp-server-writes` flag (off is `isError`
+`writes_disabled`); the approval account check; **dedupe**, a Redis claim
+`mcp:dedupe:{user}:{session}:{tool}:{client_request_id}` taken with `SET NX EX 600` BEFORE dispatch,
+holding `sha256(canonical args)` (no `client_request_id` means one derived from that hash): a replay
+of a finished write returns its first answer with `replayed: true`, the same id with other arguments
+is `client_request_id_reused`, and a write still running or whose outcome is unknown is
+`outcome=unknown`; the write budgets (30 an hour, 150 a day per user); the call under the 20 s limit.
+A timeout or a 5xx is `outcome=unknown`, **not retryable** (the handler's thread may still finish),
+and keeps the claim so a blind retry cannot double it; a refused write (4xx) changed nothing and
+releases it. A write that landed writes ONE `mcp_write {tool, target_id, scope}` audit row, never a
+body. Redis unreadable is `mcp_unavailable` (fails closed).
+
+**What the user sees.** DMs and connection requests an agent queued carry `source='mcp'`: the review
+pages badge them "Agent-created", and the Daily review never bulk-approves one ("Approve all with no
+flags" and "Approve selected" leave it out, and `POST /review/bulk` refuses it with
+`agent_created_approve_individually` in any multi-item approve). `GET /user/mcp-token/activity`
+lists the account's latest 50 `mcp_*` audit rows (mints, access, every `mcp_write` and
+`mcp_approval`) for the Agents tab; a failed read is 503, never an empty list.
 
 ## What a result may carry (`api/mcp/redact.py`)
 
@@ -97,8 +159,10 @@ documented in `utilities/observability.py` and [observability-map.md](observabil
 
 Each tool call logs ONE INFO line, `MCP tool call` with `user_id`, `tool`, `outcome`,
 `latency_ms`; never arguments, results or the token (a caplog test pins the token in no record).
-Outcomes: `ok`, `refused`, `invalid_args`, `upstream_error`, `rate_limited`, `timeout` (W2 adds
-`unknown` for a write that timed out).
+Outcomes: `ok`, `refused`, `invalid_args`, `upstream_error`, `rate_limited`, `timeout` (a read
+that ran out of time), and `unknown` (a write that timed out, hit a 5xx, or is a duplicate of one
+whose outcome is unknown). A write refusal logs DEBUG (flag off, budget, dedupe hit) or INFO (an
+approval refused on a standard account), never arguments or results.
 
 ## Limits (owner ruling O10, env `MCP_*`, 0 = refuse all)
 
@@ -107,13 +171,18 @@ Outcomes: `ok`, `refused`, `invalid_args`, `upstream_error`, `rate_limited`, `ti
 | Tool calls | 60 / minute / user | the gate, per JSON-RPC `tools/call` |
 | Inner reads | 240 / minute, 4000 / day / user | the loopback, per inner route call |
 | In flight | 2 per user, 8 per worker | the gate |
-| Writes | 30 / hour, 150 / day | W2 |
+| Writes | 30 / hour, 150 / day / user | the write tools, once per write (`MCP_RATE_WRITES_PER_*`) |
 
 ## Smoke test — `scripts/mcp_smoke.py`
 
-Read-only before W2. It calls `initialize`, compares `tools/list` with the registry for the
-token's scope, calls every read tool, checks a query-string token is refused (and, with a
-throwaway token, revoked) and a bad bearer is 401, and exits non-zero on any mismatch.
+It calls `initialize`, compares `tools/list` with the registry for the token's scope
+(`lem_approve_item` may be absent on a standard account), calls every READ tool, checks a
+query-string token is refused (and, with a throwaway token, revoked) and a bad bearer is 401, and
+exits non-zero on any mismatch. `--write --recipient <profile URL>` (W2, `mcp_outreach` token, on a
+SANDBOX account with a fixed test recipient) also queues ONE DM and checks it lands pending with
+`source='mcp'`, that a retry replays, that a reused request id and an `action` on an edit tool are
+refused, and that `lem_approve_item` approves it where listed and is refused where not. Reject or
+cancel that DM in LEM afterwards.
 
 ```
 # deployed stack: token from LEM -> Agents, kept in the environment, never on the command line

@@ -18,9 +18,11 @@ The ceremony mirrors `mint_agent_token`, tightened:
 - Audited (`mcp_token_minted` / `mcp_token_rotated`) and emailed to the account owner on every
   mint and rotate. A failed email never fails the mint.
 
-Revoking one is the existing `POST /user/sessions/revoke`.
+Revoking one is the existing `POST /user/sessions/revoke`. `GET /activity` (W2) lists the account's
+`mcp_*` audit rows for the Agents tab.
 """
 
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -43,6 +45,7 @@ from cqc_lem.utilities.db import (
     SessionStoreUnavailable,
     create_session_within_cap,
     get_owned_session,
+    list_auth_audit_events,
     list_sessions_by_scope,
     record_auth_event,
     revoke_session,
@@ -56,6 +59,8 @@ MCP_TTL_DEFAULT_DAYS = 30
 MCP_TTL_MAX_DAYS = 90
 MCP_MAX_ACTIVE_TOKENS = 10
 MCP_DEFAULT_LABEL = "Coding agent"
+# Every MCP audit event shares this prefix (`AuthAuditEvent.MCP_*`).
+MCP_EVENT_PREFIX = "mcp_"
 
 # The same rule as every machine-seat label: shown on the Security card and kept in the audit log,
 # so it cannot carry an email address, punctuation that reads as a name, or a newline.
@@ -276,6 +281,42 @@ def get_mcp_info(session_token: SessionTokenField = None) -> ResponseModel[dict[
         "mcp_url": _mcp_url(),
         "tokens": tokens,
     })
+
+
+MCP_ACTIVITY_LIMIT = 50
+
+
+def _details(raw: Any) -> Any:
+    """An audit row's `details`, decoded when the driver hands back JSON text."""
+    if isinstance(raw, (bytes, str)):
+        try:
+            return json.loads(raw)
+        except ValueError:
+            return None
+    return raw
+
+
+@router.get("/activity", responses={
+    200: {"description": "This account's latest MCP audit events, newest first"},
+    401: {"description": "Invalid or expired session"},
+    503: {"description": "The audit log could not be read"},
+})
+def get_mcp_activity(session_token: SessionTokenField = None) -> ResponseModel[dict[str, Any]]:
+    """What the account's agents did: the latest 50 `mcp_*` audit rows (W2, plan §3.5).
+
+    Mints, rotations, exposures, daily access, every write (`mcp_write {tool, target_id}`) and every
+    internal/sandbox approval (`mcp_approval`). A row never carries a token, a body or an address
+    hash. Answered with the rollout flag off too, like `/info`, so past activity stays visible. A
+    failed read is 503, never an empty list that reads as "no activity".
+    """
+    user_id = _caller(session_token)
+    rows = list_auth_audit_events(user_id, prefix=MCP_EVENT_PREFIX, limit=MCP_ACTIVITY_LIMIT)
+    if rows is None:
+        raise HTTPException(status_code=503, detail="Could not read agent activity. Try again.")
+    events = [{"event": row.get("event"), "success": bool(row.get("success", True)),
+               "client": row.get("user_agent"), "details": _details(row.get("details")),
+               "created_at": _main._utc_iso(row.get("created_at"))} for row in rows]
+    return ResponseModel(status_code=200, detail={"events": events})
 
 
 from cqc_lem.api import main as _main  # noqa: E402  — last; see `routers/__init__.py`

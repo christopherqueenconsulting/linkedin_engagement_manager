@@ -36,6 +36,8 @@ const SOURCE_LABELS: Record<string, string> = {
   adjacent_post: 'Engaged with an adjacent author',
   // Issue #1137 — without this the badge falls through to the raw column value.
   profile_viewer: 'Viewed your profile',
+  // MCP W2: queued by the user's own coding agent, never by LEM. Read it before approving.
+  mcp: 'Agent-created',
 }
 
 const STATUS_COLORS: Record<string, string> = {

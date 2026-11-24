@@ -7,9 +7,11 @@ a new endpoint. This module is READ-ONLY: it approves and cancels nothing, so no
 path is a later phase and must delegate to the per-lane helpers.
 
 Item shape: `lane, id, age_hours, summary, draft_text, hold_reason, risk_flags, confidence,
-allowed_actions, edit_href`. `risk_flags` and `confidence` are filled by `review_flags.annotate`
+allowed_actions, edit_href, agent_created`. `risk_flags` and `confidence` are filled by `review_flags.annotate`
 (Phase 2); `age_hours` is None when the lane's row carries no readable timestamp — an
-unmeasured wait is never zero, and is never counted stale.
+unmeasured wait is never zero, and is never counted stale. `agent_created` is True for a DM or
+connection request an MCP seat queued (`source='mcp'`, MCP W2): the SPA badges it and never
+bulk-approves it, and `POST /review/bulk` refuses it in a multi-item approve.
 """
 
 from collections.abc import Callable
@@ -25,6 +27,9 @@ _PAGE = 500
 _SUMMARY_CHARS = 140
 
 _APPROVE_CANCEL = ("approve", "cancel")
+# The `source` an MCP seat's row carries (`api.main.MCP_ROW_SOURCE`; not imported, to keep this
+# module free of the API package).
+MCP_SOURCE = "mcp"
 _EDIT_ONLY = ("edit",)
 
 
@@ -48,10 +53,12 @@ def _clip(text: Optional[str]) -> str:
 
 
 def _item(lane: str, row_id: int, age: Optional[float], summary: str, draft: Optional[str],
-          actions: tuple[str, ...], edit_href: str, hold_reason: Optional[str] = None) -> dict:
+          actions: tuple[str, ...], edit_href: str, hold_reason: Optional[str] = None,
+          agent_created: bool = False) -> dict:
     return {"lane": lane, "id": row_id, "age_hours": age, "summary": _clip(summary),
             "draft_text": draft or "", "hold_reason": hold_reason, "risk_flags": [],
-            "confidence": None, "allowed_actions": list(actions), "edit_href": edit_href}
+            "confidence": None, "allowed_actions": list(actions), "edit_href": edit_href,
+            "agent_created": agent_created}
 
 
 def _read_scheduled_dms(user_id: int, now: datetime) -> list[dict]:
@@ -59,7 +66,8 @@ def _read_scheduled_dms(user_id: int, now: datetime) -> list[dict]:
     rows = get_scheduled_dms(user_id, status_filter="pending", page_size=_PAGE).get("dms", [])
     return [_item("scheduled_dms", r["id"], _age_hours(r.get("created_at"), now),
                   f"DM to {r.get('recipient_name') or r.get('recipient_profile_url')}",
-                  r.get("message"), _APPROVE_CANCEL, "/content?tab=dms") for r in rows]
+                  r.get("message"), _APPROVE_CANCEL, "/content?tab=dms",
+                  agent_created=r.get("source") == MCP_SOURCE) for r in rows]
 
 
 def _read_connection_requests(user_id: int, now: datetime) -> list[dict]:
@@ -68,7 +76,8 @@ def _read_connection_requests(user_id: int, now: datetime) -> list[dict]:
                                    sort_order="asc").get("requests", [])
     return [_item("connection_requests", r["id"], _age_hours(r.get("created_at"), now),
                   f"Connect with {r.get('recipient_name') or r.get('recipient_profile_url')}",
-                  r.get("message"), _APPROVE_CANCEL, "/content?tab=connections") for r in rows]
+                  r.get("message"), _APPROVE_CANCEL, "/content?tab=connections",
+                  agent_created=r.get("source") == MCP_SOURCE) for r in rows]
 
 
 def _read_funnel_targets(user_id: int, now: datetime) -> list[dict]:

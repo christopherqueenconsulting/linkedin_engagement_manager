@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from cqc_lem.api.models import ResponseModel
 from cqc_lem.utilities.review_actions import (
+    APPROVE_ONE_AT_A_TIME,
     BULK_ACTIONS,
     BULK_CAP,
     NOT_WAITING,
@@ -81,8 +82,13 @@ def review_bulk_endpoint(request: BulkReviewRequest) -> ResponseModel[list[dict[
     _main._refuse_agent_approval(request.action)
     # The single-item endpoints trust the id; a bulk call from a stale page would re-approve a row
     # already sent or canceled (a second live send). Only rows still waiting in the queue are acted on.
-    waiting = {(q["lane"], q["id"]) for q in get_review_queue(user_id)
-               if request.action in q["allowed_actions"]}
+    queue = get_review_queue(user_id)
+    waiting = {(q["lane"], q["id"]) for q in queue if request.action in q["allowed_actions"]}
+    # A row an MCP agent queued (MCP W2) is never bulk-approved: approving it means a human read THAT
+    # row, so a multi-item approve leaves it waiting. Approving it alone is the single-item path.
+    agent_rows = {(q["lane"], q["id"]) for q in queue if q.get("agent_created")}
+    multi_approve = request.action == "approve" and len(request.items) > 1
+
     def runnable(i: BulkItem) -> bool:
         if (i.lane, i.id) in waiting:
             return True
@@ -90,8 +96,14 @@ def review_bulk_endpoint(request: BulkReviewRequest) -> ResponseModel[list[dict[
         return (request.action == "cancel" and i.lane == "scheduled_dms"
                 and is_approved_unsent_dm(user_id, i.id))
 
-    results = [apply_review_action(user_id, i.lane, i.id, request.action) if runnable(i)
-               else {"lane": i.lane, "id": i.id, "ok": False, "error": NOT_WAITING}
+    def refusal(i: BulkItem) -> Optional[str]:
+        if multi_approve and (i.lane, i.id) in agent_rows:
+            return APPROVE_ONE_AT_A_TIME
+        return None if runnable(i) else NOT_WAITING
+
+    results = [apply_review_action(user_id, i.lane, i.id, request.action)
+               if (error := refusal(i)) is None
+               else {"lane": i.lane, "id": i.id, "ok": False, "error": error}
                for i in request.items]
     return ResponseModel(status_code=200, detail=results)
 

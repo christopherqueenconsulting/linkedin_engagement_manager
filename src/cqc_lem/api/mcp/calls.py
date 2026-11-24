@@ -9,6 +9,9 @@ whose text echoes the rejected values, and lists every registered tool to every 
 - `tools/call` refuses a tool outside the scope, validates with the tool's own `extra="forbid"`
   model and reports only WHICH fields failed, runs the tool under a 20s limit, and shapes every
   result through `redact.finalize`;
+- a WRITE tool (W2) runs through `writes.run_write` (flag, dedupe, write budgets, audit; a timeout
+  is `unknown`, never `timeout`), and the internal/sandbox-only `lem_approve_item` (owner ruling O1)
+  is neither listed nor run for any other account;
 - each call is logged at INFO (tool, outcome, latency; never arguments or results) and reported as
   `mcp_tool_call` and, content-free, to PostHog MCP analytics (`observability.capture_mcp_analytics`).
 """
@@ -18,6 +21,7 @@ import json
 import time
 from typing import Any, Optional
 
+from fastapi.concurrency import run_in_threadpool
 from mcp.shared.exceptions import MCPError
 from mcp_types import (
     INVALID_PARAMS,
@@ -36,7 +40,7 @@ from mcp_types import (
 from pydantic import ValidationError
 from starlette.requests import Request
 
-from cqc_lem.api.mcp import tools as registry
+from cqc_lem.api.mcp import tools as registry, writes
 from cqc_lem.api.mcp.loopback import (
     INVALID_ARGS,
     OK,
@@ -70,19 +74,38 @@ def _input_schema(spec: registry.ToolSpec) -> dict[str, Any]:
 
 
 def mcp_tool(spec: registry.ToolSpec) -> Tool:
-    """One registry entry as the MCP `Tool` a client lists."""
+    """One registry entry as the MCP `Tool` a client lists.
+
+    A write tool says `readOnlyHint=false, destructiveHint=false` (plan §4): it only ever creates or
+    edits a pending item. It is not `idempotent` on its own; a repeated `client_request_id` is.
+    """
     return Tool(name=spec.name, title=spec.title, description=spec.description,
                 input_schema=_input_schema(spec),
-                annotations=ToolAnnotations(title=spec.title, read_only_hint=True,
-                                            destructive_hint=False, idempotent_hint=True,
+                annotations=ToolAnnotations(title=spec.title, read_only_hint=not spec.write,
+                                            destructive_hint=False, idempotent_hint=not spec.write,
                                             open_world_hint=spec.open_world))
 
 
-def list_tools(request: Optional[Request]) -> ListToolsResult:
-    """`tools/list` for this caller: exactly its scope's tools, nothing for an unadmitted request."""
+async def _approval_allowed(principal: Any) -> bool:
+    """May this caller see and run the approval tool? Only on an internal or sandbox account."""
+    user_id = getattr(principal, "user_id", None)
+    if user_id is None:
+        return False
+    return await run_in_threadpool(writes.account_may_approve, user_id)
+
+
+async def list_tools(request: Optional[Request]) -> ListToolsResult:
+    """`tools/list` for this caller: exactly its scope's tools, nothing for an unadmitted request.
+
+    An `approval` tool is listed only when the account is internal or sandbox (owner ruling O1); the
+    account kind is read only when the scope lists one.
+    """
     principal = principal_of(request)
     scope = getattr(principal, "scope", None)
-    return ListToolsResult(tools=[mcp_tool(spec) for spec in registry.tools_for_scope(scope)])
+    specs = registry.tools_for_scope(scope)
+    if any(spec.approval for spec in specs) and not await _approval_allowed(principal):
+        specs = tuple(spec for spec in specs if not spec.approval)
+    return ListToolsResult(tools=[mcp_tool(spec) for spec in specs])
 
 
 def _validation_failure(exc: ValidationError) -> ToolFailure:
@@ -153,14 +176,19 @@ async def call_tool(request: Optional[Request], name: str,
         except ValidationError as exc:
             raise _validation_failure(exc) from None
         loopback = loopback_for(request)
-        payload = await asyncio.wait_for(spec.run(loopback, args), TOOL_TIMEOUT_SECONDS)
+        if spec.write:
+            bound = loopback
+            payload = await writes.run_write(spec, args, principal,
+                                             lambda: spec.run(bound, args), TOOL_TIMEOUT_SECONDS)
+        else:
+            payload = await asyncio.wait_for(spec.run(loopback, args), TOOL_TIMEOUT_SECONDS)
         result = _ok(spec, finalize(payload))
     except ToolFailure as failure:
         outcome = failure.outcome
         result = _error(failure)
     except asyncio.TimeoutError:
-        # Every v1 tool is a read, so a call that ran out of time changed nothing: `timeout`, and
-        # safe to retry. (A write would be `unknown`, plan §5.)
+        # Only a READ reaches this: a read that ran out of time changed nothing, so `timeout`, and
+        # safe to retry. A write's timeout is `unknown` and is raised by `writes.run_write`.
         outcome = TIMEOUT
         result = _error(ToolFailure(TIMEOUT, "timeout",
                                     "LEM took too long to answer. Try again, or ask for less."))

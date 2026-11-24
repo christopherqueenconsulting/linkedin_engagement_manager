@@ -51,7 +51,8 @@ def test_every_lane_returns_items_oldest_first_with_the_item_shape(lanes):
     assert items[0]["id"] == 1 and items[0]["age_hours"] == 72.0
     assert items[-1]["age_hours"] is None  # unmeasured sorts last
     assert set(items[0]) == {"lane", "id", "age_hours", "summary", "draft_text", "hold_reason",
-                             "risk_flags", "confidence", "allowed_actions", "edit_href"}
+                             "risk_flags", "confidence", "allowed_actions", "edit_href",
+                             "agent_created"}
     assert items[0]["summary"] == "DM to Ann"
 
 

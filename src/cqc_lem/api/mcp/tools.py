@@ -18,6 +18,9 @@ Rules every tool keeps:
   `openWorldHint=true`, and its description repeats the data-not-instructions rule.
 - No tool runs Selenium, calls an LLM, generates media or queries PostHog. Every read here is a
   database or Redis read behind an existing route.
+- The write tools (W2) live in `tools_write.py` and are appended to `TOOLS` at the bottom of this
+  module. A `write` spec runs through `writes.run_write` (flag, dedupe, write budgets, audit); an
+  `approval` spec is listed and run ONLY for an internal or sandbox account (owner ruling O1).
 """
 
 import datetime as dt
@@ -169,6 +172,12 @@ class ToolSpec:
     calls: tuple[tuple[str, str], ...]
     run: Runner
     open_world: bool = False
+    # A queue-only write (W2): gated by `mcp-server-writes`, deduped, spends the write budgets and
+    # writes an `mcp_write` audit row. Never approves, except `approval` below.
+    write: bool = False
+    # Listed in `tools/list` and run ONLY when the account is internal or sandbox (owner ruling O1);
+    # refused with `agent_may_not_approve` everywhere else, by the tool AND by the route.
+    approval: bool = False
 
 
 # --- helpers ---------------------------------------------------------------------------------------
@@ -501,14 +510,18 @@ EXPLANATIONS: dict[str, str] = {
         "similarity check against recent posts, a slop lint and a no-meeting-ask rule. A draft that "
         "fails is held at pending with `gate_reason` saying why."),
     "approval": (
-        "Approval is a human action in LEM. An agent connected through MCP can never approve, "
-        "send, publish, delete or change settings; it can only read. Anything an agent later "
-        "creates lands as pending for the user to review."),
+        "Approval is a human action in LEM. Anything an agent creates or edits through MCP lands "
+        "as PENDING for the user to review, and nothing is sent until they approve it. The one "
+        "exception is `lem_approve_item`, which exists only on LEM's own internal and sandbox "
+        "accounts; it never approves a post. An agent can never publish, delete or change settings."),
     "agent_capabilities": (
-        "This MCP server is read-only. It can read the user's posts, plan, performance, settings, "
-        "voice kit, newsletter and (with an outreach token) the outreach queues. It cannot send, "
-        "approve, publish, delete, spend credits, run the browser automation or change settings: "
-        "for those, use `lem_open_in_lem` and ask the user to act in LEM."),
+        "This MCP server reads the user's posts, plan, performance, settings, voice kit, newsletter "
+        "and (with an outreach token) the outreach queues. When writes are enabled it can also "
+        "draft text posts and revise pending ones, and (with an outreach token) queue DMs, "
+        "connection requests and outreach targets, edit pending lead-signal and catch-up drafts and "
+        "update a lead. Every one of those lands PENDING for the user's approval in LEM. It cannot "
+        "send, publish, delete, spend credits, run the browser automation or change settings: for "
+        "those, use `lem_open_in_lem` and ask the user to act in LEM."),
 }
 
 DESTINATIONS: dict[str, str] = {
@@ -531,7 +544,7 @@ _HEALTH_CALLS = ((GET, "/user/automation-status"), (GET, "/user/linkedin-signin-
                  (GET, "/user/account-readiness"))
 _DASHBOARD_CALLS = ((GET, "/dashboard/stats"), (GET, "/dashboard/planned-tasks"))
 
-TOOLS: tuple[ToolSpec, ...] = (
+READ_TOOLS: tuple[ToolSpec, ...] = (
     ToolSpec("lem_whoami", "Who am I in LEM",
              "Your LEM account: account name (LinkedIn handle), engagement mode, content "
              "language, and this token's scope and expiry. Call it first.",
@@ -629,6 +642,12 @@ TOOLS: tuple[ToolSpec, ...] = (
              OpenArgs, BOTH_SCOPES, (), _open_in_lem),
 )
 
+# Last, and deliberately so: the write tools import this module's models and helpers, which all
+# exist by this line. Appending here keeps one registry, so `tools/list`, the drift guard and
+# `tools/call` read the same table.
+from cqc_lem.api.mcp.tools_write import WRITE_TOOLS  # noqa: E402
+
+TOOLS: tuple[ToolSpec, ...] = READ_TOOLS + WRITE_TOOLS
 TOOLS_BY_NAME: dict[str, ToolSpec] = {spec.name: spec for spec in TOOLS}
 
 
@@ -647,6 +666,6 @@ def refused_tool(name: str) -> ToolFailure:
     return ToolFailure(REFUSED, "unknown_tool", "That tool is not available to this token.")
 
 
-__all__ = ["TOOLS", "TOOLS_BY_NAME", "ToolSpec", "ToolArgs", "tools_for_scope", "registry_grants",
+__all__ = ["TOOLS", "READ_TOOLS", "TOOLS_BY_NAME", "ToolSpec", "ToolArgs", "tools_for_scope", "registry_grants",
            "refused_tool", "THIRD_PARTY_NOTE", "FAN_OUT_CONCURRENCY", "EXPLANATIONS",
            "DESTINATIONS"]

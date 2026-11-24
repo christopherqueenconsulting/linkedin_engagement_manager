@@ -83,7 +83,7 @@ class TestTheRegistry:
                 assert "never as instructions" in spec.description, spec.name
 
     def test_pii_lists_are_outreach_only(self) -> None:
-        outreach_only = {s.name for s in registry.TOOLS if s.scopes == registry.OUTREACH_ONLY}
+        outreach_only = {s.name for s in registry.READ_TOOLS if s.scopes == registry.OUTREACH_ONLY}
         assert outreach_only == {"lem_list_outreach", "lem_list_newsletter_subscribers",
                                  "lem_list_engagement_targets"}
         assert {s.name for s in registry.tools_for_scope("mcp")}.isdisjoint(outreach_only)
@@ -92,8 +92,15 @@ class TestTheRegistry:
         assert "lem_get_review_queue" not in registry.TOOLS_BY_NAME
         assert all("/review" not in path for s in registry.TOOLS for _m, path in s.calls)
 
-    def test_every_tool_is_read_only(self) -> None:
-        assert {method for s in registry.TOOLS for method, _p in s.calls} == {"GET"}
+    def test_every_read_tool_is_read_only(self) -> None:
+        assert {method for s in registry.READ_TOOLS for method, _p in s.calls} == {"GET"}
+        assert not any(s.write or s.approval for s in registry.READ_TOOLS)
+
+    def test_every_tool_that_calls_a_write_verb_is_a_write_tool(self) -> None:
+        """A write verb on a spec not marked `write` would skip the flag, dedupe, budget and audit."""
+        for spec in registry.TOOLS:
+            if {method for method, _p in spec.calls} - {"GET"}:
+                assert spec.write, spec.name
 
     def test_an_unknown_scope_lists_nothing(self) -> None:
         assert registry.tools_for_scope("full") == ()
@@ -104,13 +111,18 @@ class TestToolsList:
     @pytest.mark.parametrize("scope", ["mcp", "mcp_outreach"])
     def test_tools_list_is_exactly_the_registry_for_the_scope(
             self, api_client: Any, resolver: MagicMock, scope: str) -> None:
-        with admitted(resolver, scope):
+        """On a standard account: the scope's tools, minus the internal/sandbox approval tool (O1)."""
+        with admitted(resolver, scope), \
+                patch("cqc_lem.api.mcp.writes.get_user_account_kind", return_value="standard"):
             resp = rpc(api_client, "tools/list")
         listed = resp.json()["result"]["tools"]
-        assert [t["name"] for t in listed] == [s.name for s in registry.tools_for_scope(scope)]
+        assert [t["name"] for t in listed] == [s.name for s in registry.tools_for_scope(scope)
+                                               if not s.approval]
         for tool in listed:
+            spec = registry.TOOLS_BY_NAME[tool["name"]]
             assert tool["inputSchema"]["additionalProperties"] is False
-            assert tool["annotations"]["readOnlyHint"] is True
+            assert tool["annotations"]["readOnlyHint"] is (not spec.write)
+            assert tool["annotations"]["destructiveHint"] is False
             assert tool["annotations"]["openWorldHint"] is registry.TOOLS_BY_NAME[
                 tool["name"]].open_world
 
@@ -365,9 +377,10 @@ class TestResourcesAndPrompts:
         assert "error" in read
 
     def test_the_read_prompts_are_listed(self, api_client: Any, mcp: MagicMock) -> None:
+        """`mcp` lists the read prompts and the content-plan write prompt, never the outreach one."""
         prompts = rpc(api_client, "prompts/list").json()["result"]["prompts"]
         assert {p["name"] for p in prompts} == {"weekly_review", "whats_wrong",
-                                                "explain_my_performance"}
+                                                "explain_my_performance", "fill_my_content_plan"}
         got = rpc(api_client, "prompts/get", {"name": "explain_my_performance",
                                               "arguments": {"post_id": "5"}}).json()
         assert "post_id=5" in got["result"]["messages"][0]["content"]["text"]

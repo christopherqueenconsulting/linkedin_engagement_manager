@@ -576,6 +576,9 @@ _request_session_scope: ContextVar[Optional[str]] = ContextVar("lem_session_scop
 # account's `account_kind` (the fourth approval guard reads it) and that the action was audited.
 # None for every other scope.
 _request_operator: ContextVar[Optional[Dict[str, Any]]] = ContextVar("lem_operator", default=None)
+# The same for an MCP request (W2, owner ruling O1): the acting user, the account kind once the
+# approval guard has read it, and whether this request's approval was allowed. None otherwise.
+_request_mcp: ContextVar[Optional[Dict[str, Any]]] = ContextVar("lem_mcp", default=None)
 
 _guard_canonical_module()
 
@@ -596,6 +599,7 @@ async def session_cookie_middleware(request: Request, call_next):
     request_reset = _request_object.set(request)
     scope_reset = _request_session_scope.set(None)
     operator_reset = _request_operator.set(None)
+    mcp_reset = _request_mcp.set(None)
     try:
         return await call_next(request)
     finally:
@@ -604,6 +608,7 @@ async def session_cookie_middleware(request: Request, call_next):
         _request_object.reset(request_reset)
         _request_session_scope.reset(scope_reset)
         _request_operator.reset(operator_reset)
+        _request_mcp.reset(mcp_reset)
 
 
 # Registered LAST on purpose, which makes it the OUTERMOST middleware: Starlette runs the most
@@ -720,10 +725,11 @@ _SCOPE_PATTERNS: Dict[str, tuple] = {
 # (`_SCOPE_PATH_METHODS`), so the extension can neither write the queue nor read through the done path.
 _ASSIST_SESSION_SURFACE = frozenset({"/assist/queue", "/review/comment-posted"})
 
-# The end-user MCP seats (epic #2682, `docs/agent-mcp-plan.md` §3.2). Read-only in P2: every path is
-# granted `GET` and nothing else. They are reached ONLY through the in-process loopback behind
-# `POST /api/mcp` — `_scope_checked` refuses an mcp session without this worker's dispatch secret —
-# so this list is what a P3 tool may call, and a tool that needs a path not listed here cannot work.
+# The end-user MCP seats (epic #2682, `docs/agent-mcp-plan.md` §3.2). Every path below is granted
+# `GET` and nothing else; the W2 write verbs are `_MCP_WRITE_METHODS`. They are reached ONLY
+# through the in-process loopback behind `POST /api/mcp` (`_scope_checked` refuses an mcp session
+# without this worker's dispatch secret), so this list is what a tool may call, and a tool that
+# needs a path not listed here cannot work.
 # Each entry is the user's OWN data. Deliberately absent: every credential, factor, step-up and
 # recovery route; session revoke and every token mint (including `/user/mcp-token`); billing,
 # `/user/affiliate`, `/user/security`, `/user/token_status` and `/user/posthog-stats` (three
@@ -761,6 +767,41 @@ _MCP_OUTREACH_EXTRA_READ_PATHS = frozenset({
 })
 _MCP_OUTREACH_READ_PATHS = _MCP_READ_PATHS | _MCP_OUTREACH_EXTRA_READ_PATHS
 _GET_ONLY = frozenset({"GET"})
+_POST_ONLY = frozenset({"POST"})
+_PUT_ONLY = frozenset({"PUT"})
+
+# The W2 write grants (`docs/agent-mcp-plan.md` §4): exactly the verb each write tool sends on each
+# path, never DELETE or PATCH. The surface drift guard (`test_mcp_tool_surface.py`) proves this table
+# equals what the tool registry calls, per scope and per verb. Every route here lands or keeps a row
+# PENDING for an MCP seat: the approval guards (`_refuse_agent_approval`,
+# `_refuse_agent_approved_status`), the `auto_approve` downgrade and the SQL pending-only edits (W1)
+# all hold for these scopes, because they are queue-only (`_QUEUE_ONLY_SCOPES`).
+#   /schedule_post, /update_post   lem_draft_post / lem_revise_post_draft: text-only PENDING drafts
+_MCP_WRITE_METHODS: Dict[str, frozenset[str]] = {
+    "/schedule_post": _POST_ONLY, "/update_post": _POST_ONLY,
+}
+# `mcp_outreach` adds the outreach writes. Two paths carry TWO verbs: the create (POST) and the
+# internal/sandbox-only approval `lem_approve_item` sends (PUT, owner ruling O1). `PUT /dm` is that
+# approval and nothing else. On a standard account the handler refuses every approval with 403
+# `agent_may_not_approve`, exactly as it refuses an `agent`.
+_MCP_OUTREACH_WRITE_METHODS: Dict[str, frozenset[str]] = {
+    **_MCP_WRITE_METHODS,
+    "/schedule_dm": _POST_ONLY,                         # lem_queue_dm
+    "/connection_request": frozenset({"POST", "PUT"}),  # lem_queue_connection_request; approve
+    "/outreach/target": frozenset({"POST", "PUT"}),     # lem_add_outreach_target; approve
+    "/lead_signal": _PUT_ONLY,                          # lem_edit_lead_signal_draft; approve
+    "/catchup/touch": _PUT_ONLY,                        # lem_edit_catchup_draft; approve
+    "/lead": _PUT_ONLY,                                 # lem_update_lead
+    "/dm": _PUT_ONLY,                                   # approve only
+}
+
+
+def _mcp_grants(read_paths: frozenset, writes: Dict[str, frozenset[str]]) -> Dict[str, frozenset[str]]:
+    """One MCP scope's `(path -> verbs)` table: GET on every read path, plus its write verbs."""
+    grants = {path: _GET_ONLY for path in read_paths}
+    for path, verbs in writes.items():
+        grants[path] = grants.get(path, frozenset()) | verbs
+    return grants
 
 # The templated grants of a verb-limited scope: `(anchored pattern, verbs)`. A path parameter cannot
 # be a literal key in `_SCOPE_PATH_METHODS`, so one that a tool needs is listed here instead, and the
@@ -776,13 +817,13 @@ _SCOPE_PATH_PATTERN_METHODS: Dict[str, tuple] = {
 _SCOPE_PATH_METHODS: Dict[str, Dict[str, frozenset[str]]] = {
     SESSION_SCOPE_ASSIST: {"/assist/queue": frozenset({"GET"}),
                            "/review/comment-posted": frozenset({"POST"})},
-    SESSION_SCOPE_MCP: {path: _GET_ONLY for path in _MCP_READ_PATHS},
-    SESSION_SCOPE_MCP_OUTREACH: {path: _GET_ONLY for path in _MCP_OUTREACH_READ_PATHS},
+    SESSION_SCOPE_MCP: _mcp_grants(_MCP_READ_PATHS, _MCP_WRITE_METHODS),
+    SESSION_SCOPE_MCP_OUTREACH: _mcp_grants(_MCP_OUTREACH_READ_PATHS, _MCP_OUTREACH_WRITE_METHODS),
 }
 
 _SCOPE_SURFACES: Dict[str, frozenset[str]] = {
-    SESSION_SCOPE_MCP: _MCP_READ_PATHS,
-    SESSION_SCOPE_MCP_OUTREACH: _MCP_OUTREACH_READ_PATHS,
+    SESSION_SCOPE_MCP: _MCP_READ_PATHS | frozenset(_MCP_WRITE_METHODS),
+    SESSION_SCOPE_MCP_OUTREACH: _MCP_OUTREACH_READ_PATHS | frozenset(_MCP_OUTREACH_WRITE_METHODS),
     SESSION_SCOPE_ASSIST: _ASSIST_SESSION_SURFACE,
     SESSION_SCOPE_EXTENSION: _EXTENSION_SESSION_SURFACE,
     SESSION_SCOPE_ENROLL: _ENROLL_SESSION_SURFACE,
@@ -1242,6 +1283,9 @@ def _scope_checked(resolved: Dict[str, Any], token: Optional[str]) -> int:
             _record_observer_access(user_id, token, path)
         if scope == SESSION_SCOPE_OPERATOR:
             _stamp_operator(user_id, path, token)
+        if scope in MCP_SESSION_SCOPES:
+            # No read here: the account kind is read only if this request asks to approve.
+            _request_mcp.set({"user_id": user_id, "session": _session_log_id(token)})
         return user_id
     if scope == SESSION_SCOPE_EXTENSION:
         # Audited AND warned, for the extension scope only. The extension calls exactly one path
@@ -3296,8 +3340,12 @@ def _challenge_expiry() -> datetime:
 # no write verb at all, so this changes nothing they can do today; it is in place so the W2 write
 # tools inherit every approval guard below, the `auto_approve` downgrade and `agent_may_not_configure`
 # without a second list to remember. They are NEVER added to `_operator_may_approve`: owner ruling
-# O1's internal/sandbox approval lands in W2 as its own mcp branch mirroring the operator exemption.
+# O1's internal/sandbox approval is its own branch, `_mcp_may_approve`, mirroring the operator
+# exemption on the approval verb only (W2).
 _QUEUE_ONLY_SCOPES = frozenset({SESSION_SCOPE_AGENT, SESSION_SCOPE_OPERATOR, *MCP_SESSION_SCOPES})
+# The `source` a DM or connection request carries when an MCP seat created it (W2): the SPA badges it
+# "Agent-created" and the Daily review never bulk-approves it.
+MCP_ROW_SOURCE = "mcp"
 
 
 def _agent_scoped() -> bool:
@@ -3355,6 +3403,48 @@ def _audit_operator_approval(vector: str) -> None:
                               "account_kind": state.get("account_kind")})
 
 
+def _mcp_may_approve() -> bool:
+    """Owner ruling O1: an MCP seat may approve only on an internal or sandbox account.
+
+    The MCP counterpart of `_operator_may_approve`, and deliberately a SEPARATE branch: MCP seats are
+    never added to that function. True only for an `mcp`/`mcp_outreach` request whose acting account's
+    `account_kind` is in `INTERNAL_ACCOUNT_KINDS`. The kind is read on first ask and kept for the
+    request; `get_user_account_kind` fails closed to 'standard', so an unreadable account never
+    approves. As for the operator, the acting account IS the item's owner: every approving handler
+    scopes the item to the caller's own user id.
+    """
+    if _request_session_scope.get() not in MCP_SESSION_SCOPES:
+        return False
+    state = _request_mcp.get()
+    if not state or not state.get("user_id"):
+        return False
+    if "account_kind" not in state:
+        state["account_kind"] = get_user_account_kind(state["user_id"])
+    return state.get("account_kind") in INTERNAL_ACCOUNT_KINDS
+
+
+def _audit_mcp_approval(vector: str) -> None:
+    """Record that an MCP seat just approved something (`mcp_approval`, the `operator_approval` twin)."""
+    http_request = _request_object.get()
+    state = _request_mcp.get() or {}
+    scope = _request_session_scope.get()
+    _safe_auth_event(AuthAuditEvent.MCP_APPROVAL, user_id=state.get("user_id"),
+                     ip=_client_ip(http_request), user_agent=_user_agent(http_request),
+                     details={"role": scope, "via": vector,
+                              "path": _access_path(scope, _request_path.get()),
+                              "account_kind": state.get("account_kind")})
+
+
+def _mcp_approval_granted() -> bool:
+    """Did `_refuse_agent_approval` allow an MCP approval on THIS request?
+
+    Only that request leaves the pending-only edit path (so the approval runs the human path's side
+    effects: the send dispatch, the stale-slot reset, `approved_by`). Every other MCP edit stays
+    pending-only on every account kind.
+    """
+    return bool((_request_mcp.get() or {}).get("approval_granted"))
+
+
 def _agent_approval_refusal() -> HTTPException:
     return HTTPException(status_code=403, detail={
         "code": "agent_may_not_approve",
@@ -3382,6 +3472,12 @@ def _refuse_agent_approval(action: Optional[str]) -> None:
         return
     if _operator_may_approve():
         _audit_operator_approval("action")
+        return
+    if _mcp_may_approve():
+        # Owner ruling O1: the operator exemption's mirror, for `lem_approve_item` on an internal or
+        # sandbox account. Audited as `mcp_approval`; a standard account falls through to the 403.
+        (_request_mcp.get() or {})["approval_granted"] = True
+        _audit_mcp_approval("action")
         return
     raise _agent_approval_refusal()
 
@@ -3413,7 +3509,12 @@ def _edits_pending_only() -> bool:
     `_operator_may_approve()` is True keeps the human's edit path, exactly as it keeps the approval
     verbs. Never true for a full session, so the human path is untouched.
     """
-    return _agent_scoped() and not _operator_may_approve()
+    return _agent_scoped() and not _operator_may_approve() and not _mcp_approval_granted()
+
+
+def _mcp_source() -> Optional[str]:
+    """`'mcp'` for a row an MCP seat creates (W2), so the review rows can badge it; else None."""
+    return MCP_ROW_SOURCE if _request_session_scope.get() in MCP_SESSION_SCOPES else None
 
 
 def _pending_edit_or_raise(kind: str, row_id: int, user_id: int, fields: Dict[str, Any],
@@ -3890,7 +3991,7 @@ def schedule_dm_endpoint(request: ScheduleDmRequest) -> ResponseModel[dict[str, 
     status = ScheduledDmStatus.APPROVED if request.status == "approved" else ScheduledDmStatus.PENDING
     dm_id = insert_scheduled_dm(user_id, request.recipient_profile_url, request.message,
                                 request.scheduled_datetime, recipient_name=request.recipient_name,
-                                status=status)
+                                status=status, source=_mcp_source())
     if not dm_id:
         raise HTTPException(status_code=500, detail="Could not schedule DM")
     return ResponseModel(status_code=200, detail={"dm_id": dm_id})
@@ -4015,7 +4116,8 @@ def create_connection_request_endpoint(request: ConnectionRequestCreate) -> Resp
     request_id = insert_connection_request(user_id, request.recipient_profile_url,
                                            message=request.message,
                                            recipient_name=request.recipient_name, status=status,
-                                           recipient_email=request.recipient_email)
+                                           recipient_email=request.recipient_email,
+                                           source=_mcp_source())
     if not request_id:
         raise HTTPException(status_code=500, detail="Could not create connection request")
     return ResponseModel(status_code=200, detail={"request_id": request_id})

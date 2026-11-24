@@ -4,20 +4,28 @@ Run by hand, never in CI. It speaks JSON-RPC to `POST <base>/api/mcp` exactly as
 does, and exits non-zero on the first mismatch it reports (it keeps going to report the rest):
 
 1. `initialize`.
-2. `tools/list` equals the registry for the token's scope (read from `lem_whoami`).
-3. Every read tool is called with minimal valid arguments and must not come back `isError`
+2. `tools/list` equals the registry for the token's scope (read from `lem_whoami`); the
+   internal/sandbox-only `lem_approve_item` may be absent (owner ruling O1).
+3. Every READ tool is called with minimal valid arguments and must not come back `isError`
    (`lem_get_post` uses the first post `lem_list_posts` returns, and is skipped when there is none;
    `lem_list_outreach` is called once per queue on an `mcp_outreach` token).
 4. A token in the query string gets 400 `token_in_url_refused`. With a throwaway token (minted by
    `--mint-local-for`), the token must ALSO be revoked by that request.
 5. A bad bearer gets 401 `invalid_token`.
-6. (W2 only: write tools. Not in this phase.)
+6. With `--write --recipient URL` on an `mcp_outreach` token (W2): `lem_queue_dm` lands pending
+   with `source='mcp'`, the same `client_request_id` replays instead of writing twice, reusing it
+   with other arguments is refused, an `action` on an edit tool is refused, and `lem_approve_item`
+   approves the DM where it is listed (sandbox/internal) and is refused `agent_may_not_approve`
+   where it is not. Run it on a SANDBOX account with a fixed test recipient (sends suppressed), and
+   reject or cancel the queued DM in LEM afterwards.
 7. With `--mint-local-for`, the minted token is revoked at the end and the next call must be 401.
 
 Usage, against a deployed stack (token from the Agents tab, kept in the environment):
 
     PYTHONPATH=src python scripts/mcp_smoke.py --read-only --base https://<host> \
         --token "$LEM_MCP_TOKEN"
+    PYTHONPATH=src python scripts/mcp_smoke.py --write --recipient https://www.linkedin.com/in/<test>/ \
+        --base https://<host> --token "$LEM_MCP_TOKEN"
 
 Against a LOCAL stack only, `--mint-local-for EMAIL` mints the tokens itself straight through the
 database facade (no step-up ceremony), and is refused for any `--base` that is not localhost: it is
@@ -32,6 +40,7 @@ import logging
 import os
 import secrets
 import sys
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional, Sequence, TextIO
 from urllib.parse import urlparse
 
@@ -111,13 +120,28 @@ class Smoke:
         self.check(error is None, f"tool {name}", f"{error.get('code')}" if error else "")
         return None if error else structured
 
+    def refusal(self, token: str, name: str, arguments: dict) -> Optional[str]:
+        """Call a tool that is EXPECTED to refuse; return its error code (None when it did not)."""
+        result = self.result(token, "tools/call", {"name": name, "arguments": arguments}) or {}
+        if not result.get("isError"):
+            return None
+        return ((result.get("structuredContent") or {}).get("error") or {}).get("code")
 
-def _registry_names(scope: str) -> Optional[list[str]]:
+
+def _registry(scope: str) -> Optional[list[Any]]:
     try:
         from cqc_lem.api.mcp.tools import tools_for_scope
     except Exception:  # noqa: BLE001 - run outside the repo: the comparison is skipped, not failed
         return None
-    return [spec.name for spec in tools_for_scope(scope)]
+    return list(tools_for_scope(scope))
+
+
+def _write_tool_names() -> set[str]:
+    try:
+        from cqc_lem.api.mcp.tools import TOOLS
+    except Exception:  # noqa: BLE001 - outside the repo: every tool not named lem_get/list is a write
+        return set()
+    return {spec.name for spec in TOOLS if spec.write}
 
 
 def run_read_checks(smoke: Smoke, token: str) -> Optional[str]:
@@ -134,17 +158,21 @@ def run_read_checks(smoke: Smoke, token: str) -> Optional[str]:
 
     listed = smoke.result(token, "tools/list") or {}
     names = [t.get("name") for t in listed.get("tools") or []]
-    expected = _registry_names(scope) if scope else None
-    if expected is None:
+    specs = _registry(scope) if scope else None
+    if specs is None:
         smoke.check(bool(names), "tools/list (registry not importable: non-empty only)")
     else:
-        smoke.check(names == expected, "tools/list equals the registry",
-                    "" if names == expected else f"got {sorted(set(names) ^ set(expected))}")
+        full = [spec.name for spec in specs]
+        # `lem_approve_item` is listed only on an internal or sandbox account (owner ruling O1).
+        standard = [spec.name for spec in specs if not spec.approval]
+        smoke.check(names in (full, standard), "tools/list equals the registry",
+                    "" if names in (full, standard) else f"got {sorted(set(names) ^ set(full))}")
 
     posts = smoke.tool(token, "lem_list_posts", _ARGS["lem_list_posts"]) or {}
     first = next((p.get("post_id") for p in posts.get("posts") or []), None)
+    writes = _write_tool_names()
     for name in names:
-        if name in ("lem_whoami", "lem_list_posts"):
+        if name in ("lem_whoami", "lem_list_posts") or name in writes:
             continue
         if name == "lem_get_post":
             if first is None:
@@ -157,6 +185,39 @@ def run_read_checks(smoke: Smoke, token: str) -> Optional[str]:
         else:
             smoke.tool(token, name, _ARGS.get(name))
     return scope
+
+
+def run_write_checks(smoke: Smoke, token: str, recipient: str) -> None:
+    """Step 6 (W2): one pending DM, its replay, the reuse refusal, and the approval rule."""
+    listed = smoke.result(token, "tools/list") or {}
+    names = {t.get("name") for t in listed.get("tools") or []}
+    if "lem_queue_dm" not in names:
+        smoke.out.write("[SKIP] write checks - they need an mcp_outreach token with writes on\n")
+        return
+    when = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+    args = {"recipient_profile_url": recipient, "message": "LEM MCP smoke test: please reject me.",
+            "scheduled_datetime": when, "client_request_id": "smoke-" + secrets.token_hex(6)}
+    queued = smoke.tool(token, "lem_queue_dm", args) or {}
+    smoke.check(queued.get("status") == "pending" and queued.get("source") == "mcp",
+                "lem_queue_dm lands pending with source=mcp")
+    again = smoke.tool(token, "lem_queue_dm", args) or {}
+    smoke.check(again.get("replayed") is True and again.get("id") == queued.get("id"),
+                "a retried write replays instead of writing twice")
+    reused = smoke.refusal(token, "lem_queue_dm", {**args, "message": "different text"})
+    smoke.check(reused == "client_request_id_reused", "a reused request id is refused", str(reused))
+    edit = smoke.refusal(token, "lem_edit_lead_signal_draft",
+                         {"signal_id": 1, "draft_response": "x", "action": "approve"})
+    smoke.check(edit == "invalid_arguments", "an approve through an edit tool is refused", str(edit))
+    if queued.get("id") is None:
+        return
+    approve = {"kind": "dm", "id": queued["id"]}
+    if "lem_approve_item" in names:
+        approved = smoke.tool(token, "lem_approve_item", approve) or {}
+        smoke.check(approved.get("status") == "approved", "lem_approve_item approves (sandbox)")
+    else:
+        code = smoke.refusal(token, "lem_approve_item", approve)
+        smoke.check(code == "agent_may_not_approve", "approve is refused on a standard account",
+                    str(code))
 
 
 def run_refusal_checks(smoke: Smoke, throwaway: Optional[str],
@@ -226,7 +287,11 @@ def main(argv: Optional[Sequence[str]] = None, out: TextIO = sys.stdout,
     parser.add_argument("--token", default=os.getenv("LEM_MCP_TOKEN"),
                         help="An MCP token (default: $LEM_MCP_TOKEN). Never printed.")
     parser.add_argument("--read-only", action="store_true",
-                        help="Run the read checks only (the only mode before W2).")
+                        help="Run the read checks only (the default).")
+    parser.add_argument("--write", action="store_true",
+                        help="Also run the W2 write checks (needs --recipient; queues ONE DM).")
+    parser.add_argument("--recipient", metavar="URL",
+                        help="The fixed test recipient's LinkedIn profile URL for --write.")
     parser.add_argument("--mint-local-for", metavar="EMAIL",
                         help="LOCAL stack only: mint the tokens for this user through the DB.")
     parser.add_argument("--scope", choices=("mcp", "mcp_outreach"), default="mcp",
@@ -248,11 +313,14 @@ def main(argv: Optional[Sequence[str]] = None, out: TextIO = sys.stdout,
     if not token:
         out.write("No token: pass --token, set LEM_MCP_TOKEN, or use --mint-local-for locally.\n")
         return 2
-    if not args.read_only:
-        out.write("Only --read-only exists before W2; running the read checks.\n")
+    if args.write and (args.read_only or not args.recipient):
+        out.write("--write needs --recipient and cannot be combined with --read-only.\n")
+        return 2
 
     smoke = Smoke(args.base, out, client)
     run_read_checks(smoke, token)
+    if args.write:
+        run_write_checks(smoke, token, args.recipient)
     throwaway = minter.mint("mcp-smoke-exposed") if minter else None
     run_refusal_checks(smoke, throwaway, minter.live if minter else None)
     if minter:

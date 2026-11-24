@@ -13775,6 +13775,59 @@
         "summary": "Mint Mcp Token"
       }
     },
+    "/api/user/mcp-token/activity": {
+      "get": {
+        "description": "What the account's agents did: the latest 50 `mcp_*` audit rows (W2, plan \u00a73.5).\n\nMints, rotations, exposures, daily access, every write (`mcp_write {tool, target_id}`) and every\ninternal/sandbox approval (`mcp_approval`). A row never carries a token, a body or an address\nhash. Answered with the rollout flag off too, like `/info`, so past activity stays visible. A\nfailed read is 503, never an empty list that reads as \"no activity\".",
+        "operationId": "get_mcp_activity_api_user_mcp_token_activity_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "session_token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "This account's latest MCP audit events, newest first"
+          },
+          "401": {
+            "description": "Invalid or expired session"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "description": "The audit log could not be read"
+          }
+        },
+        "summary": "Get Mcp Activity"
+      }
+    },
     "/api/user/mcp-token/info": {
       "get": {
         "description": "The Agents tab's read: enabled, the URL to connect to, and every MCP token on the account.\n\nToken-free: rows carry their id, label and dates, never a token or a hash. `calls_7d` and\n`last_client_name` come from Redis and are null when it cannot be read: unknown, never 0.\nAnswered even when the rollout flag is off (`enabled: false`), so tokens minted before a\nrollback stay visible and revocable.",

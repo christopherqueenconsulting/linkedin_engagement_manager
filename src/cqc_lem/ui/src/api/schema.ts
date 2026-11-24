@@ -2773,6 +2773,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/user/mcp-token/activity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Mcp Activity
+         * @description What the account's agents did: the latest 50 `mcp_*` audit rows (W2, plan §3.5).
+         *
+         *     Mints, rotations, exposures, daily access, every write (`mcp_write {tool, target_id}`) and every
+         *     internal/sandbox approval (`mcp_approval`). A row never carries a token, a body or an address
+         *     hash. Answered with the rollout flag off too, like `/info`, so past activity stays visible. A
+         *     failed read is 503, never an empty list that reads as "no activity".
+         */
+        get: operations["get_mcp_activity_api_user_mcp_token_activity_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/user/mcp-token/info": {
         parameters: {
             query?: never;
@@ -11891,6 +11916,51 @@ export interface operations {
                 content?: never;
             };
             /** @description The token could not be created; nothing was stored */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_mcp_activity_api_user_mcp_token_activity_get: {
+        parameters: {
+            query?: {
+                session_token?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description This account's latest MCP audit events, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                };
+            };
+            /** @description Invalid or expired session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description The audit log could not be read */
             503: {
                 headers: {
                     [name: string]: unknown;
