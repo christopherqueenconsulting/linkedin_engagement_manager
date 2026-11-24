@@ -1180,8 +1180,11 @@ What the profile allows each mode, and the calls that are narrower than they loo
 - **Standalone python / npm** — exact forms only, for the committed OpenAPI snapshot (#2648):
   `poetry run python scripts/dump_openapi.py` (± `--check`) and
   `npm --prefix src/cqc_lem/ui run gen:api-types` / `… run check:api-types` (openapi-typescript is
-  pinned inside the npm script). `poetry run python -c`, any other `npm run`, `npx` and `node` stay
-  denied; `test_the_openapi_regen_allows_are_exact` pins it.
+  pinned inside the npm script); and for the committed prompt captures, so a PR that edits a
+  registered prompt can refresh `prompts.lock.json` instead of parking (PR #2654):
+  `poetry run python scripts/prompt_capture.py --write` / `… --check` (never `--render`, never
+  `--changed-in`). `poetry run python -c`, any other script or flag, any other `npm run`, `npx` and
+  `node` stay denied; `test_the_openapi_regen_allows_are_exact` pins it.
 - **Migration version** — exact forms only: `date -u +%Y%m%d%H%M%S` (the version is the CURRENT
   UTC second, never a rounded one — round versions collided 3x on 2026-11-23) and
   `git ls-tree --name-only origin/main compose/local/database/migrations/` (the collision check).

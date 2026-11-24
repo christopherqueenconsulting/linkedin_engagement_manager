@@ -49,6 +49,10 @@ Repo: `christopherqueenconsulting/linkedin_engagement_manager`. Owner/escalation
 - **Changed an API route or schema? Regenerate the committed OpenAPI snapshot and SPA types:**
   `poetry run python scripts/dump_openapi.py`, then `npm --prefix src/cqc_lem/ui run gen:api-types`
   (verify with `… dump_openapi.py --check` / `npm --prefix src/cqc_lem/ui run check:api-types`).
+- **Changed a prompt registered in `tests/benchmarks/prompts/registry.yaml`? Regenerate its capture:**
+  `poetry run python scripts/prompt_capture.py --write`, then commit the capture, lock
+  (`prompts.lock.json`) and inventory diff it produces (verify with
+  `poetry run python scripts/prompt_capture.py --check`). Never hand-edit a hash in the lock.
 - **Never** edit files under `/opt/lem` (that is live prod), never run `docker` or `sudo`, never deploy,
   never touch secrets/`.env`. **Live validation is owner-run:** the read-only live-validation probe
   launches through `sudo docker exec`, which your permission profile denies — when a finding needs a
@@ -90,10 +94,11 @@ Repo: `christopherqueenconsulting/linkedin_engagement_manager`. Owner/escalation
 ## Three environment traps specific to this box
 - **All worktrees share ONE poetry venv, and its editable-install `.pth` is mutable** — the last
   `poetry install` anywhere wins, so a standalone script may silently import a DIFFERENT worktree.
-  Standalone scripts are not available to you, bar ONE `poetry run python` script: the permission
-  profile allows `poetry run pytest` and `scripts/dump_openapi.py` (it puts its own worktree's `src`
-  first on `sys.path`) — if a finding needs any other script, ask the owner. `pytest` is unaffected
-  by the shared venv (`pythonpath` is rootdir-relative).
+  Standalone scripts are not available to you, bar TWO `poetry run python` scripts in exact forms:
+  the permission profile allows `poetry run pytest`, `scripts/dump_openapi.py [--check]` and
+  `scripts/prompt_capture.py --write|--check` (each puts its own worktree's `src` first on
+  `sys.path`) — if a finding needs any other script, ask the owner. `pytest` is unaffected by the
+  shared venv (`pythonpath` is rootdir-relative).
 - **A worktree's venv usually has NO test plugins, and the failure does not look like that.**
   Every pytest plugin lives in the `test` dependency group, and that group is `optional = true`, so
   a plain `poetry install` skips it and reports "No dependencies to install or update" while
