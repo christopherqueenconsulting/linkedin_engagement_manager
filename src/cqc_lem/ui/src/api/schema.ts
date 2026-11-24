@@ -3844,6 +3844,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/user/voice-exemplars": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload Voice Exemplars Endpoint
+         * @description Ingest the author's LinkedIn export CSV as voice exemplars (issue #2627, Phase 1a).
+         *
+         *     `kind=comments` takes `Comments.csv`, `kind=shares` takes `Shares.csv`. The caller is the
+         *     session user; the file is spooled with the same bounded reader as a post video, parsed,
+         *     deduped, length- and row-capped, and embedded at ingest. Behind `VOICE_EXEMPLARS`.
+         */
+        post: operations["upload_voice_exemplars_endpoint_api_user_voice_exemplars_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/user/weekly-report": {
         parameters: {
             query?: never;
@@ -4308,6 +4332,15 @@ export interface components {
         Body_upload_post_video_endpoint_api_user_post_video_post: {
             /** File */
             file: string;
+            /** Session Token */
+            session_token: string;
+        };
+        /** Body_upload_voice_exemplars_endpoint_api_user_voice_exemplars_post */
+        Body_upload_voice_exemplars_endpoint_api_user_voice_exemplars_post: {
+            /** File */
+            file: string;
+            /** Kind */
+            kind: string;
             /** Session Token */
             session_token: string;
         };
@@ -14113,6 +14146,60 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_voice_exemplars_endpoint_api_user_voice_exemplars_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_voice_exemplars_endpoint_api_user_voice_exemplars_post"];
+            };
+        };
+        responses: {
+            /** @description Export ingested; counts of what was stored and skipped */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Voice exemplars are not enabled */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

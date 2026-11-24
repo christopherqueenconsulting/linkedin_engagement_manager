@@ -28,7 +28,12 @@ import replicate
 from dotenv import load_dotenv
 
 from cqc_lem import assets_dir
-from cqc_lem.utilities.ai import content_framework as _framework, slop_lint as _slop, story_bank as _story_bank
+from cqc_lem.utilities.ai import (
+    content_framework as _framework,
+    slop_lint as _slop,
+    story_bank as _story_bank,
+    voice_exemplars as _voice_exemplars,
+)
 from cqc_lem.utilities.ai.client import attribution_metadata, client
 
 # The ONE alignment core (voice + prefs + LEM purpose + promo policy) shared by newsletters,
@@ -627,6 +632,12 @@ def generate_ai_response(post_content: Any, profile: LinkedInProfile,
 
                 Take a deep breath and work on this problem step-by-step.""")
 
+    # Few-shot from the user's own writing (#2627). Empty unless VOICE_EXEMPLARS is on and the user
+    # has enough embedded exemplars, in which case the prompt is byte-identical to before.
+    exemplars = (_voice_exemplars.nearest_voice_exemplars(user_id, str(post_content or "")[:1000])
+                 if post_comment is None and user_id else [])
+    prompt += _voice_exemplars.exemplar_block(exemplars)
+
     content = [{"type": "text", "text": prompt}]
 
     if post_img_url:
@@ -725,7 +736,8 @@ def generate_ai_response(post_content: Any, profile: LinkedInProfile,
                              user_id=user_id, action_type="comment")
 
     return _gated_comment(_draft, post_content, recent_comments=recent_comments, user_id=user_id,
-                          ground_specifics=True, prefs=prefs, post_body=POST_BODY_READABLE)
+                          ground_specifics=True, prefs=prefs, post_body=POST_BODY_READABLE,
+                          exemplars=exemplars)
 
 
 # Research material ACTUALLY handed to a post's writer, keyed by post id (issue #1971). The post
@@ -940,7 +952,8 @@ def _unbacked_claims(claims: list, user_id: "int | None") -> "list | None":
 def _gated_comment(draft, post_content, recent_comments: list = None,
                    user_id: int = None, ground_specifics: bool = False,
                    surface: str = "comment", prefs: dict = None,
-                   post_body: str = POST_BODY_UNCHECKED) -> "str | None":
+                   post_body: str = POST_BODY_UNCHECKED,
+                   exemplars: list = None) -> "str | None":
     """Run a comment `draft(fix_directive)` callable through the quality contract, the similarity
     gate, the slop lint and (opt-in) the fact-grounding check until it passes, and return None when
     it never does.
@@ -978,6 +991,8 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
         surface: The slop-lint surface to grade against — `own_post_comment` for the
             author's own seed/second-wave comments, `comment` for everything else.
         post_body: The caller's #1833 body-check verdict, carried onto the `comment_gate` event.
+        exemplars: The user's own example comments the writer was shown (#2627); a draft within the
+            comment cosine bar of one is a near-copy and joins the fix-list.
 
     Returns:
         The first candidate that clears every gate, or None when none of them does.
@@ -1030,6 +1045,11 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
             checks.append("similarity")
             found.append(f"near-duplicate of a recent comment ({similar['measure']} similarity "
                          f"{similar['score']:.2f} > max {similar['threshold']:.2f})")
+        copied = _voice_exemplars.too_close_to_exemplar(candidate, exemplars)
+        if copied:
+            checks.append("exemplar_copy")
+            found.append(f"near-copy of one of the user's own example comments (similarity "
+                         f"{copied['score']:.2f} > max {copied['threshold']:.2f}) — write it fresh")
         # Slop violations join the SAME retry budget as the contract failures: a comment that keeps
         # tripping either one is skipped rather than posted (issue #625).
         if not slop["passes"]:
@@ -1908,7 +1928,8 @@ def generate_nurture_dm(their_message: str, intent: str, profile: "LinkedInProfi
                         first_name: str = None, template_hint: str = None,
                         history: list = None, prefs: dict = None,
                         profile_synthesis: str = None,
-                        recipient_context: dict = None) -> "str | None":
+                        recipient_context: dict = None,
+                        user_id: int = None) -> "str | None":
     """Draft the NEXT message in a live DM thread after a lead replied (issue #485) — the
     context-aware step between "they answered" and "we followed up well".
 
@@ -1952,6 +1973,14 @@ def generate_nurture_dm(their_message: str, intent: str, profile: "LinkedInProfi
     user_prompt = {"role": "user", "content":
         f"My voice:\n{_voice_reference(profile, profile_synthesis)}\n\n{ctx}"
         f"Their reply to me:\n{their_message}\n{_style_directive(prefs)}"}
+    # Few-shot from the user's own writing (#2627); "" (prompt unchanged) unless the flag is on and
+    # enough exemplars exist. The query is the contact's reply, which already goes to the same
+    # LiteLLM proxy for drafting; the Phase 2 sensitive-info check will cover both calls.
+    dm_exemplars = (_voice_exemplars.nearest_voice_exemplars(user_id, str(their_message or "")[:500])
+                    if user_id else [])
+    voice_block = _voice_exemplars.exemplar_block(dm_exemplars)
+    if voice_block:
+        user_prompt = {"role": "user", "content": user_prompt["content"] + voice_block}
     temperature = round(random.uniform(0.4, 0.6), 2)
 
     def _draft(fix: str = "") -> "str | None":
@@ -1962,8 +1991,14 @@ def generate_nurture_dm(their_message: str, intent: str, profile: "LinkedInProfi
         content = response.choices[0].message.content
         if content is None:
             return None
-        return _humanize_text(content.strip(), content_type="dm",
+        text = _humanize_text(content.strip(), content_type="dm",
                               profile_synthesis=profile_synthesis, prefs=prefs, max_chars=300)
+        # One fresh retry when the draft near-copies an exemplar it was shown (#2627); the lint's own
+        # redrafts pass a directive, so this never nests.
+        if not fix and _voice_exemplars.too_close_to_exemplar(text, dm_exemplars):
+            return _draft("\nYour last draft nearly copied one of the user's example messages. "
+                          "Write it fresh, in their style but in new words.")
+        return text
 
     return lint_repaired(_draft(), "dm", _draft, action_type="dm")
 

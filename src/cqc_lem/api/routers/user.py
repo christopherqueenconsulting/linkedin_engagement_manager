@@ -3052,6 +3052,48 @@ async def upload_post_video_endpoint(
     return ResponseModel(status_code=200, detail={"video_url": video_url})
 
 
+@router.post("/voice-exemplars", responses={
+    200: {"description": "Export ingested; counts of what was stored and skipped"},
+    **{k: v for k, v in error_responses.items() if k in [400, 401]},
+    404: {"description": "Voice exemplars are not enabled"},
+})
+async def upload_voice_exemplars_endpoint(
+    session_token: str = Form(...),
+    kind: str = Form(...),
+    file: UploadFile = File(...),
+) -> ResponseModel[dict[str, Any]]:
+    """Ingest the author's LinkedIn export CSV as voice exemplars (issue #2627, Phase 1a).
+
+    `kind=comments` takes `Comments.csv`, `kind=shares` takes `Shares.csv`. The caller is the
+    session user; the file is spooled with the same bounded reader as a post video, parsed,
+    deduped, length- and row-capped, and embedded at ingest. Behind `VOICE_EXEMPLARS`.
+    """
+    from starlette.concurrency import run_in_threadpool
+
+    from cqc_lem.utilities.ai import voice_exemplars as ve
+
+    user_id = _main.require_session_user_id(session_token)
+    if not ve.voice_exemplars_enabled(user_id):
+        raise HTTPException(status_code=404, detail="Voice exemplars are not enabled")
+    if kind not in ("comments", "shares"):
+        raise HTTPException(status_code=400, detail="kind must be 'comments' or 'shares'")
+    spooled = None
+    try:
+        spooled, size = await _spool_upload(file, ve.MAX_UPLOAD_BYTES)
+        if size > ve.MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=400,
+                                detail=f"File is larger than {ve.MAX_UPLOAD_BYTES // (1024 * 1024)} MB")
+        with open(spooled, "rb") as fh:
+            raw = fh.read()
+    finally:
+        _drop_temp_upload(spooled)
+    texts = ve.parse_export_csv(kind, raw)
+    if not texts:
+        raise HTTPException(status_code=400, detail="No text column found in that file")
+    result = await run_in_threadpool(ve.ingest_exemplars, user_id, kind, texts)
+    return ResponseModel(status_code=200, detail=result)
+
+
 @router.post("/post/image/remove", responses={
     200: {"description": "Image removed"},
     **{k: v for k, v in error_responses.items() if k in [401, 403, 404]},
