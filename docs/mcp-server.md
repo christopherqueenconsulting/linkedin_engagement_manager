@@ -325,6 +325,47 @@ the `docker` group. `scripts/` there is the checked-out release tag (`scripts/de
 `git checkout --quiet "${TAG}"`), so `scripts/mcp_revoke_all.py` is present on any running release
 that contains P2. A release older than P2 has no MCP tokens to revoke, so step 2 does not apply to it.
 
+### W2-only fast path: the write tools misbehave, the reads are fine
+
+Try this before the full procedure below when only the queue-only writes (W2) are the problem.
+
+- **Turn writes off.** Set `mcp-server-writes` off for the account: remove its distinct-id
+  override in PostHog (the flag is at 0 % otherwise). A write tool then answers `isError`
+  `writes_disabled`. It is live within `POSTHOG_FLAG_POLL_SECONDS` per worker (default 30).
+  `MCP_SERVER_WRITES_ENABLED=false` is only the FALLBACK: the env var decides only when PostHog
+  cannot be read (`docs/feature-flags.md`), so check that it is not `true` on the box, but do not
+  rely on it while PostHog answers. If writes must stop **instantly**, use the kill switch
+  (`mcp:kill`, step 1 below), which stops reads too.
+- **Find what the agents queued.** Every row an agent wrote is marked: `scheduled_dms.source='mcp'`,
+  `connection_requests.source='mcp'`, `outreach_funnel_targets.created_via='mcp'` and
+  `catchup_touches.edited_via='mcp'`. An approval an agent made on an internal or sandbox account
+  is `approved_by LIKE 'mcp:%'`:
+
+  ```bash
+  cd /opt/lem
+  ./scripts/compose.sh exec -T mysql \
+    sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysql -u"$MYSQL_USER" "$MYSQL_DATABASE"' <<'SQL'
+  SELECT 'dm' AS queue, user_id, status, COUNT(*) AS n FROM scheduled_dms
+    WHERE source = 'mcp' GROUP BY user_id, status
+  UNION ALL SELECT 'connection_request', user_id, status, COUNT(*) FROM connection_requests
+    WHERE source = 'mcp' GROUP BY user_id, status
+  UNION ALL SELECT 'outreach_target', user_id, status, COUNT(*) FROM outreach_funnel_targets
+    WHERE created_via = 'mcp' GROUP BY user_id, status
+  UNION ALL SELECT 'catchup_touch', user_id, status, COUNT(*) FROM catchup_touches
+    WHERE edited_via = 'mcp' GROUP BY user_id, status;
+  SQL
+  ```
+
+- **Deal with them in LEM, not in SQL.** A `pending` row sends nothing until a human approves it,
+  so the account owner (or an operator) either rejects or cancels it in the review screens
+  (Content -> DMs, Connections, Outreach, Catch-up, or the Daily review), or simply leaves it
+  PENDING. The exception is an **internal or sandbox account**, where `lem_approve_item` can
+  approve: there, look for `approved_by LIKE 'mcp:%'` rows still `approved` (not yet sent) and
+  cancel them in the same screens before the next send run. On an internal account that send is
+  REAL; on a sandbox account it is a dry run.
+
+If that is not enough, run the full procedure.
+
 1. **Kill switch on.** `./scripts/compose.sh exec -T redis redis-cli -n 0 SET mcp:kill 1`, or
    `POST /api/admin/mcp-kill {"on": true}` (step-up, audited). The next request answers 503
    `mcp_disabled_by_operator` (§ Kill switch, Verify).
@@ -346,6 +387,12 @@ that contains P2. A release older than P2 has no MCP tokens to revoke, so step 2
      P2 stays: the endpoint, the scopes and the mint keep working, with no tools to call.
    - **P2 broken** (scopes and mint, merge `4657be55`): redeploy the release immediately before the
      P2 release. P1 and W1 stay; the endpoint goes back to answering 401 to every request.
+   - **W2 broken** (queue-only write tools and `lem_approve_item`, PR #2731; the W2 merge SHA is
+     filled in here after merge, or read it from that PR's "merged commit"): redeploy the release
+     immediately before the W2 release,
+     `git tag --sort=-v:refname --no-contains <W2 merge commit> | head -1`. P1, W1, P2, P3 and P4
+     stay, and so does W2b (#2730, the spend tools) if it merged before W2. Try the W2-only fast
+     path above first: it is usually enough.
 
    The newest release WITHOUT a phase is
    `git tag --sort=-v:refname --no-contains <phase merge commit> | head -1`. Deploy it as in
@@ -358,8 +405,14 @@ that contains P2. A release older than P2 has no MCP tokens to revoke, so step 2
    ```
 
    Or use the **Redeploy / Rollback VPS** workflow with that tag and `rollback` ticked
-   (`docs/DEPLOYMENT.md` § "Manual redeploy / rollback"). No MCP phase adds a migration, so the
-   redeploy changes no data.
+   (`docs/DEPLOYMENT.md` § "Manual redeploy / rollback").
+
+   **Data.** P1 to P4 add no migration. W2 adds ONE, `V20261124083939`: two NULLable
+   `VARCHAR(32)` columns, `outreach_funnel_targets.created_via` and `catchup_touches.edited_via`.
+   It is additive, and a rollback does **not** revert it (Flyway only moves forward). It is harmless
+   to an older image, which never names those columns, so no `DROP` is needed and none should be
+   run. The pre-migration safety net is the database backup: `./scripts/backup.sh`, the first
+   command of the redeploy above (run it before the Redeploy / Rollback workflow too).
 4. **Check health.** `curl -fsS https://app.<domain>/health`. `/health` stays 200 even when the MCP
    session manager fails to start, because the MCP lifespan fails open, so a non-200 means
    something other than MCP is wrong. Leave the kill switch on until the fix ships. Removing the
