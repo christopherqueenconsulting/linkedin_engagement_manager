@@ -805,10 +805,11 @@ def _mcp_grants(read_paths: frozenset, writes: Dict[str, frozenset[str]]) -> Dic
 
 # The templated grants of a verb-limited scope: `(anchored pattern, verbs)`. A path parameter cannot
 # be a literal key in `_SCOPE_PATH_METHODS`, so one that a tool needs is listed here instead, and the
-# resolver consults it only when no literal key matched. `[^/]+` crosses no segment, the same rule as
-# `_SCOPE_PATTERNS`; the handler's own `int` parameter and ownership check do the rest.
+# resolver consults it only when no literal key matched. Each parameter is matched as narrowly as
+# the handler declares it (`[0-9]+` for an `int` id), so a grant opens no sibling path such as
+# `/posts/bulk_update`; the drift guard (`test_mcp_tool_surface.py`) refuses a broader pattern.
 #   /posts/{post_id}   lem_get_post and lem://post/{id} (MCP P3): the owner-scoped one-post read
-_MCP_PATTERN_METHODS: tuple = ((re.compile(r"/posts/[^/]+"), _GET_ONLY),)
+_MCP_PATTERN_METHODS: tuple = ((re.compile(r"/posts/[0-9]+"), _GET_ONLY),)
 _SCOPE_PATH_PATTERN_METHODS: Dict[str, tuple] = {
     SESSION_SCOPE_MCP: _MCP_PATTERN_METHODS,
     SESSION_SCOPE_MCP_OUTREACH: _MCP_PATTERN_METHODS,

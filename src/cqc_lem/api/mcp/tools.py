@@ -33,7 +33,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from cqc_lem.api.mcp.lifespan import mcp_state
 from cqc_lem.api.mcp.loopback import FAN_OUT_CONCURRENCY, REFUSED, Loopback, ToolFailure
-from cqc_lem.api.mcp.redact import THIRD_PARTY_NOTE, fence_rows
+from cqc_lem.api.mcp.redact import THIRD_PARTY_NOTE, fence_row, fence_rows
 from cqc_lem.utilities.db import SESSION_SCOPE_MCP, SESSION_SCOPE_MCP_OUTREACH, PostStatus
 
 GET = "GET"
@@ -68,7 +68,7 @@ class TextArgs(ToolArgs):
 class PageArgs(ToolArgs):
     """MCP paging: an opaque `cursor` from the previous result, and `limit` (at most 100)."""
 
-    cursor: Optional[str] = Field(None, max_length=16, pattern=r"^[0-9]+$",
+    cursor: Optional[str] = Field(None, max_length=16, pattern=r"^[1-9][0-9]*$",
                                   description="`next_cursor` from the previous page.")
     limit: int = Field(25, ge=1, le=100)
 
@@ -83,7 +83,7 @@ class DashboardArgs(ToolArgs):
 PostStatusFilter = Literal[tuple(status.value for status in PostStatus)]  # type: ignore[valid-type]
 
 
-class ListPostsArgs(PageArgs):
+class ListPostsArgs(PageArgs, TextArgs):
     """Filters for the caller's posts."""
 
     status_filter: Optional[PostStatusFilter] = None
@@ -93,7 +93,7 @@ class ListPostsArgs(PageArgs):
     sort_order: Literal["asc", "desc"] = "desc"
 
 
-class PostIdArgs(ToolArgs):
+class PostIdArgs(TextArgs):
     """One of the caller's posts."""
 
     post_id: int = Field(..., ge=1)
@@ -291,11 +291,36 @@ async def _automation_health(lb: Loopback, _args: NoArgs) -> dict[str, Any]:
     return await _health(lb)
 
 
+def _outreach_scope(lb: Loopback) -> bool:
+    return lb.principal.scope in OUTREACH_ONLY
+
+
+def _shape_tasks(lb: Loopback, tasks: Any) -> Any:
+    """The planned-tasks list as this scope may see it.
+
+    A DM task's `title` is the recipient's name or the opening of the message to them
+    (`get_planned_tasks`), so it is another person's data: withheld from `mcp`, and fenced under
+    `third_party` for `mcp_outreach`, which opted into that list at mint (O11). Every other kind's
+    title is the user's own (their post, their newsletter edition).
+    """
+    if isinstance(tasks, ToolFailure):
+        return _section(tasks)
+    rows = tasks.get("tasks") if isinstance(tasks, dict) else None
+    if not isinstance(rows, list):
+        return None
+    outreach = _outreach_scope(lb)
+    shaped = []
+    for row in rows:
+        if isinstance(row, dict) and row.get("kind") == "DM":
+            row = fence_row(row, ("title",), outreach) if outreach else {**row, "title": None}
+        shaped.append(row)
+    return shaped
+
+
 async def _dashboard(lb: Loopback, args: DashboardArgs) -> dict[str, Any]:
     stats, tasks = await _gather(lambda: lb.get("/dashboard/stats"),
                                  lambda: lb.get("/dashboard/planned-tasks", {"limit": args.limit}))
-    return {"counts": _section(stats),
-            "upcoming": _section(tasks).get("tasks") if isinstance(tasks, dict) else _section(tasks)}
+    return {"counts": _section(stats), "upcoming": _shape_tasks(lb, tasks)}
 
 
 async def _account_overview(lb: Loopback, _args: NoArgs) -> dict[str, Any]:
@@ -306,9 +331,17 @@ async def _account_overview(lb: Loopback, _args: NoArgs) -> dict[str, Any]:
             "content_generation": _section(generation)}
 
 
-def _with_review_url(row: Any) -> Any:
-    if isinstance(row, dict):
-        return {**row, "review_url": _spa_url("/content")}
+def _with_review_url(row: Any, include_text: bool = False) -> Any:
+    """A post row with its `review_url`, and its curated source's credit and URL fenced.
+
+    A curated post comments on someone else's piece: the credit line names that author and the URL
+    is theirs, so both are third-party text like any other (`include_text`).
+    """
+    if not isinstance(row, dict):
+        return row
+    row = {**row, "review_url": _spa_url("/content")}
+    if isinstance(row.get("curated"), dict):
+        row["curated"] = fence_row(row["curated"], ("credit", "url"), include_text)
     return row
 
 
@@ -319,7 +352,7 @@ async def _list_posts(lb: Loopback, args: ListPostsArgs) -> dict[str, Any]:
               "start_date": args.start_date.isoformat() if args.start_date else None,
               "end_date": args.end_date.isoformat() if args.end_date else None}
     detail = await lb.get("/posts", params) or {}
-    posts = [_with_review_url(p) for p in detail.get("posts") or []]
+    posts = [_with_review_url(p, args.include_text) for p in detail.get("posts") or []]
     return {"posts": posts, "total": detail.get("total"),
             "next_cursor": _next_cursor(page, args.limit, detail.get("total"), len(posts))}
 
@@ -328,47 +361,105 @@ async def _get_post(lb: Loopback, args: PostIdArgs) -> dict[str, Any]:
     post, url = await _gather(lambda: lb.get(f"/posts/{args.post_id}"),
                               lambda: lb.get("/post_url", {"post_id": args.post_id}))
     post = _require(post)
-    return {"post": _with_review_url(post),
+    return {"post": _with_review_url(post, args.include_text),
             "linkedin_post_url": (url or {}).get("post_url") if isinstance(url, dict) else None}
 
 
-def _local_today(timezone_name: Optional[str]) -> dt.date:
+def _zone(timezone_name: Optional[str]) -> dt.tzinfo:
     try:
-        zone = ZoneInfo(timezone_name) if timezone_name else dt.timezone.utc
+        return ZoneInfo(timezone_name) if timezone_name else dt.timezone.utc
     except (ZoneInfoNotFoundError, ValueError):
-        zone = dt.timezone.utc
-    return dt.datetime.now(zone).date()
+        return dt.timezone.utc
+
+
+def _local_today(timezone_name: Optional[str]) -> dt.date:
+    return dt.datetime.now(_zone(timezone_name)).date()
+
+
+def _local_date(value: Any, zone: dt.tzinfo) -> Optional[dt.date]:
+    """The calendar day an ISO timestamp falls on in `zone`; a naive value is read as UTC."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        stamp = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=dt.timezone.utc)
+    return stamp.astimezone(zone).date()
+
+
+def _open_slots(today: dt.date, weeks: int, posting_days: list, posts_per_week: Any,
+                taken: dict[dt.date, int]) -> list[str]:
+    """Posting days from `today` on that carry no post, at most what each week still allows.
+
+    A week is Monday to Sunday in the user's calendar. `posts_per_week` is the plan's cadence
+    (#621), so a week already holding that many posts has no open slot even on a free posting day.
+    """
+    per_week = posts_per_week if isinstance(posts_per_week, int) and posts_per_week > 0 else None
+    used: dict[dt.date, int] = {}
+    for day, count in taken.items():
+        monday = day - dt.timedelta(days=day.weekday())
+        used[monday] = used.get(monday, 0) + count
+    slots = []
+    for offset in range(weeks * 7):
+        day = today + dt.timedelta(days=offset)
+        if day.weekday() not in posting_days or day in taken:
+            continue
+        monday = day - dt.timedelta(days=day.weekday())
+        if per_week is not None and used.get(monday, 0) >= per_week:
+            continue
+        used[monday] = used.get(monday, 0) + 1
+        slots.append(day.isoformat())
+    return slots
 
 
 async def _content_plan(lb: Loopback, args: ContentPlanArgs) -> dict[str, Any]:
     now = dt.datetime.now(dt.timezone.utc)
     end = now + dt.timedelta(weeks=args.weeks)
-    tasks, posts, stats, prefs = await _gather(
-        lambda: lb.get("/dashboard/planned-tasks", {"limit": 50}),
-        lambda: lb.get("/posts", {"page": 1, "page_size": 100, "sort_order": "asc",
-                                  "start_date": now.isoformat(), "end_date": end.isoformat()}),
-        lambda: lb.get("/user/post-stats"),
-        lambda: lb.get("/user/engagement-preferences"))
-    scheduled = [] if isinstance(posts, ToolFailure) else [
-        {k: p.get(k) for k in ("post_id", "scheduled_time", "status", "post_type", "archetype")}
-        for p in (posts or {}).get("posts") or []]
+    stats = await _gather(lambda: lb.get("/user/post-stats"))
+    stats = stats[0]
     timezone_name = stats.get("timezone") if isinstance(stats, dict) else None
+    zone = _zone(timezone_name)
+    today = dt.datetime.now(zone).date()
+    # Posts from the start of this week (the user's Monday), so the per-week cap counts the posts
+    # already in it, not only those still ahead.
+    week_start = dt.datetime.combine(today - dt.timedelta(days=today.weekday()), dt.time(),
+                                     tzinfo=zone).astimezone(dt.timezone.utc)
+    window = {"page": 1, "page_size": 200, "sort_order": "asc",
+              "start_date": week_start.isoformat(), "end_date": end.isoformat()}
+    tasks, posts, planning, prefs = await _gather(
+        lambda: lb.get("/dashboard/planned-tasks", {"limit": 50}),
+        lambda: lb.get("/posts", window),
+        # `planning` placeholders are left out of an unfiltered list (#1722) but hold their slot.
+        lambda: lb.get("/posts", {**window, "status_filter": "planning"}),
+        lambda: lb.get("/user/engagement-preferences"))
+    readable = not isinstance(posts, ToolFailure) and not isinstance(planning, ToolFailure)
+    # A rejected (or soft-deleted, which is the same status) post holds no slot.
+    rows = [] if not readable else [
+        p for p in [*((posts or {}).get("posts") or []), *((planning or {}).get("posts") or [])]
+        if isinstance(p, dict) and p.get("status") != "rejected"]
+    scheduled = [{k: p.get(k) for k in ("post_id", "scheduled_time", "status", "post_type",
+                                        "archetype")}
+                 for p in rows if (_local_date(p.get("scheduled_time"), zone) or today) >= today]
     posting_days = prefs.get("posting_days") if isinstance(prefs, dict) else None
+    posts_per_week = prefs.get("posts_per_week") if isinstance(prefs, dict) else None
     open_slots: Optional[list[str]] = None
-    if isinstance(posting_days, list) and not isinstance(posts, ToolFailure):
-        # Days LEM may post on (0 = Monday) in the window that carry no post yet, in the user's own
-        # calendar. None when either input is unreadable: unknown is never "fully booked".
-        taken = {str(p.get("scheduled_time") or "")[:10] for p in scheduled}
-        today = _local_today(timezone_name)
-        open_slots = [day.isoformat() for day in
-                      (today + dt.timedelta(days=offset) for offset in range(args.weeks * 7))
-                      if day.weekday() in posting_days and day.isoformat() not in taken]
+    if isinstance(posting_days, list) and readable:
+        # In the user's own calendar. None when an input is unreadable: unknown is never "fully
+        # booked".
+        taken: dict[dt.date, int] = {}
+        for row in rows:
+            day = _local_date(row.get("scheduled_time"), zone)
+            if day is not None:
+                taken[day] = taken.get(day, 0) + 1
+        open_slots = _open_slots(today, args.weeks, posting_days, posts_per_week, taken)
     return {
         "window": {"from": now.isoformat(), "to": end.isoformat(), "timezone": timezone_name},
-        "scheduled_posts": None if isinstance(posts, ToolFailure) else scheduled,
-        "upcoming_tasks": _section(tasks).get("tasks") if isinstance(tasks, dict) else _section(tasks),
+        "scheduled_posts": scheduled if readable else None,
+        "upcoming_tasks": _shape_tasks(lb, tasks),
         "posting_days": posting_days,
-        "posts_per_week": prefs.get("posts_per_week") if isinstance(prefs, dict) else None,
+        "posts_per_week": posts_per_week,
         "open_slots": open_slots,
         "best_times": (stats.get("recommendations") if isinstance(stats, dict) else _section(stats)),
     }
@@ -401,11 +492,24 @@ async def _weekly_report(lb: Loopback, _args: NoArgs) -> dict[str, Any]:
     return {"enabled": True, "report": report}
 
 
+# The activity rows whose `post_url` really is a POST: LEM's own posts and the posts it commented
+# on. Every other action logs its TARGET there (a DM's or invite's recipient profile, a follow),
+# which is a person, so it is shown only to `mcp_outreach`.
+POST_ACTION_TYPES = frozenset({"post", "comment", "reply", "group_comment"})
+
+
 async def _activity(lb: Loopback, args: ActivityArgs) -> dict[str, Any]:
     rows = await lb.get("/activity", {"limit": args.limit}) or []
-    rows = [{**r, "post_url": None} if isinstance(r, dict) and str(r.get("post_url") or "")
-            .startswith("feedpost://") else r for r in rows]
-    return {"activity": fence_rows(rows, ("message",), args.include_text)}
+    outreach = _outreach_scope(lb)
+    shaped = []
+    for row in rows:
+        if isinstance(row, dict):
+            url = str(row.get("post_url") or "")
+            if url.startswith("feedpost://") or (
+                    not outreach and row.get("action_type") not in POST_ACTION_TYPES):
+                row = {**row, "post_url": None}
+        shaped.append(row)
+    return {"activity": fence_rows(shaped, ("message",), args.include_text)}
 
 
 # Each outreach queue: its route, the key its rows sit under, and the fields that hold other
@@ -564,10 +668,12 @@ READ_TOOLS: tuple[ToolSpec, ...] = (
              NoArgs, BOTH_SCOPES, _HEALTH_CALLS, _automation_health),
     ToolSpec("lem_list_posts", "List posts",
              "Your posts, newest first by default, with status, gate reasons and authenticity "
-             "score. Page with `cursor`.",
+             "score. Page with `cursor`. A curated post's source credit and URL are withheld "
+             "unless `include_text`.",
              ListPostsArgs, BOTH_SCOPES, ((GET, "/posts"),), _list_posts),
     ToolSpec("lem_get_post", "Get one post",
-             "One of your posts by id, plus its LinkedIn URL once published.",
+             "One of your posts by id, plus its LinkedIn URL once published. A curated post's "
+             "source credit and URL are withheld unless `include_text`.",
              PostIdArgs, BOTH_SCOPES, ((GET, "/posts/{post_id}"), (GET, "/post_url")), _get_post),
     ToolSpec("lem_get_content_plan", "Content plan",
              "The next 1-4 weeks: scheduled posts, upcoming tasks, open posting days and the best "
