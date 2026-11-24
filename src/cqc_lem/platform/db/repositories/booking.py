@@ -145,7 +145,47 @@ def apply_booking(user_id: int, invitee_uri: str, event_uri: str, email: Optiona
             cursor.execute(
                 "INSERT INTO calendly_bookings (user_id, invitee_uri, event_uri, lead_id, prior_manual_stage) "
                 "VALUES (%s,%s,%s,%s,%s)", (user_id, invitee_uri, (event_uri or "")[:255], lead_id, prior))
-            return outcome
     except mysql.connector.Error as err:
         log_error("Could not apply Calendly booking", error_type=type(err).__name__, user_id=user_id)
         return BOOKING_ERROR
+    # After the commit, so a failed touch read can never undo the booking itself.
+    attribute_booking(user_id, lead_id, invitee_uri)
+    return outcome
+
+
+def attribute_booking(user_id: int, lead_id: int, invitee_uri: str) -> bool:
+    """Store first/last touch on the booking's stage event (#2668); True when a row was updated.
+
+    Walks back `ATTRIBUTION_WINDOW_DAYS` from the event time through the lead's recorded activity
+    and inbound reply events. No touch is `unattributed`, never a guess. A read fault writes nothing
+    (attribution stays NULL) rather than a false `unattributed`. Leads keyed by email (a booking with
+    no matching LinkedIn lead) have no activity under that key, so they read `unattributed`.
+    """
+    from cqc_lem.platform.db.repositories.outreach import get_lead_activity
+    from cqc_lem.utilities.lead_scoring import LeadActivity, attribute_touches, group_activity
+    try:
+        with db_cursor() as cursor:
+            cursor.execute("SELECT person_key FROM leads WHERE id=%s AND user_id=%s", (lead_id, user_id))
+            lead = cursor.fetchone()
+            cursor.execute("SELECT id, at FROM lead_stage_events WHERE lead_id=%s AND source=%s "
+                           "AND to_stage=%s AND evidence_ref=%s ORDER BY id DESC LIMIT 1",
+                           (lead_id, LeadStageSource.BOOKING.value, LeadStage.MEETING_BOOKED.value,
+                            invitee_uri[:255]))
+            event = cursor.fetchone()
+            cursor.execute("SELECT at, to_stage FROM lead_stage_events WHERE lead_id=%s "
+                           "AND to_stage LIKE 'reply:%%'", (lead_id,))
+            replies = cursor.fetchall() or []
+        if not lead or not event:
+            return False
+        person = group_activity(get_lead_activity(user_id, days=120)).get(lead[0])
+        activities = list(person["activities"]) if person else []
+        activities += [LeadActivity(kind="reply", occurred_at=r[0], detail=r[1]) for r in replies]
+        result = attribute_touches(activities, event[1])
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("UPDATE lead_stage_events SET first_touch=%s, last_touch=%s, attribution=%s "
+                           "WHERE id=%s", (result["first_touch"], result["last_touch"],
+                                           result["attribution"], event[0]))
+        return True
+    except mysql.connector.Error as err:
+        log_error("Could not attribute booking", error_type=type(err).__name__, user_id=user_id)
+        return False
