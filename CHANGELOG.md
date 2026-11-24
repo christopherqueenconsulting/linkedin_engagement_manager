@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.216.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.215.0...v0.216.0) (2026-11-24)
+
+
+### Features
+
+* **content-quality:** voice exemplars from the user's own writing, Phase 1a (refs [#2627](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2627)) ([#2743](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2743)) ([947b042](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/947b0425ec81ffc58ec38dbb33d45061248a89cc))
+* **profile:** profile audit rubric, history tables and weekly/monthly beats, Phase 1 (refs [#2631](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2631)) ([#2745](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2745)) ([c928717](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c92871769dc488322a6408f721ccd293d744f861))
+* **reports:** weekly report SPA page and on-demand ICP audience report (closes [#2667](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2667)) ([#2748](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2748)) ([9aaaaa3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9aaaaa37dfd84f6a420ed31c622f24a94514654b))
+
 ## [0.215.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.214.0...v0.215.0) (2026-11-24)
 
 
