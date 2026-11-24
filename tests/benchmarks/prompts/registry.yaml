@@ -426,3 +426,7 @@ sites:
     id: ops.issue_triage
     family: classifier
     status: planned
+  cqc_lem.utilities.profile_audit_llm:llm_audit_profile#0:
+    id: profile.audit_icp_language
+    family: json_planner
+    status: planned
