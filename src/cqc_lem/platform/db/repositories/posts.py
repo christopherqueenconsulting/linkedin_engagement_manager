@@ -2830,3 +2830,59 @@ def get_held_pending_posts(user_id: int) -> list[dict]:
     except mysql.connector.Error as err:
         log_error("Could not list held pending posts", exc=err, user_id=user_id)
         return []
+
+
+def attach_image_to_pending_post(post_id: int, user_id: int, image_url: str) -> bool:
+    """Point a still-PENDING post of this user at a newly rendered image (MCP W2b, issue #2689).
+
+    The MCP spend tools render media in the background, so a human may approve the post while the
+    render runs. Guarding the write in SQL means a render that lands late never changes what an
+    approved post will publish: the row has to be PENDING at the moment of the write.
+
+    Args:
+        post_id: The post to attach the image to.
+        user_id: Its owner; a row of any other user is never touched.
+        image_url: The stored image's public URL.
+
+    Returns:
+        True when exactly one pending row was updated; False when none matched or on a fault.
+    """
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE posts SET image_url = %s WHERE id = %s AND user_id = %s AND status = %s",
+                (image_url, post_id, user_id, PostStatus.PENDING.value))
+            return cursor.rowcount == 1
+    except mysql.connector.Error as err:
+        log_error("Could not attach an image to a pending post", exc=err, user_id=user_id,
+                  post_id=post_id)
+        return False
+
+
+def convert_pending_post_to_video(post_id: int, user_id: int, content: str) -> bool:
+    """Make a still-PENDING post of this user a video post, after its video landed (MCP W2b).
+
+    Called only once the video asset is stored, never before: a video post with no `video_url`
+    is what `get_unposted_posts_missing_assets` selects, so flipping the type first would let the
+    asset backfill queue a second paid render of the same post. `content` carries the caption with
+    any AI-visuals disclosure applied.
+
+    Args:
+        post_id: The post to convert.
+        user_id: Its owner; a row of any other user is never touched.
+        content: The caption to store with the video.
+
+    Returns:
+        True when exactly one pending row was updated; False when none matched or on a fault.
+    """
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE posts SET post_type = %s, content = %s "
+                "WHERE id = %s AND user_id = %s AND status = %s",
+                (PostType.VIDEO.value, content, post_id, user_id, PostStatus.PENDING.value))
+            return cursor.rowcount == 1
+    except mysql.connector.Error as err:
+        log_error("Could not convert a pending post to video", exc=err, user_id=user_id,
+                  post_id=post_id)
+        return False

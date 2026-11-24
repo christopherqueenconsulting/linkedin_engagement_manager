@@ -149,6 +149,14 @@ ROLE_SCOPES = _scopes()
 # The roles held to read verbs. The MCP seats are read-only in P2 (epic #2682); W2 moves them out
 # when it grants exactly one write verb per write-tool path.
 READ_ONLY_ROLES = ("observer", "mcp", "mcp_outreach")
+# The ONLY write verbs a read-only role reaches: the MCP AI/media spend routes (W2b, owner ruling O4).
+# Each creates or illustrates a PENDING draft, never approves, sends or edits anything else; their
+# bodies carry no `action`/`status` (pinned below), and each handler refuses every seat but an MCP one.
+SPEND_WRITE_REACH: dict[str, frozenset] = {
+    role: frozenset({("POST", "/user/mcp-spend/post"), ("POST", "/user/mcp-spend/post-image"),
+                     ("POST", "/user/mcp-spend/post-video")})
+    for role in ("mcp", "mcp_outreach")
+}
 
 
 @pytest.fixture(scope="module")
@@ -278,11 +286,28 @@ class TestReadOnlyRolesReachNoWriteVerb:
             route_table: list[tuple[str, str, Any]],
             role: str,
     ) -> None:
+        allowed = SPEND_WRITE_REACH.get(role, frozenset())
         offenders = [_describe(role, m, p, r)
                      for (m, p, r) in _reachable(main_mod, route_table, ROLE_SCOPES[role])
-                     if m not in READ_VERBS]
+                     if m not in READ_VERBS and (m, p) not in allowed]
         assert not offenders, (
             f"\n\nThe read-only {role!r} role can reach WRITE verbs:\n" + "\n".join(offenders) + "\n")
+
+    @pytest.mark.parametrize("role", sorted(SPEND_WRITE_REACH))
+    def test_the_spend_writes_are_reachable_exactly_and_carry_no_approval_field(
+            self,
+            main_mod: ModuleType,
+            route_table: list[tuple[str, str, Any]],
+            role: str,
+    ) -> None:
+        """The allowlist above is exact: every entry is reached, and none can move a draft."""
+        writes = [(m, p, r) for (m, p, r) in _reachable(main_mod, route_table, ROLE_SCOPES[role])
+                  if m not in READ_VERBS]
+        assert {(m, p) for (m, p, _r) in writes} == SPEND_WRITE_REACH[role]
+        for _m, p, r in writes:
+            assert not _body_fields(r) & _APPROVAL_FIELDS, p
+            assert "_mcp_caller(" in inspect.getsource(r.endpoint) or \
+                "_queue_media(" in inspect.getsource(r.endpoint), p
 
     @pytest.mark.parametrize("role", READ_ONLY_ROLES)
     def test_it_reaches_none_of_the_handler_guarded_routes(

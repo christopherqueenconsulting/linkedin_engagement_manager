@@ -2989,6 +2989,180 @@ def draft_occasion_post_task(post_id: int, archetype: str, occasion: str):
     return draft_occasion_post(post_id, archetype, occasion)
 
 
+# --- MCP spend tools (W2b, issue #2689) -----------------------------------------------------------
+# Three thin wrappers that run an agent's spend through the SAME generation paths the Content Studio
+# uses: `regenerate_post` for text, `post_image.generate_image_for_post` for an image, and
+# `_generate_video_src` + `_store_video_asset` for a video. No prompt is written here. Each runs only
+# on a PENDING post and leaves it PENDING; the media writes are SQL-guarded to a pending row, so a
+# post a human approved while the render ran is never changed underneath them. Each is admitted
+# under the free-trial daily AI cap at its entry (`admit_pipeline`), so once it starts it finishes.
+
+
+def _still_pending(post_id: int) -> bool:
+    from cqc_lem.utilities.db import get_post_status
+    return get_post_status(post_id) == PostStatus.PENDING.value
+
+
+def generate_agent_post(post_id: int, guidance: Optional[str]) -> Optional[str]:
+    """Write the text of a post an MCP agent created, then leave it PENDING for review.
+
+    The row was inserted PENDING with a placeholder body by `POST /user/mcp-spend/post`; this
+    replaces it through `regenerate_post`, which honours the user's saved voice and settings,
+    applies `guidance` (the agent's topic) the way the studio's "Added Guidance" does, and resets
+    the row to PENDING. A row still holding the placeholder is written even if someone approved it
+    first, because approving a placeholder approved no content; one whose text a human already
+    replaced is left alone. A run that writes nothing marks the post ERROR, so a placeholder is
+    never left looking like a draft.
+
+    Args:
+        post_id: The placeholder post.
+        guidance: The agent's topic and direction for the post.
+
+    Returns:
+        The persisted content, or None when nothing was written.
+    """
+    from cqc_lem.api.mcp.spend import PLACEHOLDER_CONTENT
+    from cqc_lem.utilities.ai_spend_cap import DailyAICapReached, admit_pipeline
+    from cqc_lem.utilities.db import get_post_user_id
+
+    user_id = get_post_user_id(post_id)
+    placeholder = (get_post_content(post_id) or "").strip() == PLACEHOLDER_CONTENT
+    if not user_id or not (placeholder or _still_pending(post_id)):
+        log_info("Agent post is no longer a pending draft; not generating", post_id=post_id,
+                 task_name="generate_agent_post")
+        return None
+    try:
+        with admit_pipeline(user_id):
+            content = regenerate_post(post_id, guidance)
+    except DailyAICapReached:
+        content = None
+    if not content:
+        log_info("Agent post generation wrote nothing; marking the post error", user_id=user_id,
+                 post_id=post_id, task_name="generate_agent_post")
+        if placeholder or _still_pending(post_id):
+            update_db_post_status(post_id, PostStatus.ERROR)
+        return None
+    return content
+
+
+@shared_task.task
+def generate_agent_post_task(post_id: int, guidance: Optional[str] = None):
+    """Celery wrapper: post text generation is a slow lem-complex pipeline."""
+    return generate_agent_post(post_id, guidance)
+
+
+def generate_agent_post_image(post_id: int) -> Optional[str]:
+    """Render and attach an image for a PENDING post an MCP agent created.
+
+    The render is `generate_image_for_post`, the ONE post-image engine (brief, gated renderer,
+    avatar guardrails). The attach is guarded to a pending row; a render that lands after the post
+    left PENDING is deleted, never attached.
+
+    Args:
+        post_id: The post to illustrate.
+
+    Returns:
+        The attached image URL, or None when nothing was attached.
+    """
+    from cqc_lem.utilities.ai_spend_cap import DailyAICapReached, admit_pipeline
+    from cqc_lem.utilities.db import (
+        attach_image_to_pending_post,
+        get_post_image_url,
+        get_post_user_id,
+    )
+    from cqc_lem.utilities.observability import FEATURE_CONTENT, llm_trace
+    from cqc_lem.utilities.post_image import generate_image_for_post, remove_post_image_file
+
+    user_id = get_post_user_id(post_id)
+    text = get_post_content(post_id)
+    if not user_id or not text or not _still_pending(post_id):
+        log_info("Agent post is no longer a pending draft; not rendering an image", post_id=post_id,
+                 task_name="generate_agent_post_image")
+        return None
+    previous = get_post_image_url(post_id)
+    try:
+        with admit_pipeline(user_id), llm_trace("post_image_generation", user_id=user_id,
+                                                feature=FEATURE_CONTENT):
+            image_url, reason = generate_image_for_post(user_id, text, post_id=post_id)
+    except DailyAICapReached:
+        return None
+    if not image_url:
+        log_info(f"Agent post image was not rendered: {reason}", user_id=user_id, post_id=post_id,
+                 task_name="generate_agent_post_image")
+        return None
+    if not attach_image_to_pending_post(post_id, user_id, image_url):
+        remove_post_image_file(image_url)
+        log_info("Agent post left pending while its image rendered; image discarded",
+                 user_id=user_id, post_id=post_id, task_name="generate_agent_post_image")
+        return None
+    if previous and previous != image_url:
+        remove_post_image_file(previous)
+    return image_url
+
+
+@shared_task.task
+def generate_agent_post_image_task(post_id: int):
+    """Celery wrapper: a gated render can outlast the MCP tool's 20-second budget."""
+    return generate_agent_post_image(post_id)
+
+
+def generate_agent_post_video(post_id: int) -> Optional[str]:
+    """Render a video for a PENDING post an MCP agent created, then make it a video post.
+
+    The same source + store steps `regenerate_post`'s video branch runs, on the post's own text.
+    The post becomes a video post only AFTER the asset is stored (see
+    `convert_pending_post_to_video`), and the AI-visuals disclosure is added exactly when that branch
+    adds it: when the clip came from a remote render, not the local title-card fallback.
+
+    Args:
+        post_id: The post to render a video for.
+
+    Returns:
+        The stored video URL, or None when the post was not converted.
+    """
+    from cqc_lem.utilities.ai_spend_cap import DailyAICapReached, admit_pipeline
+    from cqc_lem.utilities.db import convert_pending_post_to_video, get_post_user_id
+
+    user_id = get_post_user_id(post_id)
+    text = get_post_content(post_id)
+    if not user_id or not text or not _still_pending(post_id):
+        log_info("Agent post is no longer a pending draft; not rendering a video", post_id=post_id,
+                 task_name="generate_agent_post_video")
+        return None
+    brief_info: dict = {}
+    try:
+        with admit_pipeline(user_id):
+            video_src_url = _generate_video_src(user_id, text, load_profile_for_user(user_id),
+                                                post_id, brief_info=brief_info)
+            api_video_url = _store_video_asset(post_id, video_src_url, content=text,
+                                               user_id=user_id, brief=brief_info.get("brief"),
+                                               gate_verdict=brief_info.get("gate_verdict"),
+                                               clip_check=brief_info.get("clip_check")) \
+                if video_src_url else None
+    except DailyAICapReached:
+        return None
+    except Exception as e:
+        log_warning("Could not store the agent post video asset", exc=e, user_id=user_id,
+                    post_id=post_id, task_name="generate_agent_post_video")
+        return None
+    if not api_video_url:
+        log_info("Agent post video was not rendered", user_id=user_id, post_id=post_id,
+                 task_name="generate_agent_post_video")
+        return None
+    caption = _apply_ai_disclosure(text) if str(video_src_url).startswith("http") else text
+    if not convert_pending_post_to_video(post_id, user_id, caption):
+        log_info("Agent post left pending while its video rendered; post not converted",
+                 user_id=user_id, post_id=post_id, task_name="generate_agent_post_video")
+        return None
+    return api_video_url
+
+
+@shared_task.task
+def generate_agent_post_video_task(post_id: int):
+    """Celery wrapper: a video render takes minutes."""
+    return generate_agent_post_video(post_id)
+
+
 def _post_content_mix(post_id: int) -> Optional[str]:
     """The post's assigned 70/20/10 class — a regenerate has to keep it or the plan's mix silently
     drifts. Best-effort: an unreadable class only costs the mix steering, never the regenerate.

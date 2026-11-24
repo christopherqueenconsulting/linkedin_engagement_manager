@@ -97,8 +97,8 @@ documented in `utilities/observability.py` and [observability-map.md](observabil
 
 Each tool call logs ONE INFO line, `MCP tool call` with `user_id`, `tool`, `outcome`,
 `latency_ms`; never arguments, results or the token (a caplog test pins the token in no record).
-Outcomes: `ok`, `refused`, `invalid_args`, `upstream_error`, `rate_limited`, `timeout` (W2 adds
-`unknown` for a write that timed out).
+Outcomes: `ok`, `refused`, `invalid_args`, `upstream_error`, `rate_limited`, `timeout`, and
+`unknown` for a write tool that timed out (W2b's spend tools).
 
 ## Limits (owner ruling O10, env `MCP_*`, 0 = refuse all)
 
@@ -107,7 +107,41 @@ Outcomes: `ok`, `refused`, `invalid_args`, `upstream_error`, `rate_limited`, `ti
 | Tool calls | 60 / minute / user | the gate, per JSON-RPC `tools/call` |
 | Inner reads | 240 / minute, 4000 / day / user | the loopback, per inner route call |
 | In flight | 2 per user, 8 per worker | the gate |
-| Writes | 30 / hour, 150 / day | W2 |
+| Writes | 30 / hour, 150 / day | W2, and each W2b spend tool call |
+| Spend sub-cap | 10 text, 3 image, 1 video / UTC day / user (`MCP_SPEND_TEXT` / `_IMAGE` / `_VIDEO`) | W2b, server-side in `/api/user/mcp-spend/*` |
+
+## AI/media spend tools (W2b, owner ruling O4)
+
+`lem_generate_post`, `lem_generate_post_image`, `lem_generate_post_video`, behind `mcp-server-writes`.
+Each tool is ONE `POST` through the loopback to its own narrow route in `api/routers/mcp_spend.py`;
+the route holds every rule, so a client cannot talk its way past one:
+
+1. **MCP seats only** (`mcp_only` for every other seat). `/schedule_post/` and `/update_post/` keep
+   W1's rule unchanged: media fields from an MCP seat are still a 422 `machine_seat_text_only`.
+2. **Media only for a PENDING post THIS token created.** `api/mcp/spend.py` marks a post with
+   `(user_id, session_id)` when an MCP seat creates it (`lem_generate_post`, or a text draft through
+   `/schedule_post/`); the mark lives 90 days. Refusals: `not_found`, `requires_pending`,
+   `not_created_by_this_token`, `requires_text_post`, `post_still_generating`.
+3. **The free-trial daily AI cap first** (`daily_ai_cap`, 429 with `Retry-After`), **then the
+   sub-cap** (`mcp_spend_cap`), so a capped account burns no sub-cap unit. A unit is claimed before
+   dispatch and is not refunded when a render later fails: the cap bounds attempts.
+4. **Never inline**: each route queues a Celery task and answers `status: queued` with the
+   `post_id`. The tasks (`run_content_plan.generate_agent_post*`) run the studio's own paths:
+   `regenerate_post` (text, the agent's topic as guidance), `post_image.generate_image_for_post`
+   (image, the gated engine with the avatar guardrails) and `_generate_video_src` +
+   `_store_video_asset` (video). Each is admitted under the daily cap at entry, so once it starts it
+   finishes.
+
+**Everything stays PENDING.** `lem_generate_post` inserts a PENDING text row holding a placeholder
+body, and `regenerate_post`'s own close-out leaves it PENDING; a run that writes nothing marks it
+`error`. The image attach and the text-to-video conversion are SQL-guarded to a pending row
+(`attach_image_to_pending_post`, `convert_pending_post_to_video`), so a post a human approved while
+the render ran is never changed. A video post is converted only AFTER its asset is stored, because
+the asset backfill selects a pending video post with no `video_url` and would queue a second paid
+render. A video render honours the user's own `default_video_quality`, exactly as an auto-planned
+post does, so an account that opted into premium may spend its video credits here too.
+
+A spend tool that outlives the 20s budget answers `unknown`, never a retryable `timeout`.
 
 ## Smoke test — `scripts/mcp_smoke.py`
 

@@ -92,8 +92,10 @@ class TestTheRegistry:
         assert "lem_get_review_queue" not in registry.TOOLS_BY_NAME
         assert all("/review" not in path for s in registry.TOOLS for _m, path in s.calls)
 
-    def test_every_tool_is_read_only(self) -> None:
-        assert {method for s in registry.TOOLS for method, _p in s.calls} == {"GET"}
+    def test_every_tool_is_read_only_except_exactly_the_spend_tools(self) -> None:
+        assert {method for s in registry.TOOLS if not s.write for method, _p in s.calls} == {"GET"}
+        assert {s.name for s in registry.TOOLS if s.write} == {
+            "lem_generate_post", "lem_generate_post_image", "lem_generate_post_video"}
 
     def test_an_unknown_scope_lists_nothing(self) -> None:
         assert registry.tools_for_scope("full") == ()
@@ -110,7 +112,10 @@ class TestToolsList:
         assert [t["name"] for t in listed] == [s.name for s in registry.tools_for_scope(scope)]
         for tool in listed:
             assert tool["inputSchema"]["additionalProperties"] is False
-            assert tool["annotations"]["readOnlyHint"] is True
+            spec = registry.TOOLS_BY_NAME[tool["name"]]
+            assert tool["annotations"]["readOnlyHint"] is (not spec.write)
+            assert tool["annotations"]["idempotentHint"] is (not spec.write)
+            assert tool["annotations"]["destructiveHint"] is False
             assert tool["annotations"]["openWorldHint"] is registry.TOOLS_BY_NAME[
                 tool["name"]].open_world
 

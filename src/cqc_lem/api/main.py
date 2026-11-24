@@ -761,6 +761,12 @@ _MCP_OUTREACH_EXTRA_READ_PATHS = frozenset({
 })
 _MCP_OUTREACH_READ_PATHS = _MCP_READ_PATHS | _MCP_OUTREACH_EXTRA_READ_PATHS
 _GET_ONLY = frozenset({"GET"})
+# The AI/media spend tools (W2b, owner ruling O4), `POST` only. These three routes serve MCP seats
+# and nobody else, and each refuses media for any post but a pending one this token created; W1's
+# text-only rule on `/schedule_post/` and `/update_post/` is untouched (`api/routers/mcp_spend.py`).
+_MCP_SPEND_PATHS = frozenset({"/user/mcp-spend/post", "/user/mcp-spend/post-image",
+                              "/user/mcp-spend/post-video"})
+_POST_ONLY = frozenset({"POST"})
 
 # The templated grants of a verb-limited scope: `(anchored pattern, verbs)`. A path parameter cannot
 # be a literal key in `_SCOPE_PATH_METHODS`, so one that a tool needs is listed here instead, and the
@@ -776,8 +782,10 @@ _SCOPE_PATH_PATTERN_METHODS: Dict[str, tuple] = {
 _SCOPE_PATH_METHODS: Dict[str, Dict[str, frozenset[str]]] = {
     SESSION_SCOPE_ASSIST: {"/assist/queue": frozenset({"GET"}),
                            "/review/comment-posted": frozenset({"POST"})},
-    SESSION_SCOPE_MCP: {path: _GET_ONLY for path in _MCP_READ_PATHS},
-    SESSION_SCOPE_MCP_OUTREACH: {path: _GET_ONLY for path in _MCP_OUTREACH_READ_PATHS},
+    SESSION_SCOPE_MCP: {**{path: _GET_ONLY for path in _MCP_READ_PATHS},
+                        **{path: _POST_ONLY for path in _MCP_SPEND_PATHS}},
+    SESSION_SCOPE_MCP_OUTREACH: {**{path: _GET_ONLY for path in _MCP_OUTREACH_READ_PATHS},
+                                 **{path: _POST_ONLY for path in _MCP_SPEND_PATHS}},
 }
 
 _SCOPE_SURFACES: Dict[str, frozenset[str]] = {
@@ -2848,6 +2856,10 @@ def schedule_post(post: PostRequest) -> PostScheduledResponse:
                                        approved_by=user_approver(user_id))
     if post_id is None:
         raise HTTPException(status_code=404, detail="Could not schedule post")
+    if _request_session_scope.get() in MCP_SESSION_SCOPES:
+        # The provenance the MCP media tools require: media only for a post THIS token created (W2b).
+        from cqc_lem.api.mcp.spend import mark_created_post
+        mark_created_post(post_id, user_id, get_session_id(current_session_token(post.session_token)))
     return PostScheduledResponse(status_code=200, detail="Post scheduled successfully",
                                  post_id=post_id)
 
@@ -4685,6 +4697,7 @@ from cqc_lem.api.routers import (  # noqa: E402
     avatar as _avatar_router,
     billing as _billing_router,
     curated as _curated_router,
+    mcp_spend as _mcp_spend_router,
     mcp_tokens as _mcp_tokens_router,
     outreach as _outreach_router,
     review as _review_router,
@@ -4697,6 +4710,7 @@ app.include_router(_auth_router.router)
 app.include_router(_avatar_router.router)
 app.include_router(_billing_router.router)
 app.include_router(_curated_router.router)
+app.include_router(_mcp_spend_router.router)
 app.include_router(_mcp_tokens_router.router)
 app.include_router(_outreach_router.router)
 app.include_router(_review_router.router)

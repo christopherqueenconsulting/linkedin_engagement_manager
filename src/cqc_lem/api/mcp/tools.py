@@ -16,8 +16,9 @@ Rules every tool keeps:
   characters and caps the size. Unknown values stay null, never 0.
 - A tool whose result can carry LinkedIn-sourced text is `open_world`, so its annotations say
   `openWorldHint=true`, and its description repeats the data-not-instructions rule.
-- No tool runs Selenium, calls an LLM, generates media or queries PostHog. Every read here is a
-  database or Redis read behind an existing route.
+- No READ tool runs Selenium, calls an LLM, generates media or queries PostHog. Every read here is
+  a database or Redis read behind an existing route. The only spend is the three `write` tools from
+  `tools_spend.py` (W2b), which queue generation behind their own narrow routes and never run it.
 """
 
 import datetime as dt
@@ -31,6 +32,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from cqc_lem.api.mcp.lifespan import mcp_state
 from cqc_lem.api.mcp.loopback import FAN_OUT_CONCURRENCY, REFUSED, Loopback, ToolFailure
 from cqc_lem.api.mcp.redact import THIRD_PARTY_NOTE, fence_rows
+from cqc_lem.api.mcp.tools_spend import spend_tools
 from cqc_lem.utilities.db import SESSION_SCOPE_MCP, SESSION_SCOPE_MCP_OUTREACH, PostStatus
 
 GET = "GET"
@@ -169,6 +171,9 @@ class ToolSpec:
     calls: tuple[tuple[str, str], ...]
     run: Runner
     open_world: bool = False
+    # A tool that changes something (W2b's spend tools): annotated `readOnlyHint=false`, and a call
+    # that runs out of time is `unknown`, never a safe-to-retry `timeout`.
+    write: bool = False
 
 
 # --- helpers ---------------------------------------------------------------------------------------
@@ -628,6 +633,9 @@ TOOLS: tuple[ToolSpec, ...] = (
              "change settings).",
              OpenArgs, BOTH_SCOPES, (), _open_in_lem),
 )
+# The AI/media spend tools (W2b) live in their own module; appended here so ONE registry serves
+# `tools/list`, `tools/call` and the surface drift guard.
+TOOLS = TOOLS + spend_tools()
 
 TOOLS_BY_NAME: dict[str, ToolSpec] = {spec.name: spec for spec in TOOLS}
 

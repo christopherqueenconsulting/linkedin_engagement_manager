@@ -4111,6 +4111,75 @@
         "title": "LogoutRequest",
         "type": "object"
       },
+      "McpGeneratePostRequest": {
+        "additionalProperties": false,
+        "description": "Body of `POST /user/mcp-spend/post`.",
+        "properties": {
+          "scheduled_datetime": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When the post should publish once approved (ISO 8601 with an offset). Default: 24h out.",
+            "title": "Scheduled Datetime"
+          },
+          "session_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Token"
+          },
+          "topic": {
+            "description": "What the post is about and any direction for it, in the user's own terms.",
+            "maxLength": 1000,
+            "minLength": 10,
+            "title": "Topic",
+            "type": "string"
+          }
+        },
+        "required": [
+          "topic"
+        ],
+        "title": "McpGeneratePostRequest",
+        "type": "object"
+      },
+      "McpPostMediaRequest": {
+        "additionalProperties": false,
+        "description": "Body of `POST /user/mcp-spend/post-image` and `/post-video`.",
+        "properties": {
+          "post_id": {
+            "minimum": 1.0,
+            "title": "Post Id",
+            "type": "integer"
+          },
+          "session_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Token"
+          }
+        },
+        "required": [
+          "post_id"
+        ],
+        "title": "McpPostMediaRequest",
+        "type": "object"
+      },
       "McpTokenRequest": {
         "description": "Body of `POST /user/mcp-token`.",
         "properties": {
@@ -13716,6 +13785,147 @@
           }
         },
         "summary": "Set User Location By City Endpoint"
+      }
+    },
+    "/api/user/mcp-spend/post": {
+      "post": {
+        "description": "Create a PENDING text post and queue LEM's own writer to draft it from `topic`.",
+        "operationId": "mcp_generate_post_api_user_mcp_spend_post_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpGeneratePostRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Generation queued; the post is pending review"
+          },
+          "403": {
+            "description": "Not an MCP seat, writes off, or not this token's post"
+          },
+          "404": {
+            "description": "Post not found"
+          },
+          "409": {
+            "description": "The post is not a pending text draft"
+          },
+          "422": {
+            "description": "Invalid arguments"
+          },
+          "429": {
+            "description": "Daily AI cap or MCP spend cap reached"
+          },
+          "503": {
+            "description": "Spend limits unreadable, or the job could not be queued"
+          }
+        },
+        "summary": "Mcp Generate Post"
+      }
+    },
+    "/api/user/mcp-spend/post-image": {
+      "post": {
+        "description": "Queue LEM's gated post-image engine for a pending post this MCP token created.",
+        "operationId": "mcp_generate_post_image_api_user_mcp_spend_post_image_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpPostMediaRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Generation queued; the post is pending review"
+          },
+          "403": {
+            "description": "Not an MCP seat, writes off, or not this token's post"
+          },
+          "404": {
+            "description": "Post not found"
+          },
+          "409": {
+            "description": "The post is not a pending text draft"
+          },
+          "422": {
+            "description": "Invalid arguments"
+          },
+          "429": {
+            "description": "Daily AI cap or MCP spend cap reached"
+          },
+          "503": {
+            "description": "Spend limits unreadable, or the job could not be queued"
+          }
+        },
+        "summary": "Mcp Generate Post Image"
+      }
+    },
+    "/api/user/mcp-spend/post-video": {
+      "post": {
+        "description": "Queue LEM's post-video pipeline for a pending post this MCP token created.",
+        "operationId": "mcp_generate_post_video_api_user_mcp_spend_post_video_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpPostMediaRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Generation queued; the post is pending review"
+          },
+          "403": {
+            "description": "Not an MCP seat, writes off, or not this token's post"
+          },
+          "404": {
+            "description": "Post not found"
+          },
+          "409": {
+            "description": "The post is not a pending text draft"
+          },
+          "422": {
+            "description": "Invalid arguments"
+          },
+          "429": {
+            "description": "Daily AI cap or MCP spend cap reached"
+          },
+          "503": {
+            "description": "Spend limits unreadable, or the job could not be queued"
+          }
+        },
+        "summary": "Mcp Generate Post Video"
       }
     },
     "/api/user/mcp-token": {
