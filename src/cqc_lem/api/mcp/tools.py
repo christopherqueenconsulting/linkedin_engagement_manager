@@ -16,11 +16,12 @@ Rules every tool keeps:
   characters and caps the size. Unknown values stay null, never 0.
 - A tool whose result can carry LinkedIn-sourced text is `open_world`, so its annotations say
   `openWorldHint=true`, and its description repeats the data-not-instructions rule.
-- No tool runs Selenium, calls an LLM, generates media or queries PostHog. Every read here is a
-  database or Redis read behind an existing route.
-- The write tools (W2) live in `tools_write.py` and are appended to `TOOLS` at the bottom of this
-  module. A `write` spec runs through `writes.run_write` (flag, dedupe, write budgets, audit); an
-  `approval` spec is listed and run ONLY for an internal or sandbox account (owner ruling O1).
+- No READ tool runs Selenium, calls an LLM, generates media or queries PostHog. Every read here is
+  a database or Redis read behind an existing route. The only spend is the three `write` tools from
+  `tools_spend.py` (W2b), which queue generation behind their own narrow routes and never run it.
+- The queue-only write tools (W2) live in `tools_write.py` and are appended to `TOOLS` at the bottom
+  of this module. A `write` spec runs through `writes.run_write` (flag, dedupe, write budgets, audit);
+  an `approval` spec is listed and run ONLY for an internal or sandbox account (owner ruling O1).
 """
 
 import datetime as dt
@@ -34,6 +35,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from cqc_lem.api.mcp.lifespan import mcp_state
 from cqc_lem.api.mcp.loopback import FAN_OUT_CONCURRENCY, REFUSED, Loopback, ToolFailure
 from cqc_lem.api.mcp.redact import THIRD_PARTY_NOTE, fence_row, fence_rows
+from cqc_lem.api.mcp.tools_spend import SPEND_EXPLANATION, spend_tools
 from cqc_lem.utilities.db import SESSION_SCOPE_MCP, SESSION_SCOPE_MCP_OUTREACH, PostStatus
 
 GET = "GET"
@@ -172,8 +174,10 @@ class ToolSpec:
     calls: tuple[tuple[str, str], ...]
     run: Runner
     open_world: bool = False
-    # A queue-only write (W2): gated by `mcp-server-writes`, deduped, spends the write budgets and
-    # writes an `mcp_write` audit row. Never approves, except `approval` below.
+    # A tool that changes something (W2 queue-only writes, W2b spend tools): gated by
+    # `mcp-server-writes`, annotated `readOnlyHint=false`, deduped, spends the write budgets and
+    # writes an `mcp_write` audit row. A write that runs out of time is `unknown`, never a
+    # safe-to-retry `timeout`. Never approves, except `approval` below.
     write: bool = False
     # Listed in `tools/list` and run ONLY when the account is internal or sandbox (owner ruling O1);
     # refused with `agent_may_not_approve` everywhere else, by the tool AND by the route.
@@ -627,15 +631,14 @@ EXPLANATIONS: dict[str, str] = {
         "as PENDING for the user to review, and nothing is sent until they approve it. The one "
         "exception is `lem_approve_item`, which exists only on LEM's own internal and sandbox "
         "accounts; it never approves a post. An agent can never publish, delete or change settings."),
-    # Read rules, then each write family's own sentence, then what no tool can do. A write family
-    # adds ITS sentence to this tuple (queue-only writes: `_WRITE_EXPLANATION`; AI and media
-    # generation, W2b: its own), never a second explanation.
+    # Read rules, then each write family's own sentence (queue-only writes: `_WRITE_EXPLANATION`;
+    # AI and media generation: `tools_spend.SPEND_EXPLANATION`), then what no tool can do. A write
+    # family adds its sentence here, never a second explanation.
     "agent_capabilities": " ".join((
         "This MCP server can read the user's posts, plan, performance, settings, voice kit, "
         "newsletter and (with an outreach token) the outreach queues.",
         _WRITE_EXPLANATION,
-        "Separate generation tools (AI post text, images, video), where listed, spend the "
-        "account's AI allowance and also land their output as PENDING.",
+        SPEND_EXPLANATION,
         "It cannot send, publish, delete, run the browser automation or change settings: for "
         "those, use `lem_open_in_lem` and ask the user to act in LEM.")),
 }
@@ -759,13 +762,17 @@ READ_TOOLS: tuple[ToolSpec, ...] = (
              "change settings).",
              OpenArgs, BOTH_SCOPES, (), _open_in_lem),
 )
-
 # Last, and deliberately so: the write tools import this module's models and helpers, which all
 # exist by this line. Appending here keeps one registry, so `tools/list`, the drift guard and
-# `tools/call` read the same table.
+# `tools/call` read the same table. The AI/media spend tools (W2b) live in `tools_spend.py` and the
+# queue-only writes (W2) in `tools_write.py`.
 from cqc_lem.api.mcp.tools_write import WRITE_TOOLS  # noqa: E402
 
-TOOLS: tuple[ToolSpec, ...] = READ_TOOLS + WRITE_TOOLS
+TOOLS: tuple[ToolSpec, ...] = READ_TOOLS + spend_tools() + WRITE_TOOLS
+# The tools `writes.run_write` serves (flag, dedupe, budgets, audit). The W2b spend tools are `write`
+# too but spend the flag and the write budgets inside their own runner (`tools_spend.py`), so
+# running them through `run_write` as well would charge every call twice.
+QUEUE_WRITE_NAMES: frozenset[str] = frozenset(spec.name for spec in WRITE_TOOLS)
 TOOLS_BY_NAME: dict[str, ToolSpec] = {spec.name: spec for spec in TOOLS}
 
 
@@ -786,4 +793,4 @@ def refused_tool(name: str) -> ToolFailure:
 
 __all__ = ["TOOLS", "READ_TOOLS", "TOOLS_BY_NAME", "ToolSpec", "ToolArgs", "tools_for_scope", "registry_grants",
            "refused_tool", "THIRD_PARTY_NOTE", "FAN_OUT_CONCURRENCY", "EXPLANATIONS",
-           "DESTINATIONS"]
+           "DESTINATIONS", "QUEUE_WRITE_NAMES"]

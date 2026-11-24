@@ -40,11 +40,16 @@ EXPECTED_OUTREACH_EXTRA = frozenset({
     "/dms", "/connection_requests", "/leads", "/lead_signals", "/catchup/touches",
     "/outreach/targets", "/user/engagement-targets", "/user/engagement-suggestions",
 })
+# The W2b spend grants (owner ruling O4): `POST`, the three narrow AI/media spend routes.
+EXPECTED_SPEND_POSTS = frozenset({
+    "/user/mcp-spend/post", "/user/mcp-spend/post-image", "/user/mcp-spend/post-video",
+})
 
 # The reviewed WRITE grants (W2, plan §4): exactly one verb per write-tool call, written out. Two
 # outreach paths carry two verbs because `lem_approve_item` (owner ruling O1) PUTs the same path the
-# create POSTs; `PUT /dm` is that approval and nothing else.
-EXPECTED_MCP_WRITES = {"/schedule_post": frozenset({"POST"}), "/update_post": frozenset({"POST"})}
+# create POSTs; `PUT /dm` is that approval and nothing else. The W2b spend routes are `POST` on both.
+EXPECTED_MCP_WRITES = {"/schedule_post": frozenset({"POST"}), "/update_post": frozenset({"POST"}),
+                       **{path: frozenset({"POST"}) for path in EXPECTED_SPEND_POSTS}}
 EXPECTED_OUTREACH_WRITES = {
     **EXPECTED_MCP_WRITES,
     "/schedule_dm": frozenset({"POST"}),

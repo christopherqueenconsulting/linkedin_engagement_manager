@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "linkedin-engagement-manager"
-version = "0.214.0"
+version = "0.223.0"
 description = ""
 authors = ["gitchrisqueen <christopher.queen@gmail.com>"]
 readme = "README.md"
@@ -78,6 +78,7 @@ sendgrid = "^6.12.5"
 stripe = ">=15.2.1,<18.0.0"
 
 timezonefinder = ">=6.5,<10.0"
+copilot-core = {git = "https://github.com/gitchrisqueen/copilot-core", rev = "v0.1.1", extras = ["speaker"]}
 
 [tool.poetry.group.dev]
 optional = true

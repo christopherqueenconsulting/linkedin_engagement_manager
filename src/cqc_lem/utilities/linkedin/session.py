@@ -47,7 +47,7 @@ class ProfileUnavailableError(RuntimeError):
 def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
                         measurement_only: bool = False, debug: bool = False,
                         force_refresh: bool = False, debug_required: bool = False,
-                        needs_images: bool = False) -> Tuple[
+                        needs_images: bool = False, user_started: bool = False) -> Tuple[
     WebDriver, WebDriverWait, str, LinkedInProfile]:
     """Update the profile of the user.
 
@@ -69,13 +69,17 @@ def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
     ladder; group sync, commenting and posting) sets this `True` to exempt itself from the
     bandwidth saver, which otherwise stops either LinkedIn fastboot SPA from ever mounting.
     Defaults `False`, unchanged for every other caller.
+
+    `user_started` exempts the session from the #2628 session window; pass it only from an entry
+    point the user triggered (the on-demand profile refresh).
     """
     log_info("Getting Updated Profile")
 
     user_email, user_password = get_user_password_pair_by_id(user_id)
 
     driver, wait = get_driver_wait_pair(session_name=session_name, user_id=user_id, debug=debug,
-                                        debug_required=debug_required, needs_images=needs_images)
+                                        debug_required=debug_required, needs_images=needs_images,
+                                        user_started=user_started)
 
     # Login first — a failure here (e.g. HTTP 429 rate-limit, expired cookie) is fatal
     # for this run; abort cleanly so the caller backs off instead of hammering LinkedIn.

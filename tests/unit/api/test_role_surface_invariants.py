@@ -167,6 +167,14 @@ ROLE_SCOPES = _scopes()
 READ_ONLY_ROLES = ("observer",)
 MCP_ROLES = ("mcp", "mcp_outreach")
 
+# The W2b spend routes (owner ruling O4): the only `/user/mcp-spend/*` writes an MCP seat reaches. Each
+# creates or illustrates a PENDING draft, never approves, sends or edits anything else; their bodies
+# carry no `action`/`status` (pinned below), and each handler refuses every seat but an MCP one.
+SPEND_WRITE_REACH: frozenset = frozenset({
+    ("POST", "/user/mcp-spend/post"), ("POST", "/user/mcp-spend/post-image"),
+    ("POST", "/user/mcp-spend/post-video"),
+})
+
 # Which classified handlers (HANDLER_GUARDED_ROUTES + NOT_AN_APPROVAL_VECTOR) each write-capable role
 # reaches, exactly. A classified route that moves out from under a role, or a guarded one that moves
 # in, fails `test_the_classified_routes_a_role_reaches_are_exactly_the_reviewed_ones`.
@@ -322,6 +330,25 @@ class TestReadOnlyRolesReachNoWriteVerb:
                      if m not in READ_VERBS]
         assert not offenders, (
             f"\n\nThe read-only {role!r} role can reach WRITE verbs:\n" + "\n".join(offenders) + "\n")
+
+    @pytest.mark.parametrize("role", MCP_ROLES)
+    def test_the_spend_writes_are_reachable_exactly_and_carry_no_approval_field(
+            self,
+            main_mod: ModuleType,
+            route_table: list[tuple[str, str, Any]],
+            role: str,
+    ) -> None:
+        """The W2b spend routes (owner ruling O4) are reached as exactly these POSTs.
+
+        None can move a draft: no `action`/`status` in the body, and each serves MCP seats only.
+        """
+        spend = [(m, p, r) for (m, p, r) in _reachable(main_mod, route_table, ROLE_SCOPES[role])
+                 if p.startswith("/user/mcp-spend/")]
+        assert {(m, p) for (m, p, _r) in spend} == SPEND_WRITE_REACH
+        for _m, p, r in spend:
+            assert not _body_fields(r) & _APPROVAL_FIELDS, p
+            assert "_mcp_caller(" in inspect.getsource(r.endpoint) or \
+                "_queue_media(" in inspect.getsource(r.endpoint), p
 
     @pytest.mark.parametrize("role", READ_ONLY_ROLES)
     def test_it_reaches_none_of_the_handler_guarded_routes(

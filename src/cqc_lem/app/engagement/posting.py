@@ -80,6 +80,7 @@ from cqc_lem.utilities.audience_stats import (
     parse_search_appearances,
 )
 from cqc_lem.utilities.db import (
+    AGENT_POST_PLACEHOLDER,
     DEFAULT_POSTING_DAYS,
     SCHEDULED_DM_SOURCE_ARTIFACT,
     SCHEDULED_DM_SOURCE_NURTURE,
@@ -2726,7 +2727,8 @@ def update_stale_profile(self, user_id: int, force_refresh: bool = False):
     log_info(f"Updating Stale Profile. User ID: {user_id}")
     try:
         driver, wait, user_email, my_profile = get_current_profile(
-            user_id=user_id, session_name="Update Stale Profile", force_refresh=force_refresh)
+            user_id=user_id, session_name="Update Stale Profile", force_refresh=force_refresh,
+            user_started=force_refresh)  # only the SPA refresh button sets force_refresh (#2628)
     except LinkedInRateLimited as e:
         # A known, self-clearing back-off (429 breaker, manual pause, or this account's own
         # challenge-unsolvable cooldown per issue #1920) — not a fresh failure, so WARNING rather
@@ -2854,6 +2856,17 @@ def post_to_linkedin(self, user_id: int, post_id: int):
         # working. The comment above says as much.
         log_debug(f"Post {post_id} already posted. Skipping duplicate execution.")
         return f"Post {post_id} already posted — skipped"
+
+    # An MCP agent's post still holding its placeholder body was never written (issue #2689), so it
+    # must never publish, whatever its status says. The ready-to-post query already excludes it;
+    # this is the cross-check at the choke point every publish passes through, ahead of the sandbox
+    # dry run so not even a simulated publish happens. ERROR, not a re-queue: it needs a human.
+    # INFO: a designed refusal of one specific row, logged once per post.
+    if (get_post_content(post_id) or "").strip() == AGENT_POST_PLACEHOLDER:
+        update_db_post_status(post_id, PostStatus.ERROR)
+        log_info("Refused to publish an MCP agent post that was never written", user_id=user_id,
+                 post_id=post_id, task_name="post_to_linkedin")
+        return f"Post {post_id} still holds the agent placeholder — not published"
 
     # A sandbox account never reaches LinkedIn: complete the post as a dry run, before anything is read
     # for the publish. POSTED is the post's "published" — the account kind, not the row, says nothing

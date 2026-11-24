@@ -176,10 +176,11 @@ reads:
 ```
 
 Outcomes: `ok`, `refused`, `invalid_args`, `upstream_error`, `rate_limited`, `timeout` (a read
-that ran out of time), and `unknown` (W2: a write that was SENT and then timed out, hit a 5xx or
-crashed, or a duplicate of one whose outcome is unknown; check the queue before retrying). A write
-refusal logs DEBUG (flag off, budget, dedupe hit) or INFO (an approval refused on a standard
-account), never arguments or results.
+that ran out of time), and `unknown` (a write that was SENT and then timed out, hit a 5xx or
+crashed, or a duplicate of one whose outcome is unknown; a W2b spend tool that outlives its budget is
+`unknown` too). An `unknown` write may have been queued, so it is never a safe retry: check the queue
+before retrying. A write refusal logs DEBUG (flag off, budget, dedupe hit) or INFO (an approval
+refused on a standard account), never arguments or results.
 
 ### Am I healthy?
 
@@ -212,7 +213,136 @@ account), never arguments or results.
 | Tool calls | 60 / minute / user | the gate, per JSON-RPC `tools/call` and per `resources/read` of a data resource (the two static text resources are free) |
 | Inner reads | 240 / minute, 4000 / day / user | the loopback, per inner route call |
 | In flight | 2 per user, 8 per worker | the gate |
-| Writes | 30 / hour, 150 / day / user | the write tools, once per write (`MCP_RATE_WRITES_PER_*`) |
+| Writes | 30 / hour, 150 / day / user | the write tools, once per write, and each W2b spend tool call (`MCP_RATE_WRITES_PER_*`) |
+| Spend sub-cap | 10 text, 3 image, 1 video / UTC day / user (`MCP_SPEND_TEXT` / `_IMAGE` / `_VIDEO`) | W2b, server-side in `/api/user/mcp-spend/*` |
+
+## AI/media spend tools (W2b, owner ruling O4)
+
+`lem_generate_post`, `lem_generate_post_image`, `lem_generate_post_video`, behind `mcp-server-writes`.
+Each tool is ONE `POST` through the loopback to its own narrow route in `api/routers/mcp_spend.py`;
+the route holds every rule, so a client cannot talk its way past one:
+
+1. **MCP seats only** (`mcp_only` for every other seat). `/schedule_post/` and `/update_post/` keep
+   W1's rule unchanged: media fields from an MCP seat are still a 422 `machine_seat_text_only`.
+2. **Media only for a PENDING text post THIS token created**, read owner-scoped
+   (`get_post_for_user`; a DB fault is 503 `mcp_unavailable`, never "not found"). `api/mcp/spend.py`
+   marks a post with `(user_id, session_id)` when an MCP seat creates it (`lem_generate_post`, or a
+   text draft through `/schedule_post/`); the mark lives 90 days. Refusals: `not_found`,
+   `requires_pending`, `not_created_by_this_token`, `requires_text_post`, `post_still_generating`,
+   `already_generated`.
+3. **One render per (post, kind) at a time.** The route takes an in-flight Redis marker
+   (`SET NX`, TTL 2h, 4h for video) before anything spends; a second request is 409
+   `generation_in_progress`. The task releases it; any refusal after the claim releases it too.
+4. **The free-trial daily AI cap first** (`daily_ai_cap`, with `retry_after` seconds from the
+   route's `Retry-After`), **then the sub-cap** (`mcp_spend_cap`: 10 text, 3 image, 1 video a day by
+   default), so a capped account burns no sub-cap unit. A unit is claimed before dispatch and is not
+   refunded when a render later fails: the cap bounds attempts. A route-authored 422 (e.g.
+   `schedule_out_of_range`) keeps its code; FastAPI's own validation 422 stays `invalid_arguments`.
+5. **Never inline**: each route queues a Celery task and answers `status: queued` with the
+   `post_id`. The tasks (`run_content_plan.generate_agent_post*`) run the studio's own paths:
+   `create_text_post` + `_apply_guidance_to_text_post` (the text branch of `regenerate_post`, the
+   agent's topic as guidance), `post_image.generate_image_for_post` (the gated engine with the avatar
+   guardrails) and `_generate_video_src` + `_store_video_asset` (video). Each is admitted under the
+   daily cap at entry, so once it starts it finishes.
+
+**Money: one paid call per request.** Before the paid call each task takes a once-per-dispatch `run`
+claim per (post, kind) in Redis, so a Celery redelivery (a worker that died mid-render) skips instead
+of rendering, or deducting video credits, a second time. It is released on a terminal failure so the
+user can ask again. A task also skips when the post already carries the result.
+
+**Data: a human always wins.** No spend path ever sets a row back to PENDING. Every result lands
+through ONE SQL-guarded write that restates the conditions the task started from:
+
+| Write | Only when the row is |
+|---|---|
+| `write_agent_post_draft` | PENDING and still exactly the placeholder (status is not written) |
+| `fail_agent_post_placeholder` (→ `error`) | PENDING and still exactly the placeholder |
+| `attach_image_to_pending_post` | a PENDING text post with no image |
+| `convert_pending_post_to_video` (type, caption, `video_url`, caption record) | a PENDING text post with no video |
+
+So an edit, approve, reject or publish that lands while a render runs leaves the row exactly as the
+human left it, and the discarded image or MP4 is deleted. `_store_video_asset(..., captions=)`
+persists neither `video_url` nor the caption record for this path, and the post becomes a video post
+only AFTER its asset is stored: the asset backfill selects a pending video post with no `video_url`
+and would queue a second paid render. A video render honours the user's own `default_video_quality`,
+exactly as an auto-planned post does, so an account that defaults to premium spends its premium
+video credits here too. `lem_explain_lem` and each tool's description say all of this to the agent.
+
+A spend tool that outlives the 20s budget answers `unknown`, never a retryable `timeout`.
+
+### Spend incident: stop it, find what is stuck, unwind it
+
+Run everything from `/opt/lem`. Every key below lives in Redis db 0, the same database as `mcp:kill`.
+
+**1. Stop new spend, including spend already queued.** Turn the kill switch on (see *Kill switch*:
+`./scripts/compose.sh exec -T redis redis-cli -n 0 SET mcp:kill 1`) or turn `mcp-server-writes`
+off. The gate then refuses new calls. **Spend tasks already sitting in Celery stop too:** each of
+`generate_agent_post_task`, `generate_agent_post_image_task` and `generate_agent_post_video_task`
+re-reads `MCP_SERVER_KILL`, the `mcp:kill` key (unreadable counts as ON) and `mcp-server-writes`
+for the post's owner when it STARTS (`run_content_plan._agent_spend_halted`), and skips before any
+paid call. A text task skipped this way marks its placeholder `error`; a media task skipped this way
+releases its in-flight marker. A task already past that check (mid-render) finishes, and its result
+still lands only through the guarded writes. No `celery purge` or `revoke` is needed.
+
+**2. Inspect and clear the spend keys.** There are four families:
+
+| Key | Meaning | TTL |
+|---|---|---|
+| `mcp:spend:{text,image,video}:<user_id>:<YYYY-MM-DD>` | the day's sub-cap counter (UTC day) | 25h |
+| `mcp:spend:inflight:{text,image,video}:<post_id>` | the route's one-render-at-a-time marker | 2h (video 4h) |
+| `mcp:spend:run:{text,image,video}:<post_id>` | the task's once-per-dispatch claim | 2h (video 4h) |
+| `mcp:spend:post:<post_id>` | which token created the post (`<user_id>:<session_id>`) | 90 days |
+
+```bash
+./scripts/compose.sh exec -T redis redis-cli -n 0 --scan --pattern 'mcp:spend:inflight:*'
+./scripts/compose.sh exec -T redis redis-cli -n 0 --scan --pattern 'mcp:spend:run:*'
+./scripts/compose.sh exec -T redis redis-cli -n 0 --scan --pattern 'mcp:spend:video:*'
+./scripts/compose.sh exec -T redis redis-cli -n 0 GET mcp:spend:video:<user_id>:<YYYY-MM-DD>
+./scripts/compose.sh exec -T redis redis-cli -n 0 TTL mcp:spend:inflight:video:<post_id>
+./scripts/compose.sh exec -T redis redis-cli -n 0 DEL mcp:spend:inflight:video:<post_id> mcp:spend:run:video:<post_id>
+```
+
+A Celery redelivery (a worker that died mid-render) finds the `run` claim held, so it does not
+spend again. It leaves the row and the `inflight` marker exactly as they are, because the first run
+may still be alive: a text post keeps its placeholder, and the user is told `generation_in_progress`
+for media until the TTL above expires. Once you have confirmed the worker really died (Flower, or
+`./scripts/compose.sh logs celery_worker`), `DEL` both keys for that post so the user can ask
+again, and retire a text placeholder with step 3. A task that cannot READ its claim (Redis down)
+marks a text placeholder `error` and tries to delete a media `inflight` marker; during a real
+outage that delete fails too, so the marker clears on its TTL. Deleting a day's counter (`mcp:spend:<kind>:<user_id>:<day>`) hands that
+user their sub-cap back. Never delete a `mcp:spend:post:*` mark you did not create: it is what
+allows media on that post at all.
+
+**3. Find agent posts still holding the placeholder.** A text task that never ran leaves its row
+PENDING with the placeholder body. It can never publish:
+- the approve routes refuse it (409 `agent_draft_not_written`; `/posts/bulk_update/` approves the
+  rest of a batch and names it under `skipped`);
+- the ready-to-post query excludes it;
+- `post_to_linkedin` refuses it, marking it `error`.
+
+An APPROVED or SCHEDULED placeholder (one that slipped past those checks) is moved to `error` by
+`auto_check_scheduled_posts` on its next 10-minute run (`fail_stuck_agent_placeholders`), where the
+author can see it. PENDING ones still clutter the review queue:
+
+```bash
+./scripts/compose.sh exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysql -u"$MYSQL_USER" "$MYSQL_DATABASE" -e "SELECT id, user_id, status, scheduled_time FROM posts WHERE content LIKE '"'"'[LEM is writing this draft for your AI agent.%'"'"';"'
+```
+
+To retire them, run the same command with
+`UPDATE posts SET status = '"'"'error'"'"' WHERE status IN ('"'"'pending'"'"', '"'"'approved'"'"', '"'"'scheduled'"'"') AND content LIKE '"'"'[LEM is writing this draft for your AI agent.%'"'"';`
+as the query. Only do this for a PENDING placeholder once you know its text task is not still
+running. The full string is `AGENT_POST_PLACEHOLDER` in `platform/db/shared.py`.
+
+**4. Check, and if owed refund, premium video credits for a post.** Credits are the
+`video_credit_ledger` table (`balance = SUM(delta)`). A premium render writes a negative row with
+reason `premium_video_<model>` and the `post_id`. A render that fails is already refunded by
+`_generate_video_src` (a positive `premium_video_refund` row). Note that `refund_video_credits` does
+NOT check for an earlier refund, so check before refunding:
+
+```bash
+./scripts/compose.sh exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysql -u"$MYSQL_USER" "$MYSQL_DATABASE" -e "SELECT id, user_id, delta, reason, created_at FROM video_credit_ledger WHERE post_id = <post_id> ORDER BY id;"'
+./scripts/compose.sh exec -T celery_worker python -c "from cqc_lem.utilities.db import refund_video_credits; print(refund_video_credits(<user_id>, <credits>, <post_id>))"
+```
 
 ## Smoke test — `scripts/mcp_smoke.py`
 
@@ -391,7 +521,7 @@ If that is not enough, run the full procedure.
      filled in here after merge, or read it from that PR's "merged commit"): redeploy the release
      immediately before the W2 release,
      `git tag --sort=-v:refname --no-contains <W2 merge commit> | head -1`. P1, W1, P2, P3 and P4
-     stay, and so does W2b (#2730, the spend tools) if it merged before W2. Try the W2-only fast
+     stay, and so does W2b (#2730, the spend tools, merged first as `589c00bf`). Try the W2-only fast
      path above first: it is usually enough.
 
    The newest release WITHOUT a phase is

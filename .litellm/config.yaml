@@ -265,6 +265,41 @@ model_list:
       request_timeout: 60
       order: 2
 
+  # ── VOICE: the writer tier for comments and DMs (#2750, ruling on #2627). It replaces the
+  # 4-way lem-medium latency race for third-party-facing text: `order` makes gpt-5.4-mini the
+  # writer and gpt-oss:120b the in-group fallback, so the weakest model in the old race (and any
+  # removed deployment) can never be picked by speed. Prompts reach any provider only after the
+  # deterministic sensitive-info check (utilities/ai/sensitive_info.py, applied in `_call_llm`).
+  # Benchmark gate for this pair is owner-run: docs/model-benchmarks/README.md.
+  - model_name: lem-voice
+    litellm_params:
+      model: openai/gpt-5.4-mini
+      api_key: os.environ/OPENAI_API_KEY
+      request_timeout: 60
+      order: 1
+
+  - model_name: lem-voice
+    litellm_params:
+      model: openai/gpt-oss:120b
+      api_base: os.environ/OLLAMA_CLOUD_URL
+      api_key: os.environ/OLLAMA_CLOUD_API_KEY
+      max_parallel_requests: 4
+      request_timeout: 150
+      rpm: 50
+      order: 2
+
+  # Cross-family judge for the multi-candidate comment writer (#2751). The writer tier above is
+  # OpenAI-family (gpt-5.4-mini, gpt-oss), so the judge is Google-family open-weight and never
+  # grades its own style. Default is benchmark-gated against owner ratings (owner-run).
+  - model_name: lem-judge
+    litellm_params:
+      model: openai/gemma4:31b
+      api_base: os.environ/OLLAMA_CLOUD_URL
+      api_key: os.environ/OLLAMA_CLOUD_API_KEY
+      max_parallel_requests: 4
+      request_timeout: 120
+      rpm: 50
+
   # ── TTS: tutorial voice-over (issue #505). tts-1 is the cheapest useful option
   # ($15 / 1M characters) and streams straight back as mp3 bytes.
   # tts-1 shuts down 2027-01-06 and its named successor is realtime-only, so this is NOT a
@@ -291,6 +326,14 @@ model_list:
   - model_name: lem-embedding
     litellm_params:
       model: openai/text-embedding-3-small
+      api_key: os.environ/OPENAI_API_KEY
+
+  # Call-ingest audio transcription (issue #2729): Whisper via the existing OpenAI key, about
+  # $0.006 per audio minute. Never in a fallback group or the router: a transcript must come from
+  # this model or fail, not from a chat model.
+  - model_name: lem-transcribe
+    litellm_params:
+      model: openai/whisper-1
       api_key: os.environ/OPENAI_API_KEY
 
   # ── ROUTER: auto-routes by prompt complexity via LEMComplexityRouter hook ─────
@@ -393,6 +436,9 @@ router_settings:
         - lem-simple
     - lem-medium:
         - lem-simple
+    # Writer tier degrades to the medium group (never to latency-race peers first).
+    - lem-voice:
+        - lem-medium
     # Ollama lane degrades a hard task through cheaper cloud tiers before failing.
     - lem-agent-tier1:
         - lem-agent-tier2

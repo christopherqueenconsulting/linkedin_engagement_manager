@@ -550,6 +550,9 @@ _NO_LINKEDIN_ACTION = {
     "regenerate_post_carousel_task": "media generation",
     "regenerate_post_task": "content generation (LLM)",
     "draft_occasion_post_task": "drafts text; the publish is auto_publish_occasion_post",
+    "generate_agent_post_task": "content generation (LLM) for an MCP agent; leaves a PENDING draft",
+    "generate_agent_post_image_task": "media generation for a PENDING MCP draft; publishes nothing",
+    "generate_agent_post_video_task": "media generation for a PENDING MCP draft; publishes nothing",
     "auto_create_weekly_content": "content generation (LLM), stores drafts",
     "collect_curated_sources": "reads public sources; publishes nothing",
     "dispatch_golden_hour_engagement": "only enqueues the gated reply-sweep tasks",
@@ -560,6 +563,9 @@ _NO_LINKEDIN_ACTION = {
     "auto_suppression_tripwire": "analytics over stored impressions; pauses, never sends",
     "auto_nightly_content_quality": "analytics over stored posts",
     "auto_weekly_content_quality": "analytics over stored posts",
+    "auto_profile_audit_weekly": "rubric grading of a cached profile; opens no browser, sends nothing",
+    "auto_profile_audit_monthly": "rubric grading of a cached profile; opens no browser, sends nothing",
+    "auto_icp_audience_report_monthly": "analytics over stored engagers; stores a report, sends nothing",
     "auto_media_integrity_scan": "checks stored media files",
     "auto_generate_newsletter_drafts": "content generation (LLM), stores drafts",
     "generate_newsletter_drafts_for_user": "content generation (LLM), stores drafts",
@@ -595,6 +601,8 @@ _NO_LINKEDIN_ACTION = {
     "auto_weekly_youtube_token_check": "YouTube token health check",
     "auto_poll_calendly_bookings": "reads Calendly and labels leads; sends nothing",
     "ingest_call_transcript": "LLM extraction over an uploaded transcript; stores review candidates, sends nothing",
+    "transcribe_call_audio": "Whisper transcription of an uploaded recording, then deletes the audio; no LinkedIn "
+                             "session is opened",
     "purge_expired_call_transcripts": "retention purge of stored transcripts in our own DB",
 }
 

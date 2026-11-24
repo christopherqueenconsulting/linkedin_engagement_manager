@@ -87,7 +87,12 @@ def _error(result: dict) -> dict:
 
 class TestTheWriteRegistry:
     def test_the_write_tools_are_exactly_the_plan_s(self) -> None:
-        assert {s.name for s in registry.TOOLS if s.write} == WRITE_NAMES
+        assert registry.QUEUE_WRITE_NAMES == WRITE_NAMES
+
+    def test_the_only_other_write_tools_are_the_w2b_spend_tools(self) -> None:
+        """Every `write` spec is a queue write (run by `run_write`) or one of the three spend tools."""
+        others = {s.name for s in registry.TOOLS if s.write} - WRITE_NAMES
+        assert others == {"lem_generate_post", "lem_generate_post_image", "lem_generate_post_video"}
 
     def test_only_lem_approve_item_approves_and_it_is_outreach_only(self) -> None:
         approvals = [s for s in registry.TOOLS if s.approval]
@@ -95,12 +100,13 @@ class TestTheWriteRegistry:
         assert approvals[0].scopes == registry.OUTREACH_ONLY
 
     def test_post_drafting_is_on_both_scopes_and_outreach_writes_are_not(self) -> None:
-        both = {s.name for s in registry.TOOLS if s.write and s.scopes == registry.BOTH_SCOPES}
+        both = {s.name for s in registry.TOOLS
+                if s.name in WRITE_NAMES and s.scopes == registry.BOTH_SCOPES}
         assert both == {"lem_draft_post", "lem_revise_post_draft"}
 
     def test_every_write_tool_takes_a_client_request_id(self) -> None:
         for spec in registry.TOOLS:
-            if spec.write:
+            if spec.name in WRITE_NAMES:
                 assert "client_request_id" in spec.args_model.model_fields, spec.name
 
     def test_the_post_draft_has_no_media_type_or_status(self) -> None:

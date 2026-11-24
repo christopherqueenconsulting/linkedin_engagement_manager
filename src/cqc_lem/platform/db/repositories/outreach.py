@@ -1713,6 +1713,38 @@ def get_lead_funnel_counts(user_id: int, months: int = 12) -> Optional[list]:
     except mysql.connector.Error as err:
         log_error("Could not read lead funnel", exc=err, user_id=user_id)
         return None
+def get_weekly_conversion_counts(user_id: int, start: datetime, end: datetime) -> Optional[dict]:
+    """New conversations, calls booked and their attribution over [start, end) (#2668).
+
+    A new conversation is a lead whose FIRST inbound reply event (`reply:*`) lands in the window.
+    A call booked is a live (not canceled) Calendly booking event in the window; `attributed` and
+    `unattributed` split those, and `unevaluated` counts bookings whose touch read has not landed.
+    None on a read error, so a fault never reads as an empty week.
+    """
+    lo, hi = to_naive_utc(start), to_naive_utc(end)
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM (SELECT lead_id FROM lead_stage_events "
+                "WHERE user_id=%s AND to_stage LIKE 'reply:%%' GROUP BY lead_id "
+                "HAVING MIN(at) >= %s AND MIN(at) < %s) first_replies", (user_id, lo, hi))
+            row = cursor.fetchone()
+            conversations = int(row[0]) if row and row[0] else 0
+            cursor.execute(
+                "SELECT e.attribution, COUNT(*) FROM lead_stage_events e "
+                "JOIN calendly_bookings b ON b.user_id=e.user_id AND b.invitee_uri=e.evidence_ref "
+                "WHERE e.user_id=%s AND e.source='booking' AND e.to_stage='meeting_booked' "
+                "AND b.status<>'canceled' AND e.at >= %s AND e.at < %s GROUP BY e.attribution",
+                (user_id, lo, hi))
+            by_state = {r[0]: int(r[1]) for r in (cursor.fetchall() or [])}
+        return {"new_conversations": conversations,
+                "calls_booked": sum(by_state.values()),
+                "attributed": by_state.get("attributed", 0),
+                "unattributed": by_state.get("unattributed", 0),
+                "unevaluated": by_state.get(None, 0)}
+    except mysql.connector.Error as err:
+        log_error("Could not read weekly conversion counts", exc=err, user_id=user_id)
+        return None
 # Default DM templates = today's hard-coded strings, so behaviour is unchanged until a user
 # customizes. {first_name},{headline},{blog_url} are filled at send time.
 _DM_DEFAULT_TEMPLATES = {

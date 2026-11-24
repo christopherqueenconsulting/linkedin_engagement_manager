@@ -28,7 +28,13 @@ import replicate
 from dotenv import load_dotenv
 
 from cqc_lem import assets_dir
-from cqc_lem.utilities.ai import content_framework as _framework, slop_lint as _slop, story_bank as _story_bank
+from cqc_lem.utilities.ai import (
+    comment_candidates as _comment_candidates,
+    content_framework as _framework,
+    slop_lint as _slop,
+    story_bank as _story_bank,
+    voice_exemplars as _voice_exemplars,
+)
 from cqc_lem.utilities.ai.client import attribution_metadata, client
 
 # The ONE alignment core (voice + prefs + LEM purpose + promo policy) shared by newsletters,
@@ -60,6 +66,7 @@ from cqc_lem.utilities.ai.outbound_qa import (
     SURFACE_DM as OUTBOUND_SURFACE_DM,
     refusal_reason as outbound_refusal_reason,
 )
+from cqc_lem.utilities.ai.sensitive_info import redact_messages
 from cqc_lem.utilities.ai.tools import search_recent_news
 
 # create_runway_video lives in video_models (model abstraction); re-exported here
@@ -105,6 +112,9 @@ from cqc_lem.utilities.utils import create_folder_if_not_exists, save_video_url_
 
 # Load .env file
 load_dotenv()
+
+# Ordered writer tier for third-party-facing text: comments and DMs (#2750). Not latency-routed.
+VOICE_TIER = "lem-voice"
 
 # Re-exported ON PURPOSE, and declared here rather than suppressed per-line: `ai_helper` aliases
 # these so its long-standing internal API stays stable while the definitions live in exactly one
@@ -191,6 +201,10 @@ def _call_llm(**kwargs):
     track_user_id = kwargs.pop("_track_user_id", None)
     track_feature = kwargs.pop("_track_feature", None)
     model = kwargs.get("model", "unknown")
+    if "messages" in kwargs:
+        # Deterministic sensitive-info check (#2750): SSNs and Luhn-valid card numbers never leave
+        # the process, whichever provider the tier routes to.
+        kwargs["messages"] = redact_messages(kwargs["messages"])
     start = time.time()
     log_debug("LLM call starting", ai_model=model)
 
@@ -627,6 +641,12 @@ def generate_ai_response(post_content: Any, profile: LinkedInProfile,
 
                 Take a deep breath and work on this problem step-by-step.""")
 
+    # Few-shot from the user's own writing (#2627). Empty unless VOICE_EXEMPLARS is on and the user
+    # has enough embedded exemplars, in which case the prompt is byte-identical to before.
+    exemplars = (_voice_exemplars.nearest_voice_exemplars(user_id, str(post_content or "")[:1000])
+                 if post_comment is None and user_id else [])
+    prompt += _voice_exemplars.exemplar_block(exemplars)
+
     content = [{"type": "text", "text": prompt}]
 
     if post_img_url:
@@ -700,7 +720,7 @@ def generate_ai_response(post_content: Any, profile: LinkedInProfile,
 
     def _draft(fix_directive: str = "") -> "str | None":
         response = _call_llm(
-            model="lem-medium",
+            model=VOICE_TIER,
             messages=[{"role": "system", "content": system_prompt["content"] + fix_directive},
                       user_message],
             temperature=round(random.uniform(0.4, 0.6), 2),  # Rand temp between .5 and .7
@@ -725,7 +745,8 @@ def generate_ai_response(post_content: Any, profile: LinkedInProfile,
                              user_id=user_id, action_type="comment")
 
     return _gated_comment(_draft, post_content, recent_comments=recent_comments, user_id=user_id,
-                          ground_specifics=True, prefs=prefs, post_body=POST_BODY_READABLE)
+                          ground_specifics=True, prefs=prefs, post_body=POST_BODY_READABLE,
+                          exemplars=exemplars, multi_candidate=True)
 
 
 # Research material ACTUALLY handed to a post's writer, keyed by post id (issue #1971). The post
@@ -940,7 +961,8 @@ def _unbacked_claims(claims: list, user_id: "int | None") -> "list | None":
 def _gated_comment(draft, post_content, recent_comments: list = None,
                    user_id: int = None, ground_specifics: bool = False,
                    surface: str = "comment", prefs: dict = None,
-                   post_body: str = POST_BODY_UNCHECKED) -> "str | None":
+                   post_body: str = POST_BODY_UNCHECKED,
+                   exemplars: list = None, multi_candidate: bool = False) -> "str | None":
     """Run a comment `draft(fix_directive)` callable through the quality contract, the similarity
     gate, the slop lint and (opt-in) the fact-grounding check until it passes, and return None when
     it never does.
@@ -978,6 +1000,10 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
         surface: The slop-lint surface to grade against — `own_post_comment` for the
             author's own seed/second-wave comments, `comment` for everything else.
         post_body: The caller's #1833 body-check verdict, carried onto the `comment_gate` event.
+        exemplars: The user's own example comments the writer was shown (#2627); a draft within the
+            comment cosine bar of one is a near-copy and joins the fix-list.
+        multi_candidate: Opt in to 3 drafts per attempt and a cross-family judge (#2751), still
+            behind `COMMENT_MULTI_CANDIDATE`. Only the feed-comment writer passes it.
 
     Returns:
         The first candidate that clears every gate, or None when none of them does.
@@ -1030,6 +1056,11 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
             checks.append("similarity")
             found.append(f"near-duplicate of a recent comment ({similar['measure']} similarity "
                          f"{similar['score']:.2f} > max {similar['threshold']:.2f})")
+        copied = _voice_exemplars.too_close_to_exemplar(candidate, exemplars)
+        if copied:
+            checks.append("exemplar_copy")
+            found.append(f"near-copy of one of the user's own example comments (similarity "
+                         f"{copied['score']:.2f} > max {copied['threshold']:.2f}) — write it fresh")
         # Slop violations join the SAME retry budget as the contract failures: a comment that keeps
         # tripping either one is skipped rather than posted (issue #625).
         if not slop["passes"]:
@@ -1090,8 +1121,16 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
             "ungrounded_attempts": ungrounded_attempts, "attempts": attempt,
             "max_attempts": attempts, "failed_checks": last["checks"]})
 
+    multi = multi_candidate and _comment_candidates.enabled(user_id)
+
     for attempt in range(1, attempts + 1):
-        candidate = draft(fix_directive)
+        if multi:
+            candidate = _comment_candidates.select_candidate(
+                lambda: draft(fix_directive), lambda c: not _grade(c)[0],
+                lambda clean: _comment_candidates.judge_pick(clean, str(post_content or ""),
+                                                             _call_llm, user_id))
+        else:
+            candidate = draft(fix_directive)
         if candidate is None:
             if lint_fallback:
                 _track(GATE_SHIPPED, attempt - 1)
@@ -1633,7 +1672,7 @@ def generate_newsletter_edition(profile: "LinkedInProfile", topic: str = None,
 
 
 def generate_group_post(profile: "LinkedInProfile", group_name: str = None, prefs: dict = None,
-                        profile_synthesis: str = None) -> "str | None":
+                        profile_synthesis: str = None, user_id: int = None) -> "str | None":
     """A short, value-add post for a LinkedIn Group — a genuine insight or open question for that
     community, NEVER promotional (groups penalize/moderate self-promo). Ends inviting discussion.
     """
@@ -1653,6 +1692,8 @@ def generate_group_post(profile: "LinkedInProfile", group_name: str = None, pref
     }
     user_prompt = {"role": "user",
                    "content": f"Author profile:\n{_voice_reference(profile, profile_synthesis)}\n{_focus_directive(prefs)}{_style_directive(prefs)}"}
+    exemplars, voice_block = _voice_exemplars.voice_context(user_id, group_name or "", 200)
+    user_prompt["content"] += voice_block
     temperature = round(random.uniform(0.5, 0.7), 2)
 
     def _draft(fix: str = "") -> "str | None":
@@ -1661,7 +1702,8 @@ def generate_group_post(profile: "LinkedInProfile", group_name: str = None, pref
                                        user_prompt],
                              temperature=temperature)
         content = response.choices[0].message.content
-        return content.strip() if content is not None else None
+        text = content.strip() if content is not None else None
+        return _voice_exemplars.redraft_if_copied(text, exemplars, _draft, fix)
 
     # Since #932 a group post does wait in a review queue, but an UNATTENDED one — silence ships it —
     # so it still gets the bounded re-draft the other queue-less surfaces do rather than the hold the
@@ -1694,10 +1736,12 @@ def generate_seed_comment(post_content, profile: "LinkedInProfile", prefs: dict 
                    f"{_style_directive(prefs, _OWN_POST_COMMENT)}"
                    f"{_language_directive(user_id)}{_profile_skills_directive(user_id)}"
     }
+    exemplars, voice_block = _voice_exemplars.voice_context(user_id, post_content, 1000)
+    user_prompt["content"] += voice_block
     temperature = round(random.uniform(0.5, 0.7), 2)
 
     def _draft(fix: str = "") -> "str | None":
-        response = _call_llm(model="lem-medium",
+        response = _call_llm(model=VOICE_TIER,
                              messages=[{"role": "system", "content": system_prompt["content"] + fix},
                                        user_prompt],
                              temperature=temperature)
@@ -1705,7 +1749,8 @@ def generate_seed_comment(post_content, profile: "LinkedInProfile", prefs: dict 
         if content is None:
             return None
         # Humanization pass (issue #416 — A5): de-slop the seed comment before it's posted.
-        return _humanize_comment(content.strip(), profile_synthesis, prefs)
+        text = _humanize_comment(content.strip(), profile_synthesis, prefs)
+        return _voice_exemplars.redraft_if_copied(text, exemplars, _draft, fix)
 
     return lint_repaired(_draft(), _OWN_POST_COMMENT, _draft, prefs=prefs, user_id=user_id,
                          action_type="comment")
@@ -1756,10 +1801,12 @@ def generate_second_wave_comment(post_content, profile: "LinkedInProfile", prefs
                    f"{_style_directive(prefs, _OWN_POST_COMMENT)}"
                    f"{_language_directive(user_id)}{_profile_skills_directive(user_id)}",
     }
+    exemplars, voice_block = _voice_exemplars.voice_context(user_id, post_content, 1000)
+    user_prompt["content"] += voice_block
     temperature = round(random.uniform(0.5, 0.7), 2)
 
     def _draft(fix: str = "") -> "str | None":
-        response = _call_llm(model="lem-medium",
+        response = _call_llm(model=VOICE_TIER,
                              messages=[{"role": "system", "content": system_prompt["content"] + fix},
                                        user_prompt],
                              temperature=temperature)
@@ -1775,7 +1822,8 @@ def generate_second_wave_comment(post_content, profile: "LinkedInProfile", prefs
         return _humanize_comment(content.strip(), profile_synthesis, prefs)
 
     return _gated_comment(_draft, post_content, recent_comments=recent_comments,
-                          user_id=user_id, surface=_OWN_POST_COMMENT, prefs=prefs)
+                          user_id=user_id, surface=_OWN_POST_COMMENT, prefs=prefs,
+                          exemplars=exemplars)
 
 
 def generate_thread_reply(post_content: str, comment_text: str, profile: "LinkedInProfile",
@@ -1797,10 +1845,12 @@ def generate_thread_reply(post_content: str, comment_text: str, profile: "Linked
         f"Author profile:\n{_voice_reference(profile, profile_synthesis)}\n\nMy post:\n{post_content}\n\n"
         f"Their comment:\n{comment_text}\n{_intention_directive(prefs)}{_style_directive(prefs)}"
         f"{_language_directive(user_id)}{_profile_skills_directive(user_id)}"}
+    exemplars, voice_block = _voice_exemplars.voice_context(user_id, comment_text)
+    user_prompt["content"] += voice_block
     temperature = round(random.uniform(0.5, 0.7), 2)
 
     def _draft(fix: str = "") -> "str | None":
-        response = _call_llm(model="lem-medium",
+        response = _call_llm(model=VOICE_TIER,
                              messages=[{"role": "system", "content": system_prompt["content"] + fix},
                                        user_prompt],
                              temperature=temperature)
@@ -1808,7 +1858,8 @@ def generate_thread_reply(post_content: str, comment_text: str, profile: "Linked
         if content is None:
             return None
         # Humanization pass (issue #416 — A5): de-slop the reply before it's posted.
-        return _humanize_comment(content.strip(), profile_synthesis, prefs)
+        text = _humanize_comment(content.strip(), profile_synthesis, prefs)
+        return _voice_exemplars.redraft_if_copied(text, exemplars, _draft, fix)
 
     return lint_repaired(_draft(), "comment", _draft, prefs=prefs, user_id=user_id,
                          action_type="comment")
@@ -1840,17 +1891,20 @@ def generate_comment_reply_followup(their_reply: str, profile: "LinkedInProfile"
         f"My voice:\n{_voice_reference(profile, profile_synthesis)}\n\n{ctx}"
         f"Their reply to me:\n{their_reply}\n{_intention_directive(prefs)}{_style_directive(prefs)}"
         f"{_language_directive(user_id)}{_profile_skills_directive(user_id)}"}
+    exemplars, voice_block = _voice_exemplars.voice_context(user_id, their_reply)
+    user_prompt["content"] += voice_block
     temperature = round(random.uniform(0.5, 0.7), 2)
 
     def _draft(fix: str = "") -> "str | None":
-        response = _call_llm(model="lem-medium",
+        response = _call_llm(model=VOICE_TIER,
                              messages=[{"role": "system", "content": system_prompt["content"] + fix},
                                        user_prompt],
                              temperature=temperature)
         content = response.choices[0].message.content
         if content is None:
             return None
-        return _humanize_comment(content.strip(), profile_synthesis, prefs)
+        text = _humanize_comment(content.strip(), profile_synthesis, prefs)
+        return _voice_exemplars.redraft_if_copied(text, exemplars, _draft, fix)
 
     return lint_repaired(_draft(), "comment", _draft, prefs=prefs, user_id=user_id,
                          action_type="comment")
@@ -1858,7 +1912,7 @@ def generate_comment_reply_followup(their_reply: str, profile: "LinkedInProfile"
 
 def generate_lead_response(their_message: str, profile: "LinkedInProfile", channel: str = "reply",
                            context: str = None, prefs: dict = None,
-                           profile_synthesis: str = None) -> "str | None":
+                           profile_synthesis: str = None, user_id: int = None) -> "str | None":
     """Draft a response to someone showing INBOUND BUYING INTENT (issue #483) — they asked about
     pricing, availability, or whether we can help. This is the one place the no-self-promo guardrail
     does NOT apply: they raised their hand, so answering directly is what they want. Never invent
@@ -1884,11 +1938,13 @@ def generate_lead_response(their_message: str, profile: "LinkedInProfile", chann
     user_prompt = {"role": "user", "content":
         f"My voice:\n{_voice_reference(profile, profile_synthesis)}\n\n{ctx}"
         f"What they said:\n{their_message}\n{_style_directive(prefs)}"}
+    exemplars, voice_block = _voice_exemplars.voice_context(user_id, their_message)
+    user_prompt["content"] += voice_block
     temperature = round(random.uniform(0.4, 0.6), 2)
     surface = "dm" if is_dm else "comment"
 
     def _draft(fix: str = "") -> "str | None":
-        response = _call_llm(model="lem-medium",
+        response = _call_llm(model=VOICE_TIER,
                              messages=[{"role": "system", "content": system_prompt["content"] + fix},
                                        user_prompt],
                              temperature=temperature)
@@ -1898,7 +1954,8 @@ def generate_lead_response(their_message: str, profile: "LinkedInProfile", chann
         text = _humanize_text(content.strip(), content_type=surface,
                               profile_synthesis=profile_synthesis, prefs=prefs, max_chars=limit)
         # A public reply is a comment surface (issue #2204); a DM keeps the humanizer's output.
-        return text if is_dm else _scrub_comment_text(text)
+        text = text if is_dm else _scrub_comment_text(text)
+        return _voice_exemplars.redraft_if_copied(text, exemplars, _draft, fix)
 
     return lint_repaired(_draft(), surface, _draft, prefs=prefs,
                          action_type="dm" if is_dm else "comment")
@@ -1908,7 +1965,8 @@ def generate_nurture_dm(their_message: str, intent: str, profile: "LinkedInProfi
                         first_name: str = None, template_hint: str = None,
                         history: list = None, prefs: dict = None,
                         profile_synthesis: str = None,
-                        recipient_context: dict = None) -> "str | None":
+                        recipient_context: dict = None,
+                        user_id: int = None) -> "str | None":
     """Draft the NEXT message in a live DM thread after a lead replied (issue #485) — the
     context-aware step between "they answered" and "we followed up well".
 
@@ -1952,18 +2010,32 @@ def generate_nurture_dm(their_message: str, intent: str, profile: "LinkedInProfi
     user_prompt = {"role": "user", "content":
         f"My voice:\n{_voice_reference(profile, profile_synthesis)}\n\n{ctx}"
         f"Their reply to me:\n{their_message}\n{_style_directive(prefs)}"}
+    # Few-shot from the user's own writing (#2627); "" (prompt unchanged) unless the flag is on and
+    # enough exemplars exist. The query is the contact's reply, which already goes to the same
+    # LiteLLM proxy for drafting; the Phase 2 sensitive-info check will cover both calls.
+    dm_exemplars = (_voice_exemplars.nearest_voice_exemplars(user_id, str(their_message or "")[:500])
+                    if user_id else [])
+    voice_block = _voice_exemplars.exemplar_block(dm_exemplars)
+    if voice_block:
+        user_prompt = {"role": "user", "content": user_prompt["content"] + voice_block}
     temperature = round(random.uniform(0.4, 0.6), 2)
 
     def _draft(fix: str = "") -> "str | None":
-        response = _call_llm(model="lem-medium",
+        response = _call_llm(model=VOICE_TIER,
                              messages=[{"role": "system", "content": system_prompt["content"] + fix},
                                        user_prompt],
                              temperature=temperature)
         content = response.choices[0].message.content
         if content is None:
             return None
-        return _humanize_text(content.strip(), content_type="dm",
+        text = _humanize_text(content.strip(), content_type="dm",
                               profile_synthesis=profile_synthesis, prefs=prefs, max_chars=300)
+        # One fresh retry when the draft near-copies an exemplar it was shown (#2627); the lint's own
+        # redrafts pass a directive, so this never nests.
+        if not fix and _voice_exemplars.too_close_to_exemplar(text, dm_exemplars):
+            return _draft("\nYour last draft nearly copied one of the user's example messages. "
+                          "Write it fresh, in their style but in new words.")
+        return text
 
     return lint_repaired(_draft(), "dm", _draft, action_type="dm")
 
@@ -4204,6 +4276,7 @@ def generate_carousel_content(user_id: int, stage: str, prefs: dict = None,
     """
     from cqc_lem.utilities.carousel_creator import missing_carousel_fields
     from cqc_lem.utilities.db import get_user_password_pair_by_id
+    from cqc_lem.utilities.engagement_window import SessionDeferred
     from cqc_lem.utilities.linkedin.helper import get_my_profile
     from cqc_lem.utilities.linkedin.profile import LinkedInProfile as _Profile
     from cqc_lem.utilities.selenium_util import get_driver_wait_pair, quit_gracefully
@@ -4227,8 +4300,11 @@ def generate_carousel_content(user_id: int, stage: str, prefs: dict = None,
             profile = get_my_profile(driver, wait, user_email, user_password, user_id=user_id)
         finally:
             quit_gracefully(driver)
-    except Exception as exc:
-        if isinstance(exc, SuggestOnlyEngagement):
+    except (Exception, SessionDeferred) as exc:
+        if isinstance(exc, SessionDeferred):
+            log_debug("Live profile scrape deferred for carousel generation (session window)",
+                      user_id=user_id)
+        elif isinstance(exc, SuggestOnlyEngagement):
             log_debug("Live profile scrape skipped for carousel generation — suggest-only account",
                       user_id=user_id)
         else:

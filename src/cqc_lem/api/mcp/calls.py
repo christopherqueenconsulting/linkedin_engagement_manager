@@ -9,8 +9,9 @@ whose text echoes the rejected values, and lists every registered tool to every 
 - `tools/call` refuses a tool outside the scope, validates with the tool's own `extra="forbid"`
   model and reports only WHICH fields failed, runs the tool under a 20s limit, and shapes every
   result through `redact.finalize`;
-- a WRITE tool (W2) runs through `writes.run_write` (flag, dedupe, write budgets, audit; a timeout
-  is `unknown`, never `timeout`), and the internal/sandbox-only `lem_approve_item` (owner ruling O1)
+- a queue-write tool (W2) runs through `writes.run_write` (flag, dedupe, write budgets, audit; a
+  timeout is `unknown`, never `timeout`); a W2b spend tool guards itself and a timeout is `unknown`
+  too. The internal/sandbox-only `lem_approve_item` (owner ruling O1)
   is neither listed nor run for any other account;
 - each call is logged at INFO (tool, outcome, latency; never arguments or results) and reported as
   `mcp_tool_call` and, content-free, to PostHog MCP analytics (`observability.capture_mcp_analytics`).
@@ -46,6 +47,7 @@ from cqc_lem.api.mcp.loopback import (
     OK,
     REFUSED,
     TIMEOUT,
+    UNKNOWN,
     UPSTREAM_ERROR,
     Loopback,
     ToolFailure,
@@ -140,7 +142,12 @@ def _ok(spec: registry.ToolSpec, payload: Any) -> CallToolResult:
 
 
 def _error(failure: ToolFailure) -> CallToolResult:
-    body = {"error": {"code": failure.code, "outcome": failure.outcome, "message": failure.message}}
+    body: dict[str, Any] = {"error": {"code": failure.code, "outcome": failure.outcome,
+                                      "message": failure.message}}
+    retry_after = getattr(failure, "retry_after", None)
+    if isinstance(retry_after, int):
+        # Seconds until the refusal lifts (a 429's `Retry-After`, e.g. `daily_ai_cap`).
+        body["error"]["retry_after"] = retry_after
     return CallToolResult(content=[TextContent(type="text", text=f"{failure.code}: {failure.message}")],
                           structured_content=body, is_error=True)
 
@@ -181,7 +188,7 @@ async def call_tool(request: Optional[Request], name: str,
         except ValidationError as exc:
             raise _validation_failure(exc) from None
         loopback = loopback_for(request)
-        if spec.write:
+        if spec.name in registry.QUEUE_WRITE_NAMES:
             bound = loopback
             payload = await writes.run_write(spec, args, principal,
                                              lambda: spec.run(bound, args), TOOL_TIMEOUT_SECONDS,
@@ -201,11 +208,19 @@ async def call_tool(request: Optional[Request], name: str,
         outcome = failure.outcome
         result = _error(failure)
     except asyncio.TimeoutError:
-        # Only a READ reaches this: a read that ran out of time changed nothing, so `timeout`, and
-        # safe to retry. A write's timeout is `unknown` and is raised by `writes.run_write`.
-        outcome = TIMEOUT
-        result = _error(ToolFailure(TIMEOUT, "timeout",
-                                    "LEM took too long to answer. Try again, or ask for less."))
+        if spec is not None and spec.write:
+            # Only a W2b spend tool reaches this (a queue write's timeout is raised by
+            # `writes.run_write`). It may have landed after the budget ran out: `unknown`, never a
+            # safe retry (plan §5), or a retry could queue the spend twice.
+            outcome = UNKNOWN
+            result = _error(ToolFailure(UNKNOWN, "unknown",
+                                        "LEM did not confirm this in time and it may have been "
+                                        "queued. Check lem_list_posts before retrying."))
+        else:
+            # A read that ran out of time changed nothing: `timeout`, and safe to retry.
+            outcome = TIMEOUT
+            result = _error(ToolFailure(TIMEOUT, "timeout",
+                                        "LEM took too long to answer. Try again, or ask for less."))
     except Exception as exc:  # noqa: BLE001 — a tool must answer, never crash the MCP request.
         outcome = UPSTREAM_ERROR
         log_error("MCP tool failed unexpectedly", exc=exc, tool=tool_label,

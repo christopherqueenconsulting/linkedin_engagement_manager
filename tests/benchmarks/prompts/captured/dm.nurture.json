@@ -1,8 +1,8 @@
 {
   "prompt_id": "dm.nurture",
   "target": "cqc_lem.utilities.ai.ai_helper.generate_nurture_dm",
-  "tier": "lem-medium",
-  "content_hash": "sha256:b5932e295973598871abe392f889af96be63e266bb632b029eb2b7a4af5eb2f1",
+  "tier": "lem-voice",
+  "content_hash": "sha256:950b3fc49eec9a576bee28b3fc74c8727c1bc76ddb58e3c01eb090639bcea199",
   "messages": [
     {
       "role": "system",
@@ -10,7 +10,7 @@
     },
     {
       "role": "user",
-      "content": "My voice:\n{\"full_name\":\"Marcus Oyelaran\",\"job_title\":\"Fractional CFO\",\"company_name\":\"Ledgerline Partners\",\"industry\":\"Financial Services\",\"profile_url\":null,\"connection\":null,\"password\":null,\"email\":null,\"recent_activities\":[],\"mutual_connections\":[],\"endorsements\":[],\"education\":[],\"experiences\":[],\"certifications\":[],\"skills\":[\"Cash Flow Forecasting\",\"Financial Planning\",\"Month-End Close\",\"Board Reporting\"],\"awards\":[],\"groups\":[],\"interests\":[\"cash flow\",\"month-end close\",\"founder finance\"]}\n\nTheir first name: Chris\n\nTheir reply to me:\nHonestly that's too expensive for us right now\n"
+      "content": "My voice:\n{\"full_name\":\"Marcus Oyelaran\",\"job_title\":\"Fractional CFO\",\"company_name\":\"Ledgerline Partners\",\"industry\":\"Financial Services\",\"profile_url\":null,\"connection\":null,\"password\":null,\"email\":null,\"headline\":null,\"about\":null,\"featured_count\":null,\"banner_state\":null,\"custom_url\":null,\"recent_activities\":[],\"mutual_connections\":[],\"endorsements\":[],\"education\":[],\"experiences\":[],\"certifications\":[],\"skills\":[\"Cash Flow Forecasting\",\"Financial Planning\",\"Month-End Close\",\"Board Reporting\"],\"awards\":[],\"groups\":[],\"interests\":[\"cash flow\",\"month-end close\",\"founder finance\"]}\n\nTheir first name: Chris\n\nTheir reply to me:\nHonestly that's too expensive for us right now\n"
     }
   ],
   "params": {
@@ -20,7 +20,7 @@
         "user_id": "system"
       }
     },
-    "model": "lem-medium",
+    "model": "lem-voice",
     "temperature": 0.6
   }
 }

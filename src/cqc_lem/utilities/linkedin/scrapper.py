@@ -188,8 +188,154 @@ def _degree_from_source(source) -> str:
     return ""
 
 
-def parse_profile_header(source, profile_url, company_name=None) -> dict:
+def _section_by_heading(source, heading: str):
+    """The <section> whose own heading reads exactly `heading` ("About", "Featured"), or None."""
+    wanted = heading.lower()
+    for section in source.find_all('section'):
+        head = section.find(['h2', 'h3'])
+        if head is not None and head.get_text(" ", strip=True).lower() == wanted:
+            return section
+        title = section.select_one('.pvs-header__title, [class*="header__title"]')
+        if title is not None and title.get_text(" ", strip=True).lower() == wanted:
+            return section
+    return None
+
+
+def _about_from_source(source) -> Optional[str]:
+    """The About text, or None when the section did not render (unreadable, not empty)."""
+    section = _section_by_heading(source, "About")
+    if section is None:
+        return None
+    spans = [s.get_text(" ", strip=True) for s in section.select('span[aria-hidden="true"]')]
+    spans = [t for t in spans if t and t.lower() != "about"]
+    if spans:
+        return max(spans, key=len)
+    text = section.get_text(" ", strip=True)
+    return text[len("About"):].strip() if text.lower().startswith("about") else (text or None)
+
+
+def _featured_count_from_source(source) -> Optional[int]:
+    """How many items sit under Featured.
+
+    No Featured section counts as 0 only when the page rendered its About section; a bare page
+    answers None (unknown).
+    """
+    section = _section_by_heading(source, "Featured")
+    if section is not None:
+        return len(section.find_all('li'))
+    return 0 if _section_by_heading(source, "About") is not None else None
+
+
+def _name_anchor(source, full_name: str):
+    """The element that renders the profile name, or None.
+
+    The <h1>, else the deepest <main> node whose whole text is the name (the SDUI page has no <h1>).
+    """
+    h1 = source.find('h1')
+    if h1 is not None:
+        return h1
+    root = source.find('main')
+    if root is None or not full_name:
+        return None
+    node = next((el for el in root.find_all(True)
+                 if el.get_text(" ", strip=True) == full_name), None)
+    while node is not None:
+        child = next((c for c in node.find_all(True, recursive=False)
+                      if c.get_text(" ", strip=True) == full_name), None)
+        if child is None:
+            return node
+        node = child
+    return None
+
+
+_HEADLINE_NOISE_RE = re.compile(r"^[\W_]*$|^(?:he/him|she/her|they/them)$", re.IGNORECASE)
+
+
+def _headline_from_structure(source, full_name: str) -> Optional[str]:
+    """Headline by position, not class: the first real text after the name inside <main>.
+
+    Skips the degree badge, bare punctuation and pronoun chips. None when there is no name anchor
+    or no following text — never a guess.
+    """
+    anchor = _name_anchor(source, full_name)
+    root = source.find('main')
+    if anchor is None or root is None:
+        return None
+    for text in anchor.find_all_next(string=True):
+        if root not in text.parents:
+            return None
+        if anchor in text.parents:
+            continue
+        value = text.strip()
+        if not value or _HEADLINE_NOISE_RE.match(value) or _DEGREE_LEAF_RE.match(value):
+            continue
+        if text.parent.name in ('script', 'style', 'noscript'):
+            continue
+        return value
+    return None
+
+
+_BANNER_DEFAULT_MARKER_RE = re.compile(r"default|ghost|placeholder", re.IGNORECASE)
+_AVATAR_RE = re.compile(r"profile (?:photo|picture)|avatar|photo of|headshot", re.IGNORECASE)
+_BACKGROUND_URL_RE = re.compile(r"background(?:-image)?\s*:[^;]*url\(", re.IGNORECASE)
+
+
+def _banner_from_structure(source, full_name: str) -> str:
+    """Banner state from the top card, ABOVE the name, without hashed class names.
+
+    A background image or an <img> that is not the profile photo means a banner is present:
+    `default` when its src/style/class/alt carries a placeholder marker, else `custom`. No name
+    anchor or no image above it answers `unknown`.
+    """
+    anchor = _name_anchor(source, full_name)
+    root = source.find('main')
+    if anchor is None or root is None:
+        return "unknown"
+    for element in root.descendants:
+        if element is anchor:
+            break
+        if element.name is None:
+            continue
+        style = element.get('style') or ""
+        classes = " ".join(element.get('class') or [])
+        if element.name == 'img':
+            src = (element.get('src') or element.get('data-delayed-url') or "").strip()
+            blob = " ".join([src, classes, element.get('alt') or ""])
+            alt = (element.get('alt') or "").strip().lower()
+            if not src or _AVATAR_RE.search(blob) or (full_name and alt == full_name.lower()):
+                continue
+        elif _BACKGROUND_URL_RE.search(style):
+            blob = f"{style} {classes}"
+        else:
+            continue
+        return "default" if _BANNER_DEFAULT_MARKER_RE.search(blob) else "custom"
+    return "unknown"
+
+
+def _banner_state_from_source(source, full_name: str = "") -> str:
+    """"custom" / "default" / "unknown" for the cover image (class selectors, then structure)."""
+    for element in source.select('[class*="background-image"], [class*="cover-photo"]'):
+        classes = " ".join(element.get('class') or [])
+        if "default" in classes:
+            return "default"
+        img = element if element.name == 'img' else element.find('img')
+        if img is not None and (img.get('src') or "").strip():
+            return "custom"
+    return _banner_from_structure(source, full_name)
+
+
+def _custom_url_from_source(profile_url) -> Optional[str]:
+    """The /in/<slug> part of the profile URL, or None when it is not a member URL."""
+    match = re.search(r"/in/([^/?#]+)", str(profile_url or ""))
+    return match.group(1) if match else None
+
+
+def parse_profile_header(source, profile_url, company_name=None, is_main_user=False) -> dict:
     """Extract name/title/connection from a parsed profile page (pure, no Selenium).
+
+    With `is_main_user` it also reads the profile-audit fields (headline, about, featured count,
+    banner state, custom URL) off the same page. Never for a third party: their About, banner and
+    featured items are not stored (#2631).
 
     Raises ProfileUnavailableError on rate-limit / auth-wall / error pages or when the
     name can't be located, so callers handle it instead of crashing on a None element.
@@ -229,6 +375,13 @@ def parse_profile_header(source, profile_url, company_name=None) -> dict:
     if connection:
         profile['connection'] = connection
     profile['profile_url'] = profile_url
+    if is_main_user:
+        profile['headline'] = ((title_el.get_text(" ", strip=True) or None) if title_el else None
+                               ) or _headline_from_structure(source, full_name)
+        profile['about'] = _about_from_source(source)
+        profile['featured_count'] = _featured_count_from_source(source)
+        profile['banner_state'] = _banner_state_from_source(source, full_name)
+        profile['custom_url'] = _custom_url_from_source(profile_url)
     return profile
 
 
@@ -252,7 +405,7 @@ def returnProfileInfo(driver: webdriver, profile_url, company_name=None, is_main
 
     # Bail out clearly on rate-limit / auth-wall / error pages — parsing these used to
     # crash with "'NoneType' object has no attribute 'find'" and take down auto-commenting.
-    profile = parse_profile_header(source, profile_url, company_name)
+    profile = parse_profile_header(source, profile_url, company_name, is_main_user=is_main_user)
 
     # profile_li = source.find_all('li', class_='artdeco-list__item')
 

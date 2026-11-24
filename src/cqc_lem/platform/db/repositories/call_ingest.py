@@ -9,6 +9,7 @@ transcript was stored when it was not.
 """
 
 import hashlib
+import json
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -20,7 +21,9 @@ from cqc_lem.utilities.crypto import decrypt_secret, encrypt_secret
 from cqc_lem.utilities.logger import log_error
 
 CALL_TRANSCRIPT_FIELD = "call_ingest.transcript"
-CALL_SOURCE_TYPES = ("otter", "wispr")
+CALL_VOICE_FIELD = "call_ingest.voice_embedding"
+CALL_SOURCE_TYPES = ("otter", "wispr", "audio")
+AUDIO_FAILURE_CAP_HOURS = 24
 CANDIDATE_REVIEW_STATUSES = ("accepted", "edited", "rejected")
 STORY_BANK_ORIGIN_CALL = "call"
 RETENTION_HARD_CAP_DAYS = 7
@@ -234,6 +237,7 @@ def purge_all_call_data(user_id: int) -> bool:
             cursor.execute("DELETE FROM extract_candidate WHERE user_id=%s", (user_id,))
             cursor.execute("DELETE FROM call_ingest WHERE user_id=%s", (user_id,))
             cursor.execute("DELETE FROM call_source WHERE user_id=%s", (user_id,))
+            cursor.execute("DELETE FROM call_voice_enrollment WHERE user_id=%s", (user_id,))
             return True
     except mysql.connector.Error as err:
         log_error("Could not purge call data", exc=err, user_id=user_id)
@@ -302,3 +306,145 @@ def accept_candidates_above(user_id: int, min_confidence: float,
         log_error("Could not list candidates to accept", exc=err, user_id=user_id)
         return 0
     return sum(1 for cid in ids if review_candidate(user_id, cid, "accepted"))
+
+
+def save_voice_enrollment(user_id: int, embedding: list) -> bool:
+    """Seal and upsert the user's own-voice embedding (one row per user)."""
+    sealed = encrypt_secret(json.dumps([float(x) for x in embedding]), user_id, CALL_VOICE_FIELD)
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT INTO call_voice_enrollment (user_id, embedding_enc) VALUES (%s,%s) "
+                "ON DUPLICATE KEY UPDATE embedding_enc=VALUES(embedding_enc)", (user_id, sealed))
+            return True
+    except mysql.connector.Error as err:
+        log_error("Could not store voice enrollment", exc=err, user_id=user_id)
+        return False
+
+
+def get_voice_enrollment(user_id: int) -> Optional[list]:
+    """The user's enrolled embedding, or None when absent or unreadable (never a guess)."""
+    try:
+        with db_cursor() as cursor:
+            cursor.execute("SELECT embedding_enc FROM call_voice_enrollment WHERE user_id=%s",
+                           (user_id,))
+            row = cursor.fetchone()
+    except mysql.connector.Error as err:
+        log_error("Could not read voice enrollment", exc=err, user_id=user_id)
+        return None
+    if not row or not row[0]:
+        return None
+    plain = decrypt_secret(row[0], user_id, CALL_VOICE_FIELD)
+    try:
+        vec = json.loads(plain or "")
+    except (TypeError, ValueError):
+        return None
+    return vec if isinstance(vec, list) and vec else None
+
+
+def insert_call_audio_ingest(user_id: int, audio_hash: str, audio_path: str,
+                             source_id: Optional[int] = None, title: Optional[str] = None,
+                             now: Optional[datetime] = None) -> Optional[int]:
+    """Register an uploaded recording awaiting transcription. Same bytes twice returns the same id.
+
+    The transcript is NULL until the worker writes it; `audio_purge_after` is the 24 h cap.
+    """
+    stamp = now or datetime.utcnow()
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("SELECT id, status FROM call_ingest WHERE user_id=%s AND content_hash=%s",
+                           (user_id, audio_hash))
+            existing = cursor.fetchone()
+            if existing:
+                if existing[1] == "failed":
+                    # A failed attempt deleted its audio, so a re-upload is a retry, not a duplicate.
+                    cursor.execute(
+                        "UPDATE call_ingest SET status='received', audio_path=%s, "
+                        "audio_purge_after=%s WHERE id=%s AND user_id=%s AND status='failed' "
+                        "AND transcript_enc IS NULL",
+                        (audio_path, stamp + timedelta(hours=AUDIO_FAILURE_CAP_HOURS),
+                         int(existing[0]), user_id))
+                return int(existing[0])
+            cursor.execute(
+                "INSERT INTO call_ingest (user_id, source_id, title, content_hash, audio_path, "
+                "audio_purge_after, purge_after) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                (user_id, source_id, (title or None), audio_hash, audio_path,
+                 stamp + timedelta(hours=AUDIO_FAILURE_CAP_HOURS),
+                 stamp + timedelta(days=RETENTION_HARD_CAP_DAYS)))
+            return int(cursor.lastrowid)
+    except mysql.connector.Error as err:
+        log_error("Could not store call audio ingest", exc=err, user_id=user_id)
+        return None
+
+
+def get_call_audio_path(user_id: int, ingest_id: int) -> Optional[str]:
+    """The spooled recording path for the user's own ingest, or None once deleted."""
+    try:
+        with db_cursor() as cursor:
+            cursor.execute("SELECT audio_path FROM call_ingest WHERE id=%s AND user_id=%s",
+                           (int(ingest_id), user_id))
+            row = cursor.fetchone()
+            return str(row[0]) if row and row[0] else None
+    except mysql.connector.Error as err:
+        log_error("Could not read call audio path", exc=err, user_id=user_id)
+        return None
+
+
+def store_call_transcript(user_id: int, ingest_id: int, redacted_transcript: str,
+                          own_speaker: str, turn_count: int) -> bool:
+    """Write the redacted own-turn transcript and clear the audio reference in ONE statement.
+
+    The caller deletes the file after this returns True, so a transcript never exists beside a
+    recording the row still points at.
+    """
+    sealed = encrypt_secret(redacted_transcript, user_id, CALL_TRANSCRIPT_FIELD)
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE call_ingest SET transcript_enc=%s, own_speaker=%s, turn_count=%s, "
+                "audio_path=NULL, audio_purge_after=NULL WHERE id=%s AND user_id=%s "
+                "AND status<>'purged'",
+                (sealed, own_speaker, int(turn_count), int(ingest_id), user_id))
+            return bool(cursor.rowcount)
+    except mysql.connector.Error as err:
+        log_error("Could not store call transcript", exc=err, user_id=user_id)
+        return False
+
+
+def clear_call_audio(user_id: int, ingest_id: int) -> bool:
+    """Drop the audio reference (the caller deletes the file). Used on failure."""
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE call_ingest SET audio_path=NULL, audio_purge_after=NULL "
+                "WHERE id=%s AND user_id=%s", (int(ingest_id), user_id))
+            return bool(cursor.rowcount)
+    except mysql.connector.Error as err:
+        log_error("Could not clear call audio", exc=err, user_id=user_id)
+        return False
+
+
+def list_expired_call_audio(now: Optional[datetime] = None) -> list:
+    """`(user_id, ingest_id, audio_path)` for every recording past its 24 h failure cap."""
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT user_id, id, audio_path FROM call_ingest "
+                "WHERE audio_path IS NOT NULL AND audio_purge_after <= %s",
+                (now or datetime.utcnow(),))
+            return [(int(r[0]), int(r[1]), str(r[2])) for r in (cursor.fetchall() or [])]
+    except mysql.connector.Error as err:
+        log_error("Could not list expired call audio", exc=err)
+        return []
+
+
+def list_call_audio_paths(user_id: int) -> list:
+    """Every recording path the user still has on disk (for the purge-all endpoint)."""
+    try:
+        with db_cursor() as cursor:
+            cursor.execute("SELECT audio_path FROM call_ingest WHERE user_id=%s "
+                           "AND audio_path IS NOT NULL", (user_id,))
+            return [str(r[0]) for r in (cursor.fetchall() or [])]
+    except mysql.connector.Error as err:
+        log_error("Could not list call audio paths", exc=err, user_id=user_id)
+        return []

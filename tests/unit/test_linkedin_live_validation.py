@@ -4441,6 +4441,178 @@ class TestProfileExperiencesProbe:
         assert llv.main(["--profile-experiences", "https://www.linkedin.com/in/someone/"]) == 0
 
 
+@pytest.mark.unit
+class TestProfileAuditFieldsProbe:
+    """#2755 — the own-profile audit probe: graded per the three states, own profile only."""
+
+    _OWN = "https://www.linkedin.com/in/me"
+
+    def _driver(self, body: str):
+        driver = MagicMock()
+        driver.page_source = f"<html><head><title>Me | LinkedIn</title></head><body>{body}</body></html>"
+        driver.current_url = self._OWN + "/"
+        return driver
+
+    _FULL = (
+        "<main><section><div class='mt2 relative'><h1>Me Myself</h1>"
+        "<div class='text-body-medium'>Fractional CTO</div></div>"
+        "<div class='profile-background-image'><img src='https://x/y.png'></div></section>"
+        "<section><h2>About</h2><span aria-hidden='true'>Builds things.</span></section>"
+        "<section><h2>Featured</h2><ul><li>a</li><li>b</li></ul></section></main>")
+
+    @pytest.fixture(autouse=True)
+    def own_profile(self, monkeypatch):
+        monkeypatch.setattr(llv, "_sweep_own_profile", lambda driver, user_id: self._OWN + "/")
+
+    def test_all_five_resolving_grades_ok(self):
+        reading = llv.probe_profile_audit_fields(self._driver(self._FULL), 1, sleep=lambda s: None)
+
+        assert reading["state"] == llv.STATE_OK
+        assert reading["fields"] == {"headline": "Fractional CTO", "about": "Builds things.",
+                                     "featured_count": 2, "banner_state": "custom",
+                                     "custom_url": "me"}
+        assert reading["unresolved"] == [] and reading["dom_readings"] == {}
+
+    def test_navigates_only_the_own_profile_and_clicks_nothing(self):
+        driver = self._driver(self._FULL)
+
+        llv.probe_profile_audit_fields(driver, 1, sleep=lambda s: None)
+
+        driver.get.assert_called_once_with(self._OWN)
+        driver.find_element.assert_not_called()
+
+    def test_a_non_own_url_is_refused_before_any_navigation(self):
+        driver = self._driver(self._FULL)
+
+        reading = llv.probe_profile_audit_fields(
+            driver, 1, "https://www.linkedin.com/in/someone-else", sleep=lambda s: None)
+
+        driver.get.assert_not_called()
+        assert reading["state"] == llv.STATE_UNKNOWN
+        assert "OWN profile only" in reading["refused"]
+
+    def test_the_own_url_given_explicitly_is_accepted(self):
+        reading = llv.probe_profile_audit_fields(
+            self._driver(self._FULL), 1, self._OWN + "/", sleep=lambda s: None)
+
+        assert reading["state"] == llv.STATE_OK
+
+    def test_an_unresolved_own_profile_navigates_nothing(self, monkeypatch):
+        monkeypatch.setattr(llv, "_sweep_own_profile", lambda driver, user_id: "")
+        driver = self._driver(self._FULL)
+
+        reading = llv.probe_profile_audit_fields(driver, 1, sleep=lambda s: None)
+
+        driver.get.assert_not_called()
+        assert reading["state"] == llv.STATE_UNKNOWN
+
+    def test_a_rendered_about_heading_the_parser_missed_is_drift_with_its_dom(self):
+        # A <div role=heading> inside no <section>: the parser reads unknown, the page shows About.
+        body = ("<main><div class='mt2 relative'><h1>Me Myself</h1>"
+                "<div class='text-body-medium'>CTO</div></div>"
+                "<div data-view-name='about'><div role='heading'>About</div>"
+                "<span aria-hidden='true'>hidden body</span></div></main>")
+
+        reading = llv.probe_profile_audit_fields(self._driver(body), 1, sleep=lambda s: None)
+
+        assert reading["state"] == llv.STATE_DRIFT
+        assert reading["fields"]["about"] == "unknown"
+        dom = reading["dom_readings"]["about"]
+        assert dom["heading"] == "About"
+        assert "data-view-name" in dom["html"] and "hidden body" in dom["html"]
+        assert "about" in reading["verdict"]
+
+    def test_a_profile_with_no_about_on_the_page_is_unknown_not_drift(self):
+        body = ("<main><div class='mt2 relative'><h1>Me Myself</h1>"
+                "<div class='text-body-medium'>CTO</div></div></main>")
+
+        reading = llv.probe_profile_audit_fields(self._driver(body), 1, sleep=lambda s: None)
+
+        assert reading["state"] == llv.STATE_UNKNOWN
+        assert not any(reading["page_shows"].values())
+
+    def test_a_page_that_never_rendered_grades_unknown_and_reports_no_fields(self):
+        driver = self._driver("")
+        driver.page_source = "<html><body><main><p>Sign in to LinkedIn</p></main></body></html>"
+
+        reading = llv.probe_profile_audit_fields(driver, 1, sleep=lambda s: None)
+
+        assert reading["state"] == llv.STATE_UNKNOWN
+        assert reading["rendered"] is False
+        assert "did not render" in reading["verdict"]
+
+    def test_the_snippet_is_sanitised(self):
+        from bs4 import BeautifulSoup
+
+        node = BeautifulSoup(
+            "<div class='cover-photo'><script>secret()</script>"
+            "<a href='https://x/private' id='abc'>link</a><svg><path/></svg>"
+            f"<p>{'x' * 200}</p></div>", "html.parser")
+
+        html = llv._audit_sanitised_snippet(node)
+
+        assert "secret()" not in html and "href" not in html and "id=" not in html
+        assert "<svg" not in html and "x" * 100 not in html
+
+    def test_headline_capture_is_targeted_with_ancestor_chain(self):
+        body = ("<main><section class='dr0a'><div class='dr0b'><p>Me Myself</p>"
+                "<p class='dr0c' data-x='1'>Builds things</p></div></section></main>")
+        driver = self._driver(body)
+        driver.page_source = f"<html><head><title>Me Myself | LinkedIn</title></head><body>{body}</body></html>"
+
+        reading = llv.probe_profile_audit_fields(driver, 1, sleep=lambda s: None)
+
+        cap = reading["dom_readings"].get("headline")
+        if cap is None:  # parser resolved it via the chain: nothing to capture
+            assert reading["fields"]["headline"] == "Builds things"
+            return
+        assert cap["text"] == "Builds things" and 'dr0c' in cap["html"]
+        assert cap["ancestors"][0]["classes"] == ["dr0b"]
+
+    def test_banner_capture_lists_images_and_default_marker(self):
+        from bs4 import BeautifulSoup
+
+        source = BeautifulSoup(
+            "<main><section><img src='https://x.test/default-cover.png?token=abc' alt='b'>"
+            "<div style='background-image: url(https://x.test/z.jpg)'></div>"
+            "<svg><path d='M0 0 L9 9'/></svg><h1>Me Myself</h1></section></main>", "html.parser")
+
+        reading = llv._audit_banner_reading(source)
+
+        assert reading["found"] and len(reading["elements"]) == 2
+        assert reading["default_marker"] is True
+        assert "token=" not in " ".join(reading["elements"])
+        assert llv._audit_banner_reading(BeautifulSoup("<p>x</p>", "html.parser"))["found"] is False
+
+    def test_targeted_html_strips_path_data_and_caps_length(self):
+        from bs4 import BeautifulSoup
+
+        node = BeautifulSoup("<div><svg><path d='M0 0 L9 9' fill='red'/></svg>"
+                             f"<p>{'y' * 9000}</p></div>", "html.parser")
+
+        html = llv._audit_targeted_html(node)
+
+        assert "M0 0" not in html and "fill=" in html and len(html) <= 6000
+
+    def test_state_grading_directly(self):
+        assert llv.profile_audit_fields_state({}) == llv.STATE_UNKNOWN
+        assert llv.profile_audit_fields_state({"rendered": True, "unresolved": []}) == llv.STATE_OK
+        assert llv.profile_audit_fields_state(
+            {"rendered": True, "unresolved": ["about"], "page_shows": {"about": True}}
+        ) == llv.STATE_DRIFT
+        assert llv.profile_audit_fields_state(
+            {"rendered": True, "unresolved": ["about"], "page_shows": {"about": False}}
+        ) == llv.STATE_UNKNOWN
+
+    def test_the_flag_alone_is_enough_to_probe(self, monkeypatch):
+        monkeypatch.setattr("cqc_lem.utilities.linkedin.session.get_current_profile",
+                            lambda **k: (MagicMock(), MagicMock(), "a@b.c", MagicMock()))
+        monkeypatch.setattr("cqc_lem.utilities.selenium_util.quit_gracefully", lambda d: None)
+        clear_the_breaker(monkeypatch)
+        monkeypatch.setattr(llv, "probe_profile_audit_fields", lambda d, uid: {"verdict": "ok"})
+        assert llv.main(["--profile-audit-fields"]) == 0
+
+
 # ─────────────────────── read-only enforcement + the breaker gate (#1301) ───────────────────────
 # These are the tests that let an autonomous agent run this probe at all. Before #1301 "read-only"
 # was a property of the prose; here it is a property of the process.

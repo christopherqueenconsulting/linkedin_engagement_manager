@@ -97,6 +97,7 @@ from cqc_lem.utilities.auth_factors import (
 from cqc_lem.utilities.content_generation_status import clear_generation_status, get_generation_status, mark_queued
 from cqc_lem.utilities.curated_sources import credit_line
 from cqc_lem.utilities.db import (
+    AGENT_POST_PLACEHOLDER,
     EMAIL_VERIFICATION_REQUIRED_MESSAGE,
     INTERNAL_ACCOUNT_KINDS,
     MCP_SESSION_SCOPES,
@@ -146,7 +147,9 @@ from cqc_lem.utilities.db import (
     get_linkedin_profile_url_by_user_id,
     get_member_analytics_token_info,
     get_passkey_by_credential_id,
+    get_placeholder_post_ids,
     get_planned_tasks,
+    get_post_content,
     get_post_for_user,
     get_post_type,
     get_post_url_from_log_for_user,
@@ -769,6 +772,11 @@ _MCP_OUTREACH_READ_PATHS = _MCP_READ_PATHS | _MCP_OUTREACH_EXTRA_READ_PATHS
 _GET_ONLY = frozenset({"GET"})
 _POST_ONLY = frozenset({"POST"})
 _PUT_ONLY = frozenset({"PUT"})
+# The AI/media spend tools (W2b, owner ruling O4), `POST` only. These three routes serve MCP seats
+# and nobody else, and each refuses media for any post but a pending one this token created; W1's
+# text-only rule on `/schedule_post/` and `/update_post/` is untouched (`api/routers/mcp_spend.py`).
+_MCP_SPEND_PATHS = frozenset({"/user/mcp-spend/post", "/user/mcp-spend/post-image",
+                              "/user/mcp-spend/post-video"})
 
 # The W2 write grants (`docs/agent-mcp-plan.md` §4): exactly the verb each write tool sends on each
 # path, never DELETE or PATCH. The surface drift guard (`test_mcp_tool_surface.py`) proves this table
@@ -777,8 +785,10 @@ _PUT_ONLY = frozenset({"PUT"})
 # `_refuse_agent_approved_status`), the `auto_approve` downgrade and the SQL pending-only edits (W1)
 # all hold for these scopes, because they are queue-only (`_QUEUE_ONLY_SCOPES`).
 #   /schedule_post, /update_post   lem_draft_post / lem_revise_post_draft: text-only PENDING drafts
+#   /user/mcp-spend/*              the W2b spend tools; POST only, listed above
 _MCP_WRITE_METHODS: Dict[str, frozenset[str]] = {
     "/schedule_post": _POST_ONLY, "/update_post": _POST_ONLY,
+    **{path: _POST_ONLY for path in _MCP_SPEND_PATHS},
 }
 # `mcp_outreach` adds the outreach writes. Two paths carry TWO verbs: the create (POST) and the
 # internal/sandbox-only approval `lem_approve_item` sends (PUT, owner ruling O1). `PUT /dm` is that
@@ -2909,6 +2919,10 @@ def schedule_post(post: PostRequest) -> PostScheduledResponse:
                                        approved_by=user_approver(user_id))
     if post_id is None:
         raise HTTPException(status_code=404, detail="Could not schedule post")
+    if _request_session_scope.get() in MCP_SESSION_SCOPES:
+        # The provenance the MCP media tools require: media only for a post THIS token created (W2b).
+        from cqc_lem.api.mcp.spend import mark_created_post
+        mark_created_post(post_id, user_id, get_session_id(current_session_token(post.session_token)))
     return PostScheduledResponse(status_code=200, detail="Post scheduled successfully",
                                  post_id=post_id)
 
@@ -3124,11 +3138,66 @@ def get_posts_for_email(
     })
 
 
+# Statuses that put a post on the road to LinkedIn. A post still holding an MCP agent's placeholder
+# body (issue #2689) was never written, so none of them may be set on it.
+_PUBLISHING_STATUSES = frozenset({PostStatus.APPROVED.value, PostStatus.SCHEDULED.value,
+                                  PostStatus.POSTED.value})
+_AGENT_DRAFT_NOT_WRITTEN = "agent_draft_not_written"
+
+
+class BulkUpdateSkip(BaseModel):
+    """One post a bulk status change left untouched, and why."""
+
+    post_id: int
+    code: str
+
+
+class BulkUpdateResponse(ResponseModel[str]):
+    """`POST /posts/bulk_update/`'s reply: the usual message, plus the posts it left alone.
+
+    `skipped` is empty unless a publishing status named an MCP agent's draft that LEM is still
+    writing (issue #2689): those keep their status and every other id is updated.
+    """
+
+    skipped: List[BulkUpdateSkip] = []
+
+
+def _is_publishing(status: Any) -> bool:
+    return getattr(status, "value", status) in _PUBLISHING_STATUSES
+
+
+def _refuse_placeholder_approval(status: Any, contents: List[Optional[str]], *,
+                                 user_id: Optional[int]) -> None:
+    """409 `agent_draft_not_written` when a publishing status would land on a placeholder body.
+
+    Args:
+        status: The status the caller asked for (enum or string); anything else passes.
+        contents: The body each target post will carry after the write.
+        user_id: The caller, for the log line.
+
+    Raises:
+        HTTPException: 409 when any target still holds `AGENT_POST_PLACEHOLDER`.
+    """
+    if getattr(status, "value", status) not in _PUBLISHING_STATUSES:
+        return
+    if any((content or "").strip() == AGENT_POST_PLACEHOLDER for content in contents):
+        # DEBUG: the designed answer to a click on a draft that is still being written.
+        log_debug("Refused to approve an MCP agent post that was never written", user_id=user_id,
+                  action_type="post")
+        raise HTTPException(status_code=409, detail={
+            "code": _AGENT_DRAFT_NOT_WRITTEN,
+            "message": "LEM is still writing this draft for your AI agent; it cannot be approved "
+                       "yet.",
+        })
+
+
 @router.post("/posts/bulk_update/", responses={
-    200: {"description": "Posts updated successfully"},
-    **{k: v for k, v in error_responses.items() if k in [400, 401, 403, 405]}
+    200: {"description": "Posts updated; `skipped` lists any left untouched"},
+    **{k: v for k, v in error_responses.items() if k in [400, 401, 403, 405]},
+    409: {"description": "Every post named is an AI agent's draft LEM is still writing"},
+    503: {"description": "Could not read which posts are still being written"},
 })
-def bulk_update_posts_endpoint(request: BulkUpdateRequest) -> ResponseModel[str]:
+def bulk_update_posts_endpoint(request: BulkUpdateRequest) -> BulkUpdateResponse:
     """Restatus and/or reschedule a batch of the caller's posts, all-or-nothing.
 
     Ownership is proved for EVERY id before anything is written, and the update is additionally
@@ -3147,14 +3216,38 @@ def bulk_update_posts_endpoint(request: BulkUpdateRequest) -> ResponseModel[str]
         raise HTTPException(status_code=400, detail="post_ids is required")
     _require_own_posts(user_id, request.post_ids)
 
+    # An MCP agent's draft LEM is still writing (issue #2689) cannot take a publishing status. The
+    # rest of the batch still goes through: those ids are named back as `skipped`, and the UPDATE
+    # itself excludes the placeholder too, so a row that became one after this read is safe.
+    post_ids, skipped, exclude = list(request.post_ids), [], None
+    if _is_publishing(request.status):
+        try:
+            held = set(get_placeholder_post_ids(user_id, post_ids))
+        except OwnershipUnprovable:
+            raise HTTPException(status_code=503, detail="Could not read the posts — try again")
+        skipped = [BulkUpdateSkip(post_id=pid, code=_AGENT_DRAFT_NOT_WRITTEN)
+                   for pid in post_ids if pid in held]
+        post_ids = [pid for pid in post_ids if pid not in held]
+        exclude = AGENT_POST_PLACEHOLDER
+        if not post_ids:
+            log_debug("Refused to approve MCP agent posts that were never written",
+                      user_id=user_id, action_type="post")
+            raise HTTPException(status_code=409, detail={
+                "code": _AGENT_DRAFT_NOT_WRITTEN,
+                "message": "LEM is still writing these drafts for your AI agent; they cannot be "
+                           "approved yet.",
+                "post_ids": sorted(held),
+            })
+
     _warn_if_naive_schedule(request.scheduled_datetime, "/posts/bulk_update/", user_id=user_id)
 
     # `user_id=` scopes the WHERE clause as well as the check in front of it — the check is the
     # gate, the scope is what makes forgetting it harmless (issue #914).
-    if bulk_update_posts(request.post_ids, status=request.status,
+    if bulk_update_posts(post_ids, status=request.status,
                          scheduled_time=request.scheduled_datetime, user_id=user_id,
-                         approved_by=user_approver(user_id)):
-        return ResponseModel(status_code=200, detail="Posts updated successfully")
+                         approved_by=user_approver(user_id), exclude_content=exclude):
+        return BulkUpdateResponse(status_code=200, detail="Posts updated successfully",
+                                  skipped=skipped)
     else:
         raise HTTPException(status_code=405, detail="Posts could not be updated")
 
@@ -3224,9 +3317,39 @@ def get_post_endpoint(post_id: int, session_token: Optional[str] = None) -> Resp
     return ResponseModel(status_code=200, detail=_post_row(post, curated_sources))
 
 
+def _refuse_placeholder_save(post_id: int, post: "PostRequest", *, user_id: int) -> None:
+    """Refuse an editor save that carries an MCP agent's placeholder body (issue #2689).
+
+    `update_db_post` writes the body it is sent, so the body a save sends IS the body the row will
+    carry, and the approve check needs no read. With a publishing status it is a 409
+    `agent_draft_not_written`. With any other status it is allowed only while the stored row still
+    holds the placeholder: otherwise it is a tab opened before LEM wrote the draft, and saving it
+    would overwrite the written draft (409 `agent_placeholder_stale`). An unreadable stored body is
+    a 503, never a guess. `update_db_post` repeats that last check in its WHERE clause.
+
+    Raises:
+        HTTPException: 409 or 503 as above.
+    """
+    if (post.content or "").strip() != AGENT_POST_PLACEHOLDER:
+        return
+    _refuse_placeholder_approval(post.status, [post.content], user_id=user_id)
+    stored = get_post_content(post_id)
+    if stored is None:
+        raise HTTPException(status_code=503, detail="Could not read the post — try again")
+    if stored.strip() != AGENT_POST_PLACEHOLDER:
+        log_debug("Refused a stale save over a written MCP agent draft", user_id=user_id,
+                  post_id=post_id, action_type="post")
+        raise HTTPException(status_code=409, detail={
+            "code": "agent_placeholder_stale",
+            "message": "LEM has written this draft since you opened it. Reload it before saving.",
+        })
+
+
 @router.post("/update_post/", responses={
     200: {"description": "Post updated successfully"},
-    **{k: v for k, v in error_responses.items() if k in [401, 403, 405]}
+    **{k: v for k, v in error_responses.items() if k in [401, 403, 405]},
+    409: {"description": "An AI agent's draft LEM is still writing, or a stale save over it"},
+    503: {"description": "Could not read the stored post"},
 })
 def update_post(post_id: int, post: PostUpdateRequest) -> ResponseModel[str]:
     """Edit one of the caller's posts in place.
@@ -3238,9 +3361,14 @@ def update_post(post_id: int, post: PostUpdateRequest) -> ResponseModel[str]:
     _reject_foreign_email(user_id, post.email)
     _require_own_posts(user_id, [post_id])
     _refuse_agent_approved_status(post.status)
+    _refuse_placeholder_save(post_id, post, user_id=user_id)
 
     _warn_if_naive_schedule(post.scheduled_datetime, "/update_post/", post_id=post_id,
                             user_id=user_id)
+
+    stored_content = get_post_content(post_id)
+    if post.status in (PostStatus.PENDING, PostStatus.APPROVED):
+        _voice_note_edit(user_id, "post", post_id, stored_content, post.content)
 
     if _edits_pending_only():
         # A queue-only seat revises a PENDING draft's text and slot only (issue #2684). The type,
@@ -3270,6 +3398,8 @@ def update_post(post_id: int, post: PostUpdateRequest) -> ResponseModel[str]:
         # "clear it" (issue #744 — use_avatar is three-valued).
         if post.use_avatar is not None:
             update_post_use_avatar(post_id, post.use_avatar)
+        if post.status == PostStatus.APPROVED:
+            _voice_record_approval(user_id, "post", post_id, post.content)
         return ResponseModel(status_code=200, detail="Post updated successful")
     else:
         raise HTTPException(status_code=405, detail="Post could not be updated")
@@ -3539,6 +3669,21 @@ def _refuse_agent_approved_status(status: Optional[str]) -> None:
         _audit_operator_approval("status")
         return
     raise _agent_approval_refusal()
+
+
+def _voice_note_edit(user_id: int, lane: str, item_id: int, stored: Optional[str],
+                     submitted: Optional[str]) -> None:
+    """Edited-draft capture (#2627 1b): keep a pending draft's text as drafted before an edit lands."""
+    from cqc_lem.utilities.ai import voice_exemplars
+
+    voice_exemplars.note_draft_edit(user_id, lane, item_id, stored, submitted)
+
+
+def _voice_record_approval(user_id: int, lane: str, item_id: int, final: Optional[str]) -> None:
+    """Edited-draft capture (#2627 1b): an approval of an edited draft stores original + final."""
+    from cqc_lem.utilities.ai import voice_exemplars
+
+    voice_exemplars.record_approved_edit(user_id, lane, item_id, final)
 
 
 def _edits_pending_only() -> bool:
@@ -4084,6 +4229,10 @@ def update_scheduled_dm_endpoint(request: UpdateDmRequest) -> ResponseModel[str]
     if status is None and all(v is None for v in (request.recipient_profile_url, request.recipient_name,
                                                   request.message, request.scheduled_datetime)):
         raise HTTPException(status_code=422, detail="Nothing to update — provide at least one field or an action")
+    stored_dm = (get_scheduled_dm(request.dm_id) or {}
+                 if request.message is not None or status == ScheduledDmStatus.APPROVED else {})
+    stored_message = stored_dm.get("message")
+    _voice_note_edit(user_id, "scheduled_dm", request.dm_id, stored_message, request.message)
     if _edits_pending_only():
         fields = {k: v for k, v in (("recipient_profile_url", request.recipient_profile_url),
                                     ("recipient_name", request.recipient_name),
@@ -4100,18 +4249,23 @@ def update_scheduled_dm_endpoint(request: UpdateDmRequest) -> ResponseModel[str]
                     fields["scheduled_time"] = datetime.now(timezone.utc)
         _pending_edit_or_raise("scheduled_dm", request.dm_id, user_id, fields,
                                "Could not update scheduled DM")
+        if status == ScheduledDmStatus.APPROVED:
+            _voice_record_approval(user_id, "scheduled_dm", request.dm_id,
+                                   request.message or stored_message)
         return ResponseModel(status_code=200, detail="Scheduled DM updated")
     scheduled_time = request.scheduled_datetime
     if status == ScheduledDmStatus.APPROVED and scheduled_time is None:
         # The scanner returns a DM this far past its slot to 'pending' (#2103), so re-approving one
         # without moving its slot would bounce it straight back. Approving it now means send it now.
-        dm = get_scheduled_dm(request.dm_id)
-        if dm and scheduled_dm_is_stale(dm.get("scheduled_time")):
+        if stored_dm and scheduled_dm_is_stale(stored_dm.get("scheduled_time")):
             scheduled_time = datetime.now(timezone.utc)
     if not update_scheduled_dm(request.dm_id, recipient_profile_url=request.recipient_profile_url,
                                recipient_name=request.recipient_name, message=request.message,
                                scheduled_time=scheduled_time, status=status):
         raise HTTPException(status_code=500, detail="Could not update scheduled DM")
+    if status == ScheduledDmStatus.APPROVED:
+        _voice_record_approval(user_id, "scheduled_dm", request.dm_id,
+                               request.message or stored_message)
     return ResponseModel(status_code=200, detail="Scheduled DM updated")
 
 
@@ -4250,6 +4404,10 @@ def update_connection_request_endpoint(request: ConnectionRequestUpdate) -> Resp
                                                   request.recipient_name, request.message,
                                                   request.recipient_email)):
         raise HTTPException(status_code=422, detail="Nothing to update — provide at least one field or an action")
+    stored_message = None
+    if request.message is not None or status == ConnectionRequestStatus.APPROVED:
+        stored_message = (current or get_connection_request(request.request_id) or {}).get("message")
+    _voice_note_edit(user_id, "connection_request", request.request_id, stored_message, request.message)
     if _edits_pending_only():
         if status is None and request.recipient_email is not None and all(
                 v is None for v in (request.recipient_profile_url, request.recipient_name,
@@ -4275,6 +4433,9 @@ def update_connection_request_endpoint(request: ConnectionRequestUpdate) -> Resp
                 fields.update(_mcp_approval_fields())
         _pending_edit_or_raise("connection_request", request.request_id, user_id, fields,
                                "Could not update connection request")
+        if status == ConnectionRequestStatus.APPROVED:
+            _voice_record_approval(user_id, "connection_request", request.request_id,
+                                   request.message or stored_message)
         return ResponseModel(status_code=200, detail="Connection request updated")
     if not update_connection_request(request.request_id,
                                      recipient_profile_url=request.recipient_profile_url,
@@ -4284,6 +4445,9 @@ def update_connection_request_endpoint(request: ConnectionRequestUpdate) -> Resp
                                                   if status == ConnectionRequestStatus.APPROVED
                                                   else None)):
         raise HTTPException(status_code=500, detail="Could not update connection request")
+    if status == ConnectionRequestStatus.APPROVED:
+        _voice_record_approval(user_id, "connection_request", request.request_id,
+                               request.message or stored_message)
     return ResponseModel(status_code=200, detail="Connection request updated")
 
 
@@ -4362,6 +4526,8 @@ def update_lead_signal_endpoint(request: LeadSignalUpdate) -> ResponseModel[str]
     draft = request.draft_response if request.draft_response is not None else signal.get("draft_response")
     if status == LeadSignalStatus.APPROVED and not (draft or "").strip():
         raise HTTPException(status_code=422, detail="Cannot approve a lead with an empty response")
+    _voice_note_edit(user_id, "lead_signal", request.signal_id, signal.get("draft_response"),
+                     request.draft_response)
     if _edits_pending_only():
         fields = {k: v for k, v in (("draft_response", request.draft_response),
                                     ("status", status)) if v is not None}
@@ -4371,9 +4537,13 @@ def update_lead_signal_endpoint(request: LeadSignalUpdate) -> ResponseModel[str]
             # Reached only when the pending-only write above moved the row (it raises otherwise),
             # so a signal already approved, sent or dismissed never dispatches a second reply.
             send_lead_response.apply_async(kwargs={"signal_id": request.signal_id})
+        if status == LeadSignalStatus.APPROVED:
+            _voice_record_approval(user_id, "lead_signal", request.signal_id, draft)
         return ResponseModel(status_code=200, detail="Lead signal updated")
     if not update_lead_signal(request.signal_id, draft_response=request.draft_response, status=status):
         raise HTTPException(status_code=500, detail="Could not update lead signal")
+    if status == LeadSignalStatus.APPROVED:
+        _voice_record_approval(user_id, "lead_signal", request.signal_id, draft)
     if status == LeadSignalStatus.APPROVED:
         send_lead_response.apply_async(kwargs={"signal_id": request.signal_id})
     return ResponseModel(status_code=200, detail="Lead signal updated")
@@ -4535,6 +4705,8 @@ def update_catchup_touch_endpoint(request: UpdateCatchupTouchRequest) -> Respons
     # SKIPPED — so an approval must always land on a real message, saved now or already stored.
     if status == CatchupTouchStatus.APPROVED and not (request.message or touch.get("message") or "").strip():
         raise HTTPException(status_code=422, detail="Add a message before approving this catch-up touch")
+    _voice_note_edit(user_id, "catchup_touch", request.touch_id, touch.get("message"), request.message)
+    final_message = request.message or touch.get("message")
     if _edits_pending_only():
         fields = {k: v for k, v in (("message", request.message),
                                     ("person_name", request.person_name),
@@ -4547,10 +4719,14 @@ def update_catchup_touch_endpoint(request: UpdateCatchupTouchRequest) -> Respons
             fields.update(_mcp_approval_fields())
         _pending_edit_or_raise("catchup_touch", request.touch_id, user_id, fields,
                                "Could not update catch-up touch")
+        if status == CatchupTouchStatus.APPROVED:
+            _voice_record_approval(user_id, "catchup_touch", request.touch_id, final_message)
         return ResponseModel(status_code=200, detail="Catch-up touch updated")
     if not update_catchup_touch(request.touch_id, message=request.message,
                                 person_name=request.person_name, status=status):
         raise HTTPException(status_code=500, detail="Could not update catch-up touch")
+    if status == CatchupTouchStatus.APPROVED:
+        _voice_record_approval(user_id, "catchup_touch", request.touch_id, final_message)
     return ResponseModel(status_code=200, detail="Catch-up touch updated")
 
 
@@ -4850,6 +5026,7 @@ from cqc_lem.api.routers import (  # noqa: E402
     avatar as _avatar_router,
     billing as _billing_router,
     curated as _curated_router,
+    mcp_spend as _mcp_spend_router,
     mcp_tokens as _mcp_tokens_router,
     outreach as _outreach_router,
     review as _review_router,
@@ -4862,6 +5039,7 @@ app.include_router(_auth_router.router)
 app.include_router(_avatar_router.router)
 app.include_router(_billing_router.router)
 app.include_router(_curated_router.router)
+app.include_router(_mcp_spend_router.router)
 app.include_router(_mcp_tokens_router.router)
 app.include_router(_outreach_router.router)
 app.include_router(_review_router.router)

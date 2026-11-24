@@ -237,3 +237,92 @@ def test_bulk_accept_promotes_each_pending_candidate_above_threshold():
 def test_bulk_accept_fault_accepts_nothing():
     with patch(_CUR, side_effect=_ERR):
         assert repo.accept_candidates_above(5, 0.5) == 0
+
+
+class TestAudioRepository:
+    """Audio intake (issue #2729): voice enrollment, audio rows, the 24 h failure cap."""
+
+    def test_aad_constant_and_audio_source_type_are_pinned(self):
+        assert repo.CALL_VOICE_FIELD == "call_ingest.voice_embedding"
+        assert "audio" in repo.CALL_SOURCE_TYPES
+
+    def test_facade_re_exports_audio_names(self):
+        from cqc_lem.utilities import db
+        for name in ("save_voice_enrollment", "get_voice_enrollment", "insert_call_audio_ingest",
+                     "get_call_audio_path", "store_call_transcript", "clear_call_audio",
+                     "list_expired_call_audio", "list_call_audio_paths"):
+            assert getattr(db, name) is getattr(repo, name) and name in db.__all__
+
+    def test_enrollment_is_sealed_and_round_trips(self):
+        cur, ctx = _cursor()
+        with patch(_CUR, return_value=ctx), \
+                patch.object(repo, "encrypt_secret", return_value="sealed") as enc:
+            assert repo.save_voice_enrollment(3, [0.5, 0.25]) is True
+        assert enc.call_args.args == ("[0.5, 0.25]", 3, "call_ingest.voice_embedding")
+        assert cur.execute.call_args[0][1] == (3, "sealed")
+        cur, ctx = _cursor(one=("sealed",))
+        with patch(_CUR, return_value=ctx), \
+                patch.object(repo, "decrypt_secret", return_value="[0.5, 0.25]"):
+            assert repo.get_voice_enrollment(3) == [0.5, 0.25]
+
+    def test_enrollment_unreadable_reads_as_none(self):
+        for one, plain in ((None, None), (("s",), "not json"), (("s",), "[]"), (("s",), None),
+                           ((None,), None)):
+            cur, ctx = _cursor(one=one)
+            with patch(_CUR, return_value=ctx), patch.object(repo, "decrypt_secret",
+                                                              return_value=plain):
+                assert repo.get_voice_enrollment(3) is None
+        with patch(_CUR, side_effect=_ERR):
+            assert repo.get_voice_enrollment(3) is None
+            assert repo.save_voice_enrollment(3, [1.0]) is False
+
+    def test_audio_insert_sets_24h_and_7d_caps_and_dedupes(self):
+        cur, ctx = _cursor(one=None)
+        now = datetime(2026, 1, 1)
+        with patch(_CUR, return_value=ctx):
+            assert repo.insert_call_audio_ingest(3, "h" * 64, "/a/x.m4a", 4, "t", now=now) == 7
+        params = cur.execute.call_args_list[-1][0][1]
+        assert params[-2] == datetime(2026, 1, 2) and params[-1] == datetime(2026, 1, 8)
+        cur, ctx = _cursor(one=(42, "received"))
+        with patch(_CUR, return_value=ctx):
+            assert repo.insert_call_audio_ingest(3, "h", "/a") == 42
+        assert cur.execute.call_count == 1
+        cur, ctx = _cursor(one=(43, "failed"))
+        with patch(_CUR, return_value=ctx):
+            assert repo.insert_call_audio_ingest(3, "h", "/a/y.m4a", now=now) == 43
+        assert cur.execute.call_count == 2
+        assert "status='received'" in _sql(cur) and cur.execute.call_args[0][1][0] == "/a/y.m4a"
+        with patch(_CUR, side_effect=_ERR):
+            assert repo.insert_call_audio_ingest(3, "h", "/a") is None
+
+    def test_store_transcript_seals_and_clears_audio_reference(self):
+        cur, ctx = _cursor(rowcount=1)
+        with patch(_CUR, return_value=ctx), patch.object(repo, "encrypt_secret",
+                                                          return_value="sealed") as enc:
+            assert repo.store_call_transcript(3, 9, "my words", "me", 2) is True
+        assert enc.call_args.args == ("my words", 3, "call_ingest.transcript")
+        assert "audio_path=NULL" in _sql(cur) and "my words" not in cur.execute.call_args[0][1]
+        with patch(_CUR, side_effect=_ERR), patch.object(repo, "encrypt_secret", return_value="s"):
+            assert repo.store_call_transcript(3, 9, "x", "me", 1) is False
+
+    def test_audio_path_clear_and_listing(self):
+        cur, ctx = _cursor(one=("/a/x.m4a",), rowcount=1, rows=[(3, 9, "/a/x.m4a")])
+        with patch(_CUR, return_value=ctx):
+            assert repo.get_call_audio_path(3, 9) == "/a/x.m4a"
+            assert repo.clear_call_audio(3, 9) is True
+            assert repo.list_expired_call_audio(datetime(2026, 1, 1)) == [(3, 9, "/a/x.m4a")]
+        cur, ctx = _cursor(rows=[("/a/x.m4a",)], one=None)
+        with patch(_CUR, return_value=ctx):
+            assert repo.list_call_audio_paths(3) == ["/a/x.m4a"]
+            assert repo.get_call_audio_path(3, 9) is None
+        with patch(_CUR, side_effect=_ERR):
+            assert repo.get_call_audio_path(3, 9) is None
+            assert repo.clear_call_audio(3, 9) is False
+            assert repo.list_expired_call_audio() == []
+            assert repo.list_call_audio_paths(3) == []
+
+    def test_purge_all_also_deletes_the_voice_enrollment(self):
+        cur, ctx = _cursor()
+        with patch(_CUR, return_value=ctx):
+            assert repo.purge_all_call_data(3) is True
+        assert "DELETE FROM call_voice_enrollment" in _sql(cur)

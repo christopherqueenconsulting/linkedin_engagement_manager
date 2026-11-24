@@ -21,7 +21,9 @@ from cqc_lem.utilities.db import (
     approve_comment_candidate,
     cancel_comment_candidate,
     get_catchup_touch,
+    get_connection_request,
     get_connection_request_user_id,
+    get_outreach_target,
     get_outreach_target_user_id,
     get_scheduled_dm,
     get_scheduled_dm_user_id,
@@ -49,6 +51,13 @@ WRITE_FAILED = "write_failed"
 APPROVE_ONE_AT_A_TIME = "agent_created_approve_individually"
 
 
+def _label_edited_approval(user_id: int, lane: str, item_id: int, final: Optional[str]) -> None:
+    """A draft edited earlier and approved here becomes a voice label (#2627 1b); never raises."""
+    from cqc_lem.utilities.ai import voice_exemplars
+
+    voice_exemplars.record_approved_edit(user_id, lane, item_id, final)
+
+
 def approve_scheduled_dm(user_id: int, item_id: int) -> Optional[str]:
     """Approve a queued DM; a slot already past its window moves to now (else the scanner bounces it)."""
     if get_scheduled_dm_user_id(item_id) != user_id:
@@ -56,8 +65,10 @@ def approve_scheduled_dm(user_id: int, item_id: int) -> Optional[str]:
     from cqc_lem.app.engagement.outreach import scheduled_dm_is_stale
     dm = get_scheduled_dm(item_id)
     slot = datetime.now(timezone.utc) if dm and scheduled_dm_is_stale(dm.get("scheduled_time")) else None
-    return None if update_scheduled_dm(item_id, scheduled_time=slot,
-                                       status=ScheduledDmStatus.APPROVED) else WRITE_FAILED
+    if not update_scheduled_dm(item_id, scheduled_time=slot, status=ScheduledDmStatus.APPROVED):
+        return WRITE_FAILED
+    _label_edited_approval(user_id, "scheduled_dm", item_id, (dm or {}).get("message"))
+    return None
 
 
 def cancel_scheduled_dm(user_id: int, item_id: int) -> Optional[str]:
@@ -81,8 +92,12 @@ def approve_connection_request(user_id: int, item_id: int) -> Optional[str]:
     """Approve a connection request, stamping `approved_by`."""
     if get_connection_request_user_id(item_id) != user_id:
         return NOT_FOUND
-    return None if update_connection_request(item_id, status=ConnectionRequestStatus.APPROVED,
-                                             approved_by=user_approver(user_id)) else WRITE_FAILED
+    stored = get_connection_request(item_id)
+    if not update_connection_request(item_id, status=ConnectionRequestStatus.APPROVED,
+                                     approved_by=user_approver(user_id)):
+        return WRITE_FAILED
+    _label_edited_approval(user_id, "connection_request", item_id, (stored or {}).get("message"))
+    return None
 
 
 def cancel_connection_request(user_id: int, item_id: int) -> Optional[str]:
@@ -97,8 +112,12 @@ def approve_funnel_target(user_id: int, item_id: int) -> Optional[str]:
     """Approve the funnel target's current stage, stamping `approved_by`."""
     if get_outreach_target_user_id(item_id) != user_id:
         return NOT_FOUND
-    return None if update_outreach_target(item_id, status=OutreachStatus.APPROVED,
-                                          approved_by=user_approver(user_id)) else WRITE_FAILED
+    stored = get_outreach_target(item_id)
+    if not update_outreach_target(item_id, status=OutreachStatus.APPROVED,
+                                  approved_by=user_approver(user_id)):
+        return WRITE_FAILED
+    _label_edited_approval(user_id, "outreach_target", item_id, (stored or {}).get("draft_text"))
+    return None
 
 
 def cancel_funnel_target(user_id: int, item_id: int) -> Optional[str]:
@@ -115,7 +134,10 @@ def approve_catchup_touch(user_id: int, item_id: int) -> Optional[str]:
         return NOT_FOUND
     if not (touch.get("message") or "").strip():
         return EMPTY_MESSAGE
-    return None if update_catchup_touch(item_id, status=CatchupTouchStatus.APPROVED) else WRITE_FAILED
+    if not update_catchup_touch(item_id, status=CatchupTouchStatus.APPROVED):
+        return WRITE_FAILED
+    _label_edited_approval(user_id, "catchup_touch", item_id, touch.get("message"))
+    return None
 
 
 def cancel_catchup_touch(user_id: int, item_id: int) -> Optional[str]:

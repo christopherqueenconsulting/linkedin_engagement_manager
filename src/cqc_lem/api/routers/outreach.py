@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 from cqc_lem.api.models import ResponseModel
 from cqc_lem.utilities.db import (
     OutreachStatus,
+    get_outreach_target,
     get_outreach_target_by_profile,
     get_outreach_target_by_url,
     get_outreach_target_user_id,
@@ -161,6 +162,10 @@ def update_outreach_target_endpoint(request: UpdateOutreachTargetRequest) -> Res
     if status is None and all(v is None for v in (request.target_name, request.context_url,
                                                   request.draft_text)):
         raise HTTPException(status_code=422, detail="Nothing to update — provide at least one field or an action")
+    stored_draft = None
+    if request.draft_text is not None or status == OutreachStatus.APPROVED:
+        stored_draft = (get_outreach_target(request.target_id) or {}).get("draft_text")
+    _main._voice_note_edit(user_id, "outreach_target", request.target_id, stored_draft, request.draft_text)
     if _main._edits_pending_only():
         fields = {k: v for k, v in (("target_name", request.target_name),
                                     ("context_url", request.context_url),
@@ -172,6 +177,9 @@ def update_outreach_target_endpoint(request: UpdateOutreachTargetRequest) -> Res
             fields.update(_main._mcp_approval_fields())
         _main._pending_edit_or_raise("outreach_target", request.target_id, user_id, fields,
                                      "Could not update outreach target")
+        if status == OutreachStatus.APPROVED:
+            _main._voice_record_approval(user_id, "outreach_target", request.target_id,
+                                         request.draft_text or stored_draft)
         return ResponseModel(status_code=200, detail="Outreach target updated")
     if not update_outreach_target(request.target_id, target_name=request.target_name,
                                   context_url=request.context_url, draft_text=request.draft_text,
@@ -179,6 +187,9 @@ def update_outreach_target_endpoint(request: UpdateOutreachTargetRequest) -> Res
                                   approved_by=(user_approver(user_id)
                                                if status == OutreachStatus.APPROVED else None)):
         raise HTTPException(status_code=500, detail="Could not update outreach target")
+    if status == OutreachStatus.APPROVED:
+        _main._voice_record_approval(user_id, "outreach_target", request.target_id,
+                                     request.draft_text or stored_draft)
     return ResponseModel(status_code=200, detail="Outreach target updated")
 
 

@@ -122,6 +122,7 @@ class TestToolsList:
             spec = registry.TOOLS_BY_NAME[tool["name"]]
             assert tool["inputSchema"]["additionalProperties"] is False
             assert tool["annotations"]["readOnlyHint"] is (not spec.write)
+            assert tool["annotations"]["idempotentHint"] is (not spec.write)
             assert tool["annotations"]["destructiveHint"] is False
             assert tool["annotations"]["openWorldHint"] is registry.TOOLS_BY_NAME[
                 tool["name"]].open_world

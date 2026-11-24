@@ -27,9 +27,10 @@ prefix rule and the reasoning.
 
 import json
 import os
+import shutil
 import tempfile
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 import requests
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
@@ -56,6 +57,7 @@ from cqc_lem.api.response_schemas import (
     NewsletterDraftDetail,
     NewsletterSettingsDetail,
     NewsletterSubscribersDetail,
+    ProfileAuditDetail,
     StoryBankDetail,
     UserGroup,
     UserSettingsDetail,
@@ -63,7 +65,7 @@ from cqc_lem.api.response_schemas import (
 )
 from cqc_lem.app.engagement.posting import update_stale_profile
 from cqc_lem.utilities import db as _call_db
-from cqc_lem.utilities.ai import call_ingest as _call_ingest
+from cqc_lem.utilities.ai import call_audio as _call_audio, call_ingest as _call_ingest
 from cqc_lem.utilities.ai.audience_mix import parse_audience_mix
 from cqc_lem.utilities.ai.content_alignment import profile_niche_anchors
 from cqc_lem.utilities.ai.content_framework import GROUP_POST_BEST_PRACTICES
@@ -752,6 +754,11 @@ class EngagementPreferencesRequest(BaseModel):
     funnel_stage_mode: Optional[str] = None
     # Daily-review stale digest email (#2669). None = leave what is stored; a stored NULL is on.
     review_digest_enabled: Optional[bool] = None
+    # Per-user background-session windows and zone (issue #2767). None = leave what is stored;
+    # `[]` / "" = back to the defaults. Only SESSION_WINDOW_MODE=enforce reads them. An invalid
+    # value is stored as "defaults" and named in the PUT response, never a 422.
+    session_windows: Optional[List[Dict[str, str]]] = Field(default=None, max_length=8)
+    session_timezone: Optional[str] = Field(default=None, max_length=64)
     # Opt-in auto-connect for roster targets following did not unlock (issue #979), OFF by default
     # and independent of roster_auto_follow. No cap of its own — roster invites take at most a
     # minority share of whatever max_invites_per_day has left.
@@ -992,6 +999,7 @@ EngagementPreferencesDetail = detail_model_from(
         "catchup_contact_interval_bounds": (CatchupContactIntervalBounds, ...),
         "catchup_per_contact_cap_bounds": (CatchupPerContactCapBounds, ...),
         "gate_defaults": (GateDefaults, ...),
+        "session_window_defaults": (List[Dict[str, str]], ...),
         "feed_reach": (Optional[FeedReach], ...),
     },
     doc="The saved engagement preferences, plus the read-only context the Settings hub renders.\n\n"
@@ -2229,6 +2237,70 @@ def get_engagement_suggestions_endpoint(session_token: str) -> ResponseModel[dic
     })
 
 
+def _profile_audit_user(session_token: str) -> int:
+    """The caller, or 401; 404 while `profile-audit-enabled` is off for them."""
+    from cqc_lem.utilities.flags import PROFILE_AUDIT, flag_enabled
+    user_id = _main.get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    if not flag_enabled(PROFILE_AUDIT, user_id):
+        raise HTTPException(status_code=404, detail="Not found")
+    return user_id
+
+
+@router.get("/profile-audit", responses={200: {"model": ResponseModel[ProfileAuditDetail]}})
+def get_profile_audit_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
+    """The caller's profile audit history: score trend, latest findings, follower join (#2753).
+
+    Read-only; LEM never edits the LinkedIn profile. A failed read is 503, never an empty answer —
+    "no audits yet" (`latest: null`) is only said when it is true. 404 while the flag is off.
+    """
+    from cqc_lem.utilities.profile_audit_view import load_audit_view
+    user_id = _profile_audit_user(session_token)
+    view = load_audit_view(user_id)
+    if view is None:
+        raise HTTPException(status_code=503, detail="Profile audit is temporarily unavailable")
+    return ResponseModel(status_code=200, detail=view)
+
+
+class ProfileAuditActionRequest(BaseModel):
+    """Body of `POST /user/profile-audit/finding`: what the user says about one finding.
+
+    `reopen` clears an earlier done or ignore.
+    """
+
+    session_token: str
+    check_id: str = Field(max_length=40)
+    action: Literal["done", "ignored", "reopen"]
+
+
+@router.post("/profile-audit/finding")
+def post_profile_audit_finding_endpoint(request: ProfileAuditActionRequest) -> ResponseModel[str]:
+    """Mark a finding of the latest audit done, ignore it, or reopen it (#2753).
+
+    An ignore holds across later audits; a done covers the audit it was pressed on, and the next
+    audit re-grades. 404 for an unknown check or before the first audit; 503 if it could not be
+    stored — never a success that did not persist.
+    """
+    from cqc_lem.utilities.db import (
+        get_latest_profile_audit,
+        set_profile_finding_action,
+    )
+    from cqc_lem.utilities.profile_audit_view import known_check_ids
+    user_id = _profile_audit_user(request.session_token)
+    if request.check_id not in known_check_ids():
+        raise HTTPException(status_code=404, detail="Unknown check")
+    latest = get_latest_profile_audit(user_id)
+    if not latest:
+        raise HTTPException(status_code=404, detail="No audit yet")
+    stored = set_profile_finding_action(
+        user_id, request.check_id, None if request.action == "reopen" else request.action,
+        int(latest["id"]))
+    if not stored:
+        raise HTTPException(status_code=503, detail="Could not save. Try again shortly")
+    return ResponseModel(status_code=200, detail="ok")
+
+
 @router.put("/settings")
 def update_user_settings_endpoint(request: UserPreferencesRequest) -> ResponseModel[str]:
     """Save the account-level preferences.
@@ -2322,6 +2394,12 @@ def get_engagement_preferences_endpoint(session_token: str) -> ResponseModel[dic
     # Read-only: the highest catch-up cap this plan allows, so the UI can bound the input and show
     # what upgrading unlocks (10/day is premium-only).
     prefs["max_catchup_touches_allowed"] = max_catchup_touches_allowed(user_id)
+    # Read-only context for the session-window control (issue #2767): what is stored, validated
+    # the way the gate reads it, and the defaults a NULL means.
+    from cqc_lem.utilities.engagement_window import SESSION_WINDOWS
+    prefs["session_window_defaults"] = [
+        {"start": f"{s // 60:02d}:{s % 60:02d}", "end": f"{e // 60:02d}:{e % 60:02d}"}
+        for s, e in SESSION_WINDOWS.values()]
     # Read-only: bounds for the per-contact catch-up frequency guard (issue #1078).
     prefs["catchup_contact_interval_bounds"] = {
         "min_days": CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MIN,
@@ -2386,6 +2464,11 @@ def update_engagement_preferences_endpoint(request: EngagementPreferencesRequest
             prefs.pop(mode_key, None)
     if prefs.get("review_digest_enabled") is None:
         prefs.pop("review_digest_enabled", None)
+    # Same rule for the session windows and zone (issue #2767): omitted keeps what is stored;
+    # `[]` / "" clears back to the defaults.
+    for window_key in ("session_windows", "session_timezone"):
+        if prefs.get(window_key) is None:
+            prefs.pop(window_key, None)
     # Same rule for the forbidden-claim list (issue #2047): omitted or null is "leave what is
     # stored", never "store an empty list" — the saved subjects must survive a partial PUT.
     if prefs.get("forbidden_claim_terms") is None:
@@ -2403,6 +2486,12 @@ def update_engagement_preferences_endpoint(request: EngagementPreferencesRequest
     if not update_engagement_preferences(user_id, prefs):
         raise HTTPException(status_code=500, detail="Could not update engagement preferences")
     detail = "Engagement preferences updated"
+    # Said, not swallowed: the upsert stores an invalid window set or zone as "defaults".
+    from cqc_lem.utilities.engagement_window import normalize_session_windows, valid_session_timezone
+    if request.session_windows and normalize_session_windows(request.session_windows) is None:
+        detail += " — the session windows were invalid, so the defaults apply"
+    if (request.session_timezone or "").strip() and valid_session_timezone(request.session_timezone) is None:
+        detail += " — the session timezone was not recognised, so the account timezone applies"
     dropped = request.dropped_forbidden_claim_terms
     if dropped:
         # Said, not swallowed: a subject that is too short, too long, has no letters, or is past
@@ -2856,6 +2945,13 @@ def rescore_post_endpoint(request: PostRescoreRequest) -> ResponseModel[dict[str
         raise HTTPException(
             status_code=409,
             detail=f"Post is '{post_status}' — only pending or approved posts can be re-scored")
+    # A clean re-score promotes PENDING -> APPROVED, so an MCP agent's still-unwritten placeholder
+    # (issue #2689) is refused here exactly as an approve is. Fails CLOSED: a body that cannot be
+    # read is a 503, never a re-score that might approve a placeholder.
+    stored = get_post_content(request.post_id)
+    if stored is None:
+        raise HTTPException(status_code=503, detail="Could not read the post — try again")
+    _main._refuse_placeholder_approval(PostStatus.APPROVED, [stored], user_id=user_id)
     from cqc_lem.app.run_content_plan import rescore_post
     try:
         # Attributed to the session user and gated by the free-trial daily AI cap (issue #2378):
@@ -3050,6 +3146,48 @@ async def upload_post_video_endpoint(
     finally:
         _drop_temp_upload(spooled)
     return ResponseModel(status_code=200, detail={"video_url": video_url})
+
+
+@router.post("/voice-exemplars", responses={
+    200: {"description": "Export ingested; counts of what was stored and skipped"},
+    **{k: v for k, v in error_responses.items() if k in [400, 401]},
+    404: {"description": "Voice exemplars are not enabled"},
+})
+async def upload_voice_exemplars_endpoint(
+    session_token: str = Form(...),
+    kind: str = Form(...),
+    file: UploadFile = File(...),
+) -> ResponseModel[dict[str, Any]]:
+    """Ingest the author's LinkedIn export CSV as voice exemplars (issue #2627, Phase 1a).
+
+    `kind=comments` takes `Comments.csv`, `kind=shares` takes `Shares.csv`. The caller is the
+    session user; the file is spooled with the same bounded reader as a post video, parsed,
+    deduped, length- and row-capped, and embedded at ingest. Behind `VOICE_EXEMPLARS`.
+    """
+    from starlette.concurrency import run_in_threadpool
+
+    from cqc_lem.utilities.ai import voice_exemplars as ve
+
+    user_id = _main.require_session_user_id(session_token)
+    if not ve.voice_exemplars_enabled(user_id):
+        raise HTTPException(status_code=404, detail="Voice exemplars are not enabled")
+    if kind not in ("comments", "shares"):
+        raise HTTPException(status_code=400, detail="kind must be 'comments' or 'shares'")
+    spooled = None
+    try:
+        spooled, size = await _spool_upload(file, ve.MAX_UPLOAD_BYTES)
+        if size > ve.MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=400,
+                                detail=f"File is larger than {ve.MAX_UPLOAD_BYTES // (1024 * 1024)} MB")
+        with open(spooled, "rb") as fh:
+            raw = fh.read()
+    finally:
+        _drop_temp_upload(spooled)
+    texts = ve.parse_export_csv(kind, raw)
+    if not texts:
+        raise HTTPException(status_code=400, detail="No text column found in that file")
+    result = await run_in_threadpool(ve.ingest_exemplars, user_id, kind, texts)
+    return ResponseModel(status_code=200, detail=result)
 
 
 @router.post("/post/image/remove", responses={
@@ -3385,6 +3523,25 @@ def weekly_report_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
     if not flag_enabled(WEEKLY_REPORT, user_id):
         raise HTTPException(status_code=404, detail="Not found")
     return ResponseModel(status_code=200, detail=load_weekly_report(user_id))
+
+
+@router.get("/icp-audience-report")
+def icp_audience_report_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
+    """Return who engages with the caller's posts versus who they want (issue #2667).
+
+    On demand and in-app only. Reads the caller's own rows; 404 while `weekly-report-enabled` is off.
+    """
+    from cqc_lem.utilities.flags import WEEKLY_REPORT, flag_enabled
+    from cqc_lem.utilities.icp_audience_report import load_icp_audience_report
+    user_id = _main.get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    if not flag_enabled(WEEKLY_REPORT, user_id):
+        raise HTTPException(status_code=404, detail="Not found")
+    from cqc_lem.utilities.db import get_latest_icp_audience_report
+    return ResponseModel(status_code=200, detail={
+        **load_icp_audience_report(user_id),
+        "latest_monthly": get_latest_icp_audience_report(user_id)})
 
 
 def _suppression_status(user_id: int) -> dict:
@@ -3928,6 +4085,96 @@ def create_call_source_endpoint(request: CallSourceRequest) -> ResponseModel[dic
     return ResponseModel(status_code=200, detail={"source_id": source_id})
 
 
+def _call_audio_dir() -> str:
+    from cqc_lem import assets_dir
+    path = os.path.join(assets_dir, "call_audio")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+async def _accept_call_audio(user_id: int, source_id: int, title: Optional[str],
+                             file: UploadFile, filename: str) -> ResponseModel[dict[str, Any]]:
+    """Spool a recording under the audio dir, register it, and queue transcription.
+
+    Needs an enrolled voice first (409 `needs_enrollment`): without one every turn would be
+    UNKNOWN and the upload would only spend money. The size cap is enforced while streaming; the
+    duration cap is the worker's, before any transcription spend. The file is the worker's to delete.
+    """
+    import hashlib
+
+    if not _call_db.get_voice_enrollment(user_id):
+        raise HTTPException(status_code=409, detail={"needs_enrollment": True})
+    spooled = None
+    try:
+        spooled, size = await _spool_upload(file, _call_audio.MAX_AUDIO_BYTES)
+        if size > _call_audio.MAX_AUDIO_BYTES:
+            raise HTTPException(status_code=400, detail="Recording is larger than 60 MB")
+        if size == 0:
+            raise HTTPException(status_code=400, detail="The recording is empty")
+        with open(spooled, "rb") as fh:
+            digest = hashlib.sha256(fh.read()).hexdigest()
+        dest = os.path.join(_call_audio_dir(),
+                            f"{user_id}_{digest[:24]}{os.path.splitext(filename)[1]}")
+        if os.path.exists(dest):
+            # Same bytes already waiting on the worker: re-queueing would transcribe (and bill) twice.
+            return ResponseModel(status_code=200, detail={"duplicate": True})
+        # The spool is on the container's /tmp and the audio dir is a mounted volume, so a plain
+        # os.replace would fail with EXDEV; shutil.move falls back to copy + delete.
+        shutil.move(spooled, dest)
+        spooled = None
+    finally:
+        _drop_temp_upload(spooled)
+    ingest_id = _call_db.insert_call_audio_ingest(user_id, digest, dest, source_id=source_id,
+                                                  title=(title or None))
+    if not ingest_id:
+        _drop_temp_upload(dest)
+        raise HTTPException(status_code=500, detail="Could not store the recording")
+    if _call_db.get_call_audio_path(user_id, ingest_id) != dest:
+        # The same recording was already processed: nothing to transcribe, nothing to keep.
+        _drop_temp_upload(dest)
+        return ResponseModel(status_code=200, detail={"ingest_id": ingest_id, "duplicate": True})
+    from cqc_lem.app.run_call_ingest import transcribe_call_audio
+    transcribe_call_audio.apply_async(kwargs={"user_id": user_id, "ingest_id": ingest_id})
+    return ResponseModel(status_code=200, detail={"ingest_id": ingest_id})
+
+
+@router.post("/call-ingest/enroll")
+async def enroll_call_voice_endpoint(
+    session_token: str = Form(...),
+    file: UploadFile = File(...),
+) -> ResponseModel[dict[str, Any]]:
+    """Enrol the user's own voice from a short sample (5 s to 2 min of just them speaking).
+
+    Stores one sealed embedding and nothing else — the sample itself is deleted before returning.
+    Replaces any earlier enrollment. Speaker ID not being installed is a 503, never a silent pass.
+    """
+    _require_call_ingest()
+    user_id = _call_user(session_token)
+    if not (file.filename or "").lower().endswith(_call_audio.AUDIO_SUFFIXES):
+        raise HTTPException(status_code=400, detail="Upload an .m4a, .mp3, .wav or .webm sample")
+    spooled = None
+    try:
+        spooled, size = await _spool_upload(file, _call_audio.ENROLL_MAX_BYTES)
+        if size > _call_audio.ENROLL_MAX_BYTES:
+            raise HTTPException(status_code=400, detail="Sample is larger than 8 MB")
+        try:
+            samples = _call_audio.decode_audio(spooled, _call_audio.ENROLL_MAX_SECONDS)
+            seconds = _call_audio.duration_seconds(samples)
+            if seconds < _call_audio.ENROLL_MIN_SECONDS:
+                raise _call_audio.AudioError("The sample is shorter than 5 seconds")
+            embedding = _call_audio.embed_voice(samples, _call_audio.speaker_engine())
+        except _call_audio.AudioError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except _call_audio.SpeakerSetupError as e:
+            log_error("Call speaker ID is not set up", exc=e, user_id=user_id)
+            raise HTTPException(status_code=503, detail="Speaker ID is not available")
+    finally:
+        _drop_temp_upload(spooled)
+    if not _call_db.save_voice_enrollment(user_id, embedding):
+        raise HTTPException(status_code=500, detail="Could not store the voice enrollment")
+    return ResponseModel(status_code=200, detail={"enrolled": True})
+
+
 @router.post("/call-ingest/upload")
 async def upload_call_transcript_endpoint(
     session_token: str = Form(...),
@@ -3944,10 +4191,17 @@ async def upload_call_transcript_endpoint(
     """
     _require_call_ingest()
     user_id = _call_user(session_token)
-    if not (file.filename or "").lower().endswith(_CALL_UPLOAD_SUFFIXES):
-        raise HTTPException(status_code=400, detail="Upload a .vtt, .srt or .txt transcript")
+    filename = (file.filename or "").lower()
+    is_audio = filename.endswith(_call_audio.AUDIO_SUFFIXES)
+    if not is_audio and not filename.endswith(_CALL_UPLOAD_SUFFIXES):
+        raise HTTPException(status_code=400, detail="Upload a .vtt, .srt or .txt transcript, "
+                                                    "or an .m4a, .mp3, .wav or .webm recording")
     if not _call_db.is_call_source_enabled(user_id, source_id):
         raise HTTPException(status_code=403, detail="Source is not enabled for this account")
+    if is_audio:
+        if source_type != "audio":
+            raise HTTPException(status_code=400, detail="A recording needs the audio source type")
+        return await _accept_call_audio(user_id, source_id, title, file, filename)
     spooled = None
     try:
         spooled, size = await _spool_upload(file, _CALL_UPLOAD_MAX_BYTES)
@@ -4025,8 +4279,11 @@ def accept_call_candidates_bulk_endpoint(
 def purge_all_call_data_endpoint(request: CallPurgeRequest) -> ResponseModel[str]:
     """Delete every call row the user has — transcripts, candidates, sources and promoted facts."""
     user_id = _call_user(request.session_token)
+    audio_paths = _call_db.list_call_audio_paths(user_id)
     if not _call_db.purge_all_call_data(user_id):
         raise HTTPException(status_code=500, detail="Could not purge call data")
+    for audio_path in audio_paths:
+        _drop_temp_upload(audio_path)
     return ResponseModel(status_code=200, detail="Call data purged")
 
 

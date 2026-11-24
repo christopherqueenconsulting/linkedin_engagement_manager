@@ -11,7 +11,7 @@ RUN apt-get update -y && apt-get install --no-install-suggests --no-install-reco
     # Curl needed for AWS health checks
     curl \
     netcat-traditional \
-    # ffmpeg + ffprobe render the marketing tutorial videos (issue #505)
+    # ffmpeg + ffprobe support tutorials (#505) and call audio decoding in final.
     ffmpeg \
     # cleaning up unused files
     && apt-get purge -y --auto-remove -o APT::AutoRemove::RecommendsImportant=false \
@@ -126,6 +126,12 @@ RUN if [ "$INSTALL_DEV_DEPS" = "true" ]; then \
 
 # Clean runtime image — no Poetry, no pip build tools, just the venv and source
 FROM base AS final
+
+RUN mkdir -p /opt/models && \
+    curl -fsSL -o /opt/models/campplus_en_16k.onnx \
+      https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx && \
+    echo "98daf9bcf1c8abf3db374fec4c27a5eda7c58705bb3f180d057b085a72a88bb5  /opt/models/campplus_en_16k.onnx" | sha256sum -c - && \
+    chmod 0644 /opt/models/campplus_en_16k.onnx
 
 ENV VIRTUAL_ENV=/app/.venv \
     PATH="/app/.venv/bin:$PATH"
