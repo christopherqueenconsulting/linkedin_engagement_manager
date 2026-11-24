@@ -27,6 +27,16 @@ describe('PrivacyPolicy (issue #772)', () => {
     expect(screen.getByRole('link', { name: 'Back to home' }).getAttribute('href')).toBe('/')
   })
 
+  it('marks the calls and transcripts section as DRAFT and states the backup window', () => {
+    harness()
+    const section = screen.getByTestId('calls-draft')
+    expect(section.textContent).toMatch(/DRAFT/)
+    expect(section.textContent).toMatch(/controller/)
+    expect(section.textContent).toMatch(/processor/)
+    expect(section.textContent).toMatch(/35 days/)
+    expect(section.textContent).toMatch(/Subprocessors/)
+  })
+
   it('includes the LinkedIn integration section', () => {
     harness()
     expect(screen.getByRole('heading', { name: '4. LinkedIn integration' })).toBeTruthy()

@@ -14,7 +14,8 @@ vi.mock('../../api/client', () => ({
     delete: vi.fn(),
   },
 }))
-vi.mock('../../contexts/useAuth', () => ({ useAuth: () => ({ sessionToken: 'tok' }) }))
+let isAdmin = false
+vi.mock('../../contexts/useAuth', () => ({ useAuth: () => ({ sessionToken: 'tok', isAdmin }) }))
 vi.mock('../../utils/analytics', () => ({
   EVENTS: { storyBankSaved: 'story_bank_saved' },
   capture: vi.fn(),
@@ -32,7 +33,23 @@ function harness(ui: ReactNode) {
 
 const bodyBox = () => screen.getByLabelText('What actually happened') as HTMLTextAreaElement
 
-afterEach(() => { cleanup(); get.mockReset(); put.mockReset() })
+afterEach(() => { cleanup(); get.mockReset(); put.mockReset(); isAdmin = false })
+
+describe('StoryBankCard call ingest (issue #2629, owner-only)', () => {
+  it('hides the call-ingest panel from a non-owner account', async () => {
+    serveEntries([])
+    harness(<StoryBankCard />)
+    await waitFor(() => expect(screen.getByTestId('story-bank')).toBeTruthy())
+    expect(screen.queryByTestId('call-ingest')).toBeNull()
+  })
+
+  it('shows the call-ingest panel to an admin account', async () => {
+    isAdmin = true
+    serveEntries([])
+    harness(<StoryBankCard />)
+    await waitFor(() => expect(screen.getByTestId('call-ingest')).toBeTruthy())
+  })
+})
 
 describe('StoryBankCard save', () => {
   // React Query keeps serving the row it already has while a refetch is in flight, so dropping the
