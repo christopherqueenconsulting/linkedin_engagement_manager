@@ -87,6 +87,8 @@ WEEKLY_REPORT = "weekly-report-enabled"
 COMMENT_CANDIDATE_CRAWL = "comment-candidate-crawl-enabled"
 IMPACT_REPORT = "impact-report-enabled"
 COMMENT_RAMP = "comment-ramp-enabled"
+MCP_SERVER = "mcp-server-enabled"
+MCP_SERVER_WRITES = "mcp-server-writes"
 
 FLAGS: Dict[str, FlagSpec] = {
     spec.key: spec for spec in (
@@ -262,6 +264,27 @@ FLAGS: Dict[str, FlagSpec] = {
                          "emails the owner a before/after report 14 days after each release and "
                          "a monthly baseline, and posts a one-line metric-free note on the "
                          "tracker issue. OFF by default; the admin route is not gated by it."),
+        ),
+        FlagSpec(
+            key=MCP_SERVER,
+            env_var="MCP_SERVER_ENABLED",
+            default=False,
+            owner="platform",
+            description=("The end-user MCP server at `POST /api/mcp` (`api/mcp/`, epic #2682, "
+                         "docs/agent-mcp-plan.md): will gate the endpoint per user, the Agents "
+                         "tab and token mint (phase P2+; the P1 endpoint is inert and reads it "
+                         "nowhere). Rollout only, OFF by default: the "
+                         "safety control is the `mcp:kill` Redis key / `MCP_SERVER_KILL` env, "
+                         "never this flag."),
+        ),
+        FlagSpec(
+            key=MCP_SERVER_WRITES,
+            env_var="MCP_SERVER_WRITES_ENABLED",
+            default=False,
+            owner="platform",
+            description=("The MCP server's queue-only write tools (epic #2682, phase W2). OFF by "
+                         "default; when off a write tool answers `isError` \"writes not "
+                         "enabled\". Nothing it creates leaves LEM before a human approves it."),
         ),
     )
 }
