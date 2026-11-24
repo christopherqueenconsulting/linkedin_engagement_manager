@@ -105,7 +105,7 @@ def summarize_outcomes(rows: Optional[Iterable[Mapping[str, Any]]]) -> dict:
     actually determine. A skipped check (deleted post, comment not findable) contributes to neither
     — it is a coverage fact, reported separately as `skipped`.
     """
-    checked = skipped = unreadable = 0
+    checked = skipped = unreadable = reply_scored_n = 0
     author_replies = replied = liked = our_replies = 0
     demoted = visibility_sample = 0
     total_replies = total_likes = 0
@@ -115,14 +115,20 @@ def summarize_outcomes(rows: Optional[Iterable[Mapping[str, Any]]]) -> dict:
             skipped += 1
             continue
         checked += 1
-        reply_count = int(row.get("reply_count") or 0)
         like_count = int(row.get("like_count") or 0)
-        total_replies += reply_count
         total_likes += like_count
-        if _truthy(row.get("author_replied")):
-            author_replies += 1
-        if reply_count > 0:
-            replied += 1
+        # A None reply reading is UNSCORED (a v1-reader row, #2621) — never a zero, and out of the
+        # reply denominators, so a known-wrong reader cannot drag the rate down.
+        reply_scored = row.get("reply_count") is not None and row.get("author_replied") is not None \
+            if "reply_count" in row else True
+        if reply_scored:
+            reply_scored_n += 1
+            reply_count = int(row.get("reply_count") or 0)
+            total_replies += reply_count
+            if _truthy(row.get("author_replied")):
+                author_replies += 1
+            if reply_count > 0:
+                replied += 1
         if like_count > 0:
             liked += 1
         if _truthy(row.get("our_reply_sent")):
@@ -145,8 +151,9 @@ def summarize_outcomes(rows: Optional[Iterable[Mapping[str, Any]]]) -> dict:
         "our_replies_sent": our_replies,
         "total_replies": total_replies,
         "total_likes": total_likes,
-        "author_reply_rate": _rate(author_replies, checked),
-        "reply_rate": _rate(replied, checked),
+        "reply_scored": reply_scored_n,
+        "author_reply_rate": _rate(author_replies, reply_scored_n),
+        "reply_rate": _rate(replied, reply_scored_n),
         "like_rate": _rate(liked, checked),
         "visibility_sample": visibility_sample,
         "unreadable_readings": unreadable,

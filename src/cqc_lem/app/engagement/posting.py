@@ -1597,15 +1597,42 @@ def _load_comment_thread(driver) -> None:
         cl = driver.find_elements(By.CSS_SELECTOR, "[data-testid*='commentList']")
         if cl:
             driver.execute_script("arguments[0].scrollIntoView({block:'center'});", cl[0])
+    clicked: list = []
     for _ in range(6):
-        exp = [b for b in driver.find_elements(By.CSS_SELECTOR, "[data-testid*='commentList'] button")
-               if re.search(r'\bmore\b|repl', (b.text or ''), re.I)]
+        exp = [b for b in _reply_expansion_controls(driver) if b not in clicked]
         if not exp:
             break
         try:
+            clicked.append(exp[0])
             driver.execute_script("arguments[0].click();", exp[0]); time.sleep(random.uniform(1.2, 2))
         except Exception:
             break
+
+
+# Load-more / previous-replies controls ONLY (#1012). A bare "Reply" or a "…see more" text expander
+# must never match: the first posts a reply composer, the second is a different affordance.
+_REPLY_EXPANSION_LABEL = re.compile(
+    r"^\s*(load|show|view|see)\s+(\d+\s+)?(more|previous|earlier)\s+(comments?|repl(y|ies))\b"
+    r"|^\s*(\d+\s+)?(more|previous)\s+repl(y|ies)\b|^\s*\d+\s+repl(y|ies)\s*$", re.I)
+_REPLY_EXPANSION_SELECTORS = ("main button", "main [role='button']", "[data-testid*='commentList'] button")
+
+
+def _reply_expansion_controls(driver) -> list:
+    """Find load-more / previous-replies controls through an anchor chain (#2621).
+
+    The `[data-testid*='commentList']` scope the old matcher used matches nothing on today's SDUI
+    permalink, so no control was ever clicked. Each rung is tried until one yields a match.
+    """
+    for css in _REPLY_EXPANSION_SELECTORS:
+        try:
+            found = [b for b in driver.find_elements(By.CSS_SELECTOR, css)
+                     if _REPLY_EXPANSION_LABEL.search(
+                         ((b.text or "").strip() or (b.get_attribute("aria-label") or "").strip()))]
+        except Exception:
+            continue
+        if found:
+            return found
+    return []
 
 
 def _followup_on_post_comment_replies(driver, wait, user_id: int, post_url: str, post_key: str,
@@ -1633,21 +1660,16 @@ def _followup_on_post_comment_replies(driver, wait, user_id: int, post_url: str,
     log_info(f"Follow-up: {len(items)} comment box(es), {len(our_conts)} ours, on {post_url}",
              user_id=user_id, task_name="sweep_comment_followups")
 
+    # Nested under ours OR @mentioning us (LinkedIn auto-prepends the @mention of the person being
+    # replied to). The sibling-after-ours rule is the outcome READER's only: this sweep ACTS
+    # (reacts, replies, flags leads), so it keeps the narrower rule.
+    followup_replies = [c for c, _a in _replies_to_comment(driver, our_conts, items, our_slug)]
     for tb, cont, author in items:
         if result["reacted"] >= _MAX_FOLLOWUP_REACTS_PER_RUN:
             break
         if not author or f"/in/{our_slug}" in author:
             continue  # skip our own comments/replies
-        # A reply is "to our comment" if its block is nested in our comment's thread OR its body
-        # @mentions us — LinkedIn auto-prepends the @mention of the person being replied to, so a
-        # reply to us reliably carries our /in/ link inside its text box.
-        nested = any(driver.execute_script("return arguments[0].contains(arguments[1]);", oc, cont)
-                     for oc in our_conts)
-        try:
-            mentions_us = bool(tb.find_elements(By.CSS_SELECTOR, f"a[href*='/in/{our_slug}']"))
-        except Exception:
-            mentions_us = False
-        if not (nested or mentions_us):
+        if cont not in followup_replies:
             continue
         try:
             reply_text = (tb.text or "").strip()
@@ -2236,36 +2258,117 @@ def _comment_like_count(driver, container) -> int:
         return 0
 
 
-def _thread_replies(driver, our_cont, items: list) -> list:
-    """[(container, author_href)] for the replies nested UNDER our comment. Replies are DOM-nested
-    inside their parent comment's container (#478 thread map), and `contains` is true for the node
-    itself, so our own container is excluded explicitly.
+_LEFT_JS = "return arguments[0].getBoundingClientRect().left;"
+
+
+def _replies_to_comment(driver, ours: list, items: list, our_slug: str = "",
+                        siblings: bool = False) -> list:
+    """Return [(container, author_href)] replying to any container in `ours`, once each (#2621).
+
+    A reply is to our comment when it is (a) DOM-nested under ours, (b) with
+    `siblings`, rendered AFTER ours and indented deeper than it until the next comment at ours' own
+    level (LinkedIn renders replies as siblings, 79369696), or (c) its body @mentions us.
+
+    `siblings` is opt-in: only the read-only outcome reader takes it. The follow-up sweep acts on
+    what it finds, so it keeps nested + @mention.
     """
-    out = []
-    for _tb, cont, author in items:
-        try:
-            nested = driver.execute_script(
-                "return arguments[0]!==arguments[1] && arguments[0].contains(arguments[1]);",
-                our_cont, cont)
-        except Exception:
-            continue
-        if nested:
+    out: list = []
+    seen: list = []
+
+    def take(cont, author) -> None:
+        if cont not in seen:
+            seen.append(cont)
             out.append((cont, author or ""))
+
+    for _tb, cont, author in items:
+        if cont in ours:
+            continue
+        for o in ours:
+            try:
+                nested = driver.execute_script(
+                    "return arguments[0]!==arguments[1] && arguments[0].contains(arguments[1]);", o, cont)
+            except Exception:
+                continue
+            if nested:
+                take(cont, author)
+                break
+    if siblings:
+        for o in ours:
+            try:
+                base = driver.execute_script(_LEFT_JS, o)
+            except Exception:
+                continue
+            if base is None:
+                continue
+            after = False
+            for _tb, cont, author in items:
+                if cont == o:
+                    after = True
+                    continue
+                if not after:
+                    continue
+                try:
+                    left = driver.execute_script(_LEFT_JS, cont)
+                except Exception:
+                    break
+                if left is None or left <= base:
+                    break  # the next comment at ours' own level: the thread ended
+                take(cont, author)
+    if our_slug:
+        for tb, cont, author in items:
+            if cont in ours:
+                continue
+            try:
+                mentions = bool(tb.find_elements(By.CSS_SELECTOR, f"a[href*='/in/{our_slug}']"))
+            except Exception:
+                mentions = False
+            if mentions:
+                take(cont, author)
     return out
 
 
+def _thread_replies(driver, our_cont, items: list, our_slug: str = "", v2: bool = False) -> list:
+    """Replies to ONE comment for the outcome reader.
+
+    v1 (default) is nested-only, exactly as it shipped; v2 (`COMMENT_OUTCOME_READER_V2`) adds
+    sibling-after-ours and @mention.
+    """
+    return _replies_to_comment(driver, [our_cont], items, our_slug if v2 else "", siblings=v2)
+
+
+_ACTOR_HREF_JS = (
+    "const root=document.querySelector('main')||document.body;"
+    "for(const a of root.querySelectorAll(\"a[href*='/in/'], a[href*='/company/']\")){"
+    "  if(a.closest(\"[data-testid*='commentList']\")) continue;"
+    "  return (a.href||'').split('?')[0];"
+    "}return '';")
+
+
+def _actor_slug(href: str) -> str:
+    """Slug of a profile (/in/) or company page (/company/) href, lowercased; '' for neither."""
+    m = re.search(r"/(?:in|company)/([^/?#]+)", href or "")
+    return m.group(1).lower() if m else ""
+
+
 def _post_author_href(driver) -> str:
-    """The post author's profile href on a post permalink page — the first /in/ link under <main>
-    that is NOT inside the comment list (a commenter's link would otherwise win).
+    """The post author's /in/ or /company/ href on a permalink page.
+
+    It is the first actor link under <main> in document order. The post card header precedes the
+    thread, so it wins without relying on the `commentList` test id (gone from today's SDUI, which
+    let a commenter win); that skip is kept for the generation that still serves it.
     """
     try:
-        return driver.execute_script(
-            "const root=document.querySelector('main')||document.body;"
-            "for(const a of root.querySelectorAll(\"a[href*='/in/']\")){"
-            "  if(!a.closest(\"[data-testid*='commentList']\")) return (a.href||'').split('?')[0];"
-            "}return '';") or ""
+        return driver.execute_script(_ACTOR_HREF_JS) or ""
     except Exception:
         return ""
+
+
+def comment_outcome_reader_v2() -> bool:
+    """Whether `COMMENT_OUTCOME_READER_V2` is on (default OFF until the owner's live validation).
+
+    On: the sibling-aware reader runs and its rows carry `reader_version=2`; off keeps the v1 reading.
+    """
+    return (os.environ.get("COMMENT_OUTCOME_READER_V2") or "").strip().lower() in ("1", "true", "yes", "on")
 
 
 # Skip reasons for a comment-outcome read that could not find our comment (issue #2032). Stable
@@ -2375,14 +2478,18 @@ def _read_comment_outcome(driver, wait, user_id: int, post_url: str, our_slug: s
                   user_id=user_id, action_type="scrape", task_name="sweep_comment_outcomes")
         return outcome
 
-    replies = _thread_replies(driver, ours, items)
+    v2 = comment_outcome_reader_v2()
+    replies = _thread_replies(driver, ours, items, our_slug, v2=v2)
     author_href = _post_author_href(driver)
-    author_slug = profile_slug(author_href)
+    author_slug = _actor_slug(author_href) if v2 else profile_slug(author_href)
     outcome["like_count"] = _comment_like_count(driver, ours)
     outcome["reply_count"] = sum(1 for _c, a in replies if not _href_is_profile(a, our_slug))
     outcome["our_reply_sent"] = any(_href_is_profile(a, our_slug) for _c, a in replies)
     outcome["author_replied"] = bool(author_slug) and any(
-        _href_is_profile(a, author_slug) for _c, a in replies if not _href_is_profile(a, our_slug))
+        (_actor_slug(a) if v2 else profile_slug(a)) == author_slug
+        for _c, a in replies if not _href_is_profile(a, our_slug))
+    if v2:
+        outcome["reader_version"] = 2
     return outcome
 
 
