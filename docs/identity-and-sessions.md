@@ -623,44 +623,80 @@ surface: granting a path grants every method on it.** Check the verbs before add
 
 ### A queue-only seat edits only what is still pending (issue #2684, MCP W1)
 
-The approval guards stop a machine moving a draft INTO approved. They did not stop it editing a row a
-human had already acted on: an agent could rewrite an approved DM's text before it sent, or cancel
-an approved invite. So every edit route a queue-only seat can reach, or will reach once the MCP
-seats land, is **pending-only, in SQL**:
-`PUT /dm`, `PUT /connection_request`, `PUT /lead_signal`, `PUT /catchup/touch`,
-`PUT /outreach/target`, `PUT /curated/source` (reject) and `POST /update_post/`.
+The approval guards stop a machine moving a draft INTO approved. They did not stop it editing or
+cancelling a row a human had already acted on: an agent could rewrite an approved DM before it sent,
+or cancel an approved invite. A path grants every verb, so the soft-cancel DELETEs counted too. Every
+write route below is now **pending-only, in SQL**, for a queue-only seat:
+
+| Route | Pending state |
+|---|---|
+| `PUT /dm`, `DELETE /dm` | `pending` |
+| `PUT /connection_request`, `DELETE /connection_request` | `pending` (one carve-out, below) |
+| `PUT /lead_signal` | `new` |
+| `PUT /catchup/touch`, `DELETE /catchup/touch` | `pending` |
+| `PUT /outreach/target`, `DELETE /outreach/target` | `pending` |
+| `PUT /curated/source` (reject) | post `pending` and source `new`/`drafted`, one transaction |
+| `POST /update_post/` | `pending` |
 
 - `update_pending_row` (`platform/db/repositories/pending_edits.py`) locks the row with
   `SELECT … FOR UPDATE` and writes `UPDATE … WHERE id = %s AND user_id = %s AND status IN (…)`, so a
   status that moves between the check and the write still refuses the write. A row that has left
-  pending is a **409 `edit_requires_pending`** and nothing is written. The locked read, not
-  `rowcount`, decides the answer: the connection does not set `CLIENT.FOUND_ROWS`, so an identical
-  re-save changes zero rows and is still a success. "Pending" is per queue: `new` for a lead signal,
-  `new`/`drafted` for a curated source, `pending` everywhere else.
+  pending is a **409 `edit_requires_pending`** and nothing is written. The locked read decides the
+  answer, not `rowcount`. The connection does not set `CLIENT.FOUND_ROWS`, so an identical re-save
+  changes zero rows, and it still counts as a success.
 - It covers `cancel` and `dismiss` too, not only field saves. A machine never stamps `approved_by`.
+- The curated reject (`reject_pending_curated_source`) locks and checks BOTH rows before writing
+  either, so it never half-applies.
+- **The backfill#44 carve-out** (ruled on #2684): a `PUT /connection_request` carrying
+  `recipient_email` and no other field or action may also land on a `failed` row whose
+  `failure_reason` is exactly `EMAIL_VERIFICATION_REQUIRED_MESSAGE`
+  (`attach_email_to_connection_request`, the same predicate in SQL). It writes the address only, and
+  the row stays `failed` until a human retries it. Any extra field takes the PUT back to the
+  pending-only rule.
+- **`PUT /lead` is a deliberate exception.** Of the agent surface's write routes, it is the only
+  edit that is NOT pending-only. A lead is a scored CRM record, not a queued send, and it has no
+  pending state. A seat may set its `notes`, manual `stage`, `deal_value` and dismiss/restore flag
+  in any state, and none of those dispatches anything (`NOT_AN_APPROVAL_VECTOR` in
+  `test_role_surface_invariants.py`). MCP W2's `lem_update_lead` relies on it.
+- The rest of that surface's writes are as follows. The four creates (`POST /schedule_dm`,
+  `/connection_request`, `/outreach/target` and `/curated/source`) make new rows under the approval
+  guards above, not edits. `PUT /user/engagement-preferences` is refused outright
+  (`agent_may_not_configure`). The operator adds `/leads/refresh` and the pause.
 - **Who is held:** `_edits_pending_only()` is `_agent_scoped() and not _operator_may_approve()`. The
-  operator exemption (an `operator` on an internal or sandbox account) keeps the human edit path,
+  operator exemption (an `operator` on an internal or sandbox account) keeps the human write path,
   exactly as it keeps the approval verbs and the `operator_approval` audit row. A full session is
   untouched.
 
 Three more rules ride the same seats:
 
-- **No media spend before approval.** `POST /schedule_post/` and `POST /update_post/` hold a
-  queue-only seat to a PENDING text post: `post_type` becomes `text` and `video_url`,
-  `carousel_slides`, `use_avatar`, `video_quality` and `image_url` are dropped (`_text_only_draft`).
-  `status="approved"` is a 403 on both. `auto_backfill_missing_assets` selects only video and
-  carousel/document rows, so a text draft is never the post it spends media on
-  (`tests/integration/test_queue_only_edits_db.py`). `POST /posts/bulk_update/` refuses every
-  queue-only seat. None of these four post routes is on a machine surface today; the guards are in
-  place before one is.
-- **A recipient is a LinkedIn profile.** Any recipient or target URL a queue-only seat names
-  (`/schedule_dm`, `/connection_request` create and edit, `PUT /dm`, `/outreach/target` create) must
-  match `^https://www\.linkedin\.com/in/[A-Za-z0-9\-_%]+/?$`, else **422
-  `linkedin_profile_url_required`**. That includes the exempt operator; a human is not held to it.
+- **Text only, refused rather than downgraded.** On `POST /schedule_post/` and `POST /update_post/`,
+  a queue-only seat that supplies any media gets a **422 `machine_seat_text_only`** naming the
+  fields (`_refuse_machine_media`). "Media" means a non-text `post_type`, `video_url`,
+  `carousel_slides`, `image_url`, an explicit `use_avatar`, or a non-default `video_quality`.
+  `status="approved"` is a 403 on both routes. A created post is a PENDING text post.
+  - An edit writes `content` and `scheduled_time` only. An existing row's type, media, status,
+    avatar choice and rejection reason stay exactly as stored, so a seat can revise a pending
+    carousel's caption without stripping its slides.
+  - `auto_backfill_missing_assets` selects only video and carousel/document rows, so a text draft
+    is never the post it spends media on (`tests/integration/test_queue_only_edits_db.py`).
+  - `POST /posts/bulk_update/` refuses every queue-only seat.
+  - None of these four post routes is on a machine surface today. The guards are in place before
+    one is.
+- **A recipient is a LinkedIn profile, stored in one spelling.** Any recipient or target URL a
+  queue-only seat names goes through `_normalised_linkedin_profile_url`. That covers
+  `/schedule_dm`, `/connection_request` create and edit, `PUT /dm`, and the `/outreach/target`
+  create, where it runs before the duplicate lookup.
+  - Normalising strips whitespace, accepts `http`, lowercases the host, adds `www.`, and drops a
+    query string or fragment (`?originalSubdomain=uk`).
+  - The slug may be unicode or percent-encoded.
+  - The stored form is `https://www.linkedin.com/in/<slug>/`.
+  - Anything else gets **422 `linkedin_profile_url_required`**: another host, a company page, a
+    path beneath a profile, credentials or a port in the URL. That includes the exempt operator.
+  - A human's URL is neither checked nor rewritten.
 - **The inbound address stays with the human.** `GET /user/engagement-preferences` neither calls
   `get_or_create_reply_inbound_token` nor returns `reply_inbound_address` for any non-human scope
-  (agent, operator, observer). The address embeds a bearer secret, and the read MINTS one for an
-  account that has none.
+  (agent, operator, observer). The address embeds a bearer secret, and for an account that has none,
+  the read MINTS one.
 
 `POST /schedule_post/` now also returns the new row's `post_id`, for every caller.
 
@@ -697,8 +733,9 @@ route on `_AGENT_SESSION_SURFACE` changes what an external system may send us �
 `recipient_email` on `/connection_request` (#1836, paired with
 `christopherqueenconsulting/backfill#44`), where a machine supplies a third party's address but a
 human still approves every send. Since #2684 that supplier's `recipient_profile_url` must be a
-canonical `https://www.linkedin.com/in/<slug>` URL (no query string, no other host), and a
-field-only PUT reaches only a `pending` request — attaching an address to a `failed` one is a 409.
+LinkedIn profile URL, stored normalised as `https://www.linkedin.com/in/<slug>/`, and a PUT edits
+only a `pending` request, except the address-only attach to an email-challenged `failed` one
+(backfill#44, above).
 
 ## The `observer` scope — a read-only seat for an operations agent
 

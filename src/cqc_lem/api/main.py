@@ -24,7 +24,7 @@ from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from enum import IntEnum
 from typing import Any, Awaitable, Callable, Dict, Iterator, List, Mapping, NoReturn, Optional, Union
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlencode, urlparse, urlsplit
 
 import requests
 from celery import chain as celery_chain
@@ -114,6 +114,7 @@ from cqc_lem.utilities.db import (
     PostType,
     ScheduledDmStatus,
     add_user_with_access_token,
+    attach_email_to_connection_request,
     bulk_update_posts,
     count_hot_leads,
     count_new_lead_signals,
@@ -2653,19 +2654,6 @@ class PostScheduledResponse(ResponseModel[str]):
     post_id: int
 
 
-def _text_only_draft(post: PostRequest) -> PostRequest:
-    """The composer body a queue-only seat is allowed to have: a PENDING text post, no media.
-
-    Every dropped field is one a later step spends money on or fetches: a video render, an avatar
-    LoRA, a premium tier, a caller-named image or video URL, carousel slides to render.
-    """
-    return post.model_copy(update={
-        "post_type": PostType.TEXT, "status": PostStatus.PENDING, "video_url": None,
-        "carousel_slides": None, "use_avatar": None, "video_quality": "standard",
-        "image_url": None,
-    })
-
-
 @router.post("/schedule_post/", responses={
     200: {"description": "Post scheduled successfully"},
     500: {"description": "Session resolved to an account with no address"},
@@ -2678,15 +2666,16 @@ def schedule_post(post: PostRequest) -> PostScheduledResponse:
     read back from the account, and a compose-time `image_url` is kept only when it is a preview WE
     issued to this account (issue #1030) — anything else is dropped, never stored.
 
-    A queue-only machine seat (issue #2684) may only draft: `approved` is refused, and the row is a
-    PENDING text post with no media, so nothing is generated or spent before a human approves it.
-    The response carries the new `post_id`.
+    A queue-only machine seat (issue #2684) may only draft: `approved` is a 403, any media field is
+    a 422 `machine_seat_text_only`, and the row is a PENDING text post, so nothing is generated or
+    spent before a human approves it. The response carries the new `post_id`.
     """
     user_id = require_session_user_id(post.session_token)
     _reject_foreign_email(user_id, post.email)
     _refuse_agent_approved_status(post.status)
     if _edits_pending_only():
-        post = _text_only_draft(post)
+        _refuse_machine_media(post)
+        post = post.model_copy(update={"post_type": PostType.TEXT, "status": PostStatus.PENDING})
     # The row is written against the SESSION's address, never the body's — a target that passed the
     # check is by definition the same string, and reading it back from the account is what keeps
     # that true if the check ever moves (issue #914).
@@ -3016,14 +3005,14 @@ def update_post(post_id: int, post: PostRequest) -> ResponseModel[str]:
                             user_id=user_id)
 
     if _edits_pending_only():
-        # A queue-only seat revises a PENDING draft's text and slot only (issue #2684): the status
-        # stays pending, the post stays text, and the avatar choice and rejection reason are the
-        # human's. Enforced in SQL, so a post approved a moment ago is a 409, not an overwrite.
-        draft = _text_only_draft(post)
+        # A queue-only seat revises a PENDING draft's text and slot only (issue #2684). The type,
+        # the stored media, the status, the avatar choice and the rejection reason are left exactly
+        # as stored: asking to change type or media is a 422, never a silent overwrite that would
+        # strip a carousel's slides or a video's render. Enforced in SQL, so a post approved a
+        # moment ago is a 409.
+        _refuse_machine_media(post)
         _pending_edit_or_raise("post", post_id, user_id, {
-            "content": draft.content, "video_url": None,
-            "scheduled_time": draft.scheduled_datetime, "post_type": PostType.TEXT,
-            "status": PostStatus.PENDING,
+            "content": post.content, "scheduled_time": post.scheduled_datetime,
         }, "Post could not be updated")
         return ResponseModel(status_code=200, detail="Post updated successful")
 
@@ -3256,7 +3245,19 @@ def _pending_edit_or_raise(kind: str, row_id: int, user_id: int, fields: Dict[st
         HTTPException: 409 `edit_requires_pending` when the row has left its pending state, 500
             when the write failed.
     """
-    outcome = update_pending_row(kind, row_id, user_id, fields)
+    _raise_unless_updated(update_pending_row(kind, row_id, user_id, fields), failure_detail)
+
+
+def _raise_unless_updated(outcome: PendingEdit, failure_detail: str) -> None:
+    """Map a pending-only write's outcome onto the response a queue-only seat gets.
+
+    Args:
+        outcome: What the repository write reported.
+        failure_detail: The handler's own 500 message for a database error.
+
+    Raises:
+        HTTPException: 409 `edit_requires_pending` for NOT_PENDING, 500 for FAILED.
+    """
     if outcome == PendingEdit.NOT_PENDING:
         raise HTTPException(status_code=409, detail={
             "code": "edit_requires_pending",
@@ -3266,27 +3267,87 @@ def _pending_edit_or_raise(kind: str, row_id: int, user_id: int, fields: Dict[st
         raise HTTPException(status_code=500, detail=failure_detail)
 
 
-# The only recipient a machine seat may name: one canonical LinkedIn member profile URL.
-_LINKEDIN_PROFILE_URL = re.compile(r"^https://www\.linkedin\.com/in/[A-Za-z0-9\-_%]+/?$")
+# A LinkedIn member profile: `/in/<slug>` and nothing beneath it. The slug may be unicode or
+# percent-encoded (`\w` is unicode-aware), never a separator.
+_LINKEDIN_PROFILE_PATH = re.compile(r"/in/([\w\-%]+)/?")
+_LINKEDIN_PROFILE_HOSTS = frozenset({"linkedin.com", "www.linkedin.com"})
 
 
-def _require_linkedin_profile_url(url: Optional[str]) -> None:
-    """A queue-only seat may only queue outreach to a LinkedIn member profile (MCP W1, issue #2684).
+def _normalised_linkedin_profile_url(url: str) -> Optional[str]:
+    """The one stored spelling of a LinkedIn profile URL, or None when `url` is not one.
 
-    A human typing a URL into the SPA is unchanged. A machine seat is the caller that can be fed a
-    stranger's text, so anything it names as a recipient must be a profile URL and nothing else:
-    not another site, not a company page, not a URL with a query string. None means the field was
+    The forms the scrapers and suppliers produce all collapse here: surrounding whitespace, `http`,
+    a bare `linkedin.com`, an upper-case host, a `?originalSubdomain=uk` or `#fragment` and a
+    missing trailing slash. The canonical form is `https://www.linkedin.com/in/<slug>/`.
+    """
+    try:
+        parts = urlsplit(url.strip())
+        port = parts.port  # raises ValueError on a malformed port, like urlsplit on a bad netloc
+    except ValueError:
+        return None
+    if parts.scheme.lower() not in ("http", "https") or parts.username or parts.password:
+        return None
+    if (parts.hostname or "") not in _LINKEDIN_PROFILE_HOSTS or port is not None:
+        return None
+    match = _LINKEDIN_PROFILE_PATH.fullmatch(parts.path)
+    if not match:
+        return None
+    return f"https://www.linkedin.com/in/{match.group(1)}/"
+
+
+def _linkedin_profile_url_for_seat(url: Optional[str]) -> Optional[str]:
+    """The recipient URL to store: normalised for a queue-only seat, untouched for a human.
+
+    A queue-only seat may only queue outreach to a LinkedIn member profile (MCP W1, issue #2684). A
+    machine seat is the caller that can be fed a stranger's text, so anything it names as a
+    recipient must be a profile URL and nothing else: not another site, not a company page, not a
+    path beneath a profile. A human typing a URL into the SPA is unchanged. None means the field was
     not supplied and is left to the handler.
+
+    Args:
+        url: The recipient or target URL the request named.
+
+    Returns:
+        The canonical profile URL for a queue-only seat, `url` itself for anyone else.
 
     Raises:
         HTTPException: 422 `linkedin_profile_url_required` for a queue-only seat naming anything else.
     """
     if url is None or not _agent_scoped():
-        return
-    if not _LINKEDIN_PROFILE_URL.fullmatch(url):
+        return url
+    normalised = _normalised_linkedin_profile_url(url)
+    if normalised is None:
         raise HTTPException(status_code=422, detail={
             "code": "linkedin_profile_url_required",
-            "message": "Recipient must be a https://www.linkedin.com/in/<profile> URL.",
+            "message": "Recipient must be a LinkedIn profile URL (linkedin.com/in/<profile>).",
+        })
+    return normalised
+
+
+def _refuse_machine_media(post: "PostRequest") -> None:
+    """A queue-only seat writes TEXT drafts only, so any media in the body is a 422, never dropped.
+
+    A silent downgrade would let the caller believe it had queued the video or carousel it asked
+    for. "Supplied" is a value that would change what the post is or what a later step spends on:
+    a non-text `post_type`, a `video_url`, slides, an `image_url`, an explicit `use_avatar`, or a
+    `video_quality` other than the default.
+
+    Raises:
+        HTTPException: 422 `machine_seat_text_only`.
+    """
+    supplied = [name for name, present in (
+        ("post_type", post.post_type not in (None, PostType.TEXT)),
+        ("video_url", post.video_url is not None),
+        ("carousel_slides", bool(post.carousel_slides)),
+        ("image_url", post.image_url is not None),
+        ("use_avatar", post.use_avatar is not None),
+        ("video_quality", post.video_quality not in (None, "standard")),
+    ) if present]
+    if supplied:
+        raise HTTPException(status_code=422, detail={
+            "code": "machine_seat_text_only",
+            "message": "This token can only draft text posts; remove: " + ", ".join(supplied),
+            "fields": supplied,
         })
 
 
@@ -3635,7 +3696,7 @@ def schedule_dm_endpoint(request: ScheduleDmRequest) -> ResponseModel[dict[str, 
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     _refuse_agent_approved_status(request.status)
-    _require_linkedin_profile_url(request.recipient_profile_url)
+    request.recipient_profile_url = _linkedin_profile_url_for_seat(request.recipient_profile_url)
     status = ScheduledDmStatus.APPROVED if request.status == "approved" else ScheduledDmStatus.PENDING
     dm_id = insert_scheduled_dm(user_id, request.recipient_profile_url, request.message,
                                 request.scheduled_datetime, recipient_name=request.recipient_name,
@@ -3684,7 +3745,7 @@ def update_scheduled_dm_endpoint(request: UpdateDmRequest) -> ResponseModel[str]
         raise HTTPException(status_code=422,
                             detail=f"Unknown action '{request.action}' — expected 'approve' or 'cancel'")
     _refuse_agent_approval(request.action)
-    _require_linkedin_profile_url(request.recipient_profile_url)
+    request.recipient_profile_url = _linkedin_profile_url_for_seat(request.recipient_profile_url)
     status = action_map.get(request.action)
     if status is None and all(v is None for v in (request.recipient_profile_url, request.recipient_name,
                                                   request.message, request.scheduled_datetime)):
@@ -3720,6 +3781,11 @@ def delete_scheduled_dm_endpoint(request: DmDeleteRequest) -> ResponseModel[str]
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     if get_scheduled_dm_user_id(request.dm_id) != user_id:
         raise HTTPException(status_code=404, detail="Scheduled DM not found")
+    if _edits_pending_only():
+        # DELETE is an edit too (issue #2684): a queue-only seat cancels only a pending DM.
+        _pending_edit_or_raise("scheduled_dm", request.dm_id, user_id,
+                               {"status": ScheduledDmStatus.CANCELED}, "Could not cancel scheduled DM")
+        return ResponseModel(status_code=200, detail="Scheduled DM canceled")
     if not update_scheduled_dm_status(request.dm_id, ScheduledDmStatus.CANCELED):
         raise HTTPException(status_code=500, detail="Could not cancel scheduled DM")
     return ResponseModel(status_code=200, detail="Scheduled DM canceled")
@@ -3737,7 +3803,7 @@ def create_connection_request_endpoint(request: ConnectionRequestCreate) -> Resp
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     _refuse_agent_approved_status(request.status)
-    _require_linkedin_profile_url(request.recipient_profile_url)
+    request.recipient_profile_url = _linkedin_profile_url_for_seat(request.recipient_profile_url)
     if request.status is None:
         mode = get_engagement_preferences(user_id).get("connection_request_mode", "auto_approve")
         # The PASSIVE half of the same guarantee, and the one with no field to refuse on. This
@@ -3803,7 +3869,14 @@ def update_connection_request_endpoint(request: ConnectionRequestUpdate) -> Resp
     `retry` action because reaching `approved` on a `failed` row is a human-only call (#1026). Firing the
     same transition as a side effect of the (permitted) field-only PUT would reach `approved` through a
     route that guard never inspects — laundering the refusal rather than removing it. So this only fires
-    for a human-surface session; an agent-scoped attach still saves the address and leaves the row `failed`.
+    for a human-surface session.
+
+    A queue-only seat (issue #2684) edits only a `pending` request, enforced in SQL; anything else is a
+    409 `edit_requires_pending`. ONE exception is the `backfill` supplier's contract
+    (christopherqueenconsulting/backfill#44): a PUT carrying `recipient_email` and no other field or
+    action may also land on a `failed` row whose `failure_reason` is `EMAIL_VERIFICATION_REQUIRED_MESSAGE`.
+    It writes the address only; the row stays `failed` until a human retries it. Adding any other field
+    to that PUT takes it back to the pending-only rule, so on a failed row it is a 409.
     """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
@@ -3821,7 +3894,7 @@ def update_connection_request_endpoint(request: ConnectionRequestUpdate) -> Resp
         if not current or current["status"] != str(ConnectionRequestStatus.FAILED):
             raise HTTPException(status_code=422, detail="Only a 'failed' connection request can be retried")
     _refuse_agent_approval(request.action)
-    _require_linkedin_profile_url(request.recipient_profile_url)
+    request.recipient_profile_url = _linkedin_profile_url_for_seat(request.recipient_profile_url)
     status = action_map.get(request.action)
     if request.action is None and request.recipient_email is not None and not _agent_scoped():
         current = current or get_connection_request(request.request_id)
@@ -3833,6 +3906,13 @@ def update_connection_request_endpoint(request: ConnectionRequestUpdate) -> Resp
                                                   request.recipient_email)):
         raise HTTPException(status_code=422, detail="Nothing to update — provide at least one field or an action")
     if _edits_pending_only():
+        if status is None and request.recipient_email is not None and all(
+                v is None for v in (request.recipient_profile_url, request.recipient_name,
+                                    request.message)):
+            _raise_unless_updated(attach_email_to_connection_request(
+                request.request_id, user_id, request.recipient_email),
+                "Could not update connection request")
+            return ResponseModel(status_code=200, detail="Connection request updated")
         fields: Dict[str, Any] = {
             k: v for k, v in (("recipient_profile_url", request.recipient_profile_url),
                               ("recipient_name", request.recipient_name),
@@ -3866,6 +3946,13 @@ def delete_connection_request_endpoint(request: ConnectionRequestDelete) -> Resp
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     if get_connection_request_user_id(request.request_id) != user_id:
         raise HTTPException(status_code=404, detail="Connection request not found")
+    if _edits_pending_only():
+        # The path grants every verb, so DELETE is an edit too (issue #2684). Same side effects as
+        # `update_connection_request_status` on a move into a terminal status.
+        _pending_edit_or_raise("connection_request", request.request_id, user_id,
+                               {"status": ConnectionRequestStatus.CANCELED, "failure_reason": None,
+                                "recipient_email": None}, "Could not cancel connection request")
+        return ResponseModel(status_code=200, detail="Connection request canceled")
     if not update_connection_request_status(request.request_id, ConnectionRequestStatus.CANCELED):
         raise HTTPException(status_code=500, detail="Could not cancel connection request")
     return ResponseModel(status_code=200, detail="Connection request canceled")
@@ -4118,6 +4205,12 @@ def delete_catchup_touch_endpoint(request: CatchupTouchDeleteRequest) -> Respons
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     if get_catchup_touch_user_id(request.touch_id) != user_id:
         raise HTTPException(status_code=404, detail="Catch-up touch not found")
+    if _edits_pending_only():
+        # DELETE is an edit too (issue #2684): a queue-only seat cancels only a pending touch.
+        _pending_edit_or_raise("catchup_touch", request.touch_id, user_id,
+                               {"status": CatchupTouchStatus.CANCELED},
+                               "Could not cancel catch-up touch")
+        return ResponseModel(status_code=200, detail="Catch-up touch canceled")
     if not update_catchup_touch_status(request.touch_id, CatchupTouchStatus.CANCELED):
         raise HTTPException(status_code=500, detail="Could not cancel catch-up touch")
     return ResponseModel(status_code=200, detail="Catch-up touch canceled")

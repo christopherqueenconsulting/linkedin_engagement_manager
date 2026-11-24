@@ -103,10 +103,12 @@ def create_outreach_target_endpoint(request: OutreachTargetRequest) -> ResponseM
     context_url = request.context_url.strip() if request.context_url else None
     if not target_profile_url:
         raise HTTPException(status_code=422, detail="target_profile_url is required")
+    # A queue-only seat's URL is normalised BEFORE the duplicate lookup, so the lookup and the row
+    # both see the canonical spelling (issue #2684).
+    target_profile_url = _main._linkedin_profile_url_for_seat(target_profile_url)
     if get_outreach_target_by_url(user_id, target_profile_url):
         raise HTTPException(status_code=409, detail="Target is already in the outreach funnel")
     _main._refuse_agent_approved_status(request.status)
-    _main._require_linkedin_profile_url(target_profile_url)
     status = OutreachStatus.APPROVED if request.status == "approved" else OutreachStatus.PENDING
     target_id = insert_outreach_target(user_id, target_profile_url,
                                        target_name=target_name, context_url=context_url,
@@ -179,6 +181,13 @@ def delete_outreach_target_endpoint(request: OutreachTargetDeleteRequest) -> Res
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     if get_outreach_target_user_id(request.target_id) != user_id:
         raise HTTPException(status_code=404, detail="Outreach target not found")
+    if _main._edits_pending_only():
+        # The path grants every verb, so DELETE is an edit too: a queue-only seat cancels only a
+        # target no human has approved (issue #2684).
+        _main._pending_edit_or_raise("outreach_target", request.target_id, user_id,
+                                     {"status": OutreachStatus.CANCELED},
+                                     "Could not cancel outreach target")
+        return ResponseModel(status_code=200, detail="Outreach target canceled")
     if not update_outreach_target_status(request.target_id, OutreachStatus.CANCELED):
         raise HTTPException(status_code=500, detail="Could not cancel outreach target")
     return ResponseModel(status_code=200, detail="Outreach target canceled")

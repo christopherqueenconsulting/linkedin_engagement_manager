@@ -14,7 +14,14 @@ import mysql.connector
 import pytest
 
 from cqc_lem.utilities import db
-from cqc_lem.utilities.db import PendingEdit, PostStatus, PostType, update_pending_row
+from cqc_lem.utilities.db import (
+    EMAIL_VERIFICATION_REQUIRED_MESSAGE,
+    PendingEdit,
+    PostStatus,
+    PostType,
+    attach_email_to_connection_request,
+    update_pending_row,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -115,3 +122,39 @@ def test_the_asset_backfill_never_selects_a_pending_text_draft(users: tuple) -> 
     selected = {row[0] for row in db.get_unposted_posts_missing_assets()}
     assert video_id in selected
     assert post_id not in selected
+
+
+def test_revising_a_pending_carousel_keeps_its_type_and_slides(users: tuple) -> None:
+    """The content-and-slot write a queue-only seat makes never touches the stored media."""
+    uid, _other = users
+    post_id = db.insert_post_returning_id(_EMAIL, "carousel", _tomorrow(), PostType.CAROUSEL,
+                                          carousel_slides=["https://x/api/assets/1.png"],
+                                          status=PostStatus.PENDING)
+    when = _tomorrow() + timedelta(hours=2)
+    assert update_pending_row("post", post_id, uid,
+                              {"content": "revised", "scheduled_time": when}) is PendingEdit.UPDATED
+    status, content, post_type = _row(post_id)
+    slides = _exec("SELECT carousel_slides FROM posts WHERE id=%s", (post_id,), fetch=True)[0][0]
+    assert (status, content, post_type) == ("pending", "revised", "carousel")
+    assert "1.png" in slides
+
+
+def test_the_backfill_carve_out_attaches_only_to_an_email_challenged_failed_request(
+        users: tuple) -> None:
+    uid, _other = users
+    challenged = db.insert_connection_request(uid, "https://www.linkedin.com/in/w1-challenged/")
+    declined = db.insert_connection_request(uid, "https://www.linkedin.com/in/w1-declined/")
+    _exec("UPDATE connection_requests SET status='failed', failure_reason=%s WHERE id=%s",
+          (EMAIL_VERIFICATION_REQUIRED_MESSAGE, challenged))
+    _exec("UPDATE connection_requests SET status='failed', failure_reason='no connect' "
+          "WHERE id=%s", (declined,))
+
+    assert attach_email_to_connection_request(challenged, uid, "jane@example.test") \
+        is PendingEdit.UPDATED
+    assert attach_email_to_connection_request(declined, uid, "jane@example.test") \
+        is PendingEdit.NOT_PENDING
+    rows = {r[0]: (r[1], r[2]) for r in _exec(
+        "SELECT id, status, recipient_email FROM connection_requests WHERE id IN (%s, %s)",
+        (challenged, declined), fetch=True)}
+    assert rows[challenged] == ("failed", "jane@example.test"), "the row stays failed"
+    assert rows[declined] == ("failed", None)

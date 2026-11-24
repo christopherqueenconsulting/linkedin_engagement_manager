@@ -529,7 +529,12 @@ from cqc_lem.platform.db.repositories.outreach import (
     upsert_engagement_targets,
     upsert_lead,
 )
-from cqc_lem.platform.db.repositories.pending_edits import PendingEdit, update_pending_row
+from cqc_lem.platform.db.repositories.pending_edits import (
+    PendingEdit,
+    attach_email_to_connection_request,
+    reject_pending_curated_source,
+    update_pending_row,
+)
 from cqc_lem.platform.db.repositories.posts import (
     _ALLOWED_POST_CLAUSES,
     _POST_SORT_COLUMNS,
@@ -1462,6 +1467,8 @@ __all__ = [
     "insert_post",
     "insert_post_returning_id",
     "PendingEdit",
+    "attach_email_to_connection_request",
+    "reject_pending_curated_source",
     "update_pending_row",
     "insert_scheduled_dm",
     "is_premium_subscriber",
