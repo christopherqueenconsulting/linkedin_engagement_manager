@@ -13,8 +13,8 @@ class TestGenerateAiResponse:
         # grounded in the target post, 2+ sentences, a real value-add, no validation-filler opener,
         # and (issue #1834) no first-person number the post never mentioned.
         mock_openai_client.chat.completions.create.return_value.choices[0].message.content = (
-            "Your point about AI writing every comment is the part I keep hitting. We tried it "
-            "across a quarter of our feed and replies dropped. What made you write about it now?")
+            "AI writing every comment is where the whole idea breaks. A reader can tell when "
+            "nobody read the post. What made you write about it now?")
         with patch("cqc_lem.utilities.ai.ai_helper.client", mock_openai_client):
             from cqc_lem.utilities.ai.ai_helper import generate_ai_response
             from cqc_lem.utilities.linkedin.profile import LinkedInProfile

@@ -229,6 +229,16 @@ does not call out the Sign In with LinkedIn OpenID Connect product specifically.
 connection. `/v2/me` member IDs are app-specific, so the bridge compares the public vanity name
 against LEM's stored profile URL and stores the new app's ID only alongside its own token.
 
+**No OIDC bridge (#2584):** a verified Sign In with LinkedIn `sub` bridge is not feasible. This is
+an inference from two LinkedIn docs: the OIDC `sub` is used as the person ID
+(`urn:li:person:{sub}`), and the Profile API says member IDs are unique to the context of your
+application, so a `sub` cannot bridge two apps. The "no other API products" rule applies to the
+Development-tier CMA app; it is not permanent, since at Standard tier CMA can be added to the
+existing LEM app. That is the retirement path for this bridge (an owner and LinkedIn action). Until
+then the vanity name guards against accidental mismatch, and the first-connected CMA member ID is
+pinned per user (trust on first use): a reconnect returning a different ID fails closed with
+`account_mismatch` until the user disconnects.
+
 **Scope boundary:** `r_member_postAnalytics` covers the five post metrics currently saved by LEM;
 LinkedIn documents additional post metrics and a separate member-video analytics endpoint; those need
 separate schema/dashboard work. CMA's `r_member_profileAnalytics` also enables member follower

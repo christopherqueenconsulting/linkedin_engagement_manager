@@ -55,13 +55,11 @@ def test_registry_rows_expose_every_field_docs_and_provisioning_need():
     assert "$ai_generation" in row["metric_events"]
 
 
-def test_comment_variant_name_matches_the_content_core_literal():
-    """content_framework keeps its own copy so the shared content core never imports PostHog — if
-    these two drift, the treatment arm silently renders the control prompt.
-    """
-    from cqc_lem.utilities.ai.content_framework import COMMENT_CONTRACT_AUTHOR_QUESTION_VARIANT
-    assert COMMENT_CONTRACT_AUTHOR_QUESTION_VARIANT == ex.COMMENT_CONTRACT_AUTHOR_QUESTION
-    assert ex.COMMENT_CONTRACT_AUTHOR_QUESTION in ex.spec(ex.COMMENT_CONTRACT_PROMPT).variants
+def test_comment_experiment_control_is_the_new_prompt_and_legacy_is_a_named_arm():
+    """#2626: the author-question arm is retired; the old prompt is only the legacy arm."""
+    variants = ex.spec(ex.COMMENT_CONTRACT_PROMPT).variants
+    assert variants == (ex.CONTROL, ex.COMMENT_CONTRACT_LEGACY)
+    assert "author-question" not in variants
 
 
 def test_unregistered_experiment_raises_instead_of_defaulting():
@@ -81,7 +79,7 @@ def test_no_local_evaluation_means_the_control_arm_and_no_exposure():
 
 def test_kill_switch_forces_control_even_when_posthog_would_answer(monkeypatch, enrolled):
     mock_ph, mock_exposure = enrolled
-    mock_ph.get_feature_flag.return_value = ex.COMMENT_CONTRACT_AUTHOR_QUESTION
+    mock_ph.get_feature_flag.return_value = ex.COMMENT_CONTRACT_LEGACY
     monkeypatch.setenv("EXPERIMENTS_ENABLED", "false")
     assert ex.resolve_variant(ex.COMMENT_CONTRACT_PROMPT, 7) == ex.CONTROL
     mock_ph.get_feature_flag.assert_not_called()
@@ -139,10 +137,10 @@ def test_local_evaluation_requires_both_availability_and_a_loaded_definition_set
 
 def test_resolved_variant_is_returned_and_exposed(enrolled):
     mock_ph, mock_exposure = enrolled
-    mock_ph.get_feature_flag.return_value = ex.COMMENT_CONTRACT_AUTHOR_QUESTION
-    assert ex.resolve_variant(ex.COMMENT_CONTRACT_PROMPT, 7) == ex.COMMENT_CONTRACT_AUTHOR_QUESTION
+    mock_ph.get_feature_flag.return_value = ex.COMMENT_CONTRACT_LEGACY
+    assert ex.resolve_variant(ex.COMMENT_CONTRACT_PROMPT, 7) == ex.COMMENT_CONTRACT_LEGACY
     mock_exposure.assert_called_once_with(ex.COMMENT_CONTRACT_PROMPT,
-                                         ex.COMMENT_CONTRACT_AUTHOR_QUESTION, 7)
+                                         ex.COMMENT_CONTRACT_LEGACY, 7)
 
 
 def test_local_evaluation_only_never_makes_a_network_call(enrolled):

@@ -189,6 +189,9 @@ class TestPartialUpdateKeepsTheRest:
         "roster_auto_follow": 1, "max_follows_per_day": 4, "roster_auto_connect": 1,
         "hold_repaired_posts_for_review": 1,
         "profile_viewer_dm_auto_send": 1,
+        "icp_builder_enabled": 1, "icp_definition": '{"segments": [{"id": "ops"}]}',
+        "nurture_dm_mode": "auto_approve", "artifact_dm_mode": "auto_approve",
+        "group_post_mode": "auto_approve",
         "forbidden_claim_terms": '["complexity router"]',
         "brand_kit": '{"primary_hex": "#e9d437", "avoid": ["gears"]}',
         "audience_mix": ('{"primary_audience": "ops leaders", "secondary_audience": '

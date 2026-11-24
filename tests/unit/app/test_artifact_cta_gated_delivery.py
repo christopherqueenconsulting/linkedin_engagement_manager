@@ -37,6 +37,34 @@ class TestQueueArtifactDelivery:
         # Recorded on QUEUE so the next sweep doesn't draft the same resource again.
         rec.assert_called_once_with(1, _PROFILE, 9)
 
+    def _status(self, prefs, monkeypatch, env=None):
+        if env is None:
+            monkeypatch.delenv("DM_ARTIFACT_AUTO_APPROVE", raising=False)
+        else:
+            monkeypatch.setenv("DM_ARTIFACT_AUTO_APPROVE", env)
+        with patch(f"{_POST}.has_received_lead_magnet", return_value=False), \
+             patch(f"{_POST}.has_open_scheduled_dm", return_value=False), \
+             patch(f"{_POST}.count_scheduled_dms_created_today", return_value=0), \
+             patch(f"{_POST}.record_lead_magnet_sent"), \
+             patch(f"{_POST}.insert_scheduled_dm", return_value=42) as ins:
+            _queue(prefs=prefs)
+        return ins.call_args.kwargs["status"]
+
+    def test_artifact_auto_approve_mode_files_it_approved(self, monkeypatch):
+        from cqc_lem.utilities.db import ScheduledDmStatus
+        prefs = {**_PREFS, "artifact_dm_mode": "auto_approve"}
+        assert self._status(prefs, monkeypatch) == ScheduledDmStatus.APPROVED
+
+    def test_artifact_env_off_value_wins_over_auto_approve(self, monkeypatch):
+        from cqc_lem.utilities.db import ScheduledDmStatus
+        prefs = {**_PREFS, "artifact_dm_mode": "auto_approve"}
+        assert self._status(prefs, monkeypatch, env="off") == ScheduledDmStatus.PENDING
+
+    def test_artifact_pre_review_mode_stays_pending(self, monkeypatch):
+        from cqc_lem.utilities.db import ScheduledDmStatus
+        prefs = {**_PREFS, "artifact_dm_mode": "pre_review"}
+        assert self._status(prefs, monkeypatch) == ScheduledDmStatus.PENDING
+
     def test_no_keyword_in_the_comment_delivers_nothing(self):
         with patch(f"{_POST}.insert_scheduled_dm") as ins:
             assert _queue(comment_text="great post") is None

@@ -151,3 +151,51 @@ class TestRefreshLeads:
             resp = api_client.post("/api/leads/refresh", json={"session_token": "bad"})
         assert resp.status_code == 401
         task.assert_not_called()
+
+
+class TestOutcomeStages:
+    def test_an_outcome_stage_is_accepted_and_a_deal_value_passed_through(self, api_client):
+        with patch(f"{_M}.get_session_user_id", return_value=_U), \
+             patch(f"{_M}.get_lead", return_value=dict(_LEAD)), \
+             patch(f"{_M}.update_lead", return_value=True) as upd:
+            resp = api_client.put("/api/lead", json={"session_token": _S, "lead_id": 11,
+                                                     "stage": "won", "deal_value": 4200})
+        assert resp.status_code == 200
+        assert upd.call_args.kwargs["manual_stage"] == "won"
+        assert upd.call_args.kwargs["deal_value"] == 4200
+
+    def test_a_deal_value_alone_is_a_valid_update(self, api_client):
+        with patch(f"{_M}.get_session_user_id", return_value=_U), \
+             patch(f"{_M}.get_lead", return_value=dict(_LEAD)), \
+             patch(f"{_M}.update_lead", return_value=True):
+            resp = api_client.put("/api/lead", json={"session_token": _S, "lead_id": 11,
+                                                     "deal_value": 10})
+        assert resp.status_code == 200
+
+    def test_a_negative_deal_value_is_refused(self, api_client):
+        with patch(f"{_M}.get_session_user_id", return_value=_U):
+            resp = api_client.put("/api/lead", json={"session_token": _S, "lead_id": 11,
+                                                     "deal_value": -1})
+        assert resp.status_code == 422
+
+
+class TestLeadFunnel:
+    def test_returns_counts_per_month(self, api_client):
+        with patch(f"{_M}.get_session_user_id", return_value=_U), \
+             patch(f"{_M}.get_lead_funnel_counts",
+                   return_value=[("2026-11", "in_conversation", 4), ("2026-11", "won", 1)]):
+            resp = api_client.get(f"/api/leads/funnel?session_token={_S}")
+        assert resp.status_code == 200
+        month = resp.json()["detail"]["months"][0]
+        assert month["month"] == "2026-11" and month["in_conversation"] == 4 and month["won"] == 1
+
+    def test_a_failed_read_is_503_not_an_empty_funnel(self, api_client):
+        with patch(f"{_M}.get_session_user_id", return_value=_U), \
+             patch(f"{_M}.get_lead_funnel_counts", return_value=None):
+            resp = api_client.get(f"/api/leads/funnel?session_token={_S}")
+        assert resp.status_code == 503
+
+    def test_requires_a_session(self, api_client):
+        with patch(f"{_M}.get_session_user_id", return_value=None):
+            resp = api_client.get("/api/leads/funnel?session_token=bad")
+        assert resp.status_code == 401

@@ -7,6 +7,8 @@ re-exports every name below, so existing importers and patch targets keep resolv
 
 from typing import Optional
 
+import os
+
 import mysql.connector
 
 from cqc_lem.platform.db import connection as _connection
@@ -561,10 +563,13 @@ def record_comment_outcome(user_id: int, log_id: int, post_key: str = None,
                            author_replied: bool = False, reply_count: int = 0,
                            like_count: int = 0, visible_most_relevant: "bool | None" = None,
                            our_reply_sent: bool = False, status: str = "checked",
-                           skip_reason: str = None) -> bool:
-    """Persist one comment's outcome reading (issue #628). Upsert on (user_id, log_id) so a re-run
-    refreshes rather than duplicating; a skipped check writes a row too (status='skipped' with the
-    reason), which is what stops an unfindable comment being re-walked every night.
+                           skip_reason: str = None, reader_version: int = 1) -> bool:
+    """Persist one comment's outcome reading (issue #628).
+
+    Upsert on (user_id, log_id, reader_version) so a re-run refreshes rather than duplicating,
+    while a v2 re-read of a comment lands as a NEW row beside its v1 one (#2621); a skipped check writes a row too
+    (status='skipped' with the reason), which is what stops an unfindable comment being re-walked
+    every night.
 
     `visible_most_relevant` stays NULL when the read was ambiguous — never coerced to a boolean,
     because a guess would feed the demotion rate that gates commenting.
@@ -576,8 +581,9 @@ def record_comment_outcome(user_id: int, log_id: int, post_key: str = None,
         with db_cursor(commit=True) as cursor:
             cursor.execute(
                 "INSERT INTO comment_outcomes (user_id, log_id, post_key, author_replied, reply_count, "
-                "  like_count, visible_most_relevant, our_reply_sent, status, skip_reason) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE "
+                "  like_count, visible_most_relevant, our_reply_sent, status, skip_reason, "
+                "  reader_version) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE "
                 "  post_key=VALUES(post_key), checked_at=CURRENT_TIMESTAMP, "
                 "  author_replied=VALUES(author_replied), reply_count=VALUES(reply_count), "
                 "  like_count=VALUES(like_count), visible_most_relevant=VALUES(visible_most_relevant), "
@@ -586,26 +592,57 @@ def record_comment_outcome(user_id: int, log_id: int, post_key: str = None,
                 (user_id, int(log_id), (str(post_key)[:255] if post_key else None),
                  int(bool(author_replied)), max(0, int(reply_count or 0)), max(0, int(like_count or 0)),
                  visible, int(bool(our_reply_sent)), str(status or "checked")[:20],
-                 (str(skip_reason)[:255] if skip_reason else None)))
+                 (str(skip_reason)[:255] if skip_reason else None), max(1, int(reader_version or 1))))
             return True
     except mysql.connector.Error as err:
         log_error("Could not record comment outcome", exc=err, user_id=user_id)
         return False
+def _comment_outcome_reader_v2_on() -> bool:
+    """Whether `COMMENT_OUTCOME_READER_V2` is on (default OFF), read at the call site.
+
+    The reader's own copy is `posting.comment_outcome_reader_v2`. This layer cannot import the app tree.
+    """
+    return (os.environ.get("COMMENT_OUTCOME_READER_V2") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def get_comment_outcomes(user_id: int, days: int = 7) -> list:
-    """Comment-outcome rows checked in the last `days`, newest first — the input to the weekly
-    quality score (`utilities/comment_outcomes.py`).
+    """Comment-outcome rows for comments LOGGED in the last `days`, newest check first — the input
+    to the weekly quality score (`utilities/comment_outcomes.py`).
+
+    One row per `log_id`: the highest `reader_version` (v2 rows are dropped while
+    `COMMENT_OUTCOME_READER_V2` is off). The window keys on the comment's log date, not
+    `checked_at`, so a re-read cannot drag an old comment into the window and falsely HOLD
+    commenting (#2621). A v1 row's `reply_count` / `author_replied` come back as None — the v1
+    reader's zeros were wrong, and "unscored is never zero".
     """
     try:
         with db_cursor(dictionary=True) as cursor:
             cursor.execute(
-                "SELECT log_id, post_key, checked_at, author_replied, reply_count, like_count, "
-                "  visible_most_relevant, our_reply_sent, status, skip_reason "
-                "FROM comment_outcomes WHERE user_id=%s AND checked_at >= (NOW() - INTERVAL %s DAY) "
-                "ORDER BY checked_at DESC",
+                "SELECT co.log_id, co.post_key, co.checked_at, co.author_replied, co.reply_count, "
+                "  co.like_count, co.visible_most_relevant, co.our_reply_sent, co.status, "
+                "  co.skip_reason, co.reader_version "
+                "FROM comment_outcomes co JOIN logs l ON l.id = co.log_id AND l.user_id = co.user_id "
+                "WHERE co.user_id=%s AND l.created_at >= (NOW() - INTERVAL %s DAY) "
+                "ORDER BY co.checked_at DESC",
                 (user_id, max(1, int(days))))
-            return list(cursor.fetchall() or [])
+            raw = list(cursor.fetchall() or [])
     except mysql.connector.Error:
         return []
+    v2_on = _comment_outcome_reader_v2_on()
+    best: dict = {}
+    for row in raw:
+        version = int(row.get("reader_version") or 1)
+        if version >= 2 and not v2_on:
+            continue
+        cur = best.get(row.get("log_id"))
+        if cur is None or version > int(cur.get("reader_version") or 1):
+            best[row.get("log_id")] = row
+    out = []
+    for row in best.values():
+        if int(row.get("reader_version") or 1) < 2:
+            row = {**row, "reply_count": None, "author_replied": None}
+        out.append(row)
+    return out
 def get_duplicate_comment_posts(user_id: int, hours: int = 24):
     """Read-only report: posts the user commented on MORE THAN ONCE in the last `hours`, from the
     SUCCESS comment logs. Returns list of (post_url, comment_count, first_at, last_at) ordered by

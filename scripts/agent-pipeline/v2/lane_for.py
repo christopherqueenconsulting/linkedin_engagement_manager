@@ -123,6 +123,19 @@ def _issue_facts() -> tuple[frozenset[str], int, int]:
     return labels, len(body), len(set(re.findall(r"`([\w./-]+\.\w+)`", body)))
 
 
+def _codex_paused(base: Path) -> bool:
+    """True while the Codex provider's own pause file (UNIX end time) is in the future.
+
+    Only Codex is paused by it: a Codex failure says nothing about the Claude lane or Ollama.
+    """
+    try:
+        until = float(Path(os.environ.get("CODEX_PAUSED_FILE",
+                                          str(base / "CODEX_PAUSED_UNTIL"))).read_text().strip())
+    except (OSError, ValueError):
+        return False
+    return until > time.time()
+
+
 def _router_context(mode: str, base: Path, paused_seconds: float) -> route.Context | None:
     """The model router's context, or None when `LEM_ROUTER` is `off` (today's routing, untouched)."""
     flag = route.router_mode()
@@ -138,9 +151,12 @@ def _router_context(mode: str, base: Path, paused_seconds: float) -> route.Conte
         protected_path=os.environ.get("LEM_ROUTE_PROTECTED") == "1",
     )
     signal = usage_signal.read(base / "state" / "usage_signal.json")
+    paused = {route.CLAUDE} if paused_seconds > 0 else set()
+    if _codex_paused(base):
+        paused.add(route.CODEX)
     return route.Context(
         flag=flag, inputs=inputs, signal=signal, env=env,
-        paused=frozenset({route.CLAUDE}) if paused_seconds > 0 else frozenset(),
+        paused=frozenset(paused),
         bad_models=route.parse_labels(os.environ.get("LEM_ROUTE_BAD_MODELS", "")),
         proxy_down=os.environ.get("LEM_ROUTE_PROXY_DOWN") == "1",
     )

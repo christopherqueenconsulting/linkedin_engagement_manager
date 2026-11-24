@@ -135,7 +135,8 @@ class TestGroupPostDraft:
         profile.model_dump_json.return_value = profile_json
         with patch(f"{_FEED}.get_open_group_post_draft", return_value=None), \
              patch(f"{_FEED}.load_profile_for_user", return_value=profile), \
-             patch(f"{_FEED}.get_engagement_preferences", return_value={}), \
+             patch(f"{_FEED}.get_engagement_preferences",
+                   return_value={"group_post_mode": "auto_approve"}), \
              patch(f"{_FEED}.get_or_create_profile_synthesis", return_value=synthesis), \
              patch(f"{_FEED}.generate_group_post", return_value=text), \
              patch(f"{_DB}.get_story_bank_entries", return_value=[BANK_ENTRY]), \

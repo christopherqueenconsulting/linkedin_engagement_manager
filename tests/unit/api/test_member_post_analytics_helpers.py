@@ -10,6 +10,7 @@ pytestmark = pytest.mark.unit
 
 @pytest.mark.parametrize("profile_url, expected", [
     ("https://www.linkedin.com/in/Member-Name/", "member-name"),
+    ("https://www.linkedin.com/in/member-name?trk=abc", "member-name"),
     ("https://www.linkedin.com/company/acme", None),
     ("", None),
     (None, None),

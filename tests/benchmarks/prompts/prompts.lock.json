@@ -96,13 +96,25 @@
   },
   "comment.feed": {
     "changed_in": null,
-    "content_hash": "sha256:02c2d8ac8dd41df93dc8b89e82c5d1f4e2d3781f397cdd741b3957f22bbdb033",
-    "dataset_hash": "sha256:ff5f1bf890479af2a8b1520e699772362a3859c7925d5aa138807aca72764ad5",
-    "dataset_history": [],
-    "dataset_version": 1,
-    "history": [],
-    "source_hash": "sha256:caa030e5a6f848a3669bd78f02826e2cae08772ea983352da2f152d5a34735db",
-    "version": 1
+    "content_hash": "sha256:ec029bd5f0634ddae75cd1b8a375c7123002f4db15ceb9bff4eef80b2360cfbd",
+    "dataset_hash": "sha256:2877f830d7acfceb88b6b09d850bbd4ced10155195600bc3c59936c714374e82",
+    "dataset_history": [
+      {
+        "hash": "sha256:ff5f1bf890479af2a8b1520e699772362a3859c7925d5aa138807aca72764ad5",
+        "retired": "2026-11-23",
+        "version": 1
+      }
+    ],
+    "dataset_version": 2,
+    "history": [
+      {
+        "hash": "sha256:02c2d8ac8dd41df93dc8b89e82c5d1f4e2d3781f397cdd741b3957f22bbdb033",
+        "retired": "2026-11-23",
+        "version": 1
+      }
+    ],
+    "source_hash": "sha256:de86a98f0e7781e55c2e37feda24549059e3f45da07eca6d5943afe6c147fb2d",
+    "version": 2
   },
   "comment.reply_followup": {
     "changed_in": null,

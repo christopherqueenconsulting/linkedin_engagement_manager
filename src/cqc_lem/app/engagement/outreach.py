@@ -103,6 +103,7 @@ from cqc_lem.utilities.ai.outbound_qa import (
     SURFACE_DM as OUTBOUND_SURFACE_DM,
     refusal_reason as outbound_refusal_reason,
 )
+from cqc_lem.utilities.approval_modes import NURTURE_DM_MODE, may_auto_approve
 from cqc_lem.utilities.brand_account import (
     ACQUISITION_HOLD_REASON,
     acquisition_outbound_held,
@@ -112,6 +113,7 @@ from cqc_lem.utilities.connection_targeting import (
     SOURCE_ADJACENT_POST,
     SOURCE_OWN_POST,
     CandidateSignal,
+    apply_icp_rubric,
     rank_candidates,
     target_terms_from_prefs,
 )
@@ -213,6 +215,7 @@ from cqc_lem.utilities.human_pacing import (
     record_action,
     remaining_actions,
 )
+from cqc_lem.utilities.icp_rubric import ICP_RUBRIC_VERSION, parse_icp_definition
 from cqc_lem.utilities.lead_scoring import (
     _author_display_name,
     _flag_lead_signal,
@@ -257,6 +260,7 @@ from cqc_lem.utilities.linkedin.message_thread import (
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.linkedin.rate_limit import (
     LinkedInRateLimited,
+    is_invites_held,
 )
 from cqc_lem.utilities.linkedin.session import ProfileUnavailableError, get_current_profile
 from cqc_lem.utilities.linkedin_formatter import normalize_public_text
@@ -1435,16 +1439,15 @@ def _nurture_enabled() -> bool:
     return raw.strip().lower() not in ("0", "false", "no", "off")
 
 
-def _nurture_auto_approve() -> bool:
-    """OFF by default — a drafted reply to a real prospect is exactly the thing a human should see
-    before it sends. Turning this on skips the approval queue (the draft goes straight to 'approved'
-    and the scanner delivers it at its slot).
+def _nurture_auto_approve(user_id: int, prefs: dict = None) -> bool:
+    """Per-user `nurture_dm_mode` (issue #2624): `pre_review` by default — a drafted reply to a real
+    prospect is exactly the thing a human should see before it sends. `auto_approve` files the draft
+    straight as 'approved' for the scanner to deliver at its slot.
 
-    Only an explicit affirmative opens the gate: unset, blank/whitespace, and anything unrecognized
-    all keep the human in the loop. This is the one flag where a typo must fail CLOSED.
+    `DM_NURTURE_AUTO_APPROVE=0/false/no/off` force-reviews every user; anything else defers to the
+    per-user mode. Fails CLOSED on an unreadable preference.
     """
-    raw = os.environ.get("DM_NURTURE_AUTO_APPROVE") or ""
-    return raw.strip().lower() in ("1", "true", "yes", "on")
+    return may_auto_approve(user_id, NURTURE_DM_MODE, prefs)
 
 
 def _nurture_max_per_day() -> int:
@@ -1552,7 +1555,7 @@ def _nurture_after_reply(user_id: int, followup: dict, their_message: str,
         due = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=nurture_delay_hours(intent))
         # A blocked draft is filed PENDING even under auto-approve: it waits for the operator's edit
         # and is never sent on its own.
-        status = (ScheduledDmStatus.APPROVED if _nurture_auto_approve() and not blocked
+        status = (ScheduledDmStatus.APPROVED if not blocked and _nurture_auto_approve(user_id, prefs)
                   else ScheduledDmStatus.PENDING)
         if blocked:
             log_info(f"DM nurture: the draft for {first_name or profile_url} failed the content gate "
@@ -3414,10 +3417,26 @@ def scan_connection_candidates(self, user_id: int, max_new: int = None):
     terms = target_terms_from_prefs(prefs)
     urls = sorted({s.person_profile_url for s in signals if s.person_profile_url})
     min_icp = int(prefs.get("min_connection_icp_score") or 0)
-    candidates = rank_candidates(signals, now, facts_by_url=get_profile_facts(urls),
-                                 target_terms=terms, min_icp=min_icp,
-                                 exclude_keys=get_requested_person_keys(user_id),
-                                 limit=budget)
+    facts_by_url = get_profile_facts(urls)
+    # ICP rubric (#2630): per-user flag, default OFF. On with no usable definition falls back to
+    # `icp_fit`, so a half-configured user is never filtered down to nothing.
+    icp_definition = (parse_icp_definition(prefs.get("icp_definition"))
+                      if prefs.get("icp_builder_enabled") else None)
+    rubric_scores: dict = {}
+    if icp_definition is not None:
+        ranked_all = rank_candidates(signals, now, facts_by_url=facts_by_url, target_terms=terms,
+                                     min_icp=0, exclude_keys=get_requested_person_keys(user_id))
+        candidates, rubric_scores, held = apply_icp_rubric(
+            ranked_all, icp_definition, facts_by_url=facts_by_url, min_score=min_icp, limit=budget)
+        if held:
+            log_info(f"ICP rubric held {held} candidate(s) with no scraped profile facts",
+                     user_id=user_id, task_name="scan_connection_candidates",
+                     action_type="connection_targeting")
+    else:
+        candidates = rank_candidates(signals, now, facts_by_url=facts_by_url,
+                                     target_terms=terms, min_icp=min_icp,
+                                     exclude_keys=get_requested_person_keys(user_id),
+                                     limit=budget)
     if not candidates:
         _log_candidate_funnel(user_id, budget, own_post, adjacent)
         log_debug("Connection targeting filed nothing: every candidate was already requested, "
@@ -3446,6 +3465,11 @@ def scan_connection_candidates(self, user_id: int, max_new: int = None):
                      task_name="scan_connection_candidates", action_type="connection_targeting")
             continue
         note = _draft_connect_note(user_id, candidate, topic=topic)
+        rubric = rubric_scores.get(candidate.person_key)
+        provenance = ({"segment_id": rubric.segment_id,
+                       "icp_rubric_version": ICP_RUBRIC_VERSION,
+                       "icp_components": rubric.components, "icp_reason": rubric.reason}
+                      if rubric else {})
         request_id = insert_connection_request(
             user_id, candidate.person_profile_url, message=note,
             recipient_name=candidate.person_name, status=status,
@@ -3453,7 +3477,7 @@ def scan_connection_candidates(self, user_id: int, max_new: int = None):
             # No facts to score against means no score. Storing ICP_UNKNOWN here filed rows that
             # read as "below your floor" to whoever approves them; `reasons` says fit is unverified.
             icp_score=(candidate.icp_score if candidate.known_fit else None),
-            reasons=candidate.reasons)
+            reasons=candidate.reasons, **provenance)
         if not request_id:
             continue
         filed += 1
@@ -3496,10 +3520,13 @@ def _draft_funnel_stage(user_id: int, stage: str, target: dict) -> str:
     return ""
 
 
-def _fire_funnel_stage(user_id: int, target: dict) -> str:
+def _fire_funnel_stage(user_id: int, target: dict, invites_queued: int = 0) -> str:
     """Fire one APPROVED funnel stage by enqueuing the existing primitive, then advance the target to
     the next stage as 'pending' (needs a fresh approval). Daily caps DEFER a stage (leave it approved
     for the next run) rather than auto-firing it.
+
+    `invites_queued` is how many connect stages this same run already dispatched:
+    `invite_to_connect` is async, so none of them are in today's sent count yet.
     """
     target_id = target["id"]
     stage = str(target.get("stage"))
@@ -3515,7 +3542,7 @@ def _fire_funnel_stage(user_id: int, target: dict) -> str:
         return f"target {target_id}: skipped {stage} (no draft)"
 
     if stage in (OutreachStage.CONNECT, OutreachStage.DM) and \
-            acquisition_outbound_held(user_id, funnel=True):
+            acquisition_outbound_held(user_id, funnel=True, approved_by=target.get("approved_by")):
         # Owner ruling (#2376): the brand's funnel connect/DM is the owner's to send. The draft goes
         # back to 'pending' — still on screen, never fired — so the beat does not re-pick it. The
         # reason goes in `notes`, a column nothing else writes, so held targets can be counted.
@@ -3542,6 +3569,14 @@ def _fire_funnel_stage(user_id: int, target: dict) -> str:
                                             "comment_text": draft})
         next_stage = OutreachStage.CONNECT
     elif stage == OutreachStage.CONNECT:
+        # The same wall and daily cap `send_connection_request` enforces: a human-approved brand
+        # target is released from the #2376 hold, not from the invite budget, so re-approving a
+        # batch must not burst invites past `max_invites_per_day`. Left APPROVED for the next run.
+        if is_invites_held(user_id):
+            return f"target {target_id}: connect deferred (invites held)"
+        if count_invites_sent_today(user_id) + invites_queued >= int(
+                prefs.get("max_invites_per_day") or 0):
+            return f"target {target_id}: connect deferred (daily invite cap)"
         invite_to_connect.apply_async(kwargs={"user_id": user_id, "profile_url": profile_url,
                                               "message": draft,
                                               "source": CONNECTION_REQUEST_SOURCE_OUTREACH_FUNNEL})
@@ -3561,7 +3596,7 @@ def _fire_funnel_stage(user_id: int, target: dict) -> str:
 
     next_draft = _draft_funnel_stage(user_id, next_stage, target)
     update_outreach_target(target_id, stage=next_stage, status=OutreachStatus.PENDING,
-                           draft_text=next_draft)
+                           draft_text=next_draft, notes="")
     return f"target {target_id}: {stage} fired -> {next_stage} pending approval"
 
 
@@ -3581,9 +3616,13 @@ def process_outreach_funnel(self, user_id: int, max_per_run: int = 25):
     if not targets:
         return f"No approved outreach targets for user {user_id}"
     results = []
+    invites_queued = 0
     for target in targets[:max_per_run]:
         try:
-            results.append(_fire_funnel_stage(user_id, target))
+            result = _fire_funnel_stage(user_id, target, invites_queued=invites_queued)
+            if f": {OutreachStage.CONNECT} fired" in result:
+                invites_queued += 1
+            results.append(result)
         except Exception as e:
             log_error("Outreach funnel stage failed", exc=e, user_id=user_id,
                       action_type="outreach_funnel")
@@ -3862,6 +3901,10 @@ def scan_outreach_funnel_targets(self, user_id: int, max_new: int = None):
     # tracks aimed at one person is exactly the over-automation this stays gated against.
     requested = get_requested_person_keys(user_id)
     status = _target_status_for_mode("auto_queue", prefs)
+    # Same filing rule as scan_connection_candidates (#2376): a brand connect/DM draft is the
+    # owner's to approve, so it is filed PENDING instead of APPROVED just to bounce off the hold
+    # (#2623). The comment stage is not held, so it keeps the mode's status.
+    brand_held = acquisition_outbound_held(user_id, funnel=True)
     seen: set = set()
     filed = 0
     for prospect in prospects:
@@ -3883,7 +3926,10 @@ def scan_outreach_funnel_targets(self, user_id: int, max_new: int = None):
                  else _draft_funnel_stage(user_id, stage, {"target_name": prospect.get("name")}))
         target_id = insert_outreach_target(user_id, url, target_name=prospect.get("name") or None,
                                            context_url=prospect.get("context_url"),
-                                           draft_text=(draft or None), stage=stage, status=status)
+                                           draft_text=(draft or None), stage=stage,
+                                           status=(ConnectionRequestStatus.PENDING
+                                                   if brand_held and stage != OutreachStage.COMMENT
+                                                   else status))
         if not target_id:
             continue
         filed += 1

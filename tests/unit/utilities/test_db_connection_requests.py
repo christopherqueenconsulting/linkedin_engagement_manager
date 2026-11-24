@@ -124,6 +124,29 @@ class TestConnectionRequestDb:
         sql = cur.execute.call_args[0][0]
         assert "status = %s" in sql and "failure_reason = NULL" in sql
 
+    def test_only_an_approval_writer_sets_approved_by(self, fake_cursor):
+        conn, cur = fake_cursor(lastrowid=7)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import ConnectionRequestStatus, update_connection_request
+            assert update_connection_request(7, status=ConnectionRequestStatus.APPROVED,
+                                             approved_by="user:1") is True
+        sql, params = cur.execute.call_args[0]
+        assert "approved_by = %s" in sql and "approved_at" in sql and "user:1" in params
+
+    def test_status_only_writers_leave_approved_by_alone(self, fake_cursor):
+        # A defer (approved -> sending -> approved) must not rewrite who approved the row (#2623).
+        conn, cur = fake_cursor(lastrowid=7)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import (
+                ConnectionRequestStatus,
+                update_connection_request,
+                update_connection_request_status,
+            )
+            update_connection_request_status(7, ConnectionRequestStatus.APPROVED)
+            assert "approved_by" not in cur.execute.call_args[0][0]
+            update_connection_request(7, status=ConnectionRequestStatus.APPROVED)
+            assert "approved_by" not in cur.execute.call_args[0][0]
+
     def test_update_noop_when_nothing_provided(self):
         from cqc_lem.utilities.db import update_connection_request
         assert update_connection_request(7) is False

@@ -100,8 +100,7 @@ def _apply_router(choice: LaneChoice, ctx: route.Context) -> LaneChoice:
     """Log the router's decision, and act on it only where the flag says to.
 
     `shadow` never acts. `reviews` acts on review modes only. `full` acts on every mode. A Codex
-    decision cannot act until the execution lane exists (phase 3), so it is logged and the existing
-    path runs.
+    decision acts only on a review mode: the Codex lane is review-only.
     """
     harness, model, reason = route.decide(ctx)
     LOG.info("router[%s] mode=%s %s", ctx.flag, ctx.inputs.mode, reason)
@@ -109,7 +108,11 @@ def _apply_router(choice: LaneChoice, ctx: route.Context) -> LaneChoice:
     if not acts:
         return replace(choice, arm=f"shadow {reason}" if ctx.flag == "shadow" else f"not_acting {reason}")
     if harness == route.CODEX:
-        return replace(choice, arm=f"{reason} codex_pending_phase3")
+        # The Codex harness runs review modes only (`run_lane.sh` refuses anything else), and
+        # `run_lane.sh` owns the fallback to Sonnet then Ollama tier 3 when it fails.
+        if ctx.inputs.mode not in route.REVIEW_MODES:
+            return replace(choice, arm=f"{reason} codex_review_only")
+        return LaneChoice(route.CODEX, reason, model=model, arm=reason)
     if harness == route.CLAUDE:
         if choice.lane == "ollama" and choice.reason.startswith("weekly_flip") and "arm=label_" not in reason:
             # The meter took the subscription out of rotation. The router's quota cache is a separate

@@ -206,6 +206,20 @@ comment_author_trusted() {
   return 1
 }
 
+comment_author_lookup_failed() {
+  # comment_author_lookup_failed <login> -> 0 when the LAST `comment_author_trusted` call for <login>
+  # in this shell refused because the permission lookup was UNREADABLE (not a readable "no", not a
+  # 404). For the one caller that must tell the two apart: a reply after an owner's approval that
+  # cannot be attributed blocks the approval (`v2_owner_approval`). Twin: `github.comment_author_standing`.
+  local lc perm
+  lc="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+  [ -n "$lc" ] || return 1
+  declare -gA _COMMENT_PERM_CACHE 2>/dev/null || true
+  [ -n "${_COMMENT_PERM_CACHE[$lc]+set}" ] || return 1
+  perm="${_COMMENT_PERM_CACHE[$lc]}"
+  [ -z "${perm// /}" ]
+}
+
 trusted_answer_login() {
   # trusted_answer_login <login> -> 0 when <login> is listed in LEMD_TRUSTED_ANSWER_LOGINS (a comma
   # or whitespace list, default empty): the owner's SECOND login. It counts for three things —
@@ -310,11 +324,23 @@ decision_context() {
 }
 
 decision_prompt_args() {
-  # decision_prompt_args <pr> <issue> -> "MENU_PR=… ANSWER_PR=… MENU_ISSUE=… ANSWER_ISSUE=…" for a
-  # MODE=revise / MODE=start prompt. Either number may be empty.
-  local p i
+  # decision_prompt_args <pr> <issue> [approval-review-id]
+  #   -> "MENU_PR=… ANSWER_PR=… ANSWER_KIND_PR=… MENU_ISSUE=… ANSWER_ISSUE=…" for a MODE=revise /
+  # MODE=start prompt. Either number may be empty. ANSWER_KIND_PR is `comment` (ANSWER_PR is a
+  # comment URL), `approval` (ANSWER_PR is `review:<id>`) or `none`.
+  #
+  # The approval id is the CALLER's, already verified (`v2_owner_approval`, v2 only): the runner
+  # names the routed approval so the agent never infers one from `gh pr view --json reviews`. It
+  # counts only when the PR thread has a menu; it replaces the comment answer, because an approval
+  # qualifies only when no actionable trusted reply sits after that menu.
+  local p i ap ak="none" approval="${3:-}"
   p="$(decision_context "${1:-}")"; i="$(decision_context "${2:-}")"
-  echo "MENU_PR=${p%% *} ANSWER_PR=${p#* } MENU_ISSUE=${i%% *} ANSWER_ISSUE=${i#* }"
+  ap="${p#* }"
+  [ "$ap" = "none" ] || ak="comment"
+  if [[ "$approval" =~ ^[0-9]+$ ]] && [ "${p%% *}" != "none" ]; then
+    ap="review:$approval"; ak="approval"
+  fi
+  echo "MENU_PR=${p%% *} ANSWER_PR=$ap ANSWER_KIND_PR=$ak MENU_ISSUE=${i%% *} ANSWER_ISSUE=${i#* }"
 }
 
 issue_for_pr() {

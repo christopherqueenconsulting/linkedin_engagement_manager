@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "linkedin-engagement-manager"
-version = "0.208.4"
+version = "0.209.0"
 description = ""
 authors = ["gitchrisqueen <christopher.queen@gmail.com>"]
 readme = "README.md"
@@ -67,7 +67,7 @@ python-pptx = "^1.0.2"
 dateparser = "^1.2.0"
 
 # --- Observability ---
-posthog = ">=3.7,<8.0"
+posthog = ">=3.7,<9.0"
 opentelemetry-api = "^1.28.2"
 opentelemetry-sdk = "^1.28.2"
 opentelemetry-exporter-otlp = "^1.28.2"

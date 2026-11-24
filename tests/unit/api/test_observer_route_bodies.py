@@ -64,9 +64,9 @@ _DMS = {"id", "user_id", "recipient_profile_url", "recipient_name", "message", "
         "scheduled_time", "status", "created_at", "updated_at"}
 _CONNECTION_REQUESTS = {"id", "user_id", "recipient_profile_url", "recipient_name", "message", "source",
                         "icp_score", "reasons", "failure_reason", "status", "attempts", "created_at",
-                        "updated_at", "has_recipient_email"}
+                        "updated_at", "approved_by", "has_recipient_email"}
 _OUTREACH_TARGETS = {"id", "user_id", "target_profile_url", "target_name", "stage", "status",
-                     "context_url", "draft_text", "notes", "created_at", "updated_at"}
+                     "context_url", "draft_text", "notes", "approved_by", "created_at", "updated_at"}
 _CATCHUP_TOUCHES = {"id", "user_id", "profile_url", "person_name", "event_type", "event_detail",
                     "event_period", "score", "message", "status", "created_at", "updated_at"}
 _LEAD_SIGNALS = {"id", "user_id", "source", "channel", "person_name", "person_profile_url", "thread_key",
@@ -74,8 +74,8 @@ _LEAD_SIGNALS = {"id", "user_id", "source", "channel", "person_name", "person_pr
                  "status", "delivery_attempts", "created_at", "updated_at"}
 _LEADS = {"id", "user_id", "person_key", "person_name", "person_profile_url", "score", "icp_score",
           "engagement_score", "stage", "signals", "signal_count", "reasons", "next_action",
-          "first_signal_at", "last_signal_at", "manual_stage", "notes", "dismissed", "created_at",
-          "updated_at"}
+          "first_signal_at", "last_signal_at", "manual_stage", "notes", "deal_value", "dismissed",
+          "created_at", "updated_at"}
 
 
 def _row(fields: set[str]) -> dict[str, Any]:

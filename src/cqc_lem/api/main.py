@@ -128,10 +128,12 @@ from cqc_lem.utilities.db import (
     get_latest_post_stats,
     get_latest_review_feedback_id,
     get_lead,
+    get_lead_funnel_counts,
     get_lead_signal,
     get_lead_signals,
     get_leads,
     get_linkedin_profile_url_by_user_id,
+    get_member_analytics_token_info,
     get_passkey_by_credential_id,
     get_planned_tasks,
     get_post_type,
@@ -958,10 +960,13 @@ _OBSERVER_ROW_FIELDS: Dict[str, frozenset] = {
     "connection_requests": frozenset({
         "id", "user_id", "recipient_profile_url", "recipient_name", "message", "source", "icp_score",
         "reasons", "failure_reason", "status", "attempts", "created_at", "updated_at",
+        # Who approved the row (`user:<id>`, #2623): the same identity `user_id` already shows.
+        "approved_by",
         # A boolean saying whether an address exists — never the address.
         "has_recipient_email"}),
     "outreach_targets": frozenset({"id", "user_id", "target_profile_url", "target_name", "stage", "status",
-                                   "context_url", "draft_text", "notes", "created_at", "updated_at"}),
+                                   "context_url", "draft_text", "notes", "approved_by",
+                                   "created_at", "updated_at"}),
     "catchup_touches": frozenset({"id", "user_id", "profile_url", "person_name", "event_type",
                                   "event_detail", "event_period", "score", "message", "status",
                                   "created_at", "updated_at"}),
@@ -972,8 +977,8 @@ _OBSERVER_ROW_FIELDS: Dict[str, frozenset] = {
     "leads": frozenset({
         "id", "user_id", "person_key", "person_name", "person_profile_url", "score", "icp_score",
         "engagement_score", "stage", "signals", "signal_count", "reasons", "next_action",
-        "first_signal_at", "last_signal_at", "manual_stage", "notes", "dismissed", "created_at",
-        "updated_at"}),
+        "first_signal_at", "last_signal_at", "manual_stage", "notes", "deal_value", "dismissed",
+        "created_at", "updated_at"}),
 }
 
 
@@ -3418,17 +3423,27 @@ def member_analytics_callback(code: Optional[str] = None, state: Optional[str] =
                   status_code=status_code)
         return _member_analytics_account_redirect({"li_analytics_error": "profile_lookup_failed"})
 
-    # TODO(#2584): replace vanity-name bridge with a verified OIDC/subject identity bridge.
-    # LinkedIn's member IDs are app-specific, so /me.id cannot bridge these apps. The public
-    # vanity name is the only comparable field available without adding OIDC to the CMA app. This
-    # catches accidental account mismatches, but is not cryptographic identity proof: handles can
-    # change or be reassigned. Keep the analytics connection allowlisted and user-confirmed.
+    # NOTE: an OIDC `sub` bridge is not feasible (#2584). LinkedIn member IDs are unique to the
+    # context of each application and the OIDC `sub` is that same person ID, so neither /me.id nor
+    # `sub` can bridge the CMA app and the LEM app. The public vanity name is the only comparable
+    # field: it catches accidental account mismatches but is not cryptographic identity proof, as
+    # handles can change or be reassigned. The first-connected CMA member ID is therefore pinned
+    # per user below. This bridge retires once the existing LEM app gets CMA at Standard tier, an
+    # owner and LinkedIn action. Keep the analytics connection allowlisted and user-confirmed.
     stored_vanity_name = _linkedin_vanity_name(get_linkedin_profile_url_by_user_id(user_id))
     if not new_sub_id or not new_vanity_name or not stored_vanity_name:
         log_info("Member analytics OAuth profile could not be matched", user_id=user_id)
         return _member_analytics_account_redirect({"li_analytics_error": "identity_unverified"})
     if new_vanity_name.casefold() != stored_vanity_name:
         log_info("Member analytics OAuth profile did not match the existing LEM account",
+                 user_id=user_id)
+        return _member_analytics_account_redirect({"li_analytics_error": "account_mismatch"})
+
+    # Trust on first use: a reconnect that returns a different CMA member ID never silently
+    # replaces the pinned one; the user must disconnect first.
+    existing = get_member_analytics_token_info(user_id)
+    if existing and existing.get("linked_sub_id") and existing["linked_sub_id"] != new_sub_id:
+        log_info("Member analytics OAuth member differs from the pinned connection",
                  user_id=user_id)
         return _member_analytics_account_redirect({"li_analytics_error": "account_mismatch"})
 
@@ -3657,7 +3672,10 @@ def update_connection_request_endpoint(request: ConnectionRequestUpdate) -> Resp
     if not update_connection_request(request.request_id,
                                      recipient_profile_url=request.recipient_profile_url,
                                      recipient_name=request.recipient_name, message=request.message,
-                                     status=status, recipient_email=request.recipient_email):
+                                     status=status, recipient_email=request.recipient_email,
+                                     approved_by=(user_approver(user_id)
+                                                  if status == ConnectionRequestStatus.APPROVED
+                                                  else None)):
         raise HTTPException(status_code=500, detail="Could not update connection request")
     return ResponseModel(status_code=200, detail="Connection request updated")
 
@@ -3757,6 +3775,7 @@ class LeadUpdate(BaseModel):
     notes: Optional[str] = Field(default=None, max_length=_LEN_LEAD_NOTES)
     stage: Optional[str] = None   # manual stage override; '' clears it back to the computed stage
     action: Optional[str] = None  # 'dismiss' | 'restore' | None
+    deal_value: Optional[float] = Field(default=None, ge=0, le=9_999_999_999)  # optional, with an outcome stage
 
 
 class LeadRefreshRequest(BaseModel):
@@ -3785,6 +3804,23 @@ def list_leads_endpoint(session_token: str, stage_filter: Optional[str] = None,
     return ResponseModel(status_code=200, detail=result)
 
 
+@router.get("/leads/funnel")
+def lead_funnel_endpoint(session_token: str, months: int = Query(default=12, ge=1, le=36)
+                         ) -> ResponseModel[dict[str, Any]]:
+    """Conversation to meeting to won, counted per month from the stage history (#2633).
+
+    A failed read is 503, never an empty funnel.
+    """
+    from cqc_lem.utilities.lead_scoring import build_lead_funnel
+    user_id = get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    counts = get_lead_funnel_counts(user_id, months=months)
+    if counts is None:
+        raise HTTPException(status_code=503, detail="Could not read the lead funnel")
+    return ResponseModel(status_code=200, detail=build_lead_funnel(counts))
+
+
 @router.put("/lead")
 def update_lead_endpoint(request: LeadUpdate) -> ResponseModel[str]:
     """Operator edits: move a lead's stage by hand, keep a note, or dismiss/restore it. The nightly
@@ -3801,11 +3837,12 @@ def update_lead_endpoint(request: LeadUpdate) -> ResponseModel[str]:
                             detail=f"Unknown action '{request.action}' — expected 'dismiss' or 'restore'")
     if request.stage and request.stage not in _LEAD_STAGES:
         raise HTTPException(status_code=422, detail=f"Unknown stage '{request.stage}'")
-    if request.notes is None and request.stage is None and request.action is None:
+    if (request.notes is None and request.stage is None and request.action is None
+            and request.deal_value is None):
         raise HTTPException(status_code=422, detail="Nothing to update")
     dismissed = {"dismiss": True, "restore": False}.get(request.action)
     if not update_lead(request.lead_id, notes=request.notes, manual_stage=request.stage,
-                       dismissed=dismissed):
+                       dismissed=dismissed, deal_value=request.deal_value):
         raise HTTPException(status_code=500, detail="Could not update lead")
     return ResponseModel(status_code=200, detail="Lead updated")
 

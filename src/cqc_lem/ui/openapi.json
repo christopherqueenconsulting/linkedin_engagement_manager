@@ -1242,6 +1242,17 @@
       "EngagementPreferencesDetail": {
         "description": "The saved engagement preferences, plus the read-only context the Settings hub renders.\n\nEverything above `has_saved_preferences` is a stored column and can be PUT back; everything from it down is derived per request and is ignored on a save.",
         "properties": {
+          "artifact_dm_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Dm Mode"
+          },
           "audience_mix": {
             "anyOf": [
               {
@@ -1423,6 +1434,17 @@
               }
             ]
           },
+          "group_post_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group Post Mode"
+          },
           "has_saved_preferences": {
             "title": "Has Saved Preferences",
             "type": "boolean"
@@ -1430,6 +1452,29 @@
           "hold_repaired_posts_for_review": {
             "title": "Hold Repaired Posts For Review",
             "type": "boolean"
+          },
+          "icp_builder_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Icp Builder Enabled"
+          },
+          "icp_definition": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Icp Definition"
           },
           "include_authors": {
             "items": {
@@ -1524,6 +1569,17 @@
               }
             ],
             "title": "Min Reactions"
+          },
+          "nurture_dm_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nurture Dm Mode"
           },
           "personal_goals": {
             "anyOf": [
@@ -1670,6 +1726,9 @@
           "text_post_images",
           "roster_auto_follow",
           "max_follows_per_day",
+          "nurture_dm_mode",
+          "artifact_dm_mode",
+          "group_post_mode",
           "roster_auto_connect",
           "hold_repaired_posts_for_review",
           "profile_viewer_dm_auto_send",
@@ -1681,6 +1740,8 @@
           "max_catchup_touches_per_contact_days",
           "brand_kit",
           "audience_mix",
+          "icp_builder_enabled",
+          "icp_definition",
           "has_saved_preferences",
           "reply_inbound_address",
           "gmail_forward_confirmation",
@@ -1696,6 +1757,17 @@
       "EngagementPreferencesRequest": {
         "description": "Body of `PUT /user/engagement-preferences` \u2014 targeting, voice and the per-day caps.\n\nTwo rules run through the whole model. The `max_length=` bounds are kept in lockstep with the\nDB column widths so an over-long value is a clean 422 instead of a MySQL 1406 that silently\nrolls back the whole upsert. And the `_coerce_*` validators never reject an unknown enum value,\nthey fall back to the safe default \u2014 an SPA build that predates a mode must not 422 a settings\nsave. `Optional[...] = None` on a cap (e.g. `max_follows_per_day`) means \"leave what is\nstored\", NOT the code default, so an older client cannot resurrect a lane the user switched off.",
         "properties": {
+          "artifact_dm_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Dm Mode"
+          },
           "audience_mix": {
             "anyOf": [
               {
@@ -1867,10 +1939,44 @@
             ],
             "title": "Forbidden Claim Terms"
           },
+          "group_post_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group Post Mode"
+          },
           "hold_repaired_posts_for_review": {
             "default": true,
             "title": "Hold Repaired Posts For Review",
             "type": "boolean"
+          },
+          "icp_builder_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Icp Builder Enabled"
+          },
+          "icp_definition": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Icp Definition"
           },
           "include_authors": {
             "default": [],
@@ -1974,6 +2080,17 @@
               }
             ],
             "title": "Min Reactions"
+          },
+          "nurture_dm_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nurture Dm Mode"
           },
           "personal_goals": {
             "anyOf": [
@@ -3434,6 +3551,19 @@
               }
             ],
             "title": "Action"
+          },
+          "deal_value": {
+            "anyOf": [
+              {
+                "maximum": 9999999999.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deal Value"
           },
           "lead_id": {
             "title": "Lead Id",
@@ -9952,6 +10082,58 @@
         "summary": "List Leads Endpoint"
       }
     },
+    "/api/leads/funnel": {
+      "get": {
+        "description": "Conversation to meeting to won, counted per month from the stage history (#2633).\n\nA failed read is 503, never an empty funnel.",
+        "operationId": "lead_funnel_endpoint_api_leads_funnel_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "session_token",
+            "required": true,
+            "schema": {
+              "title": "Session Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "months",
+            "required": false,
+            "schema": {
+              "default": 12,
+              "maximum": 36,
+              "minimum": 1,
+              "title": "Months",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Lead Funnel Endpoint"
+      }
+    },
     "/api/leads/refresh": {
       "post": {
         "description": "Re-score this user's pipeline now instead of waiting for tonight's rebuild.",
@@ -14548,6 +14730,46 @@
           }
         },
         "summary": "Totp Enroll Confirm"
+      }
+    },
+    "/api/user/weekly-report": {
+      "get": {
+        "description": "The weekly 5-minute report for the caller (issue #2632).\n\nRead-only; 404 while `weekly-report-enabled` is off for this user.",
+        "operationId": "weekly_report_endpoint_api_user_weekly_report_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "session_token",
+            "required": true,
+            "schema": {
+              "title": "Session Token",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Weekly Report Endpoint"
       }
     },
     "/api/user_id/": {

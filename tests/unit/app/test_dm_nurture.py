@@ -11,6 +11,7 @@ from cqc_lem.utilities.linkedin.message_thread import ThreadState
 pytestmark = pytest.mark.unit
 
 _OUT = "cqc_lem.app.engagement.outreach"
+_AUTO = {"nurture_dm_mode": "auto_approve"}
 
 
 def _followup(**kw):
@@ -38,14 +39,15 @@ def _nurture_patches(**overrides):
     return {name: patch(f"{_OUT}.{name}", return_value=val) for name, val in defaults.items()}
 
 
-def _run_nurture(followup=None, **overrides):
+def _run_nurture(followup=None, prefs=None, **overrides):
     from cqc_lem.app.engagement.outreach import _nurture_after_reply
     patches = _nurture_patches(**overrides)
     started = {name: p.start() for name, p in patches.items()}
     enq = patch(f"{_OUT}.enqueue_followup").start()
     try:
         got = _nurture_after_reply(1, followup or _followup(), "Sounds good, let's talk",
-                                   MagicMock(), prefs={}, profile_synthesis="voice")
+                                   MagicMock(), prefs={} if prefs is None else prefs,
+                                   profile_synthesis="voice")
     finally:
         patch.stopall()
     return got, started, enq
@@ -143,18 +145,30 @@ class TestNurtureAfterReply:
             assert _nurture_after_reply(1, _followup(), "   ", MagicMock()) is None
         cls.assert_not_called()
 
-    @pytest.mark.parametrize("value", ["true", "TRUE", " yes ", "1", "on"])
-    def test_auto_approve_env_skips_the_queue(self, monkeypatch, value):
-        monkeypatch.setenv("DM_NURTURE_AUTO_APPROVE", value)
-        _got, mocks, _enq = _run_nurture()
+    def test_user_auto_approve_mode_skips_the_queue(self, monkeypatch):
+        monkeypatch.delenv("DM_NURTURE_AUTO_APPROVE", raising=False)
+        _got, mocks, _enq = _run_nurture(prefs={"nurture_dm_mode": "auto_approve"})
         assert mocks["insert_scheduled_dm"].call_args.kwargs["status"] == "approved"
 
-    @pytest.mark.parametrize("value", ["", "   ", "false", "no", "off", "0", "maybe"])
-    def test_only_an_explicit_yes_opens_the_approval_gate(self, monkeypatch, value):
-        # Blank/whitespace and anything unrecognized must fail CLOSED — a typo in this flag would
-        # otherwise send a machine-written message to a prospect without a human ever seeing it.
+    @pytest.mark.parametrize("prefs", [{}, {"nurture_dm_mode": "pre_review"},
+                                       {"nurture_dm_mode": "bogus"}])
+    def test_anything_but_an_explicit_auto_approve_keeps_review(self, monkeypatch, prefs):
+        monkeypatch.delenv("DM_NURTURE_AUTO_APPROVE", raising=False)
+        _got, mocks, _enq = _run_nurture(prefs=prefs)
+        assert mocks["insert_scheduled_dm"].call_args.kwargs["status"] == "pending"
+
+    @pytest.mark.parametrize("value", ["false", " NO ", "off", "0"])
+    def test_env_off_value_forces_review_over_auto_approve(self, monkeypatch, value):
         monkeypatch.setenv("DM_NURTURE_AUTO_APPROVE", value)
-        _got, mocks, _enq = _run_nurture()
+        _got, mocks, _enq = _run_nurture(prefs={"nurture_dm_mode": "auto_approve"})
+        assert mocks["insert_scheduled_dm"].call_args.kwargs["status"] == "pending"
+
+    @pytest.mark.parametrize("value", ["", "   ", "true", "1", "maybe"])
+    def test_other_env_values_defer_to_the_user_mode(self, monkeypatch, value):
+        monkeypatch.setenv("DM_NURTURE_AUTO_APPROVE", value)
+        _got, mocks, _enq = _run_nurture(prefs={"nurture_dm_mode": "auto_approve"})
+        assert mocks["insert_scheduled_dm"].call_args.kwargs["status"] == "approved"
+        _got, mocks, _enq = _run_nurture(prefs={"nurture_dm_mode": "pre_review"})
         assert mocks["insert_scheduled_dm"].call_args.kwargs["status"] == "pending"
 
     def test_falls_back_to_the_template_when_the_llm_fails(self):
@@ -324,28 +338,28 @@ class TestNurtureContentGate:
     """#2099: a nurture draft that fails the DM content gate stays PENDING and is never sent."""
 
     def test_the_dm_37_draft_is_held_pending_even_under_auto_approve(self, monkeypatch):
-        monkeypatch.setenv("DM_NURTURE_AUTO_APPROVE", "true")
+        monkeypatch.delenv("DM_NURTURE_AUTO_APPROVE", raising=False)
         with patch(f"{_OUT}.send_private_dm") as send:
-            got, mocks, _enq = _run_nurture(generate_nurture_dm=_DM_37)
+            got, mocks, _enq = _run_nurture(prefs=_AUTO, generate_nurture_dm=_DM_37)
         assert got == 99
         assert mocks["insert_scheduled_dm"].call_args.kwargs["status"] == "pending"
         send.apply_async.assert_not_called()
 
     def test_a_call_ask_is_allowed_once_the_contact_replied(self, monkeypatch):
-        monkeypatch.setenv("DM_NURTURE_AUTO_APPROVE", "true")
+        monkeypatch.delenv("DM_NURTURE_AUTO_APPROVE", raising=False)
         _got, mocks, _enq = _run_nurture(
-            generate_nurture_dm="Glad it landed. Do you have 15 minutes for a quick call?")
+            prefs=_AUTO, generate_nurture_dm="Glad it landed. Do you have 15 minutes for a quick call?")
         assert mocks["insert_scheduled_dm"].call_args.kwargs["status"] == "approved"
 
     def test_a_number_the_contact_wrote_is_not_an_invention(self, monkeypatch):
-        monkeypatch.setenv("DM_NURTURE_AUTO_APPROVE", "true")
+        monkeypatch.delenv("DM_NURTURE_AUTO_APPROVE", raising=False)
         from cqc_lem.app.engagement.outreach import _nurture_after_reply
         patches = _nurture_patches(generate_nurture_dm="A 40% drop is a big deal. What changed first?")
         started = {name: p.start() for name, p in patches.items()}
         patch(f"{_OUT}.enqueue_followup").start()
         try:
             _nurture_after_reply(1, _followup(), "We cut our backlog 40% last quarter",
-                                 MagicMock(), prefs={}, profile_synthesis="voice")
+                                 MagicMock(), prefs=_AUTO,profile_synthesis="voice")
         finally:
             patch.stopall()
         assert started["insert_scheduled_dm"].call_args.kwargs["status"] == "approved"

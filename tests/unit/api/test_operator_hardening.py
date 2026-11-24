@@ -397,7 +397,10 @@ class TestOperatorCannotMintOrConfigure:
 
     @pytest.mark.parametrize("kind", ["standard", "internal", "sandbox"])
     @pytest.mark.parametrize("body", [{"tone": "casual"}, {"max_comments_per_day": 999},
-                                      {"connection_request_mode": "auto_approve"}])
+                                      {"connection_request_mode": "auto_approve"},
+                                      {"nurture_dm_mode": "auto_approve"},
+                                      {"artifact_dm_mode": "auto_approve"},
+                                      {"group_post_mode": "auto_approve"}])
     def test_caps_and_approval_modes_are_refused_on_every_account_kind(
             self, api_client: Any, kind: str, body: dict[str, Any]) -> None:
         with _session("operator"), _kind(kind), \

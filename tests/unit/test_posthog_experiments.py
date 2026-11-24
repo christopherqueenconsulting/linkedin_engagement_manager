@@ -114,7 +114,7 @@ def test_plan_repairs_a_flag_missing_an_arm_the_code_resolves(mod):
     flags = {spec.key: {"id": 3, "active": True, "variants": [spec.control]}}
     actions = mod.plan_actions([spec], flags, {spec.key: {"id": 9}})
     repair = next(a for a in actions if a["action"] == "update_flag_variants")
-    assert repair["missing"] == ["author-question"]
+    assert repair["missing"] == ["legacy-question"]
     assert repair["flag_id"] == 3
 
 

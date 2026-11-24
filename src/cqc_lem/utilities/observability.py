@@ -595,6 +595,9 @@ EVENTS = {spec.event: spec for spec in (
     EventSpec("curated_source", (
         label("stage"), label("status"), label("platform"), label("treatment"), label("reason"),
         count("new"), count("blocked"))),
+    # Daily size of the comment-candidate pool (issue #2635): one per scan that wrote to it.
+    EventSpec("comment_candidates_daily", (
+        prop("user_id"), label("source"), count("written"), count("pool_today"))),
 )}
 
 
@@ -2404,6 +2407,16 @@ def track_curated_source(stage: str, status: str, user_id: Optional[int] = None,
     _emit(EVENTS["curated_source"], {"stage": stage, "status": status, "platform": platform,
                                      "treatment": treatment, "reason": reason, "new": new,
                                      "blocked": blocked, "user_id": user_id})
+
+
+def track_comment_candidates(user_id: Optional[int], source: str, written: int,
+                             pool_today: int) -> None:
+    """One scan's contribution to the daily comment-candidate pool (issue #2635).
+
+    `pool_today` is the pool's size after the scan, so the latest event of the day is the day's count.
+    """
+    _emit(EVENTS["comment_candidates_daily"], {"user_id": user_id, "source": source,
+                                               "written": written, "pool_today": pool_today})
 
 
 def track_inbound_email(verdict: str, user_id: Optional[int] = None,

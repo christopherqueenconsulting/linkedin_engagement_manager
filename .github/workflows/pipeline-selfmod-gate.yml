@@ -30,17 +30,23 @@ permissions:
   contents: read
   pull-requests: read
 
-# Supersede a PR's own in-flight runs when it is pushed to again. A merge-queue run has no PR
-# number, so it is keyed on its own unique queue ref and never cancelled: cancelling one would
-# evict that entry from the queue.
+# Supersede a PR's own in-flight runs of the SAME event when it is pushed to (or reviewed) again.
+# The event name is in the group so a review-triggered run and a pull_request-triggered run, or the
+# self-heal re-run of one, never cancel each other (#2645 attempt 2 was cancelled that way). A
+# merge-queue run has no PR number, so it is keyed on its own unique queue ref and never cancelled:
+# cancelling one would evict that entry from the queue.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 jobs:
   gate:
     name: Pipeline Self-Modification Gate
     runs-on: ubuntu-latest
+    # Read-only. The judge never needs write; the re-run grant lives on the `heal` job alone.
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - name: Merge queue (already decided on the PR)
         if: github.event_name == 'merge_group'
@@ -113,3 +119,88 @@ jobs:
             --approvers "$APPROVERS" \
             --owner "gitchrisqueen" \
             "${extra[@]}"
+
+  # Self-heal on approval (#2596, #2645). Before the owner approves, the pull_request-event run
+  # FAILS. The approval's review-triggered run then passes, but the earlier failed check run (same
+  # name, same head SHA, another workflow run) keeps blocking branch protection. So once the gate
+  # has PASSED on a review event, this job re-runs the failed jobs of THIS workflow's
+  # pull_request-event runs for THIS head SHA; the re-run re-reads the approvals and passes. Never
+  # for another SHA, never another workflow, never its own run.
+  #
+  # A SEPARATE job so the judge stays read-only: this one holds `actions: write` and nothing else
+  # (the run reads and the re-run POST are all Actions API), and checks nothing out. Its name is
+  # NOT a required context; branch protection requires the gate job's name, which this does not
+  # change. The head SHA is DATA for the API filter. Fail-soft: every error is a ::warning:: and
+  # exit 0, and continue-on-error keeps a broken heal from failing the run.
+  heal:
+    name: Pipeline Self-Modification Gate Self-Heal
+    needs: gate
+    if: github.event_name == 'pull_request_review' && needs.gate.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    continue-on-error: true
+    permissions:
+      actions: write
+    steps:
+      - name: Re-run the stale pull_request-event failure
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          SELF_RUN_ID: ${{ github.run_id }}
+          # Bounded wait for a still-running pull_request run: 12 x 10s, about two minutes.
+          HEAL_POLL_TRIES: "12"
+          HEAL_POLL_INTERVAL: "10"
+        run: |
+          set -uo pipefail
+          tries="${HEAL_POLL_TRIES:-12}"
+          interval="${HEAL_POLL_INTERVAL:-10}"
+          workflow_id=$(gh api "repos/$REPO/actions/runs/$SELF_RUN_ID" | jq -r '.workflow_id')
+          if ! [[ "$workflow_id" =~ ^[0-9]+$ ]]; then
+            echo "::warning title=Gate self-heal::could not read this run's workflow id; re-run the pull_request gate by hand."
+            exit 0
+          fi
+          # Race: a pull_request run for this SHA still queued or running when the approval lands
+          # may have read the reviews before the approval existed, and would fail AFTER the list
+          # below. Wait (bounded) until every one of them has completed, then list.
+          settled=0
+          for ((i = 1; i <= tries; i++)); do
+            if ! open=$(gh api "repos/$REPO/actions/workflows/$workflow_id/runs?event=pull_request&head_sha=$HEAD_SHA&per_page=100" \
+                | jq -r --arg sha "$HEAD_SHA" --argjson wf "$workflow_id" \
+                  '[.workflow_runs[] | select(.head_sha == $sha and .event == "pull_request" and .workflow_id == $wf and .status != "completed")] | length'); then
+              echo "::warning title=Gate self-heal::could not read in-flight pull_request gate runs for $HEAD_SHA; listing failures now."
+              settled=1
+              break
+            fi
+            if [ "$open" = "0" ]; then
+              settled=1
+              break
+            fi
+            echo "Waiting for $open in-flight pull_request gate run(s) for $HEAD_SHA ($i/$tries)."
+            sleep "$interval"
+          done
+          if [ "$settled" != "1" ]; then
+            echo "::warning title=Gate self-heal::a pull_request gate run for $HEAD_SHA is still running; if it fails, re-run it by hand."
+          fi
+          # The query filters server-side; the jq re-checks every field so an API that ignored a
+          # filter still cannot widen what gets re-run.
+          if ! ids=$(gh api "repos/$REPO/actions/workflows/$workflow_id/runs?event=pull_request&head_sha=$HEAD_SHA&status=failure&per_page=100" \
+              | jq -r --arg sha "$HEAD_SHA" --argjson wf "$workflow_id" \
+                '.workflow_runs[] | select(.head_sha == $sha and .event == "pull_request" and .conclusion == "failure" and .workflow_id == $wf) | .id'); then
+            echo "::warning title=Gate self-heal::could not list failed pull_request gate runs for $HEAD_SHA; re-run by hand."
+            exit 0
+          fi
+          if [ -z "$ids" ]; then
+            echo "No failed pull_request-event gate run for $HEAD_SHA; nothing to heal."
+            exit 0
+          fi
+          for id in $ids; do
+            [ "$id" = "$SELF_RUN_ID" ] && continue
+            if gh api -X POST "repos/$REPO/actions/runs/$id/rerun-failed-jobs" > /dev/null; then
+              echo "Re-ran the failed jobs of gate run $id for $HEAD_SHA."
+            else
+              echo "::warning title=Gate self-heal::re-run of gate run $id failed; re-run it by hand."
+            fi
+          done
+          exit 0

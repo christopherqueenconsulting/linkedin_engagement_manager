@@ -82,9 +82,20 @@ VIDEO_CAPTIONS = "video-captions-enabled"
 OCCASION_NATIVE_PUBLISH = "occasion-native-publish-enabled"
 ANIMATED_POST = "animated-post-enabled"
 CURATED_SOURCES = "curated-sources-enabled"
+COMMENT_CANDIDATE_POOL = "comment-candidate-pool-enabled"
+WEEKLY_REPORT = "weekly-report-enabled"
 
 FLAGS: Dict[str, FlagSpec] = {
     spec.key: spec for spec in (
+        FlagSpec(
+            key=COMMENT_CANDIDATE_POOL,
+            env_var="COMMENT_CANDIDATE_POOL_ENABLED",
+            default=False,
+            owner="engagement",
+            description=("Save every scored post the feed scan and roster pass read (past the "
+                         "comment-safety and min-reactions gates) into `comment_candidates` "
+                         "(issue #2635, Phase 1). OFF by default; nothing reads the pool yet."),
+        ),
         FlagSpec(
             key=COMMENT_RESEARCH,
             env_var="COMMENT_RESEARCH_ENABLED",
@@ -208,6 +219,16 @@ FLAGS: Dict[str, FlagSpec] = {
                          "in three as a reshare, re-chart or link post crediting the source. OFF "
                          "by default. Every curated draft lands PENDING and publishes only after "
                          "an owner approval — this flag never approves anything."),
+        ),
+        FlagSpec(
+            key=WEEKLY_REPORT,
+            env_var="WEEKLY_REPORT_ENABLED",
+            default=False,
+            owner="analytics",
+            description=("The weekly 5-minute report (utilities/weekly_report.py, issue #2632): "
+                         "`GET /api/user/weekly-report` answers 404 while it is off. OFF by "
+                         "default and rolled out to user 1 first. Read-only: it never sends "
+                         "or writes anything."),
         ),
     )
 }

@@ -2318,6 +2318,8 @@ COMMENT_FILLER_OPENERS: tuple = (
     "you raise a great", "you make an excellent", "you make a great",
     "great point", "great insight", "great read", "great take",
     "very insightful", "well put", "thanks for sharing", "this resonates", "so true",
+    # The restate-the-author opener (#2626): 38% of shipped comments began "You…" / "Your…".
+    "your point", "you say", "you call", "you point out",
 )
 
 # Only the OPENING of a comment is graded for filler — "Great point about the 40% figure" two
@@ -2325,24 +2327,12 @@ COMMENT_FILLER_OPENERS: tuple = (
 # post!" shape without reaching into the body.
 _OPENER_SCAN_SENTENCES = 2
 
-# A comment carrying a real number is bringing evidence rather than vibes.
-_DATA_POINT_RE = re.compile(
-    r"\d|\b(?:percent|dozens?|hundreds?|thousands?|millions?|billions?)\b", re.IGNORECASE)
-
 # Respectful disagreement — the highest-value comment there is, and the one a validation template
 # never produces.
 _DISAGREEMENT_RE = re.compile(
     r"\b(?:disagree|push ?back|counter-?point|one caveat|the catch|less convinced|"
     r"not (?:so )?sure|i'?d (?:argue|challenge|question|push)|"
     r"where i (?:differ|part ways)|the other way (?:a)?round|in practice though)\b",
-    re.IGNORECASE)
-
-# First-hand experience: the commenter did the thing, not just read about it.
-_EXPERIENCE_CUE_RE = re.compile(
-    r"\b(?:in my experience|when (?:i|we)|our team|i'?ve|we'?ve|i had|we had)\b"
-    r"|\b(?:i|we)\s+(?:once\s+|just\s+|recently\s+|actually\s+)?"
-    r"(?:ran|run|tried|built|shipped|tested|worked|saw|watched|noticed|found|learned|spent|"
-    r"switched|started|stopped|used|measured|rebuilt|rewrote|hired|migrated)\b",
     re.IGNORECASE)
 
 # Reflex closers that ask for a reply without giving one anywhere to go — they do NOT count as the
@@ -2414,14 +2404,12 @@ def has_genuine_question(text: Optional[str]) -> bool:
 
 
 def comment_value_adds(text: Optional[str]) -> list:
-    """Which of the contract's four value-adds the comment actually carries: own experience, a data
-    point, respectful disagreement, or a genuine question.
+    """Which of the contract's value-adds the comment actually carries: respectful disagreement or
+    a genuine question. A first-person experience or a bare number is NOT one (#2626) — the grader
+    that credited them selected for exactly the invention the grounding gate then had to catch.
+    A story-bank fact is the third legitimate add, but only the claims gate can judge it.
     """
     found = []
-    if any(_EXPERIENCE_CUE_RE.search(s) for s in _sentences(text)):
-        found.append("experience")
-    if _DATA_POINT_RE.search(text or ""):
-        found.append("data_point")
     if _DISAGREEMENT_RE.search(text or ""):
         found.append("disagreement")
     if has_genuine_question(text):
@@ -2433,9 +2421,7 @@ def comment_contract_report(comment: Optional[str], post_content: Optional[str] 
     """Grade one finished comment draft against the quality contract. Deterministic — no LLM, no
     I/O — so the same draft always gets the same verdict and the tests can assert it.
 
-    `value_add` requires AT LEAST one of the four, not exactly one: every comment blueprint closes
-    on a question by design, so an exactly-one rule would reject every well-formed draft that also
-    brought experience or a number — the opposite of what the contract is for.
+    `value_add` requires AT LEAST one value-add, not exactly one.
     """
     text = (comment or "").strip()
     fillers = filler_openers_found(text)
@@ -2457,7 +2443,7 @@ def comment_contract_report(comment: Optional[str], post_content: Optional[str] 
     if not checks["references_post"]:
         failures.append("does not reference a specific claim from the target post")
     if not checks["value_add"]:
-        failures.append("adds no experience, data point, disagreement, or genuine question")
+        failures.append("adds no counterpoint or genuine question")
     return {"passes": all(checks.values()), "checks": checks, "failures": failures,
             "value_adds": value_adds, "filler_openers": fillers}
 
@@ -2553,48 +2539,26 @@ def comment_similarity_report(draft: Optional[str], recent_comments: list) -> di
             "measure": measure, "too_similar": scores[best] > threshold}
 
 
-# Mirrors `experiments.COMMENT_CONTRACT_AUTHOR_QUESTION`. Kept as a literal (the same reason
-# ai/client.py mirrors observability's system sentinel) so the shared content core never imports the
-# experiment plumbing; tests/unit/utilities/test_experiments.py pins the two together.
-COMMENT_CONTRACT_AUTHOR_QUESTION_VARIANT = "author-question"
-
-# The pilot prompt variant (issue #652, `experiments.COMMENT_CONTRACT_AUTHOR_QUESTION`). Control
-# lets the closing ask be any of the four value-adds; this arm REQUIRES the comment to end on a
-# question only the post's author could answer, which is the shape most likely to earn the reply the
-# whole contract exists to earn. Measured against author-reply rate (D4) from the #628 outcome sweep.
-#
-# It is worded as an ADDITIONAL rule rather than a rewrite of rules 1-6 on purpose: the deterministic
-# `comment_contract_report` grades the same six rules in both arms, so an arm that loosened one of
-# them would change what "passes the gate" means and the two arms would no longer be comparable.
-COMMENT_AUTHOR_QUESTION_DIRECTIVE = (
-    "7. END ON A QUESTION ONLY THIS AUTHOR COULD ANSWER — about their specific numbers, their "
-    "decision, or what they saw happen. A question anyone in the thread could answer just as well "
-    "(\"what do you all think?\") does not count, and neither does a question the post already "
-    "answered. One question, at the end, and nothing after it.\n"
-)
-
-
-def comment_contract_directive(variant: Optional[str] = None) -> str:
+def comment_contract_directive() -> str:
     """The WRITER-side contract injected into every fresh feed-comment prompt. Rule 5 is the "Tip
     #8" framing: a comment's audience is the post's READERS, and its job is to add what the post
     missed — flattery for the author earns nothing and is what the 2026 ranking demotes.
 
-    `variant` is the arm of the pilot prompt experiment (#652). An unknown or missing variant is the
-    control contract, so a mis-provisioned flag can only ever produce today's prompt.
+    The `author-question` experiment arm (#652) is retired (#2626): a mandatory closing question
+    was the template. The old system prompt survives only as the named legacy arm in ai_helper.
     """
     banned = ", ".join(f"'{p}'" for p in comment_filler_openers()[:8])
-    extra = (COMMENT_AUTHOR_QUESTION_DIRECTIVE
-             if variant == COMMENT_CONTRACT_AUTHOR_QUESTION_VARIANT else "")
     return (
         "\n\nCOMMENT QUALITY CONTRACT — a draft that misses ANY of these is thrown away and "
         "rewritten, so satisfy all of them:\n"
         "1. REFERENCE A SPECIFIC CLAIM from the post — quote or paraphrase the actual sentence, "
         "number, or example you are responding to. A comment that could sit unchanged under any "
         "other post has already failed.\n"
-        "2. ADD AT LEAST ONE thing the post did not have: a first-hand experience of your own, a "
-        "concrete data point you actually know, a respectful disagreement, or a genuinely curious "
-        "question the post leaves open. One done well beats a checklist of all four, and never "
-        "invent a statistic to satisfy this.\n"
+        "2. ADD AT LEAST ONE thing the post did not have: a specific counterpoint, a precise "
+        "question the post leaves open, or a fact from the author's own material you were given. "
+        "NEVER invent an experience, a client, an event, a number or a percentage — 'in a recent "
+        "rollout I led', 'we cut it by a third' and 'roughly thirty percent' are fabrication "
+        "unless the author's material states them. A comment with no claim of its own is fine.\n"
         f"3. AT LEAST {COMMENT_MIN_SENTENCES} sentences. A one-liner reads as a bot.\n"
         f"4. NEVER open with validation filler — banned openers include {banned}. Open on the "
         "substance: the specific claim you are engaging with.\n"
@@ -2603,7 +2567,6 @@ def comment_contract_directive(variant: Optional[str] = None) -> str:
         "LinkedIn's 2026 ranking demotes comments that only validate.\n"
         "6. Use your own words and rhythm every time — never reuse the shape, opening, or phrasing "
         "of a comment you have already left on another post.\n"
-        + extra
     )
 
 

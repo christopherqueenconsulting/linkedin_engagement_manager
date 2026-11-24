@@ -1262,6 +1262,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/leads/funnel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Lead Funnel Endpoint
+         * @description Conversation to meeting to won, counted per month from the stage history (#2633).
+         *
+         *     A failed read is 503, never an empty funnel.
+         */
+        get: operations["lead_funnel_endpoint_api_leads_funnel_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/leads/refresh": {
         parameters: {
             query?: never;
@@ -3415,6 +3437,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/user/weekly-report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Weekly Report Endpoint
+         * @description The weekly 5-minute report for the caller (issue #2632).
+         *
+         *     Read-only; 404 while `weekly-report-enabled` is off for this user.
+         */
+        get: operations["weekly_report_endpoint_api_user_weekly_report_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/user_id/": {
         parameters: {
             query?: never;
@@ -4137,6 +4181,8 @@ export interface components {
          *     Everything above `has_saved_preferences` is a stored column and can be PUT back; everything from it down is derived per request and is ignored on a save.
          */
         EngagementPreferencesDetail: {
+            /** Artifact Dm Mode */
+            artifact_dm_mode: string | null;
             /** Audience Mix */
             audience_mix: {
                 [key: string]: unknown;
@@ -4186,10 +4232,18 @@ export interface components {
             forbidden_claim_terms: string[] | null;
             gate_defaults: components["schemas"]["GateDefaults"];
             gmail_forward_confirmation: components["schemas"]["GmailForwardConfirmation"] | null;
+            /** Group Post Mode */
+            group_post_mode: string | null;
             /** Has Saved Preferences */
             has_saved_preferences: boolean;
             /** Hold Repaired Posts For Review */
             hold_repaired_posts_for_review: boolean;
+            /** Icp Builder Enabled */
+            icp_builder_enabled: boolean | null;
+            /** Icp Definition */
+            icp_definition: {
+                [key: string]: unknown;
+            } | null;
             /** Include Authors */
             include_authors: string[];
             /** Include Keywords */
@@ -4222,6 +4276,8 @@ export interface components {
             min_connection_icp_score: number;
             /** Min Reactions */
             min_reactions: number | null;
+            /** Nurture Dm Mode */
+            nurture_dm_mode: string | null;
             /** Personal Goals */
             personal_goals: string | null;
             /** Post Similarity Max Pct */
@@ -4269,6 +4325,8 @@ export interface components {
          *     stored", NOT the code default, so an older client cannot resurrect a lane the user switched off.
          */
         EngagementPreferencesRequest: {
+            /** Artifact Dm Mode */
+            artifact_dm_mode?: string | null;
             /** Audience Mix */
             audience_mix?: {
                 [key: string]: unknown;
@@ -4355,11 +4413,19 @@ export interface components {
             focus_topics: string[];
             /** Forbidden Claim Terms */
             forbidden_claim_terms?: string[] | null;
+            /** Group Post Mode */
+            group_post_mode?: string | null;
             /**
              * Hold Repaired Posts For Review
              * @default true
              */
             hold_repaired_posts_for_review: boolean;
+            /** Icp Builder Enabled */
+            icp_builder_enabled?: boolean | null;
+            /** Icp Definition */
+            icp_definition?: {
+                [key: string]: unknown;
+            } | null;
             /**
              * Include Authors
              * @default []
@@ -4429,6 +4495,8 @@ export interface components {
             min_connection_icp_score: number;
             /** Min Reactions */
             min_reactions?: number | null;
+            /** Nurture Dm Mode */
+            nurture_dm_mode?: string | null;
             /** Personal Goals */
             personal_goals?: string | null;
             /** Post Similarity Max Pct */
@@ -5050,6 +5118,8 @@ export interface components {
         LeadUpdate: {
             /** Action */
             action?: string | null;
+            /** Deal Value */
+            deal_value?: number | null;
             /** Lead Id */
             lead_id: number;
             /** Notes */
@@ -8685,6 +8755,38 @@ export interface operations {
                 include_dismissed?: boolean;
                 page?: number;
                 page_size?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    lead_funnel_endpoint_api_leads_funnel_get: {
+        parameters: {
+            query: {
+                session_token: string;
+                months?: number;
             };
             header?: never;
             path?: never;
@@ -12640,6 +12742,37 @@ export interface operations {
                 "application/json": components["schemas"]["TotpConfirmRequest"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    weekly_report_endpoint_api_user_weekly_report_get: {
+        parameters: {
+            query: {
+                session_token: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {

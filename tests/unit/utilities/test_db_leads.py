@@ -258,15 +258,89 @@ class TestGetAndUpdateLead:
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import LeadStage, update_lead
             update_lead(9, manual_stage=LeadStage.OPPORTUNITY, dismissed=True)
-        params = cursor.execute.call_args[0][1]
-        assert params == ("opportunity", 1, 9)
+        update = next(c[0] for c in cursor.execute.call_args_list if c[0][0].startswith("UPDATE"))
+        assert update[1] == ("opportunity", 1, 9)
 
     def test_empty_stage_clears_the_override(self, fake_cursor):
         conn, cursor = fake_cursor()
         with patch(f"{_GET_CONN}", return_value=conn):
             from cqc_lem.utilities.db import update_lead
             update_lead(9, manual_stage="")
+        update = next(c[0] for c in cursor.execute.call_args_list if c[0][0].startswith("UPDATE"))
+        assert update[1] == (None, 9)
+
+    def test_stage_change_writes_a_manual_history_row(self, fake_cursor):
+        conn, cursor = fake_cursor()
+        cursor.fetchone.side_effect = [(5, "hot"), ("meeting_booked",)]
+        with patch(f"{_GET_CONN}", return_value=conn):
+            from cqc_lem.utilities.db import LeadStage, update_lead
+            update_lead(9, manual_stage=LeadStage.MEETING_BOOKED)
+        sql, params = cursor.execute.call_args[0]
+        assert "INSERT INTO lead_stage_events" in sql
+        assert params == (9, 5, "hot", "meeting_booked", "manual")
+
+    def test_same_stage_writes_no_history_row(self, fake_cursor):
+        conn, cursor = fake_cursor()
+        cursor.fetchone.side_effect = [(5, "won"), ("won",)]
+        with patch(f"{_GET_CONN}", return_value=conn):
+            from cqc_lem.utilities.db import LeadStage, update_lead
+            update_lead(9, manual_stage=LeadStage.WON)
+        assert not any("INSERT" in c[0][0] for c in cursor.execute.call_args_list)
+
+    def test_notes_only_edit_never_touches_history(self, fake_cursor):
+        conn, cursor = fake_cursor()
+        with patch(f"{_GET_CONN}", return_value=conn):
+            from cqc_lem.utilities.db import update_lead
+            update_lead(9, notes="x")
+        assert [c[0][0] for c in cursor.execute.call_args_list] == [
+            "UPDATE leads SET notes = %s WHERE id = %s"]
+
+    def test_deal_value_set_and_cleared(self, fake_cursor):
+        conn, cursor = fake_cursor()
+        with patch(f"{_GET_CONN}", return_value=conn):
+            from cqc_lem.utilities.db import update_lead
+            update_lead(9, deal_value=1500.5)
+            assert cursor.execute.call_args[0][1] == (1500.5, 9)
+            update_lead(9, deal_value="")
         assert cursor.execute.call_args[0][1] == (None, 9)
+
+
+class TestDerivedStageHistory:
+    def test_records_only_the_leads_whose_computed_stage_moved(self, fake_cursor):
+        conn, cursor = fake_cursor()
+        cursor.fetchall.return_value = [(1, "in:a", "hot"), (2, "in:b", "cold"), (3, "in:c", "warm")]
+        before = {"in:a": "warm", "in:b": "cold"}  # in:c is new to this re-score
+        with patch(f"{_GET_CONN}", return_value=conn):
+            from cqc_lem.utilities.db import record_derived_stage_changes
+            assert record_derived_stage_changes(7, before) == 2
+        inserts = [c[0][1] for c in cursor.execute.call_args_list if "INSERT" in c[0][0]]
+        assert inserts == [(1, 7, "warm", "hot", "derived"), (3, 7, None, "warm", "derived")]
+
+    def test_stage_map_reads_person_key_to_stage(self, fake_cursor):
+        conn, cursor = fake_cursor()
+        cursor.fetchall.return_value = [("in:a", "hot")]
+        with patch(f"{_GET_CONN}", return_value=conn):
+            from cqc_lem.utilities.db import get_lead_stage_map
+            assert get_lead_stage_map(7) == {"in:a": "hot"}
+
+    def test_db_errors_degrade_quietly(self, fake_cursor):
+        conn, _ = fake_cursor(execute_error=mysql.connector.Error("boom"))
+        with patch(f"{_GET_CONN}", return_value=conn), patch(f"{_OUTREACH}.log_error"):
+            from cqc_lem.utilities.db import (
+                get_lead_funnel_counts,
+                get_lead_stage_map,
+                record_derived_stage_changes,
+            )
+            assert get_lead_stage_map(1) is None
+            assert record_derived_stage_changes(1, {}) == 0
+            assert get_lead_funnel_counts(1) is None
+
+    def test_funnel_counts_read(self, fake_cursor):
+        conn, cursor = fake_cursor()
+        cursor.fetchall.return_value = [("2026-11", "won", 2)]
+        with patch(f"{_GET_CONN}", return_value=conn):
+            from cqc_lem.utilities.db import get_lead_funnel_counts
+            assert get_lead_funnel_counts(1) == [("2026-11", "won", 2)]
 
     def test_nothing_to_update_is_refused(self):
         with patch(f"{_GET_CONN}") as get:

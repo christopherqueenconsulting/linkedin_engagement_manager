@@ -107,11 +107,20 @@ class TestOutcomeTargets:
 
 @pytest.mark.integration
 class TestRecordAndRead:
-    def test_round_trips_every_field(self, user_id):
+    def test_v1_reply_fields_read_back_as_none(self, user_id):
+        # The v1 reader's reply zeros were wrong, so they are never surfaced (#2621).
+        log_id = _add_comment_log(user_id, "feedurn://urn:li:activity:19", "c", hours_ago=30)
+        db.record_comment_outcome(user_id, log_id, author_replied=True, reply_count=3)
+        row = db.get_comment_outcomes(user_id)[0]
+        assert row["reply_count"] is None and row["author_replied"] is None
+
+    def test_round_trips_every_field(self, user_id, monkeypatch):
+        monkeypatch.setenv("COMMENT_OUTCOME_READER_V2", "1")
         log_id = _add_comment_log(user_id, "feedurn://urn:li:activity:20", "c", hours_ago=30)
         db.record_comment_outcome(user_id, log_id, post_key="feedurn://urn:li:activity:20",
                                   author_replied=True, reply_count=3, like_count=7,
-                                  visible_most_relevant=False, our_reply_sent=True)
+                                  visible_most_relevant=False, our_reply_sent=True,
+                                  reader_version=2)
         row = db.get_comment_outcomes(user_id)[0]
         assert row["log_id"] == log_id
         assert row["author_replied"] == 1 and row["our_reply_sent"] == 1
@@ -125,10 +134,13 @@ class TestRecordAndRead:
         # NULL, not 0 — a coerced 0 would read as a confirmed demotion the DOM never gave us.
         assert db.get_comment_outcomes(user_id)[0]["visible_most_relevant"] is None
 
-    def test_upsert_refreshes_instead_of_duplicating(self, user_id):
+    def test_upsert_refreshes_instead_of_duplicating(self, user_id, monkeypatch):
+        monkeypatch.setenv("COMMENT_OUTCOME_READER_V2", "1")
         log_id = _add_comment_log(user_id, "feedurn://urn:li:activity:22", "c", hours_ago=30)
-        db.record_comment_outcome(user_id, log_id, reply_count=1, visible_most_relevant=True)
-        db.record_comment_outcome(user_id, log_id, reply_count=4, visible_most_relevant=False)
+        db.record_comment_outcome(user_id, log_id, reply_count=1, visible_most_relevant=True,
+                                  reader_version=2)
+        db.record_comment_outcome(user_id, log_id, reply_count=4, visible_most_relevant=False,
+                                  reader_version=2)
         rows = db.get_comment_outcomes(user_id)
         assert len(rows) == 1
         assert rows[0]["reply_count"] == 4 and rows[0]["visible_most_relevant"] == 0

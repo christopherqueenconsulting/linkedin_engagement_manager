@@ -233,7 +233,7 @@ session/context discipline (the dominant lever on token spend):
 
 - All new/modified code: ≥80% patch coverage enforced by Codecov.
 - **TWO lanes** (#1215): **unit** (`tests/unit/`, mock ALL I/O — fixtures `mock_openai_client` / `mock_database_connection` / `mock_selenium_driver`, plus hermetic autouse guards) and **integration** (real MySQL + Redis). **No CI lane drives a browser** — `scripts/linkedin_live_validation.py` grades Selenium.
-- Run: `poetry run pytest tests/unit -v --tb=short`; coverage: `poetry run pytest --cov=src/cqc_lem --cov-report=xml`.
+- Agents run only targeted files locally (`poetry run pytest <files> -q`); CI runs each full lane + coverage.
 - Markers, fixtures, lane selection: the **test-lanes** skill and `tests/README.md`.
 
 ## Observability

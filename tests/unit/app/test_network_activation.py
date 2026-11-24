@@ -265,6 +265,18 @@ class TestOutreachFunnelSourcing:
         assert insert.call_args.kwargs["stage"] == OutreachStage.CONNECT
         assert insert.call_args.kwargs["context_url"] is None
 
+    def test_the_brand_funnel_files_connect_drafts_pending_not_approved(self):
+        # #2623: user 1 is the brand account, whose connect stage the #2376 hold bounces — so the
+        # scan files it PENDING rather than APPROVED only to be bounced.
+        from cqc_lem.utilities.db import OutreachStatus
+        _out, insert = _scan_funnel(engagers=[_engager(degree="2nd")])
+        assert str(insert.call_args.kwargs["status"]) == str(OutreachStatus.PENDING)
+
+    def test_the_brand_comment_stage_keeps_the_mode_status(self):
+        from cqc_lem.utilities.db import OutreachStatus
+        _out, insert = _scan_funnel(roster=[_roster()])
+        assert insert.call_args.kwargs["status"] == OutreachStatus.APPROVED
+
     def test_an_already_connected_engager_is_not_sourced(self):
         out, insert = _scan_funnel(engagers=[_engager(degree="1st")])
         insert.assert_not_called()

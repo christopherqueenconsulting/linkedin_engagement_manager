@@ -5,6 +5,7 @@ secret-sealing rules described there apply here unchanged; `cqc_lem.utilities.db
 re-exports every name below, so existing importers and patch targets keep resolving.
 """
 
+import json
 import time
 from datetime import (
     date,
@@ -34,6 +35,7 @@ from cqc_lem.platform.db.enums import (
     LeadSignalSource,
     LeadSignalStatus,
     LeadStage,
+    LeadStageSource,
     OutreachStage,
     OutreachStatus,
     PostStatus,
@@ -477,7 +479,7 @@ def update_scheduled_dm(dm_id: int, recipient_profile_url: str = None, recipient
 # person, how well they fit) so the operator approving a request can see why it exists.
 _CONN_REQ_COLS = ("id", "user_id", "recipient_profile_url", "recipient_name", "message", "source",
                   "icp_score", "reasons", "failure_reason", "status", "attempts", "created_at",
-                  "updated_at", "recipient_email IS NOT NULL AS has_recipient_email")
+                  "updated_at", "approved_by", "recipient_email IS NOT NULL AS has_recipient_email")
 _CONN_REQ_DISPATCH_COLS = (*_CONN_REQ_COLS[:-1], "recipient_email")
 # A row lands here (issue #1836) when the Connect dialog opened but demanded the recipient's email
 # and the app cleared it once nothing more can be done with it — see EMAIL_VERIFICATION_REQUIRED_MESSAGE
@@ -502,22 +504,31 @@ def insert_connection_request(user_id: int, recipient_profile_url: str, message:
                               recipient_name: str = None,
                               status: "ConnectionRequestStatus" = ConnectionRequestStatus.PENDING,
                               source: str = None, icp_score: int = None, reasons: str = None,
-                              recipient_email: Optional[str] = None) -> Optional[int]:
+                              recipient_email: Optional[str] = None,
+                              segment_id: Optional[str] = None,
+                              icp_rubric_version: Optional[str] = None,
+                              icp_components: Optional[dict] = None,
+                              icp_reason: Optional[str] = None) -> Optional[int]:
     """Queue an approval-gated connection request and return its id; None when the insert failed.
 
     Nothing is sent from here — the default status is PENDING. `source` / `icp_score` / `reasons` carry
     the targeting provenance (issue #486) so the person approving can see WHY the row exists.
     `recipient_email` (issue #1836) is the recipient's email, used only when LinkedIn's Connect
     dialog demands one to verify the connection — most rows never carry one.
+    `segment_id` / `icp_rubric_version` / `icp_components` / `icp_reason` (issue #2630) are the ICP
+    rubric's provenance, written only when the per-user builder flag scored the target.
     """
     try:
         with db_cursor(commit=True) as cursor:
             cursor.execute(
                 "INSERT INTO connection_requests (user_id, recipient_profile_url, recipient_name, "
-                "message, status, source, icp_score, reasons, recipient_email) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                "message, status, source, icp_score, reasons, recipient_email, segment_id, "
+                "icp_rubric_version, icp_components, icp_reason) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (user_id, recipient_profile_url, recipient_name, message, str(status),
-                 source, icp_score, (reasons or None), recipient_email))
+                 source, icp_score, (reasons or None), recipient_email, segment_id,
+                 icp_rubric_version,
+                 None if icp_components is None else json.dumps(icp_components), icp_reason))
             return cursor.lastrowid
     except mysql.connector.Error as err:
         log_error("Could not insert connection request", exc=err, user_id=user_id)
@@ -670,8 +681,13 @@ def record_connection_request_attempt(request_id: int, failure_reason: str,
 def update_connection_request(request_id: int, recipient_profile_url: str = None,
                               recipient_name: str = None, message: str = None,
                               status: "ConnectionRequestStatus" = None,
-                              recipient_email: Optional[str] = None) -> bool:
+                              recipient_email: Optional[str] = None,
+                              approved_by: Optional[str] = None) -> bool:
     """Patch only the fields that were supplied; False when none were.
+
+    `approved_by` (issue #2623) is written ONLY by the human approve/retry paths, with
+    `approved_at`. Status-only writers (`update_connection_request_status`) never touch it, so a
+    defer from 'sending' back to 'approved' keeps whoever approved the row.
 
     Reports `rowcount > 0`, unlike the scheduled-DM updater — so False here also means "no such row", or
     that every supplied value was already what the row held. A status change also clears `failure_reason`
@@ -695,6 +711,9 @@ def update_connection_request(request_id: int, recipient_profile_url: str = None
         fields.append("failure_reason = NULL")
         if recipient_email is None and _is_terminal_connection_request_status(status):
             fields.append("recipient_email = NULL")
+    if approved_by is not None:
+        fields += ["approved_by = %s", "approved_at = UTC_TIMESTAMP()"]
+        params.append(str(approved_by)[:64])
     if not fields:
         return False
     params.append(request_id)
@@ -750,7 +769,7 @@ def get_requested_person_keys(user_id: int) -> set:
         return set()
 # --- Comment-first outreach funnel (issue #399) — approval-gated comment->connect->DM ---
 _OUTREACH_COLS = ("id", "user_id", "target_profile_url", "target_name", "stage", "status",
-                  "context_url", "draft_text", "notes", "created_at", "updated_at")
+                  "context_url", "draft_text", "notes", "approved_by", "created_at", "updated_at")
 def insert_outreach_target(user_id: int, target_profile_url: str, target_name: str = None,
                            context_url: str = None, draft_text: str = None,
                            stage: "OutreachStage" = OutreachStage.COMMENT,
@@ -880,8 +899,12 @@ def update_outreach_target_status(target_id: int, status: "OutreachStatus") -> b
         return False
 def update_outreach_target(target_id: int, target_profile_url: str = None, target_name: str = None,
                            context_url: str = None, draft_text: str = None, notes: str = None,
-                           stage: "OutreachStage" = None, status: "OutreachStatus" = None) -> bool:
+                           stage: "OutreachStage" = None, status: "OutreachStatus" = None,
+                           approved_by: Optional[str] = None) -> bool:
     """Patch only the fields that were supplied; False when none were.
+
+    `approved_by` (issue #2623) is written only by the human approve path. A STAGE change clears it
+    and `approved_at`: the next stage is a new approval. A status-only write leaves it alone.
 
     Stage and status are stringified from their enums; omitted arguments are left alone rather than
     nulled. True means the UPDATE ran, not that a row matched.
@@ -896,6 +919,11 @@ def update_outreach_target(target_id: int, target_profile_url: str = None, targe
         if val is not None:
             fields.append(f"{col} = %s")
             params.append(str(val))
+    if approved_by is not None:
+        fields += ["approved_by = %s", "approved_at = UTC_TIMESTAMP()"]
+        params.append(str(approved_by)[:64])
+    elif stage is not None:
+        fields += ["approved_by = NULL", "approved_at = NULL"]
     if not fields:
         return False
     params.append(target_id)
@@ -1336,7 +1364,7 @@ def count_new_lead_signals(user_id: int) -> int:
 _LEAD_COLS = ("id", "user_id", "person_key", "person_name", "person_profile_url", "score",
               "icp_score", "engagement_score", "stage", "signals", "signal_count", "reasons",
               "next_action", "first_signal_at", "last_signal_at", "manual_stage", "notes",
-              "dismissed", "created_at", "updated_at")
+              "deal_value", "dismissed", "created_at", "updated_at")
 def reset_lead_scores(user_id: int) -> bool:
     """Zero every computed score before a rebuild so someone who went quiet actually decays out of
     'hot' instead of keeping a stale score forever. next_action is cleared with the rest: a lead
@@ -1427,6 +1455,8 @@ def get_leads(user_id: int, stage_filter: str = None, include_dismissed: bool = 
                     if isinstance(r.get(k), datetime):
                         r[k] = r[k].isoformat()
                 r["dismissed"] = bool(r.get("dismissed"))
+                if r.get("deal_value") is not None:
+                    r["deal_value"] = float(r["deal_value"])
             return {"leads": rows, "total": total, "page": page, "page_size": page_size}
     except mysql.connector.Error as err:
         log_error("Could not list leads", exc=err, user_id=user_id)
@@ -1456,9 +1486,11 @@ def count_hot_leads(user_id: int) -> int:
     except mysql.connector.Error:
         return 0
 def update_lead(lead_id: int, notes: str = None, manual_stage: "LeadStage" = None,
-                dismissed: bool = None) -> bool:
+                dismissed: bool = None, deal_value: Any = None) -> bool:
     """Operator edits only — the nightly rebuild never writes these columns, so a correction sticks.
-    Passing manual_stage='' clears the override and hands the lead back to the scorer.
+    Passing manual_stage='' clears the override and hands the lead back to the scorer. A stage
+    change also writes a `manual` row to `lead_stage_events` (#2633), in the same transaction.
+    `deal_value` of '' clears it; None leaves it alone.
     """
     fields, params = [], []
     if notes is not None:
@@ -1470,16 +1502,81 @@ def update_lead(lead_id: int, notes: str = None, manual_stage: "LeadStage" = Non
     if dismissed is not None:
         fields.append("dismissed = %s")
         params.append(1 if dismissed else 0)
+    if deal_value is not None:
+        fields.append("deal_value = %s")
+        params.append(deal_value if deal_value != "" else None)
     if not fields:
         return False
-    params.append(lead_id)
     try:
         with db_cursor(commit=True) as cursor:
-            cursor.execute(f"UPDATE leads SET {', '.join(fields)} WHERE id = %s", tuple(params))
-            return cursor.rowcount >= 0
+            before = None
+            if manual_stage is not None:
+                cursor.execute("SELECT user_id, COALESCE(manual_stage, stage) FROM leads WHERE id = %s",
+                               (lead_id,))
+                before = cursor.fetchone()
+            cursor.execute(f"UPDATE leads SET {', '.join(fields)} WHERE id = %s", tuple(params + [lead_id]))
+            updated = cursor.rowcount >= 0
+            if before:
+                cursor.execute("SELECT COALESCE(manual_stage, stage) FROM leads WHERE id = %s", (lead_id,))
+                after = cursor.fetchone()
+                if after and after[0] != before[1]:
+                    cursor.execute(
+                        "INSERT INTO lead_stage_events (lead_id, user_id, from_stage, to_stage, source) "
+                        "VALUES (%s,%s,%s,%s,%s)",
+                        (lead_id, before[0], before[1], after[0], LeadStageSource.MANUAL.value))
+            return updated
     except mysql.connector.Error as err:
         log_error(f"Could not update lead {lead_id}", exc=err)
         return False
+def get_lead_stage_map(user_id: int) -> Optional[dict]:
+    """Map each of the user's `person_key`s to its computed stage.
+
+    Snapshotted before a re-score so the rebuild can tell which stages actually moved. None on a read
+    error (never {}, which would make every lead read as new and flood the history).
+    """
+    try:
+        with db_cursor() as cursor:
+            cursor.execute("SELECT person_key, stage FROM leads WHERE user_id=%s", (user_id,))
+            return {r[0]: r[1] for r in (cursor.fetchall() or [])}
+    except mysql.connector.Error as err:
+        log_error("Could not read lead stages", exc=err, user_id=user_id)
+        return None
+def record_derived_stage_changes(user_id: int, before: dict) -> int:
+    """Write a `derived` stage event for each lead whose computed stage moved.
+
+    `before` is the `get_lead_stage_map` snapshot taken ahead of the re-score. Unchanged leads write
+    nothing, and a lead first seen by this re-score records from_stage NULL. Returns rows written.
+    """
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("SELECT id, person_key, stage FROM leads WHERE user_id=%s", (user_id,))
+            moved = [(lid, before.get(key), stage) for lid, key, stage in (cursor.fetchall() or [])
+                     if before.get(key) != stage]
+            for lid, old, new in moved:
+                cursor.execute(
+                    "INSERT INTO lead_stage_events (lead_id, user_id, from_stage, to_stage, source) "
+                    "VALUES (%s,%s,%s,%s,%s)",
+                    (lid, user_id, old, new, LeadStageSource.DERIVED.value))
+            return len(moved)
+    except mysql.connector.Error as err:
+        log_error("Could not record derived lead stage changes", exc=err, user_id=user_id)
+        return 0
+def get_lead_funnel_counts(user_id: int, months: int = 12) -> Optional[list]:
+    """Rows of `(month 'YYYY-MM', to_stage, distinct leads)` over the last `months` months.
+
+    Oldest first. None on a read error, so a failed read is never an empty funnel.
+    """
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT DATE_FORMAT(at, '%%Y-%%m') AS m, to_stage, COUNT(DISTINCT lead_id) "
+                "FROM lead_stage_events WHERE user_id=%s "
+                "AND at >= (NOW() - INTERVAL %s MONTH) GROUP BY m, to_stage ORDER BY m",
+                (user_id, max(1, int(months))))
+            return [(r[0], r[1], int(r[2])) for r in (cursor.fetchall() or [])]
+    except mysql.connector.Error as err:
+        log_error("Could not read lead funnel", exc=err, user_id=user_id)
+        return None
 # Default DM templates = today's hard-coded strings, so behaviour is unchanged until a user
 # customizes. {first_name},{headline},{blog_url} are filled at send time.
 _DM_DEFAULT_TEMPLATES = {

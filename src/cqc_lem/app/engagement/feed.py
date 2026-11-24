@@ -86,7 +86,15 @@ from cqc_lem.utilities.ai.outbound_qa import (
     SURFACE_COMMENT as OUTBOUND_SURFACE_COMMENT,
     refusal_reason as outbound_refusal_reason,
 )
+from cqc_lem.utilities.approval_modes import GROUP_POST_MODE, may_auto_approve
 from cqc_lem.utilities.brand_account import held_connect_sources
+from cqc_lem.utilities.comment_candidates import (
+    SOURCE_FEED as POOL_SOURCE_FEED,
+    SOURCE_ROSTER as POOL_SOURCE_ROSTER,
+    pool_enabled,
+    record_comment_candidate,
+    report_candidate_pool,
+)
 from cqc_lem.utilities.comment_rotation import recent_comment_shapes, record_comment_shape
 from cqc_lem.utilities.connection_targeting import (
     SOURCE_ROSTER,
@@ -2817,6 +2825,7 @@ def comment_on_roster_posts(ctx: FeedRunContext, max_posts: int) -> dict:
     # roster of genuinely restricted authors from `_card_for_textbox` having drifted — the latter
     # would badge every target at once with a confident lie about their accounts.
     blocked_visits: list = []
+    pool_written = 0
     for target in select_roster_targets(targets, max_posts):
         if stats["posted"] >= max_posts or ctx.out_of_time(time.time()):
             break
@@ -2909,6 +2918,17 @@ def comment_on_roster_posts(ctx: FeedRunContext, max_posts: int) -> dict:
             if not _passes_hard_excludes(content, author, prefs):
                 _count_drop(target_drops, "excluded")
                 continue
+            # Pool the scored post BEFORE the topic gate (issue #2635): topic relevance RANKS the
+            # pool, it does not exclude from it. Flag-gated and fail-soft inside the helper.
+            # The card reads below cost DOM round trips, so they wait on the flag.
+            if pool_enabled(user_id) and record_comment_candidate(
+                    user_id, key, content, author, POOL_SOURCE_ROSTER, prefs=prefs,
+                    reactions=_post_social_counts(card)["reactions"],
+                    age_minutes=_post_age_minutes(driver, card),
+                    relevant=_literal_relevant(content, author, prefs),
+                    focus_affinity=focus_affinity(content, prefs),
+                    post_url=_post_permalink_from_card(card)):
+                pool_written += 1
             if not passes_topic_gate(content, prefs):
                 _count_drop(target_drops, "off_topic")
                 stats["off_topic_skipped"] += 1
@@ -2983,6 +3003,7 @@ def comment_on_roster_posts(ctx: FeedRunContext, max_posts: int) -> dict:
                                   queued_this_run=stats["connect_requested"]).invited:
             stats["connect_requested"] += 1
     _record_blocked_visits(user_id, blocked_visits, stats["targets_visited"])
+    report_candidate_pool(user_id, POOL_SOURCE_ROSTER, pool_written)
     return stats
 
 
@@ -3215,6 +3236,7 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
     walk_ran = False
     # Authors this walk has commented on (issue #2130): at most one comment per author per walk.
     commented_authors: set = set()
+    pool_written = 0
     own_comment_skipped = 0
     # Which filter removed each home-feed post, one count per post (issue #2102): "passed filters 0"
     # alone cannot say whether recency, reactions, excludes or the dedup ledger ate the scan. Keyed
@@ -3310,6 +3332,14 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
                     # per-candidate LLM call would be paying for ranking on every card of every walk.
                     "focus_affinity": focus_affinity(content, prefs)}
             hard_keys.add(key)
+            # Pool every scored post that cleared the cheap gates (issue #2635). Flag-gated,
+            # fail-soft, and deduped on the same key as the ledger, so a re-scan adds nothing.
+            if record_comment_candidate(
+                    user_id, key, content, author, POOL_SOURCE_FEED, prefs=prefs,
+                    reactions=counts["reactions"], age_minutes=age, relevant=meta["relevant"],
+                    focus_affinity=meta["focus_affinity"],
+                    post_url=_post_permalink_from_card(card)):
+                pool_written += 1
             candidates.append((_score_feed_post(meta, ctx.prefs, ctx.engagers), key, card, content,
                                author, age, fps, key_source))
 
@@ -3485,6 +3515,7 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
         "at": datetime.now().isoformat(),
     }
     set_feed_funnel(user_id, funnel)
+    report_candidate_pool(user_id, POOL_SOURCE_FEED, pool_written)
     track_feed_scan(user_id, funnel)
     log_info(f"Engagement scan: examined {len(examined_keys) + roster_stats['examined']}, "
              f"passed filters {len(hard_keys)}, matched topics {len(include_keys)}, "
@@ -4444,6 +4475,7 @@ def auto_draft_group_post(self, user_id: int, group_id: str, group_name: str = N
         log_debug("No cached profile to draft a group post from", user_id=user_id,
                   task_name="auto_draft_group_post")
         return "No cached profile to draft from"
+    prefs = get_engagement_preferences(user_id)
     with llm_attribution(user_id=user_id, feature=FEATURE_CONTENT):
         synthesis = get_or_create_profile_synthesis(user_id, my_profile)
         # The user owns ready/skipped on this draft, never its text, so the draft is what publishes
@@ -4451,7 +4483,7 @@ def auto_draft_group_post(self, user_id: int, group_id: str, group_name: str = N
         # (issue #1529). `strip_non_bmp` is the shared Selenium-typing helper and stays currency-
         # blind: it also runs over comments and invite notes written about someone ELSE's content.
         text = strip_non_bmp(normalize_currency_symbols(generate_group_post(
-            my_profile, group_name=group_name, prefs=get_engagement_preferences(user_id),
+            my_profile, group_name=group_name, prefs=prefs,
             profile_synthesis=synthesis) or ""))
     if not text.strip():
         return "No group post generated"
@@ -4459,7 +4491,11 @@ def auto_draft_group_post(self, user_id: int, group_id: str, group_name: str = N
     # us is stored SKIPPED instead (issue #2098). The studio's "undo skip" is the approval: it puts
     # this same row back in the queue until the slot passes, and nothing ships without it.
     held = unattended_fact_hold(text, "group_post", user_id, voice_reference(my_profile, synthesis))
-    status = GroupPostDraftStatus.SKIPPED if held else GroupPostDraftStatus.READY
+    # `group_post_mode` (issue #2624): under `pre_review` the draft is stored SKIPPED, the same
+    # restorable-but-never-published state a fact hold uses, so nothing ships until the owner
+    # restores it in the studio. `unattended_fact_hold` still wins either way.
+    review = not may_auto_approve(user_id, GROUP_POST_MODE, prefs)
+    status = GroupPostDraftStatus.SKIPPED if (held or review) else GroupPostDraftStatus.READY
     draft_id = create_group_post_draft(user_id, group_id, text, group_name=group_name,
                                        status=status)
     if not draft_id:
@@ -4468,6 +4504,10 @@ def auto_draft_group_post(self, user_id: int, group_id: str, group_name: str = N
         log_info("Group post held for approval — first-person specifics nothing we supplied "
                  "backs: " + ", ".join(held), user_id=user_id, task_name="auto_draft_group_post")
         return f"Held group post {draft_id} for approval"
+    if review:
+        log_info("Group post filed for review (group_post_mode=pre_review)", user_id=user_id,
+                 task_name="auto_draft_group_post")
+        return f"Drafted group post {draft_id} for review"
     log_info("Group post drafted for review", user_id=user_id, task_name="auto_draft_group_post")
     return f"Drafted group post {draft_id}"
 

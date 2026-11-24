@@ -32,7 +32,7 @@ being swept separately. A tree-wide pass here will exhaust your three attempts a
      writing a confident sentence that is wrong. A wrong docstring is worse than none.
    - Preserve existing prose. D205 ("blank line after summary") is fixed by splitting the first
      sentence onto its own line and inserting a blank line — **not** by rewriting the paragraph.
-4. `poetry run pytest tests/unit -q` — the fixes must not change behaviour.
+4. Run the tests of every module you touched (the preamble's **Targeted local tests**) — the fixes must not change behaviour.
    If your work took the total BELOW `.ruff-baseline`, lower that file to the new count in this same
    commit — the gate's job summary prints the number. Never raise it.
 5. Commit (`/home/lem/agent-pipeline/lib/git_commit.sh -m "…" -m "<Claude co-author trailer>"`) + `/home/lem/agent-pipeline/lib/git_push.sh`, then **clear the flag**:

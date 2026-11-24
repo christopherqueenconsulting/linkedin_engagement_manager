@@ -131,6 +131,41 @@ class TestUpdateEngagementPreferences:
         assert upd.call_args[0][1]["tone"] == long_tone
 
 
+class TestApprovalModes:
+    """Issue #2624: per-lane approval modes round-trip, and an omitted one never overwrites."""
+
+    _FIELDS = ("nurture_dm_mode", "artifact_dm_mode", "group_post_mode")
+
+    def _put(self, api_client, body):
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.routers.user.update_engagement_preferences", return_value=True) as upd:
+            resp = api_client.put("/api/user/engagement-preferences",
+                                  json={"session_token": _SESSION, **body})
+        return resp, (upd.call_args[0][1] if upd.call_args else None)
+
+    @pytest.mark.parametrize("field", _FIELDS)
+    @pytest.mark.parametrize("value", ["pre_review", "auto_approve"])
+    def test_each_mode_passes_through(self, api_client, field, value):
+        resp, prefs = self._put(api_client, {field: value})
+        assert resp.status_code == 200
+        assert prefs[field] == value
+
+    def test_omitted_or_null_modes_are_not_written(self, api_client):
+        resp, prefs = self._put(api_client, {"tone": "bold", "nurture_dm_mode": None})
+        assert resp.status_code == 200
+        for field in self._FIELDS:
+            assert field not in prefs
+
+    def test_unknown_mode_is_a_422(self, api_client):
+        resp, _ = self._put(api_client, {"group_post_mode": "yolo"})
+        assert resp.status_code == 422
+
+    def test_defaults_are_the_review_side(self):
+        from cqc_lem.platform.db.repositories.users import _ENGAGEMENT_DEFAULTS
+        for field in self._FIELDS:
+            assert _ENGAGEMENT_DEFAULTS[field] == "pre_review"
+
+
 class TestForbiddenClaimTermsBounds:
     """Issue #2047: the per-user forbidden-claim list is bounded at the boundary.
 

@@ -721,6 +721,11 @@ class EngagementPreferencesRequest(BaseModel):
     # older SPA build that never learned this field must not resurrect 3 follows/day over a 0 the
     # user set to switch an outbound lane off.
     max_follows_per_day: Optional[int] = None
+    # Per-lane approval mode (issue #2624). None = leave what is stored (a stale SPA tab, #743,
+    # must never overwrite the migration's backfill); an unknown value is a 422.
+    nurture_dm_mode: Optional[str] = None
+    artifact_dm_mode: Optional[str] = None
+    group_post_mode: Optional[str] = None
     # Opt-in auto-connect for roster targets following did not unlock (issue #979), OFF by default
     # and independent of roster_auto_follow. No cap of its own — roster invites take at most a
     # minority share of whatever max_invites_per_day has left.
@@ -750,6 +755,10 @@ class EngagementPreferencesRequest(BaseModel):
     # means "leave what is stored"; `{}` clears it. Bounded and tidied by the validator, never a
     # 422 for an odd value — a share of 7 is clamped to 1, not a failed settings save.
     audience_mix: Optional[Dict[str, Any]] = None
+    # ICP rubric (issue #2630, `utilities/icp_rubric.py`). Both None (omitted) mean "leave what is
+    # stored"; the flag is OFF until a user turns it on, and `{}` clears the definition.
+    icp_builder_enabled: Optional[bool] = None
+    icp_definition: Optional[Dict[str, Any]] = None
 
     @field_validator("audience_mix")
     @classmethod
@@ -785,6 +794,13 @@ class EngagementPreferencesRequest(BaseModel):
     @classmethod
     def _coerce_connection_mode(cls, v: str) -> str:
         return v if v in ("auto_approve", "pre_review") else "auto_approve"
+
+    @field_validator("nurture_dm_mode", "artifact_dm_mode", "group_post_mode")
+    @classmethod
+    def _check_approval_mode(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in ("pre_review", "auto_approve"):
+            raise ValueError("must be 'pre_review' or 'auto_approve'")
+        return v
 
     @field_validator("connection_targeting_mode")
     @classmethod
@@ -2258,6 +2274,10 @@ def update_engagement_preferences_endpoint(request: EngagementPreferencesRequest
     # which would overwrite a deliberate 0 and restart an outbound lane the user had switched off.
     if prefs.get("max_follows_per_day") is None:
         prefs.pop("max_follows_per_day", None)
+    # Same rule for the per-lane approval modes (issue #2624): omitted keeps the stored mode.
+    for mode_key in ("nurture_dm_mode", "artifact_dm_mode", "group_post_mode"):
+        if prefs.get(mode_key) is None:
+            prefs.pop(mode_key, None)
     # Same rule for the forbidden-claim list (issue #2047): omitted or null is "leave what is
     # stored", never "store an empty list" — the saved subjects must survive a partial PUT.
     if prefs.get("forbidden_claim_terms") is None:
@@ -2268,6 +2288,10 @@ def update_engagement_preferences_endpoint(request: EngagementPreferencesRequest
     # Same rule for the audience mix: omitted or null keeps it; `{}` clears it (stored NULL).
     if prefs.get("audience_mix") is None:
         prefs.pop("audience_mix", None)
+    # Same rule for the ICP rubric flag and definition (issue #2630).
+    for icp_key in ("icp_builder_enabled", "icp_definition"):
+        if prefs.get(icp_key) is None:
+            prefs.pop(icp_key, None)
     if not update_engagement_preferences(user_id, prefs):
         raise HTTPException(status_code=500, detail="Could not update engagement preferences")
     detail = "Engagement preferences updated"
@@ -3179,7 +3203,11 @@ def get_engagement_analytics_endpoint(session_token: str, days: int = 90) -> Res
     from cqc_lem.utilities.content_quality import quality_rollup, rollup_days
     from cqc_lem.utilities.db import get_content_quality_scores
     from cqc_lem.utilities.linkedin.rate_limit import commenting_hold_reason, commenting_hold_remaining
-    from cqc_lem.utilities.post_stats import build_engagement_trend, build_performance_table
+    from cqc_lem.utilities.post_stats import (
+        build_engagement_trend,
+        build_performance_table,
+        organic_engagement_summary,
+    )
     user_id = _main.get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
@@ -3203,6 +3231,7 @@ def get_engagement_analytics_endpoint(session_token: str, days: int = 90) -> Res
     return ResponseModel(status_code=200, detail={
         "per_post": build_performance_table(rows),
         "trend": build_engagement_trend(rows),
+        "organic": organic_engagement_summary(rows),
         "sample_size": len(rows),
         "days": days,
         "coverage": coverage,
@@ -3232,6 +3261,22 @@ def get_posthog_stats_endpoint(session_token: str) -> ResponseModel[dict[str, An
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     return ResponseModel(status_code=200, detail=get_user_stats_panel(user_id))
+
+
+@router.get("/weekly-report")
+def weekly_report_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
+    """The weekly 5-minute report for the caller (issue #2632).
+
+    Read-only; 404 while `weekly-report-enabled` is off for this user.
+    """
+    from cqc_lem.utilities.flags import WEEKLY_REPORT, flag_enabled
+    from cqc_lem.utilities.weekly_report import load_weekly_report
+    user_id = _main.get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    if not flag_enabled(WEEKLY_REPORT, user_id):
+        raise HTTPException(status_code=404, detail="Not found")
+    return ResponseModel(status_code=200, detail=load_weekly_report(user_id))
 
 
 def _suppression_status(user_id: int) -> dict:

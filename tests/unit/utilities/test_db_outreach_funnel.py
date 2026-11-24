@@ -99,6 +99,30 @@ class TestOutreachFunnelDb:
         assert "draft_text = %s" in sql and "stage = %s" in sql and "status = %s" in sql
         assert "target_profile_url" not in sql
 
+    def test_approve_records_the_approver(self, fake_cursor):
+        conn, cur = fake_cursor(lastrowid=7)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import OutreachStatus, update_outreach_target
+            assert update_outreach_target(7, status=OutreachStatus.APPROVED,
+                                          approved_by="user:1") is True
+        sql, params = cur.execute.call_args[0]
+        assert "approved_by = %s" in sql and "approved_at" in sql and "user:1" in params
+
+    def test_a_stage_advance_clears_the_approver(self, fake_cursor):
+        conn, cur = fake_cursor(lastrowid=7)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import OutreachStage, OutreachStatus, update_outreach_target
+            update_outreach_target(7, stage=OutreachStage.DM, status=OutreachStatus.PENDING)
+        assert "approved_by = NULL" in cur.execute.call_args[0][0]
+
+    def test_a_status_only_write_leaves_the_approver_alone(self, fake_cursor):
+        # The hold's approved -> pending bounce and a cap defer are status-only (#2623).
+        conn, cur = fake_cursor(lastrowid=7)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            from cqc_lem.utilities.db import OutreachStatus, update_outreach_target
+            update_outreach_target(7, status=OutreachStatus.PENDING, notes="held")
+        assert "approved_by" not in cur.execute.call_args[0][0]
+
     def test_update_empty_draft_still_updates(self, fake_cursor):
         conn, cur = fake_cursor(lastrowid=7)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):

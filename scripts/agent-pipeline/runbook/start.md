@@ -49,7 +49,9 @@ A fresh worktree on branch `$BRANCH` (from origin/main) is ready. Implement issu
    gate's only job is the STOP-before-code decision, not how you implement once past it.
 3. Implement the smallest correct change that satisfies the acceptance criteria, following `CLAUDE.md` (including its fixed-shape rule — see the preamble: EDIT a row, never ADD one).
    Reuse existing utilities named in the issue; don't invent parallel helpers.
-4. Add/extend tests. Run unit tests locally if you can.
+4. Add/extend tests. Run only the touched + related test files and `scripts/ruff_count.sh` (the preamble's **Targeted local tests**) —
+   never the full suite; CI runs it. Steps 3–6 repeat per sub-step: commit AND push each completed one,
+   so a timeout never loses work.
 5. Commit atomically with a clear conventional-commit message: `/home/lem/agent-pipeline/lib/git_commit.sh -m "…"` (or `-F tmp/<name>`).
 6. `/home/lem/agent-pipeline/lib/git_push.sh` (pushes your branch and sets its upstream).
 7. **Scope check BEFORE you claim the close** (see the preamble's "Phased work"). Re-read issue #$ISSUE:
