@@ -20,6 +20,7 @@ import subprocess
 from typing import Any, Callable, Optional
 
 from cqc_lem.utilities.ai.client import client
+from cqc_lem.utilities.logger import log_debug
 
 SAMPLE_RATE = 16000
 OWN_SPEAKER = "me"
@@ -148,8 +149,8 @@ def transcribe_segments(samples: Any, encode: Callable[[Any], str]) -> list:
         finally:
             try:
                 os.remove(path)
-            except OSError:
-                pass
+            except OSError as e:
+                log_debug("Could not remove audio chunk", exc=e, task_name="transcribe_call_audio")
         base = offset / SAMPLE_RATE
         for seg in getattr(resp, "segments", None) or []:
             get = (seg.get if isinstance(seg, dict) else lambda k, d=None: getattr(seg, k, d))

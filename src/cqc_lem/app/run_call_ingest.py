@@ -85,7 +85,7 @@ def delete_audio_file(path: Optional[str]) -> None:
     try:
         os.remove(path)
     except FileNotFoundError:
-        pass
+        log_debug("Call audio already gone", task_name="transcribe_call_audio")
     except OSError as e:
         log_debug("Could not delete call audio", exc=e, task_name="transcribe_call_audio")
 
