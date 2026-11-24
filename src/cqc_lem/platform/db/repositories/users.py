@@ -2822,6 +2822,9 @@ def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
         # An unknown value lands on the review side — never on auto_approve.
         if merged.get(_mode_col) not in VALID_APPROVAL_MODES:
             merged[_mode_col] = "pre_review"
+    # Hard server-side ceiling on comment volume for every user (#2647 P5), whatever a caller sent.
+    from cqc_lem.utilities.comment_ramp import clamp_comments_per_day
+    merged["max_comments_per_day"] = clamp_comments_per_day(merged.get("max_comments_per_day"))
     _icp = merged.get("min_connection_icp_score")
     try:
         merged["min_connection_icp_score"] = (min(ICP_SCORE_MAX, max(ICP_SCORE_MIN, int(_icp)))

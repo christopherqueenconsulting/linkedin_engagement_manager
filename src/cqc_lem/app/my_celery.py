@@ -206,6 +206,12 @@ app.conf.update(
             # automated emails in the same minute. Auto-pauses engagement on a reach collapse (#629).
             'schedule': crontab(hour='9', minute='15')
         },
+        'comment-ramp': {
+            'task': 'cqc_lem.app.run_scheduler.auto_comment_ramp',
+            # Daily 09:25 UTC — after the 09:15 suppression tripwire, so a fresh trip steps the ramp
+            # down the same morning (#2647). No-op unless COMMENT_RAMP_ENABLED.
+            'schedule': crontab(hour='9', minute='25')
+        },
         'nightly-content-quality': {
             'task': 'cqc_lem.app.run_scheduler.auto_nightly_content_quality',
             # Nightly 02:40 UTC — after the 23:00 post-stats scrape and the 23:40 follower capture, so
