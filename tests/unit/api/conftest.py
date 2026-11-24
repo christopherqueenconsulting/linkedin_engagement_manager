@@ -70,6 +70,11 @@ def _stated_account_state(
     def _user_owns_posts(_user_id: int, _post_ids: list[int]) -> bool:
         return owns_posts
 
+    def _get_placeholder_post_ids(_user_id: int, _post_ids: list[int]) -> list[int]:
+        # The posts the caller owns are ordinary drafts: none is an MCP agent's still-unwritten
+        # placeholder (issue #2689). `test_agent_placeholder_approval.py` patches the other case.
+        return []
+
     def _has_strong_factor(_user_id: int) -> bool:
         return not no_strong_factor
 
@@ -98,6 +103,7 @@ def _stated_account_state(
         "require_session_user_id": _require_session_user_id,
         "get_user_email": _get_user_email,
         "user_owns_posts": _user_owns_posts,
+        "get_placeholder_post_ids": _get_placeholder_post_ids,
     }
     auth_factor_overrides_by_name = {
         "has_strong_factor": _has_strong_factor,

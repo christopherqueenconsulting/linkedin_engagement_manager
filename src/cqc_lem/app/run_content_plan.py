@@ -3188,10 +3188,11 @@ def _claim_agent_run(post_id: int, kind: str, task_name: str) -> Optional[bool]:
 def _skip_unclaimed_media(post_id: int, kind: str, claimed: Optional[bool]) -> None:
     """Wind up a media task that did not get its once-per-dispatch claim.
 
-    Unreadable (`claimed is None`): free the route's in-flight marker, so the user can ask again once
-    Redis is back. Held (`False`): KEEP it, because the first run may still be rendering; it expires
-    on its own (2h image, 4h video, `spend._CLAIM_TTL_SECONDS`), and `docs/mcp-server.md` has the
-    command to clear it after a confirmed-dead worker.
+    Unreadable (`claimed is None`): TRY to free the route's in-flight marker. During a real Redis
+    outage that delete fails too, so the marker then clears on its own TTL like any other. Held
+    (`False`): KEEP it, because the first run may still be rendering; it expires on its own (2h
+    image, 4h video, `spend._CLAIM_TTL_SECONDS`), and `docs/mcp-server.md` has the command to clear
+    it after a confirmed-dead worker.
     """
     from cqc_lem.api.mcp.spend import release_inflight
 
@@ -3252,12 +3253,18 @@ def generate_agent_post(post_id: int, guidance: Optional[str]) -> Optional[str]:
         log_info("Agent post is no longer an untouched pending placeholder; not generating",
                  post_id=post_id, task_name=task)
         return None
-    # Killed, flagged off, or no claim (a redelivery, or Redis down): this run will never write the
-    # draft, so the placeholder is marked ERROR rather than left looking like one. The write is
-    # guarded on PENDING + placeholder, so a first run that already wrote its draft is untouched.
-    if _agent_spend_halted(user_id, post_id, task) \
-            or not _claim_agent_run(post_id, SPEND_TEXT, task):
+    # A HELD claim is a Celery redelivery: the first run owns this row and may still be writing it,
+    # so the placeholder is left exactly as it is (the media tasks do the same). Killed, flagged off
+    # or an unreadable claim means no run will write the draft, so the placeholder is marked ERROR
+    # rather than left looking like one, guarded on PENDING + placeholder.
+    if _agent_spend_halted(user_id, post_id, task):
         fail_agent_post_placeholder(post_id, user_id, PLACEHOLDER_CONTENT)
+        return None
+    claimed = _claim_agent_run(post_id, SPEND_TEXT, task)
+    if claimed is None:
+        fail_agent_post_placeholder(post_id, user_id, PLACEHOLDER_CONTENT)
+        return None
+    if not claimed:
         return None
     try:
         with admit_pipeline(user_id):

@@ -183,14 +183,15 @@ class TestGenerateAgentPost:
         writer["fail"].assert_called_once()
         assert not _run_held("text", redis)
 
-    def test_a_redelivery_on_a_placeholder_never_writes_again_and_ends_in_error(
+    def test_a_redelivery_with_the_claim_held_leaves_the_placeholder_alone(
             self, writer: dict, redis: _Redis) -> None:
+        """The first run owns the row and may still be writing it: no second write, no ERROR."""
         assert spend.claim_run(5, spend.SPEND_TEXT) is True  # the first delivery's claim
         assert rcp.generate_agent_post(5, "t") is None
         writer["create"].assert_not_called()
         writer["write"].assert_not_called()
-        # Guarded on PENDING + placeholder: only a row still holding it becomes `error`.
-        writer["fail"].assert_called_once_with(5, _UID, PLACEHOLDER_CONTENT)
+        writer["fail"].assert_not_called()
+        writer["status"].assert_not_called()
 
     def test_a_redelivery_after_the_text_was_written_leaves_the_row_untouched(
             self, writer: dict, row: dict) -> None:
@@ -635,3 +636,84 @@ class TestPlaceholderNeverPublishes:
             result = posting.post_to_linkedin.run(user_id=_UID, post_id=5)
         assert "agent placeholder" not in result
         set_status.assert_called_once_with(5, PostStatus.POSTED)  # the sandbox dry run's own write
+
+
+class TestStuckPlaceholderSweep:
+    def test_it_moves_only_approved_or_scheduled_placeholders_to_error(self) -> None:
+        ctx, cur = _cursor(rowcount=2)
+        with patch.object(repo, "db_cursor", return_value=ctx):
+            assert repo.fail_stuck_agent_placeholders() == 2
+        sql, params = cur.execute.call_args.args
+        assert "SET status = %s WHERE status IN (%s, %s) AND content = %s" in sql
+        assert params == (PostStatus.ERROR.value, PostStatus.APPROVED.value,
+                          PostStatus.SCHEDULED.value, PLACEHOLDER_CONTENT)  # never PENDING
+
+    def test_a_fault_is_logged_and_never_stops_the_beat(self) -> None:
+        import mysql.connector
+
+        ctx, _cur = _cursor(raises=mysql.connector.Error("gone"))
+        with patch.object(repo, "db_cursor", return_value=ctx), \
+                patch.object(repo, "log_error") as err:
+            assert repo.fail_stuck_agent_placeholders() == 0
+        err.assert_called_once()
+
+    @pytest.mark.parametrize("moved", [0, 3])
+    def test_the_publishing_beat_runs_the_sweep_first(self, moved: int) -> None:
+        from cqc_lem.app import run_scheduler
+
+        with patch.object(run_scheduler, "fail_stuck_agent_placeholders",
+                          return_value=moved) as sweep, \
+                patch.object(run_scheduler, "get_ready_to_post_posts", return_value=[]), \
+                patch.object(run_scheduler, "log_info") as info:
+            run_scheduler.auto_check_scheduled_posts.run()
+        sweep.assert_called_once_with()
+        assert any("never-written agent post" in str(c.args[0])
+                   for c in info.call_args_list) is bool(moved)
+
+
+class TestPlaceholderIdsForABulkApprove:
+    def test_the_read_is_owner_scoped_and_matches_the_exact_placeholder(self) -> None:
+        ctx, cur = _cursor()
+        cur.fetchall.return_value = [(34,)]
+        with patch.object(repo, "db_cursor", return_value=ctx):
+            assert repo.get_placeholder_post_ids(_UID, [33, 34]) == [34]
+        sql, params = cur.execute.call_args.args
+        assert "user_id = %s AND id IN (%s, %s) AND content = %s" in sql
+        assert params == (_UID, 33, 34, PLACEHOLDER_CONTENT)
+
+    def test_a_fault_raises_rather_than_answering_none(self) -> None:
+        import mysql.connector
+
+        from cqc_lem.platform.db.shared import OwnershipUnprovable
+
+        ctx, _cur = _cursor(raises=mysql.connector.Error("gone"))
+        with patch.object(repo, "db_cursor", return_value=ctx), patch.object(repo, "log_error"):
+            with pytest.raises(OwnershipUnprovable):
+                repo.get_placeholder_post_ids(_UID, [33])
+
+    def test_nothing_named_reads_nothing(self) -> None:
+        with patch.object(repo, "db_cursor") as cursor:
+            assert repo.get_placeholder_post_ids(_UID, []) == []
+        cursor.assert_not_called()
+
+    def test_the_bulk_update_excludes_the_placeholder_in_the_same_statement(self) -> None:
+        conn = MagicMock()
+        cur = conn.cursor.return_value
+        cur.rowcount = 1
+        with patch.object(repo._connection, "get_db_connection", return_value=conn):
+            assert repo.bulk_update_posts([33], status=PostStatus.APPROVED, user_id=_UID,
+                                          exclude_content=PLACEHOLDER_CONTENT) is True
+        sql, params = cur.execute.call_args.args
+        assert sql.endswith("AND user_id = %s AND (content IS NULL OR content <> %s)")
+        assert params[-1] == PLACEHOLDER_CONTENT
+
+    def test_update_db_post_refuses_a_placeholder_over_a_written_draft_in_sql(self) -> None:
+        conn = MagicMock()
+        cur = conn.cursor.return_value
+        cur.rowcount = 1
+        with patch.object(repo._connection, "get_db_connection", return_value=conn):
+            repo.update_db_post(PLACEHOLDER_CONTENT, None, datetime(2099, 1, 1), PostType.TEXT, 33,
+                                PostStatus.PENDING, user_id=_UID)
+        sql, params = cur.execute.call_args.args
+        assert sql.endswith("AND (content = %s OR %s <> %s)")
+        assert params[-3:] == [PLACEHOLDER_CONTENT, PLACEHOLDER_CONTENT, PLACEHOLDER_CONTENT]

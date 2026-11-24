@@ -147,6 +147,7 @@ from cqc_lem.utilities.db import (
     get_linkedin_profile_url_by_user_id,
     get_member_analytics_token_info,
     get_passkey_by_credential_id,
+    get_placeholder_post_ids,
     get_planned_tasks,
     get_post_content,
     get_post_for_user,
@@ -3082,6 +3083,28 @@ def get_posts_for_email(
 # body (issue #2689) was never written, so none of them may be set on it.
 _PUBLISHING_STATUSES = frozenset({PostStatus.APPROVED.value, PostStatus.SCHEDULED.value,
                                   PostStatus.POSTED.value})
+_AGENT_DRAFT_NOT_WRITTEN = "agent_draft_not_written"
+
+
+class BulkUpdateSkip(BaseModel):
+    """One post a bulk status change left untouched, and why."""
+
+    post_id: int
+    code: str
+
+
+class BulkUpdateResponse(ResponseModel[str]):
+    """`POST /posts/bulk_update/`'s reply: the usual message, plus the posts it left alone.
+
+    `skipped` is empty unless a publishing status named an MCP agent's draft that LEM is still
+    writing (issue #2689): those keep their status and every other id is updated.
+    """
+
+    skipped: List[BulkUpdateSkip] = []
+
+
+def _is_publishing(status: Any) -> bool:
+    return getattr(status, "value", status) in _PUBLISHING_STATUSES
 
 
 def _refuse_placeholder_approval(status: Any, contents: List[Optional[str]], *,
@@ -3103,17 +3126,19 @@ def _refuse_placeholder_approval(status: Any, contents: List[Optional[str]], *,
         log_debug("Refused to approve an MCP agent post that was never written", user_id=user_id,
                   action_type="post")
         raise HTTPException(status_code=409, detail={
-            "code": "agent_draft_not_written",
+            "code": _AGENT_DRAFT_NOT_WRITTEN,
             "message": "LEM is still writing this draft for your AI agent; it cannot be approved "
                        "yet.",
         })
 
 
 @router.post("/posts/bulk_update/", responses={
-    200: {"description": "Posts updated successfully"},
-    **{k: v for k, v in error_responses.items() if k in [400, 401, 403, 405]}
+    200: {"description": "Posts updated; `skipped` lists any left untouched"},
+    **{k: v for k, v in error_responses.items() if k in [400, 401, 403, 405]},
+    409: {"description": "Every post named is an AI agent's draft LEM is still writing"},
+    503: {"description": "Could not read which posts are still being written"},
 })
-def bulk_update_posts_endpoint(request: BulkUpdateRequest) -> ResponseModel[str]:
+def bulk_update_posts_endpoint(request: BulkUpdateRequest) -> BulkUpdateResponse:
     """Restatus and/or reschedule a batch of the caller's posts, all-or-nothing.
 
     Ownership is proved for EVERY id before anything is written, and the update is additionally
@@ -3131,19 +3156,39 @@ def bulk_update_posts_endpoint(request: BulkUpdateRequest) -> ResponseModel[str]
     if not request.post_ids:
         raise HTTPException(status_code=400, detail="post_ids is required")
     _require_own_posts(user_id, request.post_ids)
-    if getattr(request.status, "value", request.status) in _PUBLISHING_STATUSES:
-        _refuse_placeholder_approval(request.status,
-                                     [get_post_content(pid) for pid in request.post_ids],
-                                     user_id=user_id)
+
+    # An MCP agent's draft LEM is still writing (issue #2689) cannot take a publishing status. The
+    # rest of the batch still goes through: those ids are named back as `skipped`, and the UPDATE
+    # itself excludes the placeholder too, so a row that became one after this read is safe.
+    post_ids, skipped, exclude = list(request.post_ids), [], None
+    if _is_publishing(request.status):
+        try:
+            held = set(get_placeholder_post_ids(user_id, post_ids))
+        except OwnershipUnprovable:
+            raise HTTPException(status_code=503, detail="Could not read the posts — try again")
+        skipped = [BulkUpdateSkip(post_id=pid, code=_AGENT_DRAFT_NOT_WRITTEN)
+                   for pid in post_ids if pid in held]
+        post_ids = [pid for pid in post_ids if pid not in held]
+        exclude = AGENT_POST_PLACEHOLDER
+        if not post_ids:
+            log_debug("Refused to approve MCP agent posts that were never written",
+                      user_id=user_id, action_type="post")
+            raise HTTPException(status_code=409, detail={
+                "code": _AGENT_DRAFT_NOT_WRITTEN,
+                "message": "LEM is still writing these drafts for your AI agent; they cannot be "
+                           "approved yet.",
+                "post_ids": sorted(held),
+            })
 
     _warn_if_naive_schedule(request.scheduled_datetime, "/posts/bulk_update/", user_id=user_id)
 
     # `user_id=` scopes the WHERE clause as well as the check in front of it — the check is the
     # gate, the scope is what makes forgetting it harmless (issue #914).
-    if bulk_update_posts(request.post_ids, status=request.status,
+    if bulk_update_posts(post_ids, status=request.status,
                          scheduled_time=request.scheduled_datetime, user_id=user_id,
-                         approved_by=user_approver(user_id)):
-        return ResponseModel(status_code=200, detail="Posts updated successfully")
+                         approved_by=user_approver(user_id), exclude_content=exclude):
+        return BulkUpdateResponse(status_code=200, detail="Posts updated successfully",
+                                  skipped=skipped)
     else:
         raise HTTPException(status_code=405, detail="Posts could not be updated")
 
@@ -3213,9 +3258,39 @@ def get_post_endpoint(post_id: int, session_token: Optional[str] = None) -> Resp
     return ResponseModel(status_code=200, detail=_post_row(post, curated_sources))
 
 
+def _refuse_placeholder_save(post_id: int, post: "PostRequest", *, user_id: int) -> None:
+    """Refuse an editor save that carries an MCP agent's placeholder body (issue #2689).
+
+    `update_db_post` writes the body it is sent, so the body a save sends IS the body the row will
+    carry, and the approve check needs no read. With a publishing status it is a 409
+    `agent_draft_not_written`. With any other status it is allowed only while the stored row still
+    holds the placeholder: otherwise it is a tab opened before LEM wrote the draft, and saving it
+    would overwrite the written draft (409 `agent_placeholder_stale`). An unreadable stored body is
+    a 503, never a guess. `update_db_post` repeats that last check in its WHERE clause.
+
+    Raises:
+        HTTPException: 409 or 503 as above.
+    """
+    if (post.content or "").strip() != AGENT_POST_PLACEHOLDER:
+        return
+    _refuse_placeholder_approval(post.status, [post.content], user_id=user_id)
+    stored = get_post_content(post_id)
+    if stored is None:
+        raise HTTPException(status_code=503, detail="Could not read the post — try again")
+    if stored.strip() != AGENT_POST_PLACEHOLDER:
+        log_debug("Refused a stale save over a written MCP agent draft", user_id=user_id,
+                  post_id=post_id, action_type="post")
+        raise HTTPException(status_code=409, detail={
+            "code": "agent_placeholder_stale",
+            "message": "LEM has written this draft since you opened it. Reload it before saving.",
+        })
+
+
 @router.post("/update_post/", responses={
     200: {"description": "Post updated successfully"},
-    **{k: v for k, v in error_responses.items() if k in [401, 403, 405]}
+    **{k: v for k, v in error_responses.items() if k in [401, 403, 405]},
+    409: {"description": "An AI agent's draft LEM is still writing, or a stale save over it"},
+    503: {"description": "Could not read the stored post"},
 })
 def update_post(post_id: int, post: PostRequest) -> ResponseModel[str]:
     """Edit one of the caller's posts in place.
@@ -3227,11 +3302,7 @@ def update_post(post_id: int, post: PostRequest) -> ResponseModel[str]:
     _reject_foreign_email(user_id, post.email)
     _require_own_posts(user_id, [post_id])
     _refuse_agent_approved_status(post.status)
-    if getattr(post.status, "value", post.status) in _PUBLISHING_STATUSES:
-        # The body the row will carry: the one sent, else the one stored.
-        _refuse_placeholder_approval(post.status,
-                                     [post.content if (post.content or "").strip()
-                                      else get_post_content(post_id)], user_id=user_id)
+    _refuse_placeholder_save(post_id, post, user_id=user_id)
 
     _warn_if_naive_schedule(post.scheduled_datetime, "/update_post/", post_id=post_id,
                             user_id=user_id)

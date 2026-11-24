@@ -147,6 +147,11 @@ def update_db_post(content: str, video_url: str, scheduled_time: datetime, post_
     """`user_id` scopes the write to one account's row — same reason as `bulk_update_posts`.
 
     `approved_by` is recorded when this write moves the post INTO APPROVED (issue #2116).
+
+    An editor save that still carries an MCP agent's placeholder body (issue #2689) only lands on a
+    row that STILL holds it: a stale tab opened before LEM wrote the draft can never overwrite the
+    written draft with the placeholder. Checked in the same statement, so there is no gap between
+    the check and the write.
     """
     connection = _connection.get_db_connection()
     cursor = connection.cursor()
@@ -165,6 +170,9 @@ def update_db_post(content: str, video_url: str, scheduled_time: datetime, post_
         if user_id is not None:
             owner_clause = " AND user_id = %s"
             params.append(user_id)
+        # A placeholder body may only be written over the placeholder itself (see the docstring).
+        owner_clause += " AND (content = %s OR %s <> %s)"
+        params.extend([AGENT_POST_PLACEHOLDER, (content or "").strip(), AGENT_POST_PLACEHOLDER])
 
         cursor.execute(
             "UPDATE posts SET content = %s, video_url = %s, scheduled_time =%s, post_type = %s, "
@@ -652,10 +660,15 @@ def bulk_update_posts(post_ids: list[int], status: Optional[PostStatus] = None,
                       scheduled_time: Optional[datetime] = None,
                       rejection_reason: Optional[str] = None,
                       user_id: Optional[int] = None,
-                      approved_by: Optional[str] = None) -> bool:
+                      approved_by: Optional[str] = None,
+                      exclude_content: Optional[str] = None) -> bool:
     """`user_id` scopes the WHERE clause to one account's rows (issue #914).
 
     `approved_by` is recorded on every row this write moves INTO APPROVED (issue #2116).
+
+    `exclude_content` leaves every row whose body is exactly that string untouched, in the same
+    statement: the API passes `AGENT_POST_PLACEHOLDER` for a publishing status, so an MCP agent's
+    unwritten draft can never be approved even if it became one after the API looked (#2689).
 
     The API checks ownership before it calls this, so the scope is redundant today — that is the
     point. It closes the window between the check and the write, and it means a future caller that
@@ -700,6 +713,9 @@ def bulk_update_posts(post_ids: list[int], status: Optional[PostStatus] = None,
         if user_id is not None:
             owner_clause = " AND user_id = %s"
             params.append(user_id)
+        if exclude_content is not None:
+            owner_clause += " AND (content IS NULL OR content <> %s)"
+            params.append(exclude_content)
 
         cursor.execute(
             f"UPDATE posts SET {', '.join(sets)} WHERE id IN ({placeholders}){owner_clause}",
@@ -2965,3 +2981,59 @@ def convert_pending_post_to_video(post_id: int, user_id: int, content: str, vide
         (PostType.VIDEO.value, content, video_url, caption_text, caption_srt_url, post_id, user_id,
          PostStatus.PENDING.value, PostType.TEXT.value),
         "convert a pending post to video", post_id, user_id)
+
+
+def get_placeholder_post_ids(user_id: int, post_ids: list[int]) -> list[int]:
+    """Which of these posts of `user_id` still hold an MCP agent's placeholder body (#2689).
+
+    Owner-scoped. A database error RAISES, because the caller uses the answer to decide what a
+    publishing status may touch, and "could not look" must never read as "none".
+
+    Args:
+        user_id: The caller.
+        post_ids: The posts a bulk status change names.
+
+    Returns:
+        The ids still holding `AGENT_POST_PLACEHOLDER`, in ascending order.
+
+    Raises:
+        OwnershipUnprovable: The read failed.
+    """
+    if not user_id or not post_ids:
+        return []
+    marks = ", ".join(["%s"] * len(post_ids))
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                f"SELECT id FROM posts WHERE user_id = %s AND id IN ({marks}) AND content = %s "
+                "ORDER BY id",
+                (int(user_id), *[int(pid) for pid in post_ids], AGENT_POST_PLACEHOLDER))
+            return [int(row[0]) for row in cursor.fetchall() or []]
+    except mysql.connector.Error as err:
+        log_error("Could not read which posts hold the agent placeholder", exc=err,
+                  user_id=user_id)
+        raise OwnershipUnprovable(str(err)) from err
+
+
+def fail_stuck_agent_placeholders() -> int:
+    """Mark ERROR every approved/scheduled post still holding the agent placeholder (#2689).
+
+    Such a row can never publish (the ready-to-post query excludes it and `post_to_linkedin`
+    refuses it), so without this it would sit APPROVED forever and look queued. ERROR is what the
+    Content Studio shows as "needs a fix". PENDING rows are left alone: their draft may still be on
+    its way. Never raises: the publishing beat that calls it must keep running.
+
+    Returns:
+        How many rows were moved; 0 on a fault.
+    """
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE posts SET status = %s WHERE status IN (%s, %s) AND content = %s",
+                (PostStatus.ERROR.value, PostStatus.APPROVED.value, PostStatus.SCHEDULED.value,
+                 AGENT_POST_PLACEHOLDER))
+            return int(cursor.rowcount or 0)
+    except mysql.connector.Error as err:
+        log_error("Could not sweep stuck agent placeholder posts", exc=err,
+                  task_name="auto_check_scheduled_posts")
+        return 0

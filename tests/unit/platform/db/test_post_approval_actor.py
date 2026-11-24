@@ -109,7 +109,8 @@ class TestUpdateDbPost:
         sql, params = self._save(fake_cursor, PostStatus.APPROVED)
         assert sql.index("approved_by = IF(") < sql.index("status = %s")
         assert params[4] == "user:3"
-        assert params[-3:] == ("approved", 9, 3)
+        # status, id, owner; then the MCP placeholder guard's three parameters (issue #2689).
+        assert params[-6:-3] == ("approved", 9, 3)
 
     def test_saving_as_pending_records_nothing(self, fake_cursor):
         sql, _ = self._save(fake_cursor, PostStatus.PENDING)

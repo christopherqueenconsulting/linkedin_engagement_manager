@@ -772,6 +772,52 @@
         "title": "BulkUpdateRequest",
         "type": "object"
       },
+      "BulkUpdateResponse": {
+        "description": "`POST /posts/bulk_update/`'s reply: the usual message, plus the posts it left alone.\n\n`skipped` is empty unless a publishing status named an MCP agent's draft that LEM is still\nwriting (issue #2689): those keep their status and every other id is updated.",
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "skipped": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/BulkUpdateSkip"
+            },
+            "title": "Skipped",
+            "type": "array"
+          },
+          "status_code": {
+            "title": "Status Code",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status_code",
+          "detail"
+        ],
+        "title": "BulkUpdateResponse",
+        "type": "object"
+      },
+      "BulkUpdateSkip": {
+        "description": "One post a bulk status change left untouched, and why.",
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "post_id": {
+            "title": "Post Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "post_id",
+          "code"
+        ],
+        "title": "BulkUpdateSkip",
+        "type": "object"
+      },
       "CallBulkAcceptRequest": {
         "description": "Body of `POST /user/call-ingest/accept-bulk`.",
         "properties": {
@@ -11467,11 +11513,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResponseModel_str_"
+                  "$ref": "#/components/schemas/BulkUpdateResponse"
                 }
               }
             },
-            "description": "Posts updated successfully"
+            "description": "Posts updated; `skipped` lists any left untouched"
           },
           "400": {
             "description": "Bad Request"
@@ -11485,6 +11531,9 @@
           "405": {
             "description": "Method Not Allowed"
           },
+          "409": {
+            "description": "Every post named is an AI agent's draft LEM is still writing"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -11494,6 +11543,9 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "description": "Could not read which posts are still being written"
           }
         },
         "summary": "Bulk Update Posts Endpoint"
@@ -12113,6 +12165,9 @@
           "405": {
             "description": "Method Not Allowed"
           },
+          "409": {
+            "description": "An AI agent's draft LEM is still writing, or a stale save over it"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -12122,6 +12177,9 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "description": "Could not read the stored post"
           }
         },
         "summary": "Update Post"

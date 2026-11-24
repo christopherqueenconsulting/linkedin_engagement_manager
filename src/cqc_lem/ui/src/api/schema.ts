@@ -4425,6 +4425,34 @@ export interface components {
             status?: components["schemas"]["PostStatus"] | null;
         };
         /**
+         * BulkUpdateResponse
+         * @description `POST /posts/bulk_update/`'s reply: the usual message, plus the posts it left alone.
+         *
+         *     `skipped` is empty unless a publishing status named an MCP agent's draft that LEM is still
+         *     writing (issue #2689): those keep their status and every other id is updated.
+         */
+        BulkUpdateResponse: {
+            /** Detail */
+            detail: string;
+            /**
+             * Skipped
+             * @default []
+             */
+            skipped: components["schemas"]["BulkUpdateSkip"][];
+            /** Status Code */
+            status_code: number;
+        };
+        /**
+         * BulkUpdateSkip
+         * @description One post a bulk status change left untouched, and why.
+         */
+        BulkUpdateSkip: {
+            /** Code */
+            code: string;
+            /** Post Id */
+            post_id: number;
+        };
+        /**
          * CallBulkAcceptRequest
          * @description Body of `POST /user/call-ingest/accept-bulk`.
          */
@@ -9952,13 +9980,13 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Posts updated successfully */
+            /** @description Posts updated; `skipped` lists any left untouched */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ResponseModel_str_"];
+                    "application/json": components["schemas"]["BulkUpdateResponse"];
                 };
             };
             /** @description Bad Request */
@@ -9989,6 +10017,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Every post named is an AI agent's draft LEM is still writing */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -9997,6 +10032,13 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
+            };
+            /** @description Could not read which posts are still being written */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -10534,6 +10576,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description An AI agent's draft LEM is still writing, or a stale save over it */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -10542,6 +10591,13 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
+            };
+            /** @description Could not read the stored post */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

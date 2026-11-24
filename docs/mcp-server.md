@@ -208,9 +208,9 @@ off. The gate then refuses new calls. **Spend tasks already sitting in Celery st
 `generate_agent_post_task`, `generate_agent_post_image_task` and `generate_agent_post_video_task`
 re-reads `MCP_SERVER_KILL`, the `mcp:kill` key (unreadable counts as ON) and `mcp-server-writes`
 for the post's owner when it STARTS (`run_content_plan._agent_spend_halted`), and skips before any
-paid call. A skipped text task marks its placeholder `error`; a skipped media task releases its
-in-flight marker. A task already past that check (mid-render) finishes, and its result still lands
-only through the guarded writes. No `celery purge` or `revoke` is needed.
+paid call. A text task skipped this way marks its placeholder `error`; a media task skipped this way
+releases its in-flight marker. A task already past that check (mid-render) finishes, and its result
+still lands only through the guarded writes. No `celery purge` or `revoke` is needed.
 
 **2. Inspect and clear the spend keys.** There are four families:
 
@@ -231,25 +231,35 @@ only through the guarded writes. No `celery purge` or `revoke` is needed.
 ```
 
 A Celery redelivery (a worker that died mid-render) finds the `run` claim held, so it does not
-spend again, and it LEAVES the `inflight` marker: the first run may still be alive, so the user is
-told `generation_in_progress` until the TTL above expires. Once you have confirmed the worker
-really died (Flower, or `./scripts/compose.sh logs celery_worker`), `DEL` both keys for that post so
-the user can ask again. Deleting a day's counter (`mcp:spend:<kind>:<user_id>:<day>`) hands that
+spend again. It leaves the row and the `inflight` marker exactly as they are, because the first run
+may still be alive: a text post keeps its placeholder, and the user is told `generation_in_progress`
+for media until the TTL above expires. Once you have confirmed the worker really died (Flower, or
+`./scripts/compose.sh logs celery_worker`), `DEL` both keys for that post so the user can ask
+again, and retire a text placeholder with step 3. A task that cannot READ its claim (Redis down)
+marks a text placeholder `error` and tries to delete a media `inflight` marker; during a real
+outage that delete fails too, so the marker clears on its TTL. Deleting a day's counter (`mcp:spend:<kind>:<user_id>:<day>`) hands that
 user their sub-cap back. Never delete a `mcp:spend:post:*` mark you did not create: it is what
 allows media on that post at all.
 
 **3. Find agent posts still holding the placeholder.** A text task that never ran leaves its row
-PENDING with the placeholder body. The approve routes refuse such a row (409
-`agent_draft_not_written`), the ready-to-post query excludes it and `post_to_linkedin` refuses it
-(marking it `error`), so it can never publish. But it clutters the review queue:
+PENDING with the placeholder body. It can never publish:
+- the approve routes refuse it (409 `agent_draft_not_written`; `/posts/bulk_update/` approves the
+  rest of a batch and names it under `skipped`);
+- the ready-to-post query excludes it;
+- `post_to_linkedin` refuses it, marking it `error`.
+
+An APPROVED or SCHEDULED placeholder (one that slipped past those checks) is moved to `error` by
+`auto_check_scheduled_posts` on its next 10-minute run (`fail_stuck_agent_placeholders`), where the
+author can see it. PENDING ones still clutter the review queue:
 
 ```bash
 ./scripts/compose.sh exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" mysql -u"$MYSQL_USER" "$MYSQL_DATABASE" -e "SELECT id, user_id, status, scheduled_time FROM posts WHERE content LIKE '"'"'[LEM is writing this draft for your AI agent.%'"'"';"'
 ```
 
 To retire them, run the same command with
-`UPDATE posts SET status = '"'"'error'"'"' WHERE status = '"'"'pending'"'"' AND content LIKE '"'"'[LEM is writing this draft for your AI agent.%'"'"';`
-as the query. The full string is `AGENT_POST_PLACEHOLDER` in `platform/db/shared.py`.
+`UPDATE posts SET status = '"'"'error'"'"' WHERE status IN ('"'"'pending'"'"', '"'"'approved'"'"', '"'"'scheduled'"'"') AND content LIKE '"'"'[LEM is writing this draft for your AI agent.%'"'"';`
+as the query. Only do this for a PENDING placeholder once you know its text task is not still
+running. The full string is `AGENT_POST_PLACEHOLDER` in `platform/db/shared.py`.
 
 **4. Check, and if owed refund, premium video credits for a post.** Credits are the
 `video_credit_ledger` table (`balance = SUM(delta)`). A premium render writes a negative row with
