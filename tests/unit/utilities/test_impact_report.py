@@ -139,7 +139,7 @@ class TestLatestSnapshot:
         with patch.object(repo, "db_cursor", return_value=ctx):
             repo.get_impact_post_rows(1, CHANGE, CHANGE + timedelta(days=1))
         sql = cursor.execute.call_args[0][0]
-        assert "MAX(id) FROM post_stats" in sql and "GROUP BY post_id" in sql
+        assert "PARTITION BY post_id" in sql and "(source='api') DESC" in sql
 
 
 class TestLoad:

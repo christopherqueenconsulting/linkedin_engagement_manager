@@ -60,14 +60,14 @@ class TestWarnIfNaiveSchedule:
 
 class TestSchedulePostEndpoint:
     def test_warns_on_a_naive_scheduled_datetime(self, api_client, signed_in):
-        with patch(f"{_MAIN}.insert_post", return_value=True), \
+        with patch(f"{_MAIN}.insert_post_returning_id", return_value=12), \
              patch(f"{_MAIN}.log_warning") as warn:
             resp = api_client.post("/api/schedule_post/", json={**_POST_BODY, "scheduled_datetime": _NAIVE})
         assert resp.status_code == 200
         assert _warned(warn)
 
     def test_quiet_on_an_explicit_utc_scheduled_datetime(self, api_client, signed_in):
-        with patch(f"{_MAIN}.insert_post", return_value=True), \
+        with patch(f"{_MAIN}.insert_post_returning_id", return_value=12), \
              patch(f"{_MAIN}.log_warning") as warn:
             resp = api_client.post("/api/schedule_post/", json={**_POST_BODY, "scheduled_datetime": _AWARE})
         assert resp.status_code == 200

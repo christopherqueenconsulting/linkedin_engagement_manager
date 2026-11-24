@@ -42,7 +42,7 @@ def _signed_in(**extra):
 @pytest.mark.integration
 class TestSchedulePostEndpoint:
     def test_schedule_post_returns_200_for_the_session_user(self, api_client):
-        with _signed_in(insert_post=True):
+        with _signed_in(insert_post_returning_id=41):
             response = api_client.post("/api/schedule_post/", json={
                 "session_token": _SESSION_TOKEN,
                 "email": _EMAIL,
@@ -57,7 +57,7 @@ class TestSchedulePostEndpoint:
 
     def test_schedule_post_returns_401_without_a_session(self, api_client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=None), \
-             patch("cqc_lem.api.main.insert_post") as mock_insert:
+             patch("cqc_lem.api.main.insert_post_returning_id") as mock_insert:
             response = api_client.post("/api/schedule_post/", json={
                 "email": "nobody@example.com",
                 "content": "Test post",
@@ -72,7 +72,7 @@ class TestSchedulePostEndpoint:
     def test_schedule_post_returns_403_for_another_account(self, api_client):
         with _signed_in() as mocks:
             mocks["get_user_email"].return_value = _EMAIL
-            with patch("cqc_lem.api.main.insert_post") as mock_insert:
+            with patch("cqc_lem.api.main.insert_post_returning_id") as mock_insert:
                 response = api_client.post("/api/schedule_post/", json={
                     "session_token": _SESSION_TOKEN,
                     "email": "victim@example.com",

@@ -1,4 +1,4 @@
-"""Once-a-day access record for an `observer` or `operator` session (docs/agent-roles.md).
+"""Once-a-day access record for an `observer`, `operator` or MCP session (docs/agent-roles.md).
 
 An observer only ever reads, so its requests are not audited one by one — a row per poll would bury
 every human sign-in in the account's recent-events list. What the owner needs is a durable answer to
@@ -52,3 +52,13 @@ def claim_operator_access(session_key: str) -> bool:
     different sessions, but the prefix keeps the two audit streams independently inspectable.
     """
     return _claim(session_key, "lem:operator_access", "Operator")
+
+
+def claim_mcp_access(session_key: str) -> bool:
+    """True when this is the session's first MCP request of the UTC day (write the row).
+
+    Claimed by the MCP gate (`api/mcp/gate.py`, plan §3.3 step 13), never by `_scope_checked`: one
+    tool call resolves the token at the gate and again on each inner loopback call, and only the
+    gate sees the call as one access. Same window and fail-open rule, its own key space.
+    """
+    return _claim(session_key, "lem:mcp_access", "MCP")

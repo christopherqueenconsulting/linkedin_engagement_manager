@@ -152,7 +152,7 @@ _REQUEUE_SITES = {("app/engagement/posting.py", "auto_publish_occasion_post"),
 
 # Writers that may set any status; only a literal non-APPROVED status is exempt from naming an actor.
 _WRITERS = {"update_db_post_status": 1, "bulk_update_posts": None, "update_db_post": 5,
-            "insert_post": None}
+            "insert_post": None, "insert_post_returning_id": None}
 
 
 def _status_arg(call: ast.Call, name: str):
@@ -201,6 +201,19 @@ def test_every_approval_names_its_actor():
     assert _unattributed_approvals() == [], (
         "A post can reach 'approved' here without recording who approved it (#2116). Pass "
         "approved_by=PostApprover.<source> or user_approver(user_id).")
+
+
+def test_the_composer_insert_is_one_of_the_scanned_writers():
+    """`schedule_post` can insert APPROVED; if its writer leaves `_WRITERS` the scan above skips it.
+
+    That happened once already: #2684 moved it from `insert_post` to `insert_post_returning_id`.
+    """
+    tree = ast.parse((_SRC / "api/main.py").read_text(encoding="utf-8"))
+    func = next(n for n in ast.walk(tree)
+                if isinstance(n, ast.FunctionDef) and n.name == "schedule_post")
+    called = {getattr(c.func, "id", None) or getattr(c.func, "attr", None)
+              for c in ast.walk(func) if isinstance(c, ast.Call)}
+    assert called & set(_WRITERS), "schedule_post's post insert is not a scanned writer"
 
 
 def test_the_requeue_exemption_is_still_real():

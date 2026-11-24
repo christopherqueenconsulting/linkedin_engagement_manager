@@ -955,6 +955,14 @@ def get_recent_post_texts(user_id: int, limit: int = 20,
 # The most rows a windowed history read scans (the cooldown window above).
 _WINDOW_SCAN_MAX = 200
 
+# The ONE `post_stats` row per post a reader should see (#2702): a post's `api` row when it has one,
+# else its latest scraped row. The two sources are never merged. One `%s` = the user id.
+_LATEST_STATS_IDS = (
+    "(SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY post_id "
+    "ORDER BY (source='api') DESC, id DESC) AS rn FROM post_stats WHERE user_id=%s) ranked "
+    "WHERE rn=1)")
+_LATEST_STATS_IDS_ALL_USERS = _LATEST_STATS_IDS.replace(" WHERE user_id=%s", "")
+
 
 def get_recent_post_topics(user_id: int, limit: int = 3,
                            exclude_post_id: Optional[int] = None) -> list:
@@ -1619,7 +1627,7 @@ def get_shipped_content_for_quality(user_id: int, days: int = 1) -> list:
             "  s.reactions, s.comments, s.own_comments, s.reposts, s.impressions "
             "FROM posts p LEFT JOIN post_stats s "
             "  ON s.post_id=p.id AND s.user_id=p.user_id "
-            "  AND s.id IN (SELECT MAX(id) FROM post_stats WHERE user_id=%s GROUP BY post_id) "
+            "  AND s.id IN " + _LATEST_STATS_IDS + " "
             "WHERE p.user_id=%s AND p.status=%s AND p.content IS NOT NULL AND p.content <> '' "
             "  AND p.scheduled_time >= (NOW() - INTERVAL %s DAY) "
             "ORDER BY p.scheduled_time DESC",
@@ -1759,7 +1767,7 @@ def get_content_quality_scores(user_id: int, days: int = 14) -> list:
 def record_post_stats(user_id: int, post_id: int, reactions: Optional[int], comments: Optional[int],
                       reposts: Optional[int] = 0, impressions: Optional[int] = None,
                       saves: Optional[int] = None,
-                      own_comments: Optional[int] = None) -> bool:
+                      own_comments: Optional[int] = None, source: str = "scrape") -> bool:
     """Append one engagement snapshot for a post, with the post's SHAPE copied in beside the numbers.
 
     archetype / hook_style / format / topic / buyer_stage are snapshotted from `posts` at capture time so
@@ -1774,7 +1782,12 @@ def record_post_stats(user_id: int, post_id: int, reactions: Optional[int], comm
     rather than 0 for the same reason `impressions` already does — a label the page never rendered
     is not a zero. `reactions`, `comments` and `reposts` keep their `or 0` coercion because the
     callers that write them have always treated a missing bar as no engagement.
+
+    `source` is `scrape` or `api` (#2702). The two are never merged: each lands as its own row, and
+    readers prefer a post's API row over its scraped one.
     """
+    if source not in ("scrape", "api"):
+        raise ValueError(f"post_stats source must be 'scrape' or 'api', got {source!r}")
     try:
         with db_cursor(commit=True) as cursor:
         # Snapshot the post's content attributes at capture time so the feedback loop (#386) can
@@ -1787,12 +1800,12 @@ def record_post_stats(user_id: int, post_id: int, reactions: Optional[int], comm
             archetype, hook_style, fmt, topic, buyer_stage = row if row else (None, None, None, None, None)
             cursor.execute(
                 "INSERT INTO post_stats (user_id, post_id, reactions, comments, own_comments, "
-                "reposts, impressions, saves, archetype, hook_style, `format`, topic, buyer_stage) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                "reposts, impressions, saves, archetype, hook_style, `format`, topic, buyer_stage, source) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (user_id, post_id, int(reactions or 0), int(comments or 0),
                  None if own_comments is None else int(own_comments), int(reposts or 0),
                  impressions, None if saves is None else int(saves),
-                 archetype, hook_style, fmt, topic, buyer_stage))
+                 archetype, hook_style, fmt, topic, buyer_stage, source))
             return True
     except mysql.connector.Error as err:
         log_error("Could not record post stats", exc=err, user_id=user_id)
@@ -1807,7 +1820,8 @@ def get_latest_post_stats(user_id: int, post_id: int) -> Optional[dict]:
         with db_cursor(dictionary=True) as cursor:
             cursor.execute(
                 "SELECT reactions, comments, reposts, impressions, saves, captured_at "
-                "FROM post_stats WHERE user_id=%s AND post_id=%s ORDER BY id DESC LIMIT 1",
+                "FROM post_stats WHERE user_id=%s AND post_id=%s "
+                "ORDER BY (source='api') DESC, id DESC LIMIT 1",
                 (user_id, post_id))
             return cursor.fetchone()
     except mysql.connector.Error as err:
@@ -1898,7 +1912,7 @@ def get_post_engagement_rows(user_id: int) -> list:
                 "s.archetype, s.hook_style, s.`format`, s.topic, s.buyer_stage, s.impressions "
                 "FROM posts p JOIN post_stats s ON s.post_id=p.id AND s.user_id=p.user_id "
                 "WHERE p.user_id=%s AND s.id IN "
-                "(SELECT MAX(id) FROM post_stats WHERE user_id=%s GROUP BY post_id)",
+                "" + _LATEST_STATS_IDS + "",
                 (user_id, user_id))
             return cursor.fetchall() or []
     except mysql.connector.Error as err:
@@ -1929,7 +1943,7 @@ def get_shape_performance(user_id: int, days: int = 90) -> dict:
                     "ON s.post_id=p.id AND s.user_id=p.user_id "
                     f"WHERE p.user_id=%s AND p.status='posted' AND p.{column} IS NOT NULL "
                     "AND p.scheduled_time >= (NOW() - INTERVAL %s DAY) "
-                    "AND s.id IN (SELECT MAX(id) FROM post_stats WHERE user_id=%s GROUP BY post_id) "
+                    "AND s.id IN " + _LATEST_STATS_IDS + " "
                     f"GROUP BY p.{column}",
                     (user_id, days, user_id))
                 for key, samples, reactions, comments, reposts, impressions, imp_samples in cursor.fetchall():
@@ -1964,7 +1978,7 @@ def get_post_performance_rows(user_id: int, days: Optional[int] = None) -> list:
                 "s.own_comments "
                 "FROM posts p JOIN post_stats s ON s.post_id=p.id AND s.user_id=p.user_id "
                 "WHERE p.user_id=%s AND p.status='posted' "
-                "AND s.id IN (SELECT MAX(id) FROM post_stats WHERE user_id=%s GROUP BY post_id) "
+                "AND s.id IN " + _LATEST_STATS_IDS + " "
                 + window +
                 "ORDER BY p.scheduled_time DESC",
                 params)
@@ -2043,7 +2057,7 @@ def get_variant_outcome_rows(user_id: int) -> list:
                 "JOIN posts p ON p.id=v.post_id AND p.user_id=v.user_id "
                 "JOIN post_stats s ON s.post_id=v.post_id AND s.user_id=v.user_id "
                 "WHERE v.user_id=%s AND s.id IN "
-                "(SELECT MAX(id) FROM post_stats WHERE user_id=%s GROUP BY post_id)",
+                "" + _LATEST_STATS_IDS + "",
                 (user_id, user_id))
             return [
                 {"variant_key": r[0], "scheduled_time": r[1], "reactions": r[2],
@@ -2253,7 +2267,7 @@ def get_post_quality_rows(start_date, end_date) -> list:
                 "p.authenticity_score, s.reactions, s.comments, s.reposts, s.impressions "
                 "FROM posts p JOIN post_stats s ON s.post_id=p.id AND s.user_id=p.user_id "
                 "WHERE p.status='posted' AND p.scheduled_time BETWEEN %s AND %s "
-                "AND s.id IN (SELECT MAX(id) FROM post_stats GROUP BY post_id)",
+                "AND s.id IN " + _LATEST_STATS_IDS_ALL_USERS + "",
                 (start_date, end_date))
             rows = cursor.fetchall() or []
             return [
@@ -2324,23 +2338,57 @@ def insert_post(email: str, content: str, scheduled_time: datetime, post_type: P
                 video_quality: str = "standard", status: PostStatus = PostStatus.PENDING,
                 use_avatar: Optional[bool] = None, image_url: Optional[str] = None,
                 approved_by: Optional[str] = None) -> bool:
-    """Insert a fully-formed post for the account behind `email`.
+    """Insert a fully-formed post for the account behind `email`; True when one row was written.
 
     A post inserted APPROVED records `approved_by` and the time (issue #2116).
 
     `use_avatar` is deliberately three-valued: NULL means the composer expressed no preference for this
     post, so the per-user opt-ins decide (issue #744); 0/1 is an explicit compose-time choice. An unknown
-    email is logged and returns False rather than raising.
+    email is logged and returns False rather than raising. `insert_post_returning_id` is the same
+    write for a caller that needs the new row's id.
+    """
+    return insert_post_returning_id(email, content, scheduled_time, post_type, video_url=video_url,
+                                    carousel_slides=carousel_slides, video_quality=video_quality,
+                                    status=status, use_avatar=use_avatar, image_url=image_url,
+                                    approved_by=approved_by) is not None
+
+
+def insert_post_returning_id(email: str, content: str, scheduled_time: datetime, post_type: PostType,
+                             video_url: Optional[str] = None,
+                             carousel_slides: Optional[list[str]] = None,
+                             video_quality: str = "standard",
+                             status: PostStatus = PostStatus.PENDING,
+                             use_avatar: Optional[bool] = None, image_url: Optional[str] = None,
+                             approved_by: Optional[str] = None) -> Optional[int]:
+    """`insert_post`, answering the new row's id instead of a bool (MCP W1, issue #2684).
+
+    `POST /schedule_post/` returns the id so a caller can name the draft it just queued.
+
+    Args:
+        email: The account the post belongs to.
+        content: The post body.
+        scheduled_time: When it should publish; stored as naive UTC.
+        post_type: text, carousel, video or document.
+        video_url: The video asset, for a video post.
+        carousel_slides: Slide URLs, stored as JSON.
+        video_quality: The render tier a video post asked for.
+        status: The row's initial status.
+        use_avatar: The three-valued compose-time avatar choice (issue #744).
+        image_url: A validated compose-time image.
+        approved_by: The actor recorded when `status` is APPROVED.
+
+    Returns:
+        The new post's id, or None when nothing was written (unknown email, or a database error).
     """
     user_id = get_user_id(email)
-
-    success = False
 
     if not user_id:
         # WARNING, not INFO: the post is silently dropped. Once is a bad argument; repeatedly is
         # something systematically composing posts against an account that does not exist.
         log_warning("Cannot insert post — no user for that email")
-        return success
+        return None
+
+    post_id = None
 
     try:
         with db_cursor(commit=True) as cursor:
@@ -2365,12 +2413,12 @@ def insert_post(email: str, content: str, scheduled_time: datetime, post_type: P
                   None if use_avatar is None else int(bool(use_avatar)), image_url,
                   approver, approved_at))
 
-            success = cursor.rowcount == 1
+            if cursor.rowcount == 1:
+                post_id = cursor.lastrowid
     except mysql.connector.Error as e:
-        success = False
         log_error("Could not insert post", exc=e)
 
-    return success
+    return post_id
 
 
 # Columns the Review & Edit list may be ordered by. Whitelisted to keep the
@@ -2601,7 +2649,7 @@ def get_weekly_post_rows(user_id: int, start: datetime, end: datetime) -> Option
                 "SELECT p.id, s.impressions, s.reactions, s.comments, s.own_comments, s.reposts "
                 "FROM posts p LEFT JOIN post_stats s "
                 "  ON s.post_id=p.id AND s.user_id=p.user_id "
-                "  AND s.id IN (SELECT MAX(id) FROM post_stats WHERE user_id=%s GROUP BY post_id) "
+                "  AND s.id IN " + _LATEST_STATS_IDS + " "
                 "WHERE p.user_id=%s AND p.status=%s AND p.scheduled_time >= %s "
                 "  AND p.scheduled_time < %s ORDER BY p.scheduled_time",
                 (user_id, user_id, PostStatus.POSTED.value, to_naive_utc(start), to_naive_utc(end)))
@@ -2663,7 +2711,7 @@ def get_impact_post_rows(user_id: int, start: datetime, end: datetime) -> Option
                 "  s.own_comments, s.reposts "
                 "FROM posts p LEFT JOIN post_stats s "
                 "  ON s.post_id=p.id AND s.user_id=p.user_id "
-                "  AND s.id IN (SELECT MAX(id) FROM post_stats WHERE user_id=%s GROUP BY post_id) "
+                "  AND s.id IN " + _LATEST_STATS_IDS + " "
                 "WHERE p.user_id=%s AND p.status=%s AND p.scheduled_time >= %s "
                 "  AND p.scheduled_time < %s ORDER BY p.scheduled_time",
                 (user_id, user_id, PostStatus.POSTED.value, to_naive_utc(start), to_naive_utc(end)))
