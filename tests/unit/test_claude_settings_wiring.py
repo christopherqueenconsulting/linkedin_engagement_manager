@@ -37,3 +37,21 @@ def test_no_session_end_hook() -> None:
 @pytest.mark.parametrize("rule", ["Bash(trail:*)", "Bash(npx graft:*)", "Bash(node dist/cli.js:*)"])
 def test_prefixes_catch_the_rules_the_refresh_writes(rule: str) -> None:
     assert rule.startswith(EXCLUDED_ALLOW_PREFIXES)
+
+
+# Claude Code reads a hook's `timeout` in SECONDS. graft's wiring writes millisecond-sized values
+# (15000 = over four hours), so a hung `graft ask` under the UserPromptSubmit hook blocked a
+# pipeline lane for 23 minutes and pushed lem-agent.slice past MemoryHigh, stalling the daemon's
+# GitHub reads. Any hook that needs longer than this is a defect, not a setting.
+MAX_HOOK_TIMEOUT_SECONDS = 60
+
+
+def test_hook_timeouts_are_seconds_not_milliseconds() -> None:
+    too_long = [
+        (event, hook.get("command", "")[:60], hook["timeout"])
+        for event, matchers in _settings().get("hooks", {}).items()
+        for matcher in matchers
+        for hook in matcher.get("hooks", [])
+        if "timeout" in hook and hook["timeout"] > MAX_HOOK_TIMEOUT_SECONDS
+    ]
+    assert too_long == [], f"hook timeouts are seconds; these look like milliseconds: {too_long}"

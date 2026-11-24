@@ -1174,6 +1174,8 @@ def generate_cover_for_edition(user_id: int, edition_id: int, title: Optional[st
     try:
         os.makedirs(directory, exist_ok=True)
         name = f"ed{int(edition_id)}_{secrets.token_hex(6)}{verdict.extension}"
+        # A byte copy: render_image_gated already signed this file at its final write (#2634);
+        # signing the copy again would stack a second XMP packet and a nested C2PA manifest.
         shutil.copyfile(generated_path, os.path.join(directory, name))
     except OSError as e:
         log_warning("Could not store generated newsletter cover", exc=e, user_id=user_id,

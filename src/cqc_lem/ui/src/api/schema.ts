@@ -2136,6 +2136,149 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/user/call-ingest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Purge All Call Data Endpoint
+         * @description Delete every call row the user has — transcripts, candidates, sources and promoted facts.
+         */
+        delete: operations["purge_all_call_data_endpoint_api_user_call_ingest_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/user/call-ingest/accept-bulk": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Accept Call Candidates Bulk Endpoint
+         * @description Accept every pending candidate at or above `min_confidence` (default 0.8).
+         */
+        post: operations["accept_call_candidates_bulk_endpoint_api_user_call_ingest_accept_bulk_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/user/call-ingest/calls": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Call Ingests Endpoint
+         * @description The user's calls with how many candidates each still has pending.
+         */
+        get: operations["list_call_ingests_endpoint_api_user_call_ingest_calls_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/user/call-ingest/candidates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Call Candidates Endpoint
+         * @description Pending candidates, for one call or the whole queue.
+         */
+        get: operations["list_call_candidates_endpoint_api_user_call_ingest_candidates_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/user/call-ingest/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Review Call Candidate Endpoint
+         * @description Accept, edit or reject one candidate. Promotion writes `origin` and `source_quote`.
+         */
+        post: operations["review_call_candidate_endpoint_api_user_call_ingest_review_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/user/call-ingest/source": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Call Source Endpoint
+         * @description Register a transcript source. It stays disabled until the consent attestation is given.
+         */
+        post: operations["create_call_source_endpoint_api_user_call_ingest_source_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/user/call-ingest/upload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload Call Transcript Endpoint
+         * @description Take a VTT, SRT or TXT transcript (Otter export or Wispr Flow text) and queue extraction.
+         *
+         *     Only the user's OWN redacted turns are stored. When the user's speaker label is missing or
+         *     matches nobody the answer is 409 with the speaker list — never a guess.
+         */
+        post: operations["upload_call_transcript_endpoint_api_user_call_ingest_upload_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/user/company-page": {
         parameters: {
             query?: never;
@@ -4188,6 +4331,21 @@ export interface components {
             /** Trigger Word */
             trigger_word: string;
         };
+        /** Body_upload_call_transcript_endpoint_api_user_call_ingest_upload_post */
+        Body_upload_call_transcript_endpoint_api_user_call_ingest_upload_post: {
+            /** File */
+            file: string;
+            /** Own Speaker */
+            own_speaker?: string | null;
+            /** Session Token */
+            session_token: string;
+            /** Source Id */
+            source_id: number;
+            /** Source Type */
+            source_type: string;
+            /** Title */
+            title?: string | null;
+        };
         /** Body_upload_newsletter_cover_endpoint_api_user_newsletter_draft_cover_post */
         Body_upload_newsletter_cover_endpoint_api_user_newsletter_draft_cover_post: {
             /** Edition Id */
@@ -4265,6 +4423,60 @@ export interface components {
             /** Session Token */
             session_token?: string | null;
             status?: components["schemas"]["PostStatus"] | null;
+        };
+        /**
+         * CallBulkAcceptRequest
+         * @description Body of `POST /user/call-ingest/accept-bulk`.
+         */
+        CallBulkAcceptRequest: {
+            /** Ingest Id */
+            ingest_id?: number | null;
+            /**
+             * Min Confidence
+             * @default 0.8
+             */
+            min_confidence: number;
+            /** Session Token */
+            session_token: string;
+        };
+        /**
+         * CallPurgeRequest
+         * @description Body of `DELETE /user/call-ingest`.
+         */
+        CallPurgeRequest: {
+            /** Session Token */
+            session_token: string;
+        };
+        /**
+         * CallReviewRequest
+         * @description Body of `POST /user/call-ingest/review`.
+         */
+        CallReviewRequest: {
+            /** Candidate Id */
+            candidate_id: number;
+            /** Decision */
+            decision: string;
+            /** Edited Body */
+            edited_body?: string | null;
+            /** Session Token */
+            session_token: string;
+        };
+        /**
+         * CallSourceRequest
+         * @description Body of `POST /user/call-ingest/source`.
+         */
+        CallSourceRequest: {
+            /**
+             * Consent Attested
+             * @default false
+             */
+            consent_attested: boolean;
+            /** Label */
+            label?: string | null;
+            /** Session Token */
+            session_token: string;
+            /** Source Type */
+            source_type: string;
         };
         /**
          * CatchupContactIntervalBounds
@@ -10786,6 +10998,234 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    purge_all_call_data_endpoint_api_user_call_ingest_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CallPurgeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_str_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    accept_call_candidates_bulk_endpoint_api_user_call_ingest_accept_bulk_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CallBulkAcceptRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_call_ingests_endpoint_api_user_call_ingest_calls_get: {
+        parameters: {
+            query: {
+                session_token: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_call_candidates_endpoint_api_user_call_ingest_candidates_get: {
+        parameters: {
+            query: {
+                session_token: string;
+                ingest_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    review_call_candidate_endpoint_api_user_call_ingest_review_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CallReviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_call_source_endpoint_api_user_call_ingest_source_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CallSourceRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_call_transcript_endpoint_api_user_call_ingest_upload_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_call_transcript_endpoint_api_user_call_ingest_upload_post"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

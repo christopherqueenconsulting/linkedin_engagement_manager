@@ -279,6 +279,10 @@ sites:
     assertions:
       - {type: production_json, required_keys: [score]}
       - {type: label_match, parse: authenticity_action, threshold: 60}
+  cqc_lem.app.run_call_ingest:_extract#0:
+    id: call_ingest.extract
+    family: json_planner
+    status: planned
   cqc_lem.utilities.ai.content_research:_research_via_litellm#0:
     id: research.web
     status: "exempt:live web research — output depends on the live web, not reproducible"

@@ -28,7 +28,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from cqc_lem.utilities.linkedin.rate_limit import shared_redis_client
 from cqc_lem.utilities.logger import log_info, log_warning
-from cqc_lem.utilities.observability import track_pre_post_engagement
+from cqc_lem.utilities.observability import track_pre_post_engagement, track_session_window_shadow
 
 # Lead times the scheduler warms up with, kept here next to the planner that clamps them.
 PRE_POST_COMMENT_LEAD_MINUTES = 15
@@ -456,3 +456,151 @@ def _zone(tz_name: Optional[str]):
     except (ZoneInfoNotFoundError, ValueError):
         log_warning(f"Unknown timezone {tz_name!r} for engagement slot — anchoring in UTC")
         return timezone.utc
+
+
+# --- Session window gate (issue #2628, Phase 1: off | shadow) ---------------------------------
+#
+# One answer to "may a BACKGROUND browser session open for this user right now": weekday daytime in
+# the user's own timezone, at most SESSION_DAILY_TARGET sessions a local day. Phase 1 only
+# OBSERVES: `shadow` counts and logs what enforcement would defer and never refuses; `enforce` is a
+# later phase and is treated as `shadow` until it lands.
+
+SESSION_WINDOW_MODE_ENV = "SESSION_WINDOW_MODE"
+SESSION_WINDOW_OFF = "off"
+SESSION_WINDOW_SHADOW = "shadow"
+SESSION_DAILY_TARGET = 3  # hard ceiling of 4 arrives with enforcement
+FALLBACK_TIMEZONE = "America/New_York"  # the users.timezone default — NOT UTC
+
+# Local-clock windows in minutes since midnight: A 08:00-08:45, C 12:30-13:15 (B, the post-tied
+# window, needs a post time and arrives with enforcement).
+SESSION_WINDOWS = {"A": (8 * 60, 8 * 60 + 45), "C": (12 * 60 + 30, 13 * 60 + 15)}
+SESSION_BAN_START_HOUR = 19
+SESSION_BAN_END_HOUR = 7
+
+# Sessions the USER starts are exempt (owner decision): profile refresh, a Publish click, login.
+# Matched case-insensitively as a substring of the Grid session name.
+USER_STARTED_SESSION_MARKERS = ("profile refresh", "refresh profile", "publish now", "login")
+
+SESSION_REASON_EXEMPT = "user_started"
+SESSION_REASON_WEEKEND = "weekend"
+SESSION_REASON_NIGHT = "night"
+SESSION_REASON_OUTSIDE_WINDOW = "outside_window"
+SESSION_REASON_OVER_TARGET = "over_daily_target"
+
+_SESSION_COUNT_PREFIX = "engagement:sessions:"
+_SESSION_COUNT_TTL_SECONDS = 30 * 60 * 60
+_TZ_WARNED: set = set()
+
+
+@dataclass(frozen=True)
+class SessionWindowDecision:
+    """Whether a background session may open now, and why not."""
+
+    allowed: bool
+    reason: str
+    window: Optional[str]
+    local_now: datetime
+    day: str  # the user's local date, the counter's key
+
+
+def session_window_mode() -> str:
+    """`off` (default) or `shadow`. Anything unrecognised is `off`; `enforce` is not built yet."""
+    raw = (os.environ.get(SESSION_WINDOW_MODE_ENV) or SESSION_WINDOW_OFF).strip().lower()
+    return SESSION_WINDOW_SHADOW if raw in (SESSION_WINDOW_SHADOW, "enforce") else SESSION_WINDOW_OFF
+
+
+def is_user_started_session(lane: str) -> bool:
+    """True for a session the user triggered themselves (exempt from the window)."""
+    name = (lane or "").lower()
+    return any(marker in name for marker in USER_STARTED_SESSION_MARKERS)
+
+
+def resolve_session_zone(tz_name: Optional[str]) -> ZoneInfo:
+    """The user's zone, falling back to America/New_York (never UTC); warns once per bad value."""
+    if tz_name:
+        try:
+            return ZoneInfo(tz_name)
+        except (ZoneInfoNotFoundError, ValueError):
+            if tz_name not in _TZ_WARNED:
+                _TZ_WARNED.add(tz_name)
+                log_warning("Unusable users.timezone for the session window; using the default zone")
+    return ZoneInfo(FALLBACK_TIMEZONE)
+
+
+def session_window_decision(user_id: int, lane: str, now: Optional[datetime] = None,
+                            tz: Optional[str] = None,
+                            sessions_today: int = 0) -> SessionWindowDecision:
+    """Pure decision: may a background `lane` session open for `user_id` at `now`?
+
+    `sessions_today` is how many sessions already opened on the user's local day. Dispatch is
+    decided on the user's wall clock (zoneinfo), so DST shifts move the UTC instant, never the hour.
+    """
+    local_now = _as_utc(now if now is not None else datetime.now(timezone.utc)).astimezone(
+        resolve_session_zone(tz))
+    day = local_now.date().isoformat()
+
+    def decide(allowed: bool, reason: str, window: Optional[str] = None) -> SessionWindowDecision:
+        return SessionWindowDecision(allowed, reason, window, local_now, day)
+
+    if is_user_started_session(lane):
+        return decide(True, SESSION_REASON_EXEMPT)
+    if local_now.weekday() >= 5:
+        return decide(False, SESSION_REASON_WEEKEND)
+    if local_now.hour >= SESSION_BAN_START_HOUR or local_now.hour < SESSION_BAN_END_HOUR:
+        return decide(False, SESSION_REASON_NIGHT)
+    minute = local_now.hour * 60 + local_now.minute
+    window = next((n for n, (start, end) in SESSION_WINDOWS.items() if start <= minute < end), None)
+    if window is None:
+        return decide(False, SESSION_REASON_OUTSIDE_WINDOW)
+    if sessions_today >= SESSION_DAILY_TARGET:
+        return decide(False, SESSION_REASON_OVER_TARGET, window)
+    return decide(True, "in_window", window)
+
+
+def count_session(user_id: int, day: str) -> Optional[int]:
+    """Count one session for the user on local `day`.
+
+    Returns the new count, or None when Redis can't answer (fails OPEN — the caller then treats
+    the session as the first).
+    """
+    client = shared_redis_client()
+    if client is None:
+        return None
+    key = f"{_SESSION_COUNT_PREFIX}{int(user_id)}:{day}"
+    try:
+        count = int(client.incr(key))
+        if count == 1:
+            client.expire(key, _SESSION_COUNT_TTL_SECONDS)
+        return count
+    except Exception as e:
+        log_warning("Could not count the session for the window gate", exc=e, user_id=user_id)
+        return None
+
+
+def observe_session_window(user_id: Optional[int], lane: str,
+                           now: Optional[datetime] = None) -> Optional[SessionWindowDecision]:
+    """Shadow hook at the one browser-session seam, `selenium_util.get_docker_driver`.
+
+    Every `get_driver_wait_pair` lane reaches that seam. Counts the session and logs/emits what
+    enforcement WOULD defer. Never raises and never refuses; `off` returns None untouched.
+    """
+    if user_id is None or session_window_mode() == SESSION_WINDOW_OFF:
+        return None
+    try:
+        from cqc_lem.utilities.db import get_user_timezone
+        tz = get_user_timezone(user_id)
+        local = _as_utc(now if now is not None else datetime.now(timezone.utc)).astimezone(
+            resolve_session_zone(tz))
+        prior = 0
+        if not is_user_started_session(lane):
+            counted = count_session(user_id, local.date().isoformat())
+            prior = (counted - 1) if counted else 0
+        decision = session_window_decision(user_id, lane, now=now, tz=tz, sessions_today=prior)
+        if not decision.allowed:
+            log_info(f"Session window shadow: would defer '{lane}' ({decision.reason})",
+                     user_id=user_id)
+            track_session_window_shadow(user_id, decision.reason, lane, decision.window or "none")
+        return decision
+    except Exception as e:  # observation must never cost a session
+        log_warning("Session window shadow check failed", exc=e, user_id=user_id)
+        return None

@@ -82,7 +82,8 @@ def record_comment_candidate(user_id: int, key: str, content: str, author: str, 
             return False
         score, components = candidate_score(source, relevant, focus_affinity, age_minutes)
         return bool(insert_comment_candidate(user_id, key, source, score, post_url=post_url,
-                                             author=author, components=components))
+                                             author=author, components=components,
+                                             post_text=content if isinstance(content, str) else None))
     except Exception as exc:
         log_warning("Could not record a comment candidate", exc=exc, user_id=user_id,
                     action_type="comment", task_name="record_comment_candidate")

@@ -89,9 +89,21 @@ IMPACT_REPORT = "impact-report-enabled"
 COMMENT_RAMP = "comment-ramp-enabled"
 MCP_SERVER = "mcp-server-enabled"
 MCP_SERVER_WRITES = "mcp-server-writes"
+COMMENT_CANDIDATE_DRAFTS = "comment-candidate-drafts-enabled"
 
 FLAGS: Dict[str, FlagSpec] = {
     spec.key: spec for spec in (
+        FlagSpec(
+            key=COMMENT_CANDIDATE_DRAFTS,
+            env_var="COMMENT_CANDIDATE_DRAFTS_ENABLED",
+            default=False,
+            owner="engagement",
+            description=("Draft one comment per pooled candidate through the claims-gated generator "
+                         "and surface the drafts, with risk flags, as the `comment_candidates` lane "
+                         "of Daily review (issue #2647, Phase 3). Drafting posts nothing; an approved "
+                         "draft is posted only by the automated lane within its caps or by Assist. "
+                         "OFF by default."),
+        ),
         FlagSpec(
             key=COMMENT_RAMP,
             env_var="COMMENT_RAMP_ENABLED",

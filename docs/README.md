@@ -140,6 +140,7 @@ index and the `CLAUDE.md` row that points at it, or the pointer becomes a dead e
 ## Agent pipeline & contribution
 
 - ★ [Agent pipeline v2](agent-pipeline-v2.md) — the `lem-agentd` daemon, its state machine, and the full `decide()` table
+- [Model router rollout](agent-pipeline-model-router-rollout.md) — `LEM_ROUTER` shadow, reviews, full; the one-flag rollback; the pre-flight smoke and replay
 - ★ [Contribution security](contribution-security.md) — a label is not an access control; provenance, not presence
 - [Owner review on `main`](codeowners-enforcement-limit.md) — the Self-Modification Gate is the enforced owner review; code-owner review is off; scope = CODEOWNERS
 - ★ [Branch cleanup](branch-cleanup.md) — the two layers that keep merged branches from reaccumulating

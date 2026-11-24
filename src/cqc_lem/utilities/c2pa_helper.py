@@ -12,6 +12,9 @@ a CA-issued cert on the C2PA Trust List upgrades trust with no code change.
 Everything here is best-effort: it never raises into the generation pipeline.
 """
 import os
+import re
+import struct
+import zlib
 
 from cqc_lem.utilities.env_constants import C2PA_CERT_PATH, C2PA_ENABLED, C2PA_KEY_PATH
 from cqc_lem.utilities.logger import log_debug, log_warning
@@ -30,6 +33,110 @@ _FORMATS = {
 
 def _format_for(file_path: str) -> "str | None":
     return _FORMATS.get(os.path.splitext(file_path)[1].lower())
+
+
+_XMP_PACKET = (
+    '<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>'
+    '<x:xmpmeta xmlns:x="adobe:ns:meta/">'
+    '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+    '<rdf:Description rdf:about="" xmlns:Iptc4xmpExt="http://iptc.org/std/Iptc4xmpExt/2008-02-29/" '
+    'Iptc4xmpExt:DigitalSourceType="' + _AI_SOURCE_TYPE + '"/>'
+    '</rdf:RDF></x:xmpmeta><?xpacket end="w"?>'
+).encode("utf-8")
+_XMP_JPEG_HEADER = b"http://ns.adobe.com/xap/1.0/\x00"
+_XMP_PNG_KEYWORD = b"XML:com.adobe.xmp"
+_IPTC_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp")
+_SOURCE_TYPE_RE = re.compile(rb'DigitalSourceType\s*=\s*"([^"]+)"')
+
+
+def _xmp_into_png(data: bytes) -> bytes:
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError("not a PNG")
+    body = _XMP_PNG_KEYWORD + b"\x00\x00\x00\x00\x00" + _XMP_PACKET
+    chunk = (struct.pack(">I", len(body)) + b"iTXt" + body
+             + struct.pack(">I", zlib.crc32(b"iTXt" + body) & 0xFFFFFFFF))
+    ihdr_end = 8 + 8 + struct.unpack(">I", data[8:12])[0] + 4
+    return data[:ihdr_end] + chunk + data[ihdr_end:]
+
+
+def _xmp_into_jpeg(data: bytes) -> bytes:
+    if data[:2] != b"\xff\xd8":
+        raise ValueError("not a JPEG")
+    payload = _XMP_JPEG_HEADER + _XMP_PACKET
+    segment = b"\xff\xe1" + struct.pack(">H", len(payload) + 2) + payload
+    at = 2
+    if data[2:4] == b"\xff\xe0":  # JFIF APP0 must stay first
+        at = 4 + struct.unpack(">H", data[4:6])[0]
+    return data[:at] + segment + data[at:]
+
+
+def _xmp_into_webp(file_path: str, out_path: str) -> None:
+    from PIL import Image
+    with Image.open(file_path) as img:
+        img.load()
+        img.save(out_path, "WEBP", lossless=True, xmp=_XMP_PACKET)
+
+
+def write_ai_source_metadata(file_path: str) -> bool:
+    """Embed the IPTC ``DigitalSourceType = trainedAlgorithmicMedia`` XMP property in an image.
+
+    Needs no certificate. Runs BEFORE C2PA so the signed manifest hashes the metadata too.
+    Supports PNG, JPEG and WEBP; returns True only when the property was written. Never raises.
+    """
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext not in _IPTC_IMAGE_EXTS or not os.path.exists(file_path):
+        log_debug(f"IPTC metadata skipped (unsupported or missing): {file_path}")
+        return False
+    tmp_out = file_path + ".iptc.tmp"
+    try:
+        if ext == ".webp":
+            _xmp_into_webp(file_path, tmp_out)
+        else:
+            with open(file_path, "rb") as fh:
+                data = fh.read()
+            out = _xmp_into_png(data) if ext == ".png" else _xmp_into_jpeg(data)
+            with open(tmp_out, "wb") as fh:
+                fh.write(out)
+        os.replace(tmp_out, file_path)
+        return True
+    except Exception as e:
+        log_warning("IPTC source-type metadata failed", exc=e)
+        try:
+            if os.path.exists(tmp_out):
+                os.remove(tmp_out)
+        except OSError:
+            pass  # best-effort temp-file cleanup
+        return False
+
+
+def read_ai_source_type(file_path: str) -> "str | None":
+    """The IPTC digital source type embedded in ``file_path``, or None when absent/unreadable."""
+    try:
+        with open(file_path, "rb") as fh:
+            match = _SOURCE_TYPE_RE.search(fh.read())
+    except OSError:
+        return None
+    return match.group(1).decode("utf-8", "replace") if match else None
+
+
+def sign_ai_image(file_path: str, *, post_id: "int | None" = None) -> bool:
+    """Final-write provenance for a non-avatar AI image: IPTC metadata, then C2PA.
+
+    Call it on the file that ships, after the last re-save (a Pillow re-save strips both layers).
+    Returns the C2PA result, so a caller deciding the visible disclosure reads the same boolean
+    as before. When ``post_id`` is given and C2PA is on, the outcome is persisted to
+    ``posts.c2pa_signed``. Never raises.
+    """
+    try:
+        write_ai_source_metadata(file_path)
+        signed = add_ai_content_credentials(file_path)
+        if post_id and C2PA_ENABLED:
+            from cqc_lem.utilities.db import set_post_c2pa_signed
+            set_post_c2pa_signed(post_id, signed)
+        return signed
+    except Exception as e:
+        log_warning("AI image provenance signing failed", exc=e, post_id=post_id)
+        return False
 
 
 def add_ai_content_credentials(file_path: str) -> bool:
