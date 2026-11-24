@@ -1,6 +1,7 @@
 import { Suspense, useEffect, useState } from 'react'
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../contexts/useAuth'
+import { FLAGS, useFeatureFlag } from '../hooks/useFeatureFlags'
 import AccountReadinessBanner from './AccountReadinessBanner'
 import FeedbackWidget from './FeedbackWidget'
 import FloatingDock, { OPEN_FEEDBACK_EVENT } from './FloatingDock'
@@ -22,6 +23,10 @@ const navLinks: { to: string; label: string; end?: boolean }[] = [
   { to: '/content', label: 'Content' },
 ]
 
+// Shown only while `mcp-server-enabled` is on for this user (issue #2687). The route redirects home
+// when it is off, so a hidden entry and an unreachable page always agree.
+const agentsNavLink: { to: string; label: string; end?: boolean } = { to: '/agents', label: 'Agents' }
+
 // One link style for every nav item: a full-height row with a 2px primary bar under the active
 // page (the marketing nav's hairline chrome, carried into the app).
 function navLinkClass({ isActive }: { isActive: boolean }): string {
@@ -40,6 +45,8 @@ const adminNavLinks = [
 
 export default function Layout() {
   const { user, logout, openLoginModal, isAdmin, enrollmentRequired } = useAuth()
+  const agentsEnabled = useFeatureFlag(FLAGS.mcpServer, false)
+  const links = agentsEnabled ? [...navLinks, agentsNavLink] : navLinks
   const navigate = useNavigate()
   const location = useLocation()
   const showReadiness = !!user && AUTOMATION_PATHS.some((p) => location.pathname.startsWith(p))
@@ -88,7 +95,7 @@ export default function Layout() {
               data-testid="nav-links"
               className="hidden md:flex items-center gap-7 min-w-0 overflow-x-auto scrollbar-none"
             >
-              {navLinks.map(({ to, label, end }) => (
+              {links.map(({ to, label, end }) => (
                 <NavLink key={to} to={to} end={end} className={navLinkClass}>
                   {label}
                 </NavLink>
@@ -139,7 +146,7 @@ export default function Layout() {
               Logged in as: <span className="font-medium text-fg">{user.email}</span>
             </p>
             <ul className="divide-y divide-hairline border-y border-hairline">
-              {[...navLinks, ...(isAdmin ? adminNavLinks : [])].map(({ to, label, end }: { to: string; label: string; end?: boolean }) => (
+              {[...links, ...(isAdmin ? adminNavLinks : [])].map(({ to, label, end }: { to: string; label: string; end?: boolean }) => (
                 <li key={to}>
                   <NavLink
                     to={to}

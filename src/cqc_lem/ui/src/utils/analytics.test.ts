@@ -403,3 +403,25 @@ describe('maskProps', () => {
     expect(a.maskProps().className).toBe('ph-no-capture')
   })
 })
+
+// The Agents tab's events (issue #2687): PostHog matches on the ingested type, so a number or a
+// boolean prop silently stops a string-filtered insight matching — and no helper takes a token.
+describe('Agents tab events', () => {
+  it('send only string props, with the documented names', async () => {
+    const a = await loadAnalytics('phc_test')
+    a.recordMcpTokenMinted(30, 'mcp_outreach')
+    a.recordMcpTokenRotated('mcp')
+    a.recordMcpTokenRevoked('mcp')
+    a.recordMcpCommandCopied('claude-code', 'env')
+    await vi.waitFor(() => expect(ph.capture).toHaveBeenCalledTimes(4))
+    expect(ph.capture.mock.calls).toEqual([
+      ['mcp_token_minted', { ttl_days: '30', scope: 'mcp_outreach' }],
+      ['mcp_token_rotated', { scope: 'mcp' }],
+      ['mcp_token_revoked', { scope: 'mcp' }],
+      ['mcp_command_copied', { client: 'claude-code', variant: 'env' }],
+    ])
+    for (const [, props] of ph.capture.mock.calls) {
+      for (const value of Object.values(props as Record<string, unknown>)) expect(typeof value).toBe('string')
+    }
+  })
+})

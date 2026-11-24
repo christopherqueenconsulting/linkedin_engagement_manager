@@ -395,4 +395,28 @@ export const EVENTS = {
   landingCtaClicked: 'landing_cta_clicked',
   landingPlanSelected: 'landing_plan_selected',
   landingSectionViewed: 'landing_section_viewed',
+  // Agents tab (issue #2687). Every property is a STRING (PostHog matches on the ingested type),
+  // and none of them is ever the token, the URL or a command — only which bucket the user chose.
+  mcpTokenMinted: 'mcp_token_minted',
+  mcpTokenRotated: 'mcp_token_rotated',
+  mcpTokenRevoked: 'mcp_token_revoked',
+  mcpCommandCopied: 'mcp_command_copied',
 } as const
+
+// The Agents tab's four events, each with a fixed property shape. Typed helpers rather than bare
+// `capture()` calls so a call site cannot hand over a token-bearing object by accident.
+export function recordMcpTokenMinted(ttlDays: number, scope: string): void {
+  capture(EVENTS.mcpTokenMinted, { ttl_days: String(ttlDays), scope: String(scope) })
+}
+
+export function recordMcpTokenRotated(scope: string): void {
+  capture(EVENTS.mcpTokenRotated, { scope: String(scope) })
+}
+
+export function recordMcpTokenRevoked(scope: string): void {
+  capture(EVENTS.mcpTokenRevoked, { scope: String(scope) })
+}
+
+export function recordMcpCommandCopied(client: string, variant: string): void {
+  capture(EVENTS.mcpCommandCopied, { client: String(client), variant: String(variant) })
+}

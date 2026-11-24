@@ -370,6 +370,36 @@ def admin_impact_report(user_id: int, change_at: datetime, days: int = Query(14,
         raise HTTPException(status_code=503, detail="Impact report inputs could not be read")
 
 
+@router.get("/icp-evaluation", responses={200: {"description": "ICP rubric outcome report"},
+                                          403: {"description": "Forbidden"},
+                                          503: {"description": "A read failed"}})
+def admin_icp_evaluation(user_id: int, x_admin_secret: Optional[str] = Header(default=None)
+                         ) -> ResponseModel[dict[str, Any]]:
+    """Acceptance per segment and score band, plus the 90-day back-test (issue #2655, Phase 5).
+
+    Admin-only and read-only. Buckets under the minimum sample read "insufficient data". The
+    back-test re-scores the user's accepted contacts with their CURRENT definition (informational,
+    no pass mark); with no usable definition it is "not measured". A failed read is 503.
+    """
+    _require_admin(x_admin_secret)
+    from cqc_lem.utilities.db import get_engagement_preferences, get_icp_outcome_rows, get_profile_facts
+    from cqc_lem.utilities.icp_evaluation import BACKTEST_DAYS, NOT_MEASURED, backtest, outcome_report
+    from cqc_lem.utilities.icp_rubric import parse_icp_definition
+    rows = get_icp_outcome_rows(user_id, BACKTEST_DAYS)
+    if rows is None:
+        raise HTTPException(status_code=503, detail="ICP outcome rows could not be read")
+    report = outcome_report(rows)
+    definition = parse_icp_definition((get_engagement_preferences(user_id) or {}).get("icp_definition"))
+    if definition is None:
+        report["backtest"] = NOT_MEASURED
+    else:
+        accepted = [r for r in rows if r.get("accepted")]
+        facts = get_profile_facts([r["recipient_profile_url"] for r in accepted
+                                   if r.get("recipient_profile_url")])
+        report["backtest"] = backtest(accepted, definition, facts)
+    return ResponseModel(status_code=200, detail=report)
+
+
 @router.post("/fix-video-urls", responses={
     200: {"description": "Video URLs updated"},
     403: {"description": "Forbidden"},

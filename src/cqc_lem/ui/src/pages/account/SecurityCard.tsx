@@ -4,6 +4,7 @@ import api from '../../api/client'
 import { useAuth } from '../../contexts/useAuth'
 import SettingsCard from '../../components/SettingsCard'
 import { useStepUp } from '../../hooks/useStepUp'
+import { maskProps } from '../../utils/analytics'
 
 type SessionRow = {
   id: number
@@ -204,6 +205,12 @@ export default function SecurityCard() {
                         Agent
                       </span>
                     )}
+                    {/* An MCP connection from the Agents tab (#2687), managed there. */}
+                    {(s.scope === 'mcp' || s.scope === 'mcp_outreach') && (
+                      <span className="ml-2 text-xs font-semibold text-accent bg-accent/5 px-2 py-0.5 rounded-control">
+                        MCP
+                      </span>
+                    )}
                   </p>
                   <p className="text-xs text-fg-muted">Last used {when(s.last_seen_at ?? s.created_at)}</p>
                 </div>
@@ -271,7 +278,8 @@ export default function SecurityCard() {
             <p className="text-xs font-semibold text-warning">
               Shown once — copy it now. It will not be shown again.
             </p>
-            <code className="block text-xs break-all text-warning">{mintedToken.token}</code>
+            {/* Masked in replay and out of autocapture: a live credential is on screen. */}
+            <code {...maskProps('block text-xs break-all text-warning')}>{mintedToken.token}</code>
             <p className="text-xs text-warning">Expires in {mintedToken.expiresInDays} days.</p>
             <button
               type="button"

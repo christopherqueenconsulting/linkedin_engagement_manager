@@ -84,6 +84,12 @@ export default function ContentSection() {
 
         <Advanced>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Field settingKey="review_digest_enabled">
+              <Toggle on={eng.review_digest_enabled ?? true}
+                onClick={() => setEng({
+                  review_digest_enabled: !(eng.review_digest_enabled ?? true),
+                })} />
+            </Field>
             <Field settingKey="authenticity_score_min">
               <input type="number" min={0} max={100} value={eng.authenticity_score_min ?? ''}
                 placeholder={`Default ${gateDefaults.authenticity_score_min}`}

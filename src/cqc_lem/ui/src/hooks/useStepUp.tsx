@@ -27,7 +27,11 @@ function stepUpMethods(error: any): StepUpMethod[] | null {
   return methods
 }
 
-export function useStepUp() {
+const DEFAULT_REASON = 'This change touches your LinkedIn credentials, so it needs one more check.'
+
+/** `reason` is the modal's one line of WHY — a caller whose write is not about LinkedIn credentials
+ * (an agent connection, say) names its own instead of borrowing that one. */
+export function useStepUp({ reason = DEFAULT_REASON }: { reason?: string } = {}) {
   const { sessionToken } = useAuth()
   const [methods, setMethods] = useState<StepUpMethod[] | null>(null)
   const [busy, setBusy] = useState(false)
@@ -102,9 +106,7 @@ export function useStepUp() {
       <div className="bg-raised rounded-panel shadow-xl w-full max-w-sm p-6 max-h-viewport overflow-y-auto" role="dialog"
            aria-modal="true" aria-label="Confirm it's you">
         <h3 className="text-xl font-semibold text-fg mb-1">Confirm it's you</h3>
-        <p className="text-sm text-fg-muted mb-4">
-          This change touches your LinkedIn credentials, so it needs one more check.
-        </p>
+        <p className="text-sm text-fg-muted mb-4">{reason}</p>
 
         {methods.length === 0 && (
           <p className="text-sm text-danger mb-4">
