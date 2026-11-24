@@ -26,6 +26,22 @@ _SPEC.loader.exec_module(smoke)
 _TOKEN = "lem_mcp_" + "smokecanary" * 3
 
 
+@pytest.fixture(autouse=True)
+def _restore_http_loggers() -> Any:
+    """`smoke.main()` quiets the `httpx`/`httpx2` loggers for the whole process, as a CLI should.
+
+    In a test process that leaks into every later test on the same worker: the MCP caplog test
+    (`test_mcp_analytics.py`) asserts the loopback's inner requests ARE logged, and silently loses
+    them when it runs after this file. Restore whatever level each logger had.
+    """
+    import logging
+
+    saved = {name: logging.getLogger(name).level for name in ("httpx", "httpx2")}
+    yield
+    for name, level in saved.items():
+        logging.getLogger(name).setLevel(level)
+
+
 def _server(scope: str = "mcp", tools: Optional[list[str]] = None, failing: str = "",
             query_status: int = 400) -> tuple[httpx2.Client, list[dict]]:
     seen: list[dict] = []
