@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
+import type { components } from '../../api/schema'
 import { useAuth } from '../../contexts/useAuth'
 import { formatInTimezone, zonedInputToUtcIso } from '../../utils/datetime'
 import { maskProps } from '../../utils/analytics'
@@ -18,6 +19,8 @@ interface ScheduledDm {
   scheduled_time: string
   status: string
   source?: string | null
+  authenticity_score?: number | null
+  authenticity_issues?: string | null
 }
 
 // Auto-drafted rows (issue #485: the next message in a thread where the lead replied) land in this
@@ -53,6 +56,19 @@ export default function ScheduledDMs(
   const qc = useQueryClient()
   const [filter, setFilter] = useState('ALL')
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [override, setOverride] = useState<{ id: number; detail: { message: string; score: number; issues: string[] } } | null>(null)
+  const [reason, setReason] = useState('')
+  const reasonRef = useRef<HTMLTextAreaElement>(null)
+
+  useEffect(() => {
+    if (!override) return
+    reasonRef.current?.focus()
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { setOverride(null); setReason('') }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [override])
 
   // New-DM draft form
   const [url, setUrl] = useState('')
@@ -111,18 +127,43 @@ export default function ScheduledDMs(
   // the only reading available to the operator was that the button is dead. Both outcomes are
   // flashed now: the failure names itself, and the success says what will happen next.
   const actionMutation = useMutation({
-    mutationFn: (v: { id: number; action: 'approve' | 'cancel' }) =>
-      api.put('/dm', { session_token: sessionToken, dm_id: v.id, action: v.action }),
+    mutationFn: (v: { id: number; action: 'approve' | 'cancel'; reason?: string }) => {
+      const request: components['schemas']['UpdateDmRequest'] = {
+        session_token: sessionToken!, dm_id: v.id, action: v.action,
+        ...(v.reason ? { authenticity_override_reason: v.reason } : {}),
+      }
+      return api.put('/dm', request)
+    },
     onSuccess: (_r, v) => {
       invalidate()
       flash(true, v.action === 'approve'
         ? 'Approved — it will send at its scheduled time.'
         : 'Canceled — this DM will not be sent.')
     },
-    onError: (err, v) => flash(false, errorText(err, v.action === 'approve'
-      ? 'Could not approve this DM — try again.'
-      : 'Could not cancel this DM — try again.')),
+    onError: (err, v) => {
+      const detail = (err as { response?: { status?: number; data?: { detail?: unknown } } })?.response?.data?.detail
+      if (v.action === 'approve' && (err as { response?: { status?: number } })?.response?.status === 403 &&
+          typeof detail === 'object' && detail !== null && (detail as { code?: string }).code === 'authenticity_below_floor') {
+        const floor = detail as { message?: string; score?: number; issues?: string[] }
+        setOverride({ id: v.id, detail: { message: floor.message ?? 'This draft is below the authenticity floor.',
+          score: floor.score ?? 0, issues: floor.issues ?? [] } })
+        setReason('')
+        return
+      }
+      flash(false, errorText(err, v.action === 'approve'
+        ? 'Could not approve this DM — try again.'
+        : 'Could not cancel this DM — try again.'))
+    },
   })
+
+  const submitOverride = () => {
+    const trimmed = reason.trim()
+    if (!trimmed || trimmed.length > 500) return
+    const id = override?.id
+    setOverride(null)
+    setReason('')
+    if (id !== undefined) actionMutation.mutate({ id, action: 'approve', reason: trimmed })
+  }
 
   const canSubmit = url.trim() && body.trim() && when && timezoneResolved
 
@@ -205,6 +246,13 @@ export default function ScheduledDMs(
               </div>
             </div>
             <p className="text-sm text-fg whitespace-pre-wrap line-clamp-3">{dm.message}</p>
+            {dm.status === 'pending' && dm.authenticity_score !== null && dm.authenticity_score !== undefined && (
+              <div className="mt-2 text-xs text-fg-muted" aria-label="Authenticity assessment">
+                <p>Authenticity score: <strong>{dm.authenticity_score}</strong></p>
+                {dm.authenticity_issues && <ul className="list-disc pl-5">{dm.authenticity_issues.split('\n').filter(Boolean).map((issue, i) =>
+                  <li key={`${i}-${issue}`}>{issue}</li>)}</ul>}
+              </div>
+            )}
             {['pending', 'approved', 'scheduled'].includes(dm.status) && (
               <div className="flex gap-2 mt-2">
                 {dm.status === 'pending' && (
@@ -224,6 +272,25 @@ export default function ScheduledDMs(
           </div>
         ))}
       </div>
+      {override && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onMouseDown={(e) => { if (e.target === e.currentTarget) { setOverride(null); setReason('') } }}>
+          <section role="dialog" aria-modal="true" aria-labelledby="authenticity-override-title" aria-describedby="authenticity-override-description"
+            className="w-full max-w-lg max-h-viewport overflow-y-auto rounded-panel bg-raised p-5 shadow-panel space-y-3">
+            <h2 id="authenticity-override-title" className="font-semibold text-fg">Confirm authenticity override</h2>
+            <p id="authenticity-override-description" className="text-sm text-fg-muted">{override.detail.message} Score: {override.detail.score}.</p>
+            {override.detail.issues.length > 0 && <ul className="list-disc pl-5 text-sm text-fg">{override.detail.issues.map((issue, i) => <li key={`${i}-${issue}`}>{issue}</li>)}</ul>}
+            <label htmlFor="authenticity-override-reason" className="block text-sm font-medium text-fg">Reason for approving anyway</label>
+            <textarea id="authenticity-override-reason" ref={reasonRef} value={reason} maxLength={500} rows={3}
+              onChange={(e) => setReason(e.target.value)} className="w-full border border-field rounded-control px-3 py-2 text-sm" />
+            <p className="text-xs text-fg-muted">{reason.length}/500 characters. Required.</p>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => { setOverride(null); setReason('') }} className="px-3 py-2 border border-field rounded-control text-sm">Cancel</button>
+              <button onClick={submitOverride} disabled={!reason.trim() || reason.trim().length > 500 || actionMutation.isPending}
+                className="px-3 py-2 bg-accent text-on-accent rounded-control text-sm font-semibold disabled:opacity-50">Approve anyway</button>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   )
 }

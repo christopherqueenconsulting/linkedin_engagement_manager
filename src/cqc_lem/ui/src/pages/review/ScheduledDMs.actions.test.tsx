@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest'
 import type { ReactNode } from 'react'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import ScheduledDMs from './ScheduledDMs'
 
@@ -100,5 +100,60 @@ describe('ScheduledDMs approve/cancel (issue #1528)', () => {
     fireEvent.click(cancel())
 
     expect(await screen.findByText('Could not cancel this DM — try again.')).toBeDefined()
+  })
+
+  it('shows authenticity score and issues on a held draft', async () => {
+    get.mockResolvedValue({ data: { detail: { dms: [{ ...PENDING_DM, authenticity_score: 42,
+      authenticity_issues: 'Generic opening\nUnsupported claim' }], total: 1 } } })
+    render_()
+    expect(await screen.findByText('Authenticity score:')).toBeDefined()
+    expect(screen.getByText('42')).toBeDefined()
+    expect(screen.getByText('Generic opening')).toBeDefined()
+    expect(screen.getByText('Unsupported claim')).toBeDefined()
+  })
+
+  const authenticityFailure = {
+    response: { status: 403, data: { detail: { code: 'authenticity_below_floor',
+      message: 'This draft scored 42 for authenticity, below 60.', score: 42, issues: ['Generic opening'] } } },
+  }
+
+  it('opens reason prompt when approve is refused by authenticity floor', async () => {
+    put.mockRejectedValueOnce(authenticityFailure)
+    render_()
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve' }))
+    expect(await screen.findByRole('dialog')).toBeDefined()
+    expect(screen.getByText(/Score: 42/)).toBeDefined()
+    expect(screen.getByText('Generic opening')).toBeDefined()
+    expect(document.activeElement).toBe(screen.getByLabelText('Reason for approving anyway'))
+  })
+
+  it('refuses empty reason without resending', async () => {
+    put.mockRejectedValueOnce(authenticityFailure)
+    render_()
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve anyway' }))
+    expect(put).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('dialog')).toBeDefined()
+  })
+
+  it('resends approval with nonempty override reason', async () => {
+    put.mockRejectedValueOnce(authenticityFailure)
+    put.mockResolvedValueOnce({ data: { detail: 'Scheduled DM updated' } })
+    render_()
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve' }))
+    fireEvent.change(await screen.findByLabelText('Reason for approving anyway'), { target: { value: 'Reviewed context and accept the risk.' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Approve anyway' }))
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(2))
+    expect(put).toHaveBeenLastCalledWith('/dm', { session_token: 'tok', dm_id: 12, action: 'approve',
+      authenticity_override_reason: 'Reviewed context and accept the risk.' })
+  })
+
+  it('cancel closes prompt without resending', async () => {
+    put.mockRejectedValueOnce(authenticityFailure)
+    render_()
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve' }))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(put).toHaveBeenCalledTimes(1)
   })
 })
