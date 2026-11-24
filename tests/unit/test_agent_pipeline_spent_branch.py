@@ -454,6 +454,45 @@ def test_origin_ahead_of_a_stale_tracking_ref_attaches(box: Box) -> None:
     assert "(refs-disagree:" in err and "spent" not in err
 
 
+def test_an_unpushed_local_commit_on_the_origin_path_is_never_moved_back(box: Box) -> None:
+    """Stale tracking ref kept, local ref one commit AHEAD of it: `checkout -B <b> origin/<b>` orphaned it.
+
+    The origin path used to reset refs/heads/<branch> onto the tracking ref unconditionally; a local
+    ref that is not an ancestor of the tracking ref is attached as-is instead.
+    """
+    merged_head = box.phase_k()
+    main = box.squash_merge()
+    box.delete_on_merge(keep_tracking=True)
+    box.git("checkout", "-q", BRANCH)
+    box.commit("unpushed.py", "U = 1\n", msg="unpushed")
+    box.git("fetch", "-q", str(box.dev), f"+refs/heads/{BRANCH}:refs/heads/{BRANCH}", cwd=box.repo)
+    tip = box.git("rev-parse", f"refs/heads/{BRANCH}", cwd=box.repo)
+    assert box.git("rev-parse", f"refs/remotes/origin/{BRANCH}", cwd=box.repo) == merged_head
+    err, wt = box.run(prs=[pr("MERGED", merged_head, merge=main)], prefetch=False)
+    assert box.git("rev-parse", f"refs/heads/{BRANCH}", cwd=box.repo) == tip, "local ref never moved back"
+    assert box.head(wt) == tip
+    assert box.branch_at(wt) == BRANCH
+    assert (wt / "unpushed.py").read_text(encoding="utf-8") == "U = 1\n"
+    assert "attaching local" in err and "was spent" not in err
+    assert "reattaching existing" not in err, "took add_worktree's origin path"
+
+
+def test_a_spent_branch_checked_out_in_another_worktree_is_never_reset(box: Box, tmp_path: Path) -> None:
+    """git 2.43's `checkout -B` does not refuse a branch another worktree holds; the guard must."""
+    tip = box.phase_k()
+    main = box.squash_merge()
+    box.git("fetch", "-q", "origin", cwd=box.repo)
+    other = tmp_path / "other-wt"
+    box.git("worktree", "add", "-q", str(other), BRANCH, cwd=box.repo)
+    assert box.head(other) == tip
+    err, wt = box.run(prs=[pr("MERGED", tip, merge=main)], prefetch=False)
+    assert box.head(other) == tip, "the other worktree's HEAD moved under it"
+    assert box.git("rev-parse", f"refs/heads/{BRANCH}", cwd=box.repo) == tip
+    assert box.origin(f"refs/heads/{BRANCH}") == tip, "nothing pushed over the held branch"
+    assert "(checked-out-elsewhere:" in err and str(other) in err
+    assert "restarted from" not in err
+
+
 def test_a_lease_refusal_attaches_and_never_overwrites_origin(box: Box, tmp_path: Path) -> None:
     """Origin moves AFTER the guard read it (the gh call is the window); the lease refuses."""
     tip = box.phase_k()

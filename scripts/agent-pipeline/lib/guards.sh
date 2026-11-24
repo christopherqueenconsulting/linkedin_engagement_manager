@@ -576,10 +576,28 @@ spent_merged_pr() {  # $1=tip $2=base(origin/<name>) $3=branch_pr_heads output -
   return 1
 }
 
+branch_checked_out_elsewhere() {  # $1=branch $2=worktree -> other path on stdout; rc 0=yes 1=no 2=unreadable
+  # Any worktree but $2 (the main checkout included) whose porcelain entry names refs/heads/$1.
+  local branch="$1" here list line path="" p
+  here="$(cd "$2" 2>/dev/null && pwd -P)" || here="$2"
+  list="$(git -C "$REPO" worktree list --porcelain 2>/dev/null)" || return 2
+  while IFS= read -r line; do
+    case "$line" in
+      "worktree "*) path="${line#worktree }" ;;
+      "branch refs/heads/$branch")
+        p="$(cd "$path" 2>/dev/null && pwd -P)" || p="$path"
+        [ "$p" = "$here" ] && continue
+        echo "$path"
+        return 0 ;;
+    esac
+  done <<< "$list"
+  return 1
+}
+
 restart_spent_branch() {  # $1=worktree (on $4) $2=branch $3=base $4=tip -> always 0, no stdout
   # $4 is the branch's tip as add_worktree found it: the local ref, else the remote-tracking ref.
   # Restarts the worktree's branch from $base when spent; otherwise leaves the attach untouched.
-  local wt="$1" branch="$2" base="$3" tip="$4" head tracking remote="" rc prs hit pr_no upstream new
+  local wt="$1" branch="$2" base="$3" tip="$4" head tracking remote="" rc prs hit pr_no upstream new other
   case "$base" in
     origin/?*) ;;
     *) log "add_worktree: attaching $branch (base $base is not an origin ref)." >&2; return 0 ;;
@@ -619,6 +637,16 @@ restart_spent_branch() {  # $1=worktree (on $4) $2=branch $3=base $4=tip -> alwa
     return 0
   }
   pr_no="${hit%% *}"
+  # git 2.43 (prod) lets `checkout -B` reset a branch another worktree has checked out (2.44 began
+  # refusing), which would rewrite that worktree's HEAD under it. Never reset a branch held elsewhere.
+  rc=0
+  other="$(branch_checked_out_elsewhere "$branch" "$wt")" || rc=$?
+  case "$rc" in
+    0) log "add_worktree: attaching $branch (checked-out-elsewhere: $other; spent, merged PR #$pr_no)." >&2
+       return 0 ;;
+    1) ;;
+    *) log "add_worktree: attaching $branch (worktree-list-unreadable)." >&2; return 0 ;;
+  esac
   upstream="$(git -C "$wt" rev-parse --abbrev-ref --symbolic-full-name "$branch@{upstream}" 2>/dev/null)" \
     || upstream=""
   # --no-track: a branch restarted from origin/main must never take origin/main as its upstream.
@@ -670,8 +698,17 @@ add_worktree() {  # $1=branch  $2=base(ref)  -> path on stdout
   rm -rf "$wt"
   git -C "$REPO" worktree prune >/dev/null 2>&1
   if git -C "$REPO" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
-    git -C "$REPO" worktree add "$wt" "origin/$branch" >/dev/null 2>&1
-    git -C "$wt" checkout -B "$branch" "origin/$branch" >/dev/null 2>&1
+    if git -C "$REPO" show-ref --verify --quiet "refs/heads/$branch" \
+       && ! git -C "$REPO" merge-base --is-ancestor "refs/heads/$branch" "refs/remotes/origin/$branch" 2>/dev/null; then
+      # The local branch is ahead of (or diverged from) the tracking ref: it carries commits that
+      # ref does not. `checkout -B <branch> origin/<branch>` would move it BACK and orphan them, so
+      # attach the local branch as it is. refs/heads/<branch> only ever fast-forwards here.
+      log "add_worktree: attaching local $branch (has commits not on origin/$branch; never moved back)." >&2
+      git -C "$REPO" worktree add "$wt" "$branch" >/dev/null 2>&1
+    else
+      git -C "$REPO" worktree add "$wt" "origin/$branch" >/dev/null 2>&1
+      git -C "$wt" checkout -B "$branch" "origin/$branch" >/dev/null 2>&1
+    fi
     # A phased issue's merged branch is SPENT: restart it from $base rather than build the next
     # phase on commits main already carries. Never discards work; see restart_spent_branch.
     [ -d "$wt" ] && restart_spent_branch "$wt" "$branch" "$base" "$tip"

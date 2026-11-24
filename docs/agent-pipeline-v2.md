@@ -123,7 +123,8 @@ merge moves the tip off the merged head, so it attaches. No data loss by constru
 | Branch | Worktree |
 |---|---|
 | `git fetch origin main` failed, or `ls-remote` of origin unreadable | attach |
-| the tip, the tracking ref and origin's ref (where each exists) disagree | attach (`refs-disagree`): a reset never abandons a commit some ref of the branch names |
+| the tip, the tracking ref and origin's ref (where each exists) disagree | attach (`refs-disagree`), no reset. `refs/heads/<branch>` never moves backwards: a local ref NOT an ancestor of the tracking ref (unpushed or diverged commits) is attached as-is (`attaching local <branch>`), and only a local ref equal to or behind it is fast-forwarded onto the tracking ref first |
+| the branch is checked out in ANOTHER worktree (`git worktree list --porcelain`), or that list is unreadable | attach (`checked-out-elsewhere` / `worktree-list-unreadable`), no reset: git 2.43's `checkout -B` does not refuse a branch held elsewhere, and would move that worktree's HEAD under it |
 | PR list unreadable | attach |
 | an OPEN PR into ANY base | attach (a fix/review/rebase lane works that head). The PR list is therefore not `--base main` |
 | SPENT, origin has no `<branch>` (deleted on merge) | **fresh** from `origin/main`, push NOTHING (the lane's first push creates it); the stale tracking ref is dropped, as a prune would |
