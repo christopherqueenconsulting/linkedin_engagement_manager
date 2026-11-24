@@ -52,6 +52,19 @@ export interface McpMintResponse {
 
 export const MCP_INFO_KEY = 'mcp-info'
 
+/** The server's `expired` is the answer; the clock is only a fallback for a row read long ago. */
+export function isExpired(row: McpTokenRow, now: Date = new Date()): boolean {
+  if (row.expired) return true
+  if (!row.expires_at) return false
+  const d = new Date(row.expires_at)
+  return !Number.isNaN(d.getTime()) && d <= now
+}
+
+/** A token that can still reach LEM: neither revoked nor expired. */
+export function isLive(row: McpTokenRow): boolean {
+  return !row.revoked && !isExpired(row)
+}
+
 /** The label is nullable server-side; a row is never shown nameless. */
 export function rowLabel(row: Pick<McpTokenRow, 'label'>): string {
   return row.label?.trim() || 'Agent connection'

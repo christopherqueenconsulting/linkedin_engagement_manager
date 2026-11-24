@@ -1,19 +1,11 @@
 import SettingsCard from '../../components/SettingsCard'
-import { rowLabel } from '../../hooks/useMcpCredentials'
+import { isExpired, isLive, rowLabel } from '../../hooks/useMcpCredentials'
 import type { McpTokenRow } from '../../hooks/useMcpCredentials'
 
 function when(value: string | null): string {
   if (!value) return '—'
   const d = new Date(value)
   return Number.isNaN(d.getTime()) ? '—' : d.toLocaleDateString()
-}
-
-/** The server's `expired` is the answer; the clock is only a fallback for a row read long ago. */
-function isExpired(row: McpTokenRow, now: Date = new Date()): boolean {
-  if (row.expired) return true
-  if (!row.expires_at) return false
-  const d = new Date(row.expires_at)
-  return !Number.isNaN(d.getTime()) && d <= now
 }
 
 function scopeLabel(scope: string): string {
@@ -29,20 +21,23 @@ const BADGE = 'text-xs font-semibold px-2 py-0.5 rounded-control'
  *
  * A revoked or expired row is greyed and kept, so the history stays readable, but it has no
  * actions: rotate only replaces a LIVE token (the server answers 404 otherwise), and there is
- * nothing left to revoke. A new connection is the way back.
+ * nothing left to revoke. A new connection is the way back. `canRotate` is false while the rollout
+ * flag is off: the server refuses a rotate then, but a live token must still be revocable.
  */
 export default function ConnectedAgentsCard({
   tokens,
   busyId,
   onRotate,
   onRevoke,
+  canRotate = true,
 }: {
   tokens: McpTokenRow[]
   busyId: number | null
   onRotate: (row: McpTokenRow) => void
   onRevoke: (row: McpTokenRow) => void
+  canRotate?: boolean
 }) {
-  const noneLive = tokens.length > 0 && tokens.every((t) => t.revoked || isExpired(t))
+  const noneLive = tokens.length > 0 && !tokens.some(isLive)
 
   return (
     <SettingsCard
@@ -61,7 +56,7 @@ export default function ConnectedAgentsCard({
           <ul className="divide-y divide-hairline border border-hairline rounded-panel">
             {tokens.map((t) => {
               const expired = isExpired(t)
-              const live = !t.revoked && !expired
+              const live = isLive(t)
               const busy = busyId === t.session_id
               const label = rowLabel(t)
               return (
@@ -91,6 +86,7 @@ export default function ConnectedAgentsCard({
                   </div>
                   {live && (
                     <div className="flex items-center gap-4 shrink-0">
+                      {canRotate && (
                       <button
                         type="button"
                         onClick={() => onRotate(t)}
@@ -100,6 +96,7 @@ export default function ConnectedAgentsCard({
                       >
                         Rotate
                       </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => onRevoke(t)}

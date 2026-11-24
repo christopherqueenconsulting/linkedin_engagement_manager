@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import AgentsPage from './AgentsPage'
@@ -71,6 +71,13 @@ function mintResponse(token = TOKEN) {
   }
 }
 
+function factorRefusal() {
+  return { response: { status: 403, data: { detail: {
+    code: 'mcp_needs_strong_factor',
+    message: 'Add a passkey or an authenticator app before connecting an agent.',
+  } } } }
+}
+
 function stepUpRefusal() {
   return { response: { status: 403, data: { detail: { code: 'step_up_required', methods: ['totp'] } } } }
 }
@@ -135,12 +142,36 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('AgentsPage flag gate', () => {
-  it('sends a direct visit home when mcp-server-enabled is off', async () => {
+  it('sends a direct visit home when mcp-server-enabled is off and nothing is live', async () => {
     flagState.on = false
+    info = { enabled: false, mcp_url: URL, tokens: [row({ expired: true }), row({ session_id: 8, revoked: true })] }
     harness()
     await waitFor(() => expect(screen.getByText('Home page')).toBeTruthy())
     expect(screen.queryByRole('heading', { name: 'Agents' })).toBeNull()
-    expect(get).not.toHaveBeenCalled()
+    // Nothing that could mint was ever asked for.
+    expect(get.mock.calls.some((c) => String(c[0]).startsWith('/user/auth-factors'))).toBe(false)
+  })
+
+  it('flag off with a live token: a read-only list that can still revoke it, and nothing else', async () => {
+    flagState.on = false
+    info = { enabled: false, mcp_url: URL, tokens: [row()] }
+    post.mockResolvedValue({ data: { detail: { revoked: 1 } } })
+    harness()
+    const r = await screen.findByTestId('mcp-row-7')
+    expect(screen.getByText(/Agent connections are turned off for your account/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Create connection' })).toBeNull()
+    expect(screen.queryByText('Connect your agent')).toBeNull()
+    expect(within(r).queryByRole('button', { name: /^Rotate/ })).toBeNull()
+    fireEvent.click(within(r).getByRole('button', { name: 'Revoke Claude Code - macOS' }))
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/user/sessions/revoke', {
+      session_token: 'cookie', session_id: 7 }))
+  })
+
+  it('the off banner states what the server reported, not a cause', async () => {
+    info = { enabled: false, mcp_url: URL, tokens: [] }
+    harness()
+    const banner = await screen.findByText(/Agent connections are turned off for your account/)
+    expect(banner.textContent).not.toMatch(/operator|kill|maintenance|outage/i)
   })
 
   it('does not bounce anyone while the flags payload is still in flight', () => {
@@ -172,7 +203,8 @@ describe('AgentsPage minting (issue #2687)', () => {
     expect(screen.getByLabelText('Your token').textContent).toBe(TOKEN)
     const cli = screen.getByLabelText('Terminal command').textContent ?? ''
     expect(cli).toContain(`export LEM_MCP_TOKEN=${TOKEN}`)
-    expect(cli).toContain('--header "Authorization: Bearer ${LEM_MCP_TOKEN}"')
+    // Single-quoted: Claude Code stores the NAME and expands it at load, never the token itself.
+    expect(cli).toContain("--header 'Authorization: Bearer ${LEM_MCP_TOKEN}'")
     expect(screen.getByLabelText('Or, per project').textContent).not.toContain(TOKEN)
 
     expect(captured).toContainEqual(['mcpTokenMinted', 30, 'mcp'])
@@ -247,10 +279,11 @@ describe('AgentsPage minting (issue #2687)', () => {
 
   it('403 mcp_needs_strong_factor swaps Create for the enrol hint, with no step-up ceremony', async () => {
     // The server checks the factor BEFORE step-up (P2), so this refusal must never open the modal.
-    post.mockRejectedValue({ response: { status: 403, data: { detail: {
-      code: 'mcp_needs_strong_factor',
-      message: 'Add a passkey or an authenticator app before connecting an agent.',
-    } } } })
+    // The cached factors read said yes (stale); the server, and every read after it, says no.
+    post.mockImplementation(() => {
+      strong = false
+      return Promise.reject(factorRefusal())
+    })
     harness()
     await ready()
     fireEvent.click(screen.getByRole('button', { name: 'Create connection' }))
@@ -259,6 +292,32 @@ describe('AgentsPage minting (issue #2687)', () => {
     expect(screen.queryByRole('button', { name: 'Create connection' })).toBeNull()
     expect(screen.queryByText("Confirm it's you")).toBeNull()
     expect(post).toHaveBeenCalledTimes(1)
+  })
+
+  it('the refusal stands only until a fresher factors read: enrolling brings Create back', async () => {
+    post.mockRejectedValue(factorRefusal())
+    harness()
+    await ready()
+    // A refusal the factors read immediately contradicts would hide nothing, so pin the read to
+    // "no" for the refetch the 403 triggers, then enrol.
+    strong = false
+    fireEvent.click(screen.getByRole('button', { name: 'Create connection' }))
+    await screen.findByRole('link', { name: 'Enrol a passkey or authenticator first' })
+
+    strong = true
+    await act(() => client.invalidateQueries({ queryKey: ['auth-factors'] }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create connection' })).toBeTruthy())
+    expect(screen.queryByRole('link', { name: 'Enrol a passkey or authenticator first' })).toBeNull()
+  })
+
+  it('the 403 re-reads the factors rather than trusting a stale cache', async () => {
+    post.mockRejectedValue(factorRefusal())
+    harness()
+    await ready()
+    const before = get.mock.calls.filter((c) => String(c[0]).startsWith('/user/auth-factors')).length
+    fireEvent.click(screen.getByRole('button', { name: 'Create connection' }))
+    await waitFor(() => expect(get.mock.calls.filter((c) => String(c[0]).startsWith('/user/auth-factors')).length)
+      .toBeGreaterThan(before))
   })
 
   it('429 mcp_mint_rate_limited asks the user to wait', async () => {
@@ -288,7 +347,7 @@ describe('AgentsPage show-once window', () => {
     fireEvent.click(screen.getByRole('button', { name: /hide the token/ }))
     expect(document.body.textContent).not.toContain(TOKEN)
     expect(screen.getByLabelText('Terminal command').textContent).toContain('<YOUR_TOKEN>')
-    expect(screen.getByText(/Rotate a connection below to get a new paste-ready command/)).toBeTruthy()
+    expect(screen.getByText(/Rotate a live connection below, or create a new one, to get a paste-ready command/)).toBeTruthy()
   })
 
   it('a later render never has the token — it lived in component state only', async () => {
@@ -312,7 +371,7 @@ describe('AgentsPage show-once window', () => {
     await ready()
     fireEvent.click(screen.getByRole('button', { name: 'Create connection' }))
     await waitFor(() => expect(screen.getByText(/Shown once/)).toBeTruthy())
-    const inlineHeader = `--header "Authorization: Bearer ${TOKEN}"`
+    const inlineHeader = `--header 'Authorization: Bearer ${TOKEN}'`
     expect(screen.getByLabelText('Terminal command').textContent).not.toContain(inlineHeader)
 
     fireEvent.click(screen.getByRole('checkbox', { name: /Show inline token/ }))
@@ -391,6 +450,90 @@ describe('AgentsPage clients', () => {
     await ready()
     fireEvent.change(screen.getByRole('textbox', { name: 'Name' }), { target: { value: 'bad/label' } })
     expect((screen.getByRole('button', { name: 'Create connection' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+})
+
+describe('AgentsPage show-once ties to its row', () => {
+  async function mintNine() {
+    post.mockResolvedValueOnce(mintResponse())
+    harness()
+    await ready()
+    // The list now holds the new connection (session 9), as the refresh after a mint returns it.
+    info = { enabled: true, mcp_url: URL, tokens: [row({ session_id: 9, label: 'New one' })] }
+    fireEvent.click(screen.getByRole('button', { name: 'Create connection' }))
+    await waitFor(() => expect(screen.getByLabelText('Your token').textContent).toBe(TOKEN))
+    await screen.findByTestId('mcp-row-9')
+  }
+
+  it('revoking the row whose token is on screen takes the token off the screen', async () => {
+    await mintNine()
+    post.mockResolvedValueOnce({ data: { detail: { revoked: 1 } } })
+    fireEvent.click(screen.getByRole('button', { name: 'Revoke New one' }))
+    await waitFor(() => expect(screen.queryByLabelText('Your token')).toBeNull())
+    expect(document.body.textContent).not.toContain(TOKEN)
+  })
+
+  it('a failed rotate of that row clears it too — the server revokes before it mints', async () => {
+    await mintNine()
+    post.mockRejectedValueOnce({ response: { status: 500, data: { detail: 'Could not create the agent token' } } })
+    fireEvent.click(screen.getByRole('button', { name: 'Rotate New one' }))
+    await waitFor(() => expect(screen.getByText(/Could not rotate that connection/)).toBeTruthy())
+    expect(screen.queryByLabelText('Your token')).toBeNull()
+  })
+
+  it('revoking a DIFFERENT row leaves the shown token alone', async () => {
+    await mintNine()
+    info = { enabled: true, mcp_url: URL, tokens: [row({ session_id: 9, label: 'New one' }), row()] }
+    await act(() => client.invalidateQueries({ queryKey: ['mcp-info'] }))
+    await screen.findByTestId('mcp-row-7')
+    post.mockResolvedValueOnce({ data: { detail: { revoked: 1 } } })
+    fireEvent.click(screen.getByRole('button', { name: 'Revoke Claude Code - macOS' }))
+    await waitFor(() => expect(screen.getByText(/Revoked Claude Code - macOS/)).toBeTruthy())
+    expect(screen.getByLabelText('Your token').textContent).toBe(TOKEN)
+  })
+})
+
+describe('AgentsPage shells and Claude Desktop', () => {
+  const realUA = navigator.userAgent
+  afterEach(() => {
+    Object.defineProperty(window.navigator, 'userAgent', { value: realUA, configurable: true })
+  })
+
+  it('switches the commands to PowerShell on the toggle', async () => {
+    post.mockResolvedValue(mintResponse())
+    harness()
+    await ready()
+    fireEvent.click(screen.getByRole('button', { name: 'Create connection' }))
+    await waitFor(() => expect(screen.getByText(/Shown once/)).toBeTruthy())
+    expect(screen.getByLabelText('Terminal command').textContent).toContain(`export LEM_MCP_TOKEN=${TOKEN}`)
+    fireEvent.click(screen.getByRole('radio', { name: 'PowerShell' }))
+    const cli = screen.getByLabelText('Terminal command').textContent ?? ''
+    expect(cli).toContain(`$env:LEM_MCP_TOKEN = '${TOKEN}'`)
+    expect(cli).not.toContain('export ')
+  })
+
+  it('defaults to PowerShell on a Windows browser', async () => {
+    Object.defineProperty(window.navigator, 'userAgent', {
+      value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)', configurable: true })
+    harness()
+    await ready()
+    expect((screen.getByRole('radio', { name: 'PowerShell' }) as HTMLInputElement).checked).toBe(true)
+    expect(screen.getByLabelText('Terminal command').textContent).toContain("$env:LEM_MCP_TOKEN = '<YOUR_TOKEN>'")
+  })
+
+  it('Claude Desktop gets the fresh token in its config, and the copy records it as inline', async () => {
+    post.mockResolvedValue(mintResponse())
+    harness()
+    await ready()
+    fireEvent.click(screen.getByRole('button', { name: 'Create connection' }))
+    await waitFor(() => expect(screen.getByText(/Shown once/)).toBeTruthy())
+    fireEvent.click(screen.getByRole('tab', { name: 'Claude Desktop' }))
+    const config = screen.getByLabelText('Config file').textContent ?? ''
+    expect(JSON.parse(config).mcpServers.lem.env.AUTH_HEADER).toBe(`Bearer ${TOKEN}`)
+    expect(screen.getByText(/stores your token in/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Copy Config file' }))
+    await waitFor(() => expect(captured).toContainEqual(['mcpCommandCopied', 'claude-desktop', 'inline']))
+    expectTokenNowhereButTheDom()
   })
 })
 
@@ -509,10 +652,24 @@ describe('AgentsPage error and off states', () => {
     expect(screen.queryByText('Connect your agent')).toBeNull()
   })
 
-  it('shows a banner when the server says connections are switched off', async () => {
-    info = { enabled: false, mcp_url: URL, tokens: [] }
+  it('with no public URL, Create is disabled and says why — no token the user could not use', async () => {
+    info = { enabled: true, mcp_url: null, tokens: [] }
     harness()
-    await waitFor(() => expect(screen.getByText(/Agent connections are switched off right now/)).toBeTruthy())
+    await waitFor(() => expect(screen.getAllByText(/no public address to give your agent/).length).toBeGreaterThan(0))
+    expect((screen.getByRole('button', { name: 'Create connection' }) as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Create connection' }))
+    expect(post).not.toHaveBeenCalled()
+  })
+
+  it('a minted token is shown even when the commands cannot render', async () => {
+    // mcp-token/info failed, and the mint answered without a URL: the token must still be visible.
+    info = new Error('down')
+    post.mockResolvedValue({ data: { detail: { ...mintResponse().data.detail, mcp_url: null } } })
+    harness()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create connection' })).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'Create connection' }))
+    await waitFor(() => expect(screen.getByLabelText('Your token').textContent).toBe(TOKEN))
+    expect(screen.queryByText('Connect your agent')).toBeNull()
   })
 
   it('never puts the token in a URL — mint is a POST body, info a token-free GET', async () => {

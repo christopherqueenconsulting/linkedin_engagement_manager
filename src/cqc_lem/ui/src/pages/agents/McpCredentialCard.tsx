@@ -25,6 +25,7 @@ const ENROL_PATH = '/account?section=billing'
 export default function McpCredentialCard({
   client,
   hasStrongFactor,
+  unavailable = null,
   busy,
   error,
   onCreate,
@@ -32,6 +33,8 @@ export default function McpCredentialCard({
   client: ClientId
   /** null while unknown — the server is the gate, so unknown still offers Create. */
   hasStrongFactor: boolean | null
+  /** Why a token minted now could not be used (no URL to connect to). Create is disabled while set. */
+  unavailable?: string | null
   busy: boolean
   error: string | null
   onCreate: (request: McpMintRequest) => void
@@ -69,7 +72,7 @@ export default function McpCredentialCard({
           className="space-y-3"
           onSubmit={(e) => {
             e.preventDefault()
-            if (!labelOk || busy) return
+            if (!labelOk || busy || unavailable) return
             onCreate({ label: label.trim(), ttl_days: ttlDays, outreach })
           }}
         >
@@ -119,10 +122,11 @@ export default function McpCredentialCard({
               </span>
             </span>
           </label>
+          {unavailable && <p className="text-sm text-warning" role="status">{unavailable}</p>}
           {error && <p className="text-sm text-danger" role="alert">{error}</p>}
           <button
             type="submit"
-            disabled={busy || !labelOk}
+            disabled={busy || !labelOk || !!unavailable}
             className="bg-accent text-on-accent px-4 py-2 rounded-control text-sm font-semibold hover:bg-accent/90
               disabled:opacity-50"
           >
