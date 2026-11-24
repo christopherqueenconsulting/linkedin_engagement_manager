@@ -45,6 +45,7 @@ A DM is sent only once it is visible in the thread. The cost of getting this wro
 metric — it is the account.
 """
 
+import hashlib
 import inspect
 import json
 import os
@@ -195,6 +196,7 @@ from cqc_lem.utilities.db import (
     last_catchup_sent_at,
     mark_followup,
     max_catchup_touches_allowed,
+    record_lead_reply_event,
     record_unreadable_read,
     release_catchup_send_attempt,
     reset_unreadable_reads,
@@ -1778,6 +1780,12 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
                     lead_ctx = {"prefs": get_engagement_preferences(user_id),
                                 "synthesis": get_or_create_profile_synthesis(user_id, my_profile)}
                 their_message = _last_inbound_message(driver)
+                # Outcome tracking (#2658 P4): one event per distinct reply, off the read we already
+                # made. Nothing is navigated or sent; a failed write never blocks the follow-up.
+                reply_basis = their_message or f"followup:{f['id']}"
+                record_lead_reply_event(
+                    user_id, "dm", "dm:" + hashlib.sha1(reply_basis.encode()).hexdigest()[:20],
+                    person_name=f.get("first_name"), person_profile_url=f["profile_url"])
                 _flag_lead_signal(user_id, their_message, LeadSignalSource.DM,
                                   "thread", person_name=f.get("first_name"),
                                   person_profile_url=f["profile_url"], channel=LeadSignalChannel.DM,

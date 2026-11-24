@@ -130,6 +130,7 @@ from cqc_lem.utilities.db import (
     record_connection_accepted,
     record_follower_stat,
     record_lead_magnet_sent,
+    record_lead_reply_event,
     record_post_stats,
     set_profile_synthesis,
     update_commented_post_key,
@@ -2481,6 +2482,8 @@ def _read_comment_outcome(driver, wait, user_id: int, post_url: str, our_slug: s
         for _c, a in replies if not _href_is_profile(a, our_slug))
     if v2:
         outcome["reader_version"] = 2
+    if outcome["author_replied"]:
+        outcome["_author_slug"] = author_slug  # popped by the sweep before the row is written
     return outcome
 
 
@@ -2577,7 +2580,13 @@ def _run_comment_outcomes_sweep(user_id: int) -> str:
                 log_warning("Comment outcome check failed", exc=e, user_id=user_id,
                             task_name="sweep_comment_outcomes")
                 continue
+            author_slug = outcome.pop("_author_slug", None)
             record_comment_outcome(user_id, row.get("log_id"), post_key=key, **outcome)
+            if author_slug:
+                # Outcome tracking (#2658 P4): the post author answered our comment — one event per
+                # comment (log id), from the read just made; no extra navigation, nothing sent.
+                record_lead_reply_event(user_id, "comment", f"comment:{row.get('log_id')}",
+                                        person_profile_url=f"https://www.linkedin.com/in/{author_slug}/")
             track_comment_outcome(user_id, row.get("log_id"), outcome, post_key=key)
             if outcome["status"] == "skipped":
                 skipped += 1
