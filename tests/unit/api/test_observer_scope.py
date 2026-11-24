@@ -238,7 +238,7 @@ class TestObserverEndToEnd:
     def test_an_allowed_read_is_a_200(self, api_client: Any) -> None:
         with _session("observer"), \
              patch(f"{_USER}.list_user_sessions", return_value=[]), \
-             patch(f"{_USER}.get_auth_audit_events", return_value=[]), \
+             patch(f"{_USER}.list_auth_audit_events", return_value=[]), \
              patch(f"{_USER}.get_user_public_uid", return_value="pub-1"), \
              patch(f"{_USER}.get_user_email", return_value=_EMAIL):
             resp = api_client.get("/api/user/security", params={"session_token": _TOKEN})
@@ -302,7 +302,7 @@ class TestObserverEndToEnd:
     def test_a_full_session_is_untouched(self, api_client: Any) -> None:
         with _session("full"), \
              patch(f"{_USER}.list_user_sessions", return_value=[]), \
-             patch(f"{_USER}.get_auth_audit_events", return_value=[]), \
+             patch(f"{_USER}.list_auth_audit_events", return_value=[]), \
              patch(f"{_USER}.get_user_public_uid", return_value="pub-1"), \
              patch(f"{_USER}.get_user_email", return_value=_EMAIL):
             resp = api_client.get("/api/user/security", params={"session_token": _TOKEN})
@@ -364,7 +364,8 @@ class TestObserverTokenTTL:
 
     def test_the_fixed_ttl_scopes_are_exactly_the_machine_held_ones(self) -> None:
         from cqc_lem.platform.db.repositories.auth import FIXED_TTL_SCOPES
-        assert FIXED_TTL_SCOPES == frozenset({"agent", "observer", "operator", "assist"})
+        assert FIXED_TTL_SCOPES == frozenset({"agent", "observer", "operator", "assist", "mcp",
+                                                    "mcp_outreach"})
 
 
 class TestObserverTokenMint:

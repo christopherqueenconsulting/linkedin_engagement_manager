@@ -2726,6 +2726,79 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/user/mcp-token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mint Mcp Token
+         * @description Mint an MCP token for the user's own coding agent, shown exactly once in the response.
+         *
+         *     Scope `mcp` reads the account's own content, analytics, plan and settings; `outreach=true` mints
+         *     `mcp_outreach`, which adds the lists holding other people's data. Neither can approve, send or
+         *     configure anything, nor reach raw `/api` without the gate (`docs/identity-and-sessions.md`).
+         */
+        post: operations["mint_mcp_token_api_user_mcp_token_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/user/mcp-token/info": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Mcp Info
+         * @description The Agents tab's read: enabled, the URL to connect to, and every MCP token on the account.
+         *
+         *     Token-free: rows carry their id, label and dates, never a token or a hash. `calls_7d` and
+         *     `last_client_name` come from Redis and are null when it cannot be read: unknown, never 0.
+         *     Answered even when the rollout flag is off (`enabled: false`), so tokens minted before a
+         *     rollback stay visible and revocable.
+         */
+        get: operations["get_mcp_info_api_user_mcp_token_info_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/user/mcp-token/rotate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rotate Mcp Token
+         * @description Replace one of the caller's MCP tokens with a new one: same label, scope and TTL.
+         *
+         *     The old token is revoked FIRST. Rotation is what someone does when a token may have leaked, so
+         *     a failure part-way must leave no live old token behind; the cost is that a failed mint leaves
+         *     the user with none, and they mint again.
+         */
+        post: operations["rotate_mcp_token_api_user_mcp_token_rotate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/user/member-post-analytics-connection": {
         parameters: {
             query?: never;
@@ -5515,6 +5588,37 @@ export interface components {
          *     regardless of whether a row was found to delete.
          */
         LogoutRequest: {
+            /** Session Token */
+            session_token?: string | null;
+        };
+        /**
+         * McpTokenRequest
+         * @description Body of `POST /user/mcp-token`.
+         */
+        McpTokenRequest: {
+            /** Label */
+            label?: string | null;
+            /**
+             * Outreach
+             * @description Also grant the outreach and leads lists (other people's data): scope `mcp_outreach`.
+             * @default false
+             */
+            outreach: boolean;
+            /** Session Token */
+            session_token?: string | null;
+            /**
+             * Ttl Days
+             * @default 30
+             */
+            ttl_days: number;
+        };
+        /**
+         * McpTokenRotateRequest
+         * @description Body of `POST /user/mcp-token/rotate`.
+         */
+        McpTokenRotateRequest: {
+            /** Session Id */
+            session_id: number;
             /** Session Token */
             session_token?: string | null;
         };
@@ -11634,6 +11738,194 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
+            };
+        };
+    };
+    mint_mcp_token_api_user_mcp_token_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["McpTokenRequest"];
+            };
+        };
+        responses: {
+            /** @description Token minted; shown once */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                };
+            };
+            /** @description Invalid or expired session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Step-up required, or no strong factor enrolled */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The MCP server is not enabled for this account */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Already at the active-token limit */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Too many mints this hour */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The token could not be created; nothing was stored */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_mcp_info_api_user_mcp_token_info_get: {
+        parameters: {
+            query?: {
+                session_token?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Whether the MCP server is enabled, its URL, and this account's tokens */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                };
+            };
+            /** @description Invalid or expired session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description The token list could not be read */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    rotate_mcp_token_api_user_mcp_token_rotate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["McpTokenRotateRequest"];
+            };
+        };
+        responses: {
+            /** @description Old token revoked, new token minted; shown once */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                };
+            };
+            /** @description Invalid or expired session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Step-up required, or no strong factor enrolled */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such live agent token on this account, or the server is not enabled */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Too many mints this hour */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The token could not be read */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

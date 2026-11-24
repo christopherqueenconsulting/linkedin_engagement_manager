@@ -235,7 +235,7 @@ class TestExtensionScope:
     def test_a_full_session_is_untouched_by_the_narrowing(self, api_client):
         with _session("full"), \
              patch(f"{_USER}.list_user_sessions", return_value=[]), \
-             patch(f"{_USER}.get_auth_audit_events", return_value=[]), \
+             patch(f"{_USER}.list_auth_audit_events", return_value=[]), \
              patch(f"{_USER}.get_user_public_uid", return_value="pub-1"), \
              patch(f"{_USER}.get_user_email", return_value=_EMAIL):
             resp = api_client.get("/api/user/security", params={"session_token": _TOKEN})
@@ -248,7 +248,7 @@ class TestExtensionScope:
         with patch(f"{_M}._db_resolve_session",
                    side_effect=lambda t: {"user_id": _UID, "scope": None} if t == _TOKEN else None), \
              patch(f"{_USER}.list_user_sessions", return_value=[]), \
-             patch(f"{_USER}.get_auth_audit_events", return_value=[]), \
+             patch(f"{_USER}.list_auth_audit_events", return_value=[]), \
              patch(f"{_USER}.get_user_public_uid", return_value="pub-1"), \
              patch(f"{_USER}.get_user_email", return_value=_EMAIL):
             resp = api_client.get("/api/user/security", params={"session_token": _TOKEN})
@@ -428,7 +428,7 @@ class TestEnrollmentHold:
         with _deadline(""), _session("enroll"), \
              patch(f"{_M}.release_enrollment_scope", return_value=True) as released, \
              patch(f"{_USER}.list_user_sessions", return_value=[]), \
-             patch(f"{_USER}.get_auth_audit_events", return_value=[]), \
+             patch(f"{_USER}.list_auth_audit_events", return_value=[]), \
              patch(f"{_USER}.get_user_public_uid", return_value="pub-1"), \
              patch(f"{_USER}.get_user_email", return_value=_EMAIL):
             resp = api_client.get("/api/user/security", params={"session_token": _TOKEN})
@@ -446,7 +446,7 @@ class TestEnrollmentHold:
              patch("cqc_lem.utilities.auth_factors.count_auth_factors", return_value=1), \
              patch(f"{_M}.release_enrollment_scope", return_value=True) as released, \
              patch(f"{_USER}.list_user_sessions", return_value=[]), \
-             patch(f"{_USER}.get_auth_audit_events", return_value=[]), \
+             patch(f"{_USER}.list_auth_audit_events", return_value=[]), \
              patch(f"{_USER}.get_user_public_uid", return_value="pub-1"), \
              patch(f"{_USER}.get_user_email", return_value=_EMAIL):
             resp = api_client.get("/api/user/security", params={"session_token": _TOKEN})
@@ -461,7 +461,7 @@ class TestEnrollmentHold:
              patch("cqc_lem.utilities.auth_factors.count_auth_factors", return_value=1), \
              patch(f"{_M}.release_enrollment_scope", side_effect=RuntimeError("db down")), \
              patch(f"{_USER}.list_user_sessions", return_value=[]), \
-             patch(f"{_USER}.get_auth_audit_events", return_value=[]), \
+             patch(f"{_USER}.list_auth_audit_events", return_value=[]), \
              patch(f"{_USER}.get_user_public_uid", return_value="pub-1"), \
              patch(f"{_USER}.get_user_email", return_value=_EMAIL):
             resp = api_client.get("/api/user/security", params={"session_token": _TOKEN})

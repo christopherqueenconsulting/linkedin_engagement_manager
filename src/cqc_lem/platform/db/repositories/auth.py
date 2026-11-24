@@ -146,37 +146,75 @@ SESSION_SCOPE_OPERATOR = "operator"
 # An `assist` session (#2647 P4) is held by the LEM Assist browser extension: it may GET the approved
 # comment queue and POST that one comment as posted, and nothing else.
 SESSION_SCOPE_ASSIST = "assist"
+# The two end-user MCP seats (epic #2682, `docs/agent-mcp-plan.md` §3). Held by the user's own coding
+# agent, presented ONLY as a bearer at `POST /api/mcp`, and refused on raw `/api` unless the request
+# carries this worker's in-process dispatch secret. `mcp` reads the user's own content, analytics,
+# plan and settings; `mcp_outreach` adds the PII lists (DMs, leads, lead signals, catch-ups,
+# targets) and is opted into at mint.
+SESSION_SCOPE_MCP = "mcp"
+SESSION_SCOPE_MCP_OUTREACH = "mcp_outreach"
+MCP_SESSION_SCOPES = frozenset({SESSION_SCOPE_MCP, SESSION_SCOPE_MCP_OUTREACH})
+# Every MCP token starts with this, so a leaked one is recognisable in a paste or a secret scanner.
+# The hash covers the WHOLE string, prefix included, so `resolve_session` needs no change for it.
+MCP_TOKEN_PREFIX = "lem_mcp_"
 # Scopes whose expiry is fixed at mint and never slid by `resolve_session`. Every one of them is a
 # credential a machine holds on a schedule, so a sliding window would make it renew forever.
 FIXED_TTL_SCOPES = frozenset({SESSION_SCOPE_AGENT, SESSION_SCOPE_OBSERVER, SESSION_SCOPE_OPERATOR,
-                              SESSION_SCOPE_ASSIST})
-def resolve_session(token: str) -> Optional[dict]:
-    """Validate a session token and, if live, slide its expiry forward — returning WHO it is and
-    WHAT it may do in one read.
+                              SESSION_SCOPE_ASSIST, *MCP_SESSION_SCOPES})
+# One MCP tool call resolves its token once at the gate and again on every inner loopback call, so
+# an unthrottled `last_seen_at` write would be N row writes per tool call. Mcp scopes only; every
+# other seat keeps writing it on each request (plan appendix, critique M7).
+MCP_LAST_SEEN_THROTTLE_SECONDS = 60
 
-    Sliding idle window (SESSION_IDLE_HOURS) so an active user never has to request a new PIN,
-    bounded by an absolute cap (SESSION_ABSOLUTE_MAX_DAYS from first login) for security.
-    Expired/unknown/revoked tokens return None so the caller forces a fresh PIN.
 
-    An `agent` or `observer` session is the exception and does not slide at all — its expiry is
-    whatever `create_session(ttl_hours=...)` granted, fixed from mint (`FIXED_TTL_SCOPES`). See the
-    branch below for why.
+class SessionStoreUnavailable(Exception):
+    """The session lookup did not RUN, so nothing is known about the token either way.
 
-    The presented token is hashed before lookup (#745, 2b) — the plaintext never touches SQL.
+    `resolve_session` answers None for that, which is right for a browser (sign in again) and wrong
+    for the MCP gate: telling an agent "invalid token, create a new one" during a database blip
+    sends its user to mint a credential they did not need. `resolve_session_checked` raises this
+    instead, and the gate answers 503 `mcp_unavailable`.
+    """
 
-    `scope` rides along because the API resolver has to decide, on the SAME request, whether a
-    restricted session (`extension`, `enroll`) may reach the path it is calling (2c.1, issue #905).
-    Reading it separately would double a query every authenticated request already makes.
+
+def _last_seen_is_fresh(last_seen_at: Optional[datetime], now: datetime) -> bool:
+    """Was `last_seen_at` written within the MCP throttle window?"""
+    if last_seen_at is None:
+        return False
+    if last_seen_at.tzinfo is None:
+        last_seen_at = last_seen_at.replace(tzinfo=timezone.utc)
+    return now - last_seen_at < timedelta(seconds=MCP_LAST_SEEN_THROTTLE_SECONDS)
+
+
+def _resolve_session_row(token: str, raise_on_fault: bool,
+                         mutate_scopes: Optional[frozenset] = None) -> Optional[dict]:
+    """The one implementation behind `resolve_session` and `resolve_session_checked`.
+
+    Returns `{user_id, scope, session_id, expires_at}` for a live token, None for an unknown,
+    expired or revoked one. A database fault is None, or `SessionStoreUnavailable` when
+    `raise_on_fault` is set.
+
+    `mutate_scopes`, when given, is the only set of scopes this lookup may WRITE for: a session of
+    any other scope is read and nothing about it changes, neither its expiry nor `last_seen_at`.
+    None keeps `resolve_session`'s behaviour, which writes for every scope.
     """
     token_hash = hash_session_token(token)
     if not token_hash:
         return None
-    connection = _connection.get_db_connection()
+    if raise_on_fault:
+        try:
+            connection = _connection.get_db_connection()
+        except mysql.connector.Error as err:
+            log_error("Could not validate session token", exc=err)
+            raise SessionStoreUnavailable() from err
+    else:
+        # Unchanged for every other caller: a connect failure propagates exactly as it always has.
+        connection = _connection.get_db_connection()
     cursor = connection.cursor(dictionary=True)
     try:
         now = datetime.now(timezone.utc)
         cursor.execute(
-            "SELECT user_id, created_at, scope FROM sessions "
+            "SELECT id, user_id, created_at, scope, expires_at, last_seen_at FROM sessions "
             "WHERE session_token = %s AND expires_at > %s AND revoked_at IS NULL",
             (token_hash, now),
         )
@@ -185,6 +223,10 @@ def resolve_session(token: str) -> Optional[dict]:
             return None
 
         scope = row.get('scope') or SESSION_SCOPE_FULL
+        found = {"user_id": row['user_id'], "scope": scope, "session_id": row.get('id'),
+                 "expires_at": row.get('expires_at')}
+        if mutate_scopes is not None and scope not in mutate_scopes:
+            return found
 
         if scope in FIXED_TTL_SCOPES:
             # An agent (or observer) session's life is FIXED at mint, never slid (issue #1026). Sliding it is
@@ -197,12 +239,14 @@ def resolve_session(token: str) -> Optional[dict]:
             # deadline that only a human ceremony can extend, which is also why the absolute cap
             # (SESSION_ABSOLUTE_MAX_DAYS, counted from first login) is not applied here — it exists
             # to bound a sliding window, and there is none to bound.
+            if scope in MCP_SESSION_SCOPES and _last_seen_is_fresh(row.get('last_seen_at'), now):
+                return found
             cursor.execute(
                 "UPDATE sessions SET last_seen_at = %s WHERE session_token = %s",
                 (now, token_hash),
             )
             connection.commit()
-            return {"user_id": row['user_id'], "scope": scope}
+            return found
 
         new_expiry = now + timedelta(hours=SESSION_IDLE_HOURS)
         created_at = row.get('created_at')
@@ -217,13 +261,63 @@ def resolve_session(token: str) -> Optional[dict]:
             (new_expiry, now, token_hash),
         )
         connection.commit()
-        return {"user_id": row['user_id'], "scope": scope}
+        found["expires_at"] = new_expiry
+        return found
     except mysql.connector.Error as err:
         log_error("Could not validate session token", exc=err)
+        if raise_on_fault:
+            raise SessionStoreUnavailable() from err
         return None
     finally:
         cursor.close()
         connection.close()
+
+
+def resolve_session_checked(token: str,
+                            mutate_scopes: Optional[frozenset] = None) -> Optional[dict]:
+    """`resolve_session` for a caller that must tell "no such token" from "could not look".
+
+    Returns `{user_id, scope, session_id, expires_at}` for a live token and None for an unknown,
+    expired or revoked one, with the same expiry and `last_seen_at` rules as `resolve_session`.
+
+    Args:
+        token: The presented token.
+        mutate_scopes: When given, the only scopes this lookup may write for. The MCP gate passes
+            `MCP_SESSION_SCOPES`: it refuses every other scope, so a browser session presented
+            there must come out of the lookup exactly as it went in, its idle window unslid.
+
+    Raises:
+        SessionStoreUnavailable: The lookup did not run (a database fault).
+    """
+    return _resolve_session_row(token, raise_on_fault=True, mutate_scopes=mutate_scopes)
+
+
+def resolve_session(token: str) -> Optional[dict]:
+    """Validate a session token and, if live, slide its expiry forward — returning WHO it is and
+    WHAT it may do in one read.
+
+    Sliding idle window (SESSION_IDLE_HOURS) so an active user never has to request a new PIN,
+    bounded by an absolute cap (SESSION_ABSOLUTE_MAX_DAYS from first login) for security.
+    Expired/unknown/revoked tokens return None so the caller forces a fresh PIN.
+
+    An `agent` or `observer` session is the exception and does not slide at all — its expiry is
+    whatever `create_session(ttl_hours=...)` granted, fixed from mint (`FIXED_TTL_SCOPES`). See the
+    fixed-TTL branch in `_resolve_session_row` for why.
+
+    The presented token is hashed before lookup (#745, 2b) — the plaintext never touches SQL.
+
+    `scope` rides along because the API resolver has to decide, on the SAME request, whether a
+    restricted session (`extension`, `enroll`) may reach the path it is calling (2c.1, issue #905).
+    Reading it separately would double a query every authenticated request already makes.
+
+    An `mcp` / `mcp_outreach` session also skips the `last_seen_at` write when it already
+    happened within `MCP_LAST_SEEN_THROTTLE_SECONDS`. A database fault answers None; a caller
+    that must tell that apart from an unknown token uses `resolve_session_checked`.
+    """
+    resolved = _resolve_session_row(token, raise_on_fault=False)
+    if resolved is None:
+        return None
+    return {"user_id": resolved["user_id"], "scope": resolved["scope"]}
 def get_session_id(token: str) -> Optional[int]:
     """Row id of a live session, for audit rows that name the session that acted."""
     token_hash = hash_session_token(token)
@@ -946,7 +1040,7 @@ def get_passkey_by_credential_id(credential_id: str) -> Optional[dict]:
 def create_session(user_id: int, user_agent: Optional[str] = None,
                    ip: Optional[str] = None, label: Optional[str] = None,
                    scope: str = SESSION_SCOPE_FULL, verified: bool = False,
-                   ttl_hours: Optional[int] = None) -> Optional[str]:
+                   ttl_hours: Optional[int] = None, token_prefix: str = "") -> Optional[str]:
     """Mint a session and return the token to the CALLER ONLY — the row stores its SHA-256.
 
     Since #745 (2b) `sessions.session_token` holds the hash, so a DB dump hands over no live
@@ -961,29 +1055,44 @@ def create_session(user_id: int, user_agent: Optional[str] = None,
     headless agent runs on a schedule — a weekly one would find a 24h session dead every single
     run — so its row gets an explicit, longer life. It is still an ordinary revocable row on the
     Security card, so a long TTL is not a one-way door.
+
+    `token_prefix` is prepended to the random part (`lem_mcp_` for an MCP token), so a leaked token
+    is recognisable. The stored hash covers the whole string, so resolving it is unchanged.
     """
-    import secrets
-    token = secrets.token_hex(32)
-    now = datetime.now(timezone.utc)
-    expires_at = now + timedelta(hours=ttl_hours if ttl_hours is not None else SESSION_IDLE_HOURS)
+    hours = ttl_hours if ttl_hours is not None else SESSION_IDLE_HOURS
     try:
         with db_cursor(commit=True) as cursor:
-            cursor.execute(
-                "INSERT INTO sessions (session_token, user_id, expires_at, user_agent, ip_hash, "
-                "last_seen_at, label, scope, last_verified_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                (hash_session_token(token), user_id, expires_at, (user_agent or None),
-                 hash_client_ip(ip), now, (label or _device_label(user_agent)), scope,
-                 now if verified else None),
-            )
-            cursor.execute(
-                "UPDATE users SET last_login = %s WHERE id = %s",
-                (now, user_id),
-            )
-            return token
+            return _insert_session_row(cursor, user_id, user_agent, ip, label, scope, verified,
+                                       hours, token_prefix)
     except mysql.connector.Error as err:
         log_error("Could not create session", exc=err, user_id=user_id)
         return None
+
+
+def _insert_session_row(cursor: MySQLCursorAbstract, user_id: int, user_agent: Optional[str],
+                        ip: Optional[str], label: Optional[str], scope: str, verified: bool,
+                        hours: int, token_prefix: str) -> str:
+    """Insert one session row on the caller's cursor and return its token. Raises on a fault.
+
+    `hours` is the row's life, already decided by the caller.
+    """
+    import secrets
+    token = token_prefix + secrets.token_hex(32)
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(hours=hours)
+    cursor.execute(
+        "INSERT INTO sessions (session_token, user_id, expires_at, user_agent, ip_hash, "
+        "last_seen_at, label, scope, last_verified_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        (hash_session_token(token), user_id, expires_at, (user_agent or None),
+         hash_client_ip(ip), now, (label or _device_label(user_agent)), scope,
+         now if verified else None),
+    )
+    cursor.execute(
+        "UPDATE users SET last_login = %s WHERE id = %s",
+        (now, user_id),
+    )
+    return token
 def _device_label(user_agent: Optional[str]) -> str:
     """A short, human-readable name for a session row ("Chrome on macOS"). Best effort: the account
     page has to show the user something they can recognise before they revoke it.
@@ -1034,3 +1143,266 @@ def list_user_sessions(user_id: int, current_token: Optional[str] = None) -> lis
     except mysql.connector.Error as err:
         log_error("Could not list sessions", exc=err, user_id=user_id)
         return []
+
+
+
+# --- MCP token management (epic #2682, `docs/agent-mcp-plan.md` §3.5) --------------------------
+#
+# Every reader below answers None (or raises), never `[]` or 0, on a fault. Each feeds a decision a
+# person acts on: a token cap that read 0 on a fault would let an eleventh mint through, and an empty
+# "connected agents" list reads as "nothing can reach my account".
+
+
+def _scope_params(scopes: "frozenset[str] | tuple[str, ...] | set[str]") -> tuple[str, tuple]:
+    """`(placeholders, values)` for an `IN (...)` over a non-empty scope set, in a stable order."""
+    ordered = tuple(sorted({str(s) for s in scopes}))
+    if not ordered:
+        raise ValueError("at least one scope is required")
+    return ", ".join(["%s"] * len(ordered)), ordered
+
+
+def _like_prefix(prefix: str) -> str:
+    r"""A LIKE pattern matching `prefix` literally: `mcp_` must not read `_` as "any character"."""
+    escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return escaped + "%"
+
+
+def count_active_sessions(user_id: int, scopes: "frozenset[str] | tuple[str, ...]") -> Optional[int]:
+    """How many live (unrevoked, unexpired) sessions this user holds in `scopes`.
+
+    Returns:
+        The count, or None when it could not be read.
+    """
+    placeholders, values = _scope_params(scopes)
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                f"SELECT COUNT(*) FROM sessions WHERE user_id = %s AND scope IN ({placeholders}) "
+                "AND revoked_at IS NULL AND expires_at > %s",
+                (user_id, *values, datetime.now(timezone.utc)),
+            )
+            row = cursor.fetchone()
+            return int(row[0]) if row else 0
+    except mysql.connector.Error as err:
+        log_error("Could not count active sessions", exc=err, user_id=user_id)
+        return None
+
+
+def get_owned_session(user_id: int, session_id: int,
+                      scopes: "frozenset[str] | tuple[str, ...]") -> Optional[dict]:
+    """The caller's own LIVE session `session_id`, when its scope is one of `scopes`.
+
+    Scoped by `user_id` in SQL, so another account's session id is indistinguishable from one that
+    does not exist.
+
+    Returns:
+        `{id, label, scope, created_at, expires_at}`, or None when no such live session is owned.
+
+    Raises:
+        SessionStoreUnavailable: The lookup did not run.
+    """
+    placeholders, values = _scope_params(scopes)
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT id, label, scope, created_at, expires_at FROM sessions "
+                f"WHERE id = %s AND user_id = %s AND scope IN ({placeholders}) "
+                "AND revoked_at IS NULL AND expires_at > %s",
+                (int(session_id), user_id, *values, datetime.now(timezone.utc)),
+            )
+            return cursor.fetchone()
+    except mysql.connector.Error as err:
+        log_error("Could not read an owned session", exc=err, user_id=user_id)
+        raise SessionStoreUnavailable() from err
+
+
+def list_sessions_by_scope(user_id: int, scopes: "frozenset[str] | tuple[str, ...]",
+                           limit: int = 50) -> Optional[list[dict]]:
+    """This user's sessions in `scopes`: every LIVE row first, then recent dead ones up to `limit`.
+
+    Live-first in SQL, so a live token can never be pushed off the list by a pile of revoked or
+    expired ones, whatever `limit` is. Newest first within each group. Never returns a token or a
+    hash. `revoked_at` and `expires_at` are what lets the SPA grey out a dead row rather than hide it.
+
+    Returns:
+        Rows of `{id, label, scope, created_at, last_seen_at, expires_at, revoked_at}`, or None
+        when the read failed.
+    """
+    placeholders, values = _scope_params(scopes)
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT id, label, scope, created_at, last_seen_at, expires_at, revoked_at "
+                f"FROM sessions WHERE user_id = %s AND scope IN ({placeholders}) "
+                "ORDER BY (revoked_at IS NULL AND expires_at > %s) DESC, id DESC LIMIT %s",
+                (user_id, *values, datetime.now(timezone.utc), int(limit)),
+            )
+            return cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        log_error("Could not list sessions by scope", exc=err, user_id=user_id)
+        return None
+
+
+def list_auth_audit_events(user_id: int, prefix: Optional[str] = None,
+                           exclude_prefix: Optional[str] = None,
+                           limit: int = 50) -> Optional[list[dict]]:
+    """Recent `auth_audit_log` rows for one user, optionally narrowed by event-name prefix.
+
+    `prefix` keeps only events starting with it; `exclude_prefix` drops them (the Security card
+    uses that so machine rows cannot push human sign-ins out of its last 20). Both match the prefix
+    literally. Never selects `ip_hash`.
+
+    Returns:
+        Rows of `{event, success, user_agent, details, created_at}`, or None when the read failed.
+    """
+    where = ["user_id = %s"]
+    params: list = [user_id]
+    if prefix:
+        where.append("event LIKE %s")
+        params.append(_like_prefix(prefix))
+    if exclude_prefix:
+        where.append("event NOT LIKE %s")
+        params.append(_like_prefix(exclude_prefix))
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT event, success, user_agent, details, created_at FROM auth_audit_log "
+                f"WHERE {' AND '.join(where)} ORDER BY id DESC LIMIT %s",
+                (*params, int(limit)),
+            )
+            return cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        log_error("Could not list auth audit events", exc=err, user_id=user_id)
+        return None
+
+
+def revoke_session_by_token(token: str) -> Optional[dict]:
+    """Revoke the live session behind a presented token, at once — the token-exposure path.
+
+    For a token that turned up somewhere it must never be (an MCP query string), so it is revoked
+    whatever its scope. The lookup neither slides the expiry nor touches `last_seen_at`.
+
+    Returns:
+        `{user_id, session_id, scope, label}` for the session revoked, or None when the token matched no
+        live session or the write failed (logged).
+    """
+    token_hash = hash_session_token(token)
+    if not token_hash:
+        return None
+    try:
+        with db_cursor(dictionary=True, commit=True) as cursor:
+            cursor.execute(
+                "SELECT id, user_id, scope, label FROM sessions WHERE session_token = %s "
+                "AND revoked_at IS NULL AND expires_at > %s",
+                (token_hash, datetime.now(timezone.utc)),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            cursor.execute(
+                "UPDATE sessions SET revoked_at = %s WHERE id = %s AND revoked_at IS NULL",
+                (datetime.now(timezone.utc), row["id"]),
+            )
+            if not cursor.rowcount:
+                return None
+            return {"user_id": row["user_id"], "session_id": row["id"],
+                    "scope": row.get("scope") or SESSION_SCOPE_FULL, "label": row.get("label")}
+    except mysql.connector.Error as err:
+        log_error("Could not revoke an exposed session", exc=err)
+        return None
+
+
+def revoke_sessions_by_scope(scopes: "frozenset[str] | tuple[str, ...]", reason: str,
+                             event: AuthAuditEvent = AuthAuditEvent.MCP_SESSIONS_REVOKED
+                             ) -> Optional[int]:
+    """Revoke every live session in `scopes`, fleet-wide, writing one audit row per affected user.
+
+    The audit rows commit in the SAME transaction as the revoke, so the record and the change can
+    never disagree. This is the rollback's "revoke all" (`scripts/mcp_revoke_all.py`), replacing raw
+    SQL that would leave no trail.
+
+    Args:
+        scopes: The session scopes to revoke.
+        reason: Why, kept in each audit row's `details` (truncated to 64 characters).
+        event: The audit event to write per user.
+
+    Returns:
+        How many sessions were revoked, or None when the transaction failed (nothing changed).
+    """
+    placeholders, values = _scope_params(scopes)
+    now = datetime.now(timezone.utc)
+    try:
+        with db_cursor(dictionary=True, commit=True) as cursor:
+            cursor.execute(
+                "SELECT user_id, COUNT(*) AS n FROM sessions "
+                f"WHERE scope IN ({placeholders}) AND revoked_at IS NULL AND expires_at > %s "
+                "GROUP BY user_id",
+                (*values, now),
+            )
+            per_user = cursor.fetchall() or []
+            if not per_user:
+                return 0
+            cursor.execute(
+                f"UPDATE sessions SET revoked_at = %s WHERE scope IN ({placeholders}) "
+                "AND revoked_at IS NULL AND expires_at > %s",
+                (now, *values, now),
+            )
+            total = cursor.rowcount or 0
+            for row in per_user:
+                insert_auth_event_row(cursor, event, user_id=row["user_id"],
+                                      details={"reason": (reason or "")[:64],
+                                               "revoked": int(row["n"]), "scopes": list(values)})
+            return total
+    except mysql.connector.Error as err:
+        log_error("Could not revoke sessions by scope", exc=err)
+        return None
+
+
+
+class SessionCapReached(Exception):
+    """`create_session_within_cap` found the account already at its cap; nothing was inserted."""
+
+
+def create_session_within_cap(user_id: int, scopes: "frozenset[str] | tuple[str, ...]", cap: int,
+                              scope: str, user_agent: Optional[str] = None,
+                              ip: Optional[str] = None, label: Optional[str] = None,
+                              ttl_hours: Optional[int] = None,
+                              token_prefix: str = "") -> tuple[Optional[str], Optional[int]]:
+    """Mint a session only while the user holds fewer than `cap` live sessions in `scopes`.
+
+    The count and the insert run in ONE transaction that first takes the user's row lock
+    (`SELECT ... FOR UPDATE` on `users`). A second concurrent mint for the same account waits on
+    that lock and then counts the first one's row, so two mints cannot both pass the cap. Mints
+    for different accounts never wait on each other.
+
+    Returns:
+        `(token, session_id)` on success, or `(None, None)` when the transaction failed (logged;
+        nothing was inserted).
+
+    Raises:
+        SessionCapReached: The account is already at `cap`; nothing was inserted.
+    """
+    placeholders, values = _scope_params(scopes)
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("SELECT id FROM users WHERE id = %s FOR UPDATE", (user_id,))
+            if cursor.fetchone() is None:
+                log_warning("Session mint refused: no such user", user_id=user_id)
+                return None, None
+            cursor.execute(
+                f"SELECT COUNT(*) FROM sessions WHERE user_id = %s AND scope IN ({placeholders}) "
+                "AND revoked_at IS NULL AND expires_at > %s",
+                (user_id, *values, datetime.now(timezone.utc)),
+            )
+            row = cursor.fetchone()
+            live = int((row[0] if not isinstance(row, dict) else next(iter(row.values())))
+                       if row else 0)
+            if live >= cap:
+                raise SessionCapReached()
+            token = _insert_session_row(
+                cursor, user_id, user_agent, ip, label, scope, False,
+                ttl_hours if ttl_hours is not None else SESSION_IDLE_HOURS, token_prefix)
+            return token, cursor.lastrowid
+    except mysql.connector.Error as err:
+        log_error("Could not create a capped session", exc=err, user_id=user_id)
+        return None, None

@@ -13,6 +13,8 @@ a route that imports around it is a bug.
 | `observer` | the account owner, human session + step-up | `POST /api/user/observer-token` | `_OBSERVER_SESSION_SURFACE`: review-queue reads, preferences, automation status, dashboard stats, curated-source list, `/auth/session`, `/app-info`, `/flags`, `/user/security` | `GET` `HEAD` `OPTIONS` only, on every path | `ttl_days`, 1–365, default 90, fixed at mint | create, edit, delete or approve anything; read or write a credential; change caps or approval modes; revoke sessions; move the account email; mint any token |
 | `agent` | the account owner, human session + step-up | `POST /api/user/agent-token` | `_AGENT_SESSION_SURFACE`: the observer's queue reads plus the create/save routes for pending work | any verb on a granted path (path-only scope) | `ttl_days`, 1–365, default 90, fixed at mint | approve or retry anything that sends to a real person (refused in the handlers by `_refuse_agent_approval`, `_refuse_agent_approved_status` and the `_agent_scoped()` checks in the connection-request handlers); change caps or approval modes (the `PUT /user/engagement-preferences` handler refuses on `_agent_scoped()`); touch a credential; revoke sessions; move the account email; mint any token |
 | `operator` | the account owner, human session + step-up | `POST /api/user/operator-token` (internal, sandbox or admin account only) | the agent surface plus `_OPERATOR_MAINTENANCE_SURFACE`: `POST /leads/refresh`, `GET /admin/automation-status`, `POST /admin/automation-pause`, `GET /admin/task-status/{id}` | any verb on a granted path (path-only scope) | `ttl_days`, 1–**90**, default **30**, fixed at mint | everything the agent cannot do, plus: be minted on, or act through, a `standard` non-admin account; approve on a `standard` account; take the passive `auto_approve` default on any account; resume automation; pause for more than 24 hours; call any other admin route |
+| `mcp` | the account owner, human session + **strong factor** + step-up, while the `mcp-server-enabled` flag is on for the account | `POST /api/user/mcp-token` | `_MCP_READ_PATHS`: the account's own settings (billing withheld), automation state, dashboard, posts, plan, performance, engagement preferences and DM templates, voice kit and newsletter settings — reached ONLY through the `POST /api/mcp` gate's in-process loopback | `GET` only, per path (`_SCOPE_PATH_METHODS`); dead on raw `/api` without the dispatch secret | `ttl_days`, 1–**90**, default **30**, fixed at mint | everything the observer cannot do, plus: be used anywhere but `/api/mcp`; read the outreach lists, `/user/security`, `/user/token_status`, billing or any `/admin/*` route |
+| `mcp_outreach` | as `mcp`, with `outreach: true` at mint | `POST /api/user/mcp-token` | `mcp` plus DMs, connection requests, leads, lead signals, catch-ups, outreach targets, newsletter subscribers, engagement targets and engagement suggestions (row fields cut to `_OBSERVER_ROW_FIELDS`) | as `mcp` | as `mcp` | as `mcp` |
 | `extension` | the account owner, human session + step-up | `POST /api/user/extension-token` | `/user/linkedin-cookie` only | the verbs that route serves | idle window (slides) | everything else |
 | `enroll` | the sign-in flow, when a strong factor is required and none is enrolled | — | the enrolment ceremonies only; promoted to `full` on enrolment | the verbs those routes serve | idle window (slides) | everything else |
 
@@ -131,10 +133,12 @@ not what it read.
 ### Where the token lives
 
 In a secret manager or an environment variable of the agent's runtime. Never committed, never
-pasted into an issue, a pull request or a chat, and **never in a URL**. Send it in a header or the
-`lem_session` cookie. Some routes still accept `session_token` as a query parameter, and a query
-string can end up in an access log, a proxy log or a browser history, so treat a token that has ever
-been sent that way as exposed and rotate it.
+pasted into an issue, a pull request or a chat, and **never in a URL**. Send it as the `lem_session`
+cookie: an `Authorization` header is **not** a session credential on `/api` routes (the MCP endpoint
+`POST /api/mcp` is the one exception, and it takes only MCP tokens — see § MCP seats). Some routes
+still accept `session_token` as a query parameter, and a query string can end up in an access log, a
+proxy log or a browser history, so treat a token that has ever been sent that way as exposed and
+rotate it.
 
 ### Rollback, in this order
 
@@ -422,11 +426,11 @@ SELECT id, account_kind FROM users WHERE account_kind <> 'standard';
 
 ## Where the roles differ on approval
 
-| Account kind (`users.account_kind`) | `agent` | `operator` | `observer` |
-|---|---|---|---|
-| `standard` (default) | queue only | queue only | read only |
-| `internal` | queue only | queue, and **approve explicitly** (audited); the send is **real** | read only |
-| `sandbox` | queue only | queue, and **approve explicitly** (audited); the send is a **dry run** | read only |
+| Account kind (`users.account_kind`) | `agent` | `operator` | `observer` | `mcp` / `mcp_outreach` |
+|---|---|---|---|---|
+| `standard` (default) | queue only | queue only | read only | read only |
+| `internal` | queue only | queue, and **approve explicitly** (audited); the send is **real** | read only | read only (W2 adds queue-only writes, then owner ruling O1's approval) |
+| `sandbox` | queue only | queue, and **approve explicitly** (audited); the send is a **dry run** | read only | read only (as above) |
 
 The passive `auto_approve` default never applies to a machine seat, and no seat may change caps or
 approval modes, on any account kind. Operator actions that are not reads, and every operator approval,
@@ -685,3 +689,28 @@ slid, revocable per device, cannot mint a successor).
 - **No code path clicks Post.** `tests/unit/api/test_assist_scope.py` scans the extension's sources for
   `.click()`, `.submit()`, synthetic events, forms and any request outside the two paths.
 - Nothing yet moves a candidate to `approved`; that is P3 (Daily review). Until it lands the queue is empty.
+
+## MCP seats: the user's own coding agent (epic #2682)
+
+`mcp` and `mcp_outreach` are held by the user's own coding agent and presented ONLY as
+`Authorization: Bearer` at `POST /api/mcp`. Mechanism, gate order and the identity carve-out:
+[`identity-and-sessions.md` § The `mcp` scopes](identity-and-sessions.md); the plan is
+`docs/agent-mcp-plan.md`.
+
+- **Minting** is the account owner's: the Agents tab (P4) or `POST /api/user/mcp-token`, which needs a
+  strong factor AND step-up, emails the owner on every mint and rotate, caps the account at 10 live
+  MCP tokens and 10 mints an hour, and fixes the expiry at 1–90 days (default 30). `outreach: true`
+  is the opt-in for the PII lists. The token starts `lem_mcp_`.
+- **Dead off the gate.** Sent to raw `/api` (cookie or `session_token`) an MCP token is 403
+  `session_scope_forbidden` and a WARNING, before anything is written: only the gate's in-process
+  loopback carries the per-worker dispatch secret.
+- **A token in a URL is revoked.** `POST /api/mcp?token=…` (or `session_token`, `access_token`) is 400,
+  and if the value is any live session it is revoked on the spot, audited `mcp_token_exposed`, and the
+  owner is emailed.
+- **Audit events:** `mcp_token_minted`, `mcp_token_rotated`, `mcp_token_exposed`, `mcp_access` (the
+  first gate request of each UTC day, per session), `mcp_kill_toggled`, `mcp_sessions_revoked`.
+- **Rollback, owner-run, in this order:** kill on (`POST /api/admin/mcp-kill {"on": true}` with
+  step-up, or `scripts/mcp_kill.py on`); revoke all, one audit row per user:
+  `sudo docker exec -i celery_worker python - --reason incident-2026-11 --yes < scripts/mcp_revoke_all.py`
+  (`--yes` is required there: STDIN is the script, so no prompt can be answered); then revert code.
+  Revoking before the revert means old code never meets an `mcp` scope it does not know.

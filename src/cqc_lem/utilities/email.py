@@ -701,6 +701,56 @@ def send_suppression_tripwire_email(to_email: str, reason: str) -> bool:
                            html, high_priority=True)
 
 
+def send_mcp_token_email(to_email: str, kind: str, label: Optional[str] = None,
+                         scope: Optional[str] = None) -> bool:
+    """Tell the account owner an agent connection (an MCP token) was created, rotated or exposed.
+
+    Sent on every mint and rotate (owner ruling O3) and when a token is revoked because it turned
+    up in a URL (plan §3.3 step 5). It is the out-of-band signal for "someone made a credential on
+    my account", so it never carries the token, only the label the owner chose and the access level.
+
+    Args:
+        to_email: The account's address.
+        kind: `minted`, `rotated` or `exposed`.
+        label: The token's label, as shown in the Agents tab.
+        scope: `mcp` or `mcp_outreach`.
+
+    Returns:
+        True when a provider accepted the message.
+    """
+    # The Account page, where the Security card lists and revokes every session, this one included.
+    url = _account_url()
+    safe_label = html_escape(label or "Agent connection")
+    access = ("reads, plus outreach and leads (personal data)" if scope == "mcp_outreach"
+              else "read-only")
+    if kind == "exposed":
+        subject = "⚠️ An agent connection token was exposed and revoked"
+        headline = "We revoked an exposed agent connection token"
+        body = (f"A token for <strong>{safe_label}</strong> was sent inside a web address, where it "
+                "can end up in logs and browser history. We revoked it at once, so it no longer "
+                "works. Create a new one in LEM, and keep it out of URLs and chats.")
+    elif kind == "rotated":
+        subject = "An agent connection token was rotated"
+        headline = "Your agent connection token was rotated"
+        body = (f"The token for <strong>{safe_label}</strong> ({access}) was replaced with a new "
+                "one. The old token no longer works.")
+    else:
+        subject = "A new agent connection was created on your LEM account"
+        headline = "A new agent connection was created"
+        body = (f"A token for <strong>{safe_label}</strong> ({access}) was just created. It lets a "
+                "coding agent read your LEM account; anything it creates waits for your approval.")
+    html = f"""
+    <html><body style="font-family:Arial,Helvetica,sans-serif;color:#222;">
+    <h2>{headline}</h2>
+    <p>{body}</p>
+    <p>If this was not you, revoke it now and sign out your other devices:</p>
+    <p><a href="{url}" style="background:#0a66c2;color:#fff;padding:10px 16px;border-radius:6px;
+    text-decoration:none;">Review agent connections</a></p>
+    </body></html>
+    """
+    return _dispatch_email(to_email, subject, html, high_priority=kind == "exposed")
+
+
 def send_onboarding_nudge_email(to_email: str, subject: str, headline: str, body: str,
                                 cta_label: str, cta_path: str = "/account") -> bool:
     """Nudge a user who stalled part-way through activation (issue #500). Copy is supplied by the
