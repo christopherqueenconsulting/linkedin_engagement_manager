@@ -1018,6 +1018,15 @@ experiments are later phases.
   (`update_stale_profile(force_refresh=True)`, the SPA button) passes it and the nightly sweep,
   which shares its session name, does not. A Publish click and a cookie/PIN login open no
   separate session today; one that does must pass the flag.
+- **Per-user windows (#2767, Phase 3).** `engagement_preferences.session_windows` (JSON list of up to
+  four `{"start","end"}` `HH:MM` entries, named A, C, D, E in time order) and `session_timezone` (IANA
+  zone) replace the default A/C windows and `users.timezone` for that user. NULL means the defaults.
+  `engagement_window.parse_session_windows` / `valid_session_timezone` validate on write (the
+  upsert) AND on read: an inverted, overlapping, under-15-minute or out-of-range set (outside
+  07:00–19:00, the owner's ban), or an unknown zone, falls back to the defaults at DEBUG, never a
+  repeated warning. **Only `enforce` reads them** (`get_session_window_prefs`); `off` and `shadow`
+  never touch the columns, so they stay byte-identical. The weekday-only rule, the night ban and the
+  `user_started` exemption are not configurable. Volume blocks start at the user's own window starts.
 - The host-cron SDUI drift probe is not a Celery beat and is not gated; it runs Mondays 16:00 UTC.
 - Owner action: run shadow for 7 days or more, then `SESSION_WINDOW_MODE=enforce`. Rollback:
   `off`.

@@ -20,6 +20,7 @@ failed dispatch.
 """
 
 import hashlib
+import json
 import math
 import os
 from dataclasses import dataclass
@@ -28,7 +29,7 @@ from typing import Any, Optional, Tuple
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from cqc_lem.utilities.linkedin.rate_limit import shared_redis_client
-from cqc_lem.utilities.logger import log_info, log_warning
+from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 from cqc_lem.utilities.observability import track_pre_post_engagement, track_session_window_shadow
 
 # Lead times the scheduler warms up with, kept here next to the planner that clamps them.
@@ -545,19 +546,101 @@ def resolve_session_zone(tz_name: Optional[str]) -> ZoneInfo:
     return ZoneInfo(FALLBACK_TIMEZONE)
 
 
-def session_blocks(approved_comments: int = 0) -> dict:
+SESSION_WINDOW_NAMES = tuple(name for name, _ in SESSION_BLOCK_STARTS)
+SESSION_WINDOWS_MAX = len(SESSION_WINDOW_NAMES)
+SESSION_WINDOW_MIN_LENGTH = 15  # minutes; shorter is not a window a session can open in
+
+
+def _parse_clock(value: Any) -> Optional[int]:
+    """`HH:MM` as minutes since midnight, or None when it is anything else."""
+    if not isinstance(value, str) or len(value) != 5 or value[2] != ":":
+        return None
+    hours, minutes = value[:2], value[3:]
+    if not (hours.isdigit() and minutes.isdigit()):
+        return None
+    h, m = int(hours), int(minutes)
+    return h * 60 + m if h < 24 and m < 60 else None
+
+
+def parse_session_windows(raw: Any) -> Optional[dict]:
+    """A user's stored session windows as `{name: (start, end)}`, or None for "use the defaults".
+
+    `raw` is a JSON string/bytes or an already-decoded list of `{"start": "HH:MM", "end": "HH:MM"}`.
+    The whole value is refused (None) when any entry is malformed, inverted, shorter than
+    `SESSION_WINDOW_MIN_LENGTH`, outside the owner's 07:00-19:00 background-session hours, or
+    overlapping another entry, or when there are more than four. A refusal is DEBUG: it is the
+    documented fallback, and a repeated warning would file a defect for it.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode("utf-8", errors="replace")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            log_debug("Stored session windows are not JSON; using the default windows")
+            return None
+    if not isinstance(raw, list) or not 0 < len(raw) <= SESSION_WINDOWS_MAX:
+        if raw not in (None, []):
+            log_debug("Stored session windows unusable; using the default windows")
+        return None
+    spans = []
+    for entry in raw:
+        start = _parse_clock(entry.get("start")) if isinstance(entry, dict) else None
+        end = _parse_clock(entry.get("end")) if isinstance(entry, dict) else None
+        if (start is None or end is None or end - start < SESSION_WINDOW_MIN_LENGTH
+                or start < SESSION_BAN_END_HOUR * 60 or end > SESSION_BAN_START_HOUR * 60):
+            log_debug("Stored session windows invalid; using the default windows")
+            return None
+        spans.append((start, end))
+    spans.sort()
+    if any(spans[i][1] > spans[i + 1][0] for i in range(len(spans) - 1)):
+        log_debug("Stored session windows overlap; using the default windows")
+        return None
+    return {name: span for name, span in zip(SESSION_WINDOW_NAMES, spans)}
+
+
+def normalize_session_windows(raw: Any) -> Optional[list]:
+    """The storable form of `raw` (sorted `{"start","end"}` list), or None when it is not valid."""
+    parsed = parse_session_windows(raw)
+    if parsed is None:
+        return None
+    return [{"start": f"{s // 60:02d}:{s % 60:02d}", "end": f"{e // 60:02d}:{e % 60:02d}"}
+            for s, e in parsed.values()]
+
+
+def valid_session_timezone(raw: Any) -> Optional[str]:
+    """`raw` when it names a real IANA zone, else None ("use users.timezone")."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    name = raw.strip()
+    try:
+        ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        log_debug("Stored session timezone unusable; using the account timezone")
+        return None
+    return name
+
+
+def session_blocks(approved_comments: int = 0, windows: Optional[dict] = None) -> dict:
     """Window name -> (start, end) minutes since local midnight for a day with this comment volume.
 
-    With no approved comments this is exactly A and C. Otherwise the typing time (~88 s a comment)
-    is spread over 2 to 4 blocks of 45 to 60 minutes: 100 comments is about 3 x 50 min.
+    With no approved comments this is exactly A and C (or the user's own `windows`). Otherwise the
+    typing time (~88 s a comment) is spread over 2 to 4 blocks of 45 to 60 minutes: 100 comments is
+    about 3 x 50 min. A user's windows supply the first block starts; the rest stay the defaults.
     """
     if approved_comments <= 0:
-        return dict(SESSION_WINDOWS)
+        return dict(windows) if windows else dict(SESSION_WINDOWS)
     total_minutes = approved_comments * SECONDS_PER_COMMENT / 60
     count = min(SESSION_DAILY_CEILING, max(2, math.ceil(total_minutes / SESSION_BLOCK_MAX_MINUTES)))
     length = min(SESSION_BLOCK_MAX_MINUTES,
                  max(SESSION_BLOCK_MIN_MINUTES, math.ceil(total_minutes / count)))
-    return {name: (start, start + length) for name, start in SESSION_BLOCK_STARTS[:count]}
+    starts = SESSION_BLOCK_STARTS
+    if windows:
+        custom = [(name, span[0]) for name, span in windows.items()]
+        starts = tuple(custom) + SESSION_BLOCK_STARTS[len(custom):]
+    return {name: (start, start + length) for name, start in starts[:count]}
 
 
 def _session_cap(blocks: dict) -> int:
@@ -579,7 +662,8 @@ def _post_windows(local_day, post_times: Tuple[datetime, ...], zone: ZoneInfo) -
 def session_window_decision(user_id: int, lane: str, now: Optional[datetime] = None,
                             tz: Optional[str] = None, sessions_today: int = 0,
                             user_started: bool = False, approved_comments: int = 0,
-                            post_times: Tuple[datetime, ...] = ()) -> SessionWindowDecision:
+                            post_times: Tuple[datetime, ...] = (),
+                            windows: Optional[dict] = None) -> SessionWindowDecision:
     """Pure decision: may a background `lane` session open for `user_id` at `now`?
 
     `sessions_today` is how many sessions already opened on the user's local day. Dispatch is
@@ -601,7 +685,7 @@ def session_window_decision(user_id: int, lane: str, now: Optional[datetime] = N
     if local_now.hour >= SESSION_BAN_START_HOUR or local_now.hour < SESSION_BAN_END_HOUR:
         return decide(False, SESSION_REASON_NIGHT)
     minute = local_now.hour * 60 + local_now.minute
-    blocks = session_blocks(approved_comments)
+    blocks = session_blocks(approved_comments, windows)
     window = next((n for n, (start, end) in blocks.items() if start <= minute < end), None)
     if window is None and any(start <= minute < end for start, end in
                               _post_windows(local_now.date(), post_times, zone)):
@@ -619,7 +703,7 @@ def _local_minutes_to_utc(day, minutes: int, zone: ZoneInfo) -> datetime:
 
 
 def next_window_start(now: datetime, tz: Optional[str] = None, approved_comments: int = 0,
-                      sessions_today: int = 0) -> datetime:
+                      sessions_today: int = 0, windows: Optional[dict] = None) -> datetime:
     """The UTC instant a deferred session should re-run: the next block start on a weekday.
 
     A day already at its session cap is skipped, so a deferral never lands in a window that would
@@ -627,7 +711,7 @@ def next_window_start(now: datetime, tz: Optional[str] = None, approved_comments
     """
     zone = resolve_session_zone(tz)
     local_now = _as_utc(now).astimezone(zone)
-    blocks = session_blocks(approved_comments)
+    blocks = session_blocks(approved_comments, windows)
     starts = sorted(start for start, _ in blocks.values())
     day = local_now.date()
     if local_now.weekday() < 5 and sessions_today < _session_cap(blocks):
@@ -698,9 +782,16 @@ def observe_session_window(user_id: Optional[int], lane: str, now: Optional[date
             get_user_timezone,
         )
         tz = get_user_timezone(user_id)
+        enforce = mode == SESSION_WINDOW_ENFORCE
+        windows = None
+        if enforce:
+            # Per-user windows and zone apply ONLY in enforce; off and shadow read nothing new.
+            from cqc_lem.utilities.db import get_session_window_prefs
+            raw_windows, raw_tz = get_session_window_prefs(user_id)
+            windows = parse_session_windows(raw_windows)
+            tz = valid_session_timezone(raw_tz) or tz
         current = _as_utc(now if now is not None else datetime.now(timezone.utc))
         day = current.astimezone(resolve_session_zone(tz)).date().isoformat()
-        enforce = mode == SESSION_WINDOW_ENFORCE
         approved, post_times, prior = 0, (), 0
         if not user_started:
             if enforce:
@@ -713,12 +804,12 @@ def observe_session_window(user_id: Optional[int], lane: str, now: Optional[date
                 prior = (counted - 1) if counted else 0
         decision = session_window_decision(user_id, lane, now=current, tz=tz, sessions_today=prior,
                                            user_started=user_started, approved_comments=approved,
-                                           post_times=post_times)
+                                           post_times=post_times, windows=windows)
         if decision.allowed:
             if enforce and not user_started:
                 count_session(user_id, day)
         elif enforce:
-            eta = next_window_start(current, tz, approved, prior)
+            eta = next_window_start(current, tz, approved, prior, windows)
             log_info(f"Session window enforce: deferring '{lane}' ({decision.reason})",
                      user_id=user_id)
             track_session_window_shadow(user_id, decision.reason, lane, "deferred")

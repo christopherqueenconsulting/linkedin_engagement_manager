@@ -23,6 +23,7 @@ const base = (over: Partial<EngPrefs> = {}): EngPrefs => ({
   text_post_images: true, roster_auto_follow: false, max_follows_per_day: 3,
   roster_auto_connect: false, hold_repaired_posts_for_review: true, icp_builder_enabled: null, icp_definition: null,
   profile_viewer_dm_auto_send: false, review_digest_enabled: true,
+  session_windows: null, session_timezone: null, session_window_defaults: [],
   nurture_dm_mode: 'pre_review', artifact_dm_mode: 'pre_review', group_post_mode: 'pre_review',
   followup_step_mode: 'pre_review', appreciation_dm_mode: 'pre_review', funnel_stage_mode: 'pre_review',
   // Read-only context the endpoint always returns alongside the row (issue #1446).
