@@ -852,6 +852,43 @@ def get_outreach_target_by_url(user_id: int, target_profile_url: str) -> Optiona
     except mysql.connector.Error as err:
         log_error("Could not look up outreach target", exc=err, user_id=user_id)
         return None
+
+
+def get_outreach_target_by_profile(user_id: int, target_profile_url: str) -> Optional[dict]:
+    """This user's funnel row for the same LinkedIn PROFILE, whatever spelling either side uses.
+
+    `get_outreach_target_by_url` matches the exact string, which is right for a human's create
+    (unchanged). A queue-only seat's URL is stored normalised since #2684, while older rows keep the
+    spelling their scraper saw (`https://linkedin.com/in/jane-doe`, `…?originalSubdomain=uk`), so an
+    exact match would let one person into the funnel twice. This narrows with a LIKE on the slug,
+    then compares `profile_url_key` on each candidate in Python.
+
+    Args:
+        user_id: The account whose funnel is searched.
+        target_profile_url: A LinkedIn profile URL, in any spelling.
+
+    Returns:
+        The first matching row, or None when there is none, the URL is not a profile URL, or the
+        read failed (logged).
+    """
+    from cqc_lem.utilities.linkedin.profile_url import profile_url_key, profile_url_like_patterns
+
+    key = profile_url_key(target_profile_url)
+    if key is None:
+        return None
+    patterns = profile_url_like_patterns(key)
+    likes = " OR ".join(["LOWER(target_profile_url) LIKE %s"] * len(patterns))
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                f"SELECT {', '.join(_OUTREACH_COLS)} FROM outreach_funnel_targets "
+                f"WHERE user_id = %s AND ({likes}) ORDER BY id", (user_id, *patterns))
+            rows = cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        log_error("Could not look up outreach target", exc=err, user_id=user_id)
+        return None
+    return next((row for row in rows
+                 if profile_url_key(row.get("target_profile_url")) == key), None)
 def get_outreach_targets(user_id: int, status_filter: str = None, stage_filter: str = None,
                          page: int = 1, page_size: int = 25, sort_order: str = "asc") -> dict:
     """Paginated list of a user's outreach-funnel targets (mirrors the scheduled-DM list response)."""

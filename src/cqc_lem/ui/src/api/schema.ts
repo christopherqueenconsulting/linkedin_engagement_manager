@@ -814,7 +814,14 @@ export interface paths {
          *     `retry` action because reaching `approved` on a `failed` row is a human-only call (#1026). Firing the
          *     same transition as a side effect of the (permitted) field-only PUT would reach `approved` through a
          *     route that guard never inspects — laundering the refusal rather than removing it. So this only fires
-         *     for a human-surface session; an agent-scoped attach still saves the address and leaves the row `failed`.
+         *     for a human-surface session.
+         *
+         *     A queue-only seat (issue #2684) edits only a `pending` request, enforced in SQL; anything else is a
+         *     409 `edit_requires_pending`. ONE exception is the `backfill` supplier's contract
+         *     (christopherqueenconsulting/backfill#44): a PUT carrying `recipient_email` and no other field or
+         *     action may also land on a `failed` row whose `failure_reason` is `EMAIL_VERIFICATION_REQUIRED_MESSAGE`.
+         *     It writes the address only; the row stays `failed` until a human retries it. Adding any other field
+         *     to that PUT takes it back to the pending-only rule, so on a failed row it is a 409.
          */
         put: operations["update_connection_request_endpoint_api_connection_request_put"];
         /**
@@ -1626,6 +1633,10 @@ export interface paths {
          *     Two things the body does NOT get to decide: the row is written against the SESSION's address
          *     read back from the account, and a compose-time `image_url` is kept only when it is a preview WE
          *     issued to this account (issue #1030) — anything else is dropped, never stored.
+         *
+         *     A queue-only machine seat (issue #2684) may only draft: `approved` is a 403, any media field is
+         *     a 422 `machine_seat_text_only`, and the row is a PENDING text post, so nothing is generated or
+         *     spent before a human approves it. The response carries the new `post_id`.
          */
         post: operations["schedule_post_api_schedule_post__post"];
         delete?: never;
@@ -6105,6 +6116,18 @@ export interface components {
             session_token: string;
         };
         /**
+         * PostScheduledResponse
+         * @description `POST /schedule_post/`'s reply: the usual message, plus the new row's id (issue #2684).
+         */
+        PostScheduledResponse: {
+            /** Detail */
+            detail: string;
+            /** Post Id */
+            post_id: number;
+            /** Status Code */
+            status_code: number;
+        };
+        /**
          * PostStatus
          * @description The `posts.status` ENUM. `error` means generation or posting failed and the row needs a human.
          *
@@ -9721,7 +9744,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ResponseModel_str_"];
+                    "application/json": components["schemas"]["PostScheduledResponse"];
                 };
             };
             /** @description Unauthorized */

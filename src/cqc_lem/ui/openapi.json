@@ -5532,6 +5532,30 @@
         "title": "PostRescoreRequest",
         "type": "object"
       },
+      "PostScheduledResponse": {
+        "description": "`POST /schedule_post/`'s reply: the usual message, plus the new row's id (issue #2684).",
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "post_id": {
+            "title": "Post Id",
+            "type": "integer"
+          },
+          "status_code": {
+            "title": "Status Code",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status_code",
+          "detail",
+          "post_id"
+        ],
+        "title": "PostScheduledResponse",
+        "type": "object"
+      },
       "PostStatus": {
         "description": "The `posts.status` ENUM. `error` means generation or posting failed and the row needs a human.\n\nSame rule as `PostType`: the column is a MySQL ENUM, so a new member lands in a Flyway migration\nfirst.",
         "enum": [
@@ -9236,7 +9260,7 @@
         "summary": "Create Connection Request Endpoint"
       },
       "put": {
-        "description": "Edit a queued connection request, or approve/cancel/retry it.\n\n`approve` releases it to the invite drip and is refused for an `agent` session; an unknown action is a 422,\nnever a silent save. `retry` (issue #1735) is the ONLY way a `failed` request is ever sent again \u2014 LEM\nnever auto-retries a failed invite (repeat-inviting a decliner risks the account), so a stuck `failed`\nrow needs an explicit human decision every time. It is refused on anything but a `failed` row, and is\ngated the same as `approve` since it reaches the identical send-queue state.\n\nRevive-on-attach (issue #1881): a field-only save (no `action`) that supplies `recipient_email` on a\n`failed` row whose `failure_reason` is `EMAIL_VERIFICATION_REQUIRED_MESSAGE` (#1836's Class C \u2014 the\nONLY string `send_connection_request` ever writes for this challenge) moves that row straight to\n`approved` **in this same write**. `failed -> approved` must never pass through a terminal status on\nthe way \u2014 `update_connection_request` clears `recipient_email` on a move INTO a terminal status, so\nrouting the revival through one would erase the address just attached and walk the row straight back\ninto the same challenge (see #1881's write-up on PR #1840).\n\nGated on the CALLER, not the field: `_refuse_agent_approval` refuses an `agent`-scoped session the\n`retry` action because reaching `approved` on a `failed` row is a human-only call (#1026). Firing the\nsame transition as a side effect of the (permitted) field-only PUT would reach `approved` through a\nroute that guard never inspects \u2014 laundering the refusal rather than removing it. So this only fires\nfor a human-surface session; an agent-scoped attach still saves the address and leaves the row `failed`.",
+        "description": "Edit a queued connection request, or approve/cancel/retry it.\n\n`approve` releases it to the invite drip and is refused for an `agent` session; an unknown action is a 422,\nnever a silent save. `retry` (issue #1735) is the ONLY way a `failed` request is ever sent again \u2014 LEM\nnever auto-retries a failed invite (repeat-inviting a decliner risks the account), so a stuck `failed`\nrow needs an explicit human decision every time. It is refused on anything but a `failed` row, and is\ngated the same as `approve` since it reaches the identical send-queue state.\n\nRevive-on-attach (issue #1881): a field-only save (no `action`) that supplies `recipient_email` on a\n`failed` row whose `failure_reason` is `EMAIL_VERIFICATION_REQUIRED_MESSAGE` (#1836's Class C \u2014 the\nONLY string `send_connection_request` ever writes for this challenge) moves that row straight to\n`approved` **in this same write**. `failed -> approved` must never pass through a terminal status on\nthe way \u2014 `update_connection_request` clears `recipient_email` on a move INTO a terminal status, so\nrouting the revival through one would erase the address just attached and walk the row straight back\ninto the same challenge (see #1881's write-up on PR #1840).\n\nGated on the CALLER, not the field: `_refuse_agent_approval` refuses an `agent`-scoped session the\n`retry` action because reaching `approved` on a `failed` row is a human-only call (#1026). Firing the\nsame transition as a side effect of the (permitted) field-only PUT would reach `approved` through a\nroute that guard never inspects \u2014 laundering the refusal rather than removing it. So this only fires\nfor a human-surface session.\n\nA queue-only seat (issue #2684) edits only a `pending` request, enforced in SQL; anything else is a\n409 `edit_requires_pending`. ONE exception is the `backfill` supplier's contract\n(christopherqueenconsulting/backfill#44): a PUT carrying `recipient_email` and no other field or\naction may also land on a `failed` row whose `failure_reason` is `EMAIL_VERIFICATION_REQUIRED_MESSAGE`.\nIt writes the address only; the row stays `failed` until a human retries it. Adding any other field\nto that PUT takes it back to the pending-only rule, so on a failed row it is a 409.",
         "operationId": "update_connection_request_endpoint_api_connection_request_put",
         "requestBody": {
           "content": {
@@ -11342,7 +11366,7 @@
     },
     "/api/schedule_post/": {
       "post": {
-        "description": "Create a post row from the composer \u2014 draft (`pending`) or queued (`approved`).\n\nTwo things the body does NOT get to decide: the row is written against the SESSION's address\nread back from the account, and a compose-time `image_url` is kept only when it is a preview WE\nissued to this account (issue #1030) \u2014 anything else is dropped, never stored.",
+        "description": "Create a post row from the composer \u2014 draft (`pending`) or queued (`approved`).\n\nTwo things the body does NOT get to decide: the row is written against the SESSION's address\nread back from the account, and a compose-time `image_url` is kept only when it is a preview WE\nissued to this account (issue #1030) \u2014 anything else is dropped, never stored.\n\nA queue-only machine seat (issue #2684) may only draft: `approved` is a 403, any media field is\na 422 `machine_seat_text_only`, and the row is a PENDING text post, so nothing is generated or\nspent before a human approves it. The response carries the new `post_id`.",
         "operationId": "schedule_post_api_schedule_post__post",
         "requestBody": {
           "content": {
@@ -11359,7 +11383,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResponseModel_str_"
+                  "$ref": "#/components/schemas/PostScheduledResponse"
                 }
               }
             },

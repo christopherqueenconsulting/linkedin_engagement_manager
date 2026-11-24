@@ -210,7 +210,7 @@ class TestAgentMayNotApproveAtCreateTime:
              patch.object(main_mod, "insert_connection_request", return_value=99) as insert:
             main_mod.create_connection_request_endpoint(
                 main_mod.ConnectionRequestCreate(session_token="t",
-                                                 recipient_profile_url="https://example.com/in/x"))
+                                                 recipient_profile_url="https://www.linkedin.com/in/x"))
         assert insert.call_args.kwargs.get("status") == ConnectionRequestStatus.PENDING
 
     def test_the_same_default_still_auto_approves_for_a_human(self, main_mod):
@@ -223,7 +223,7 @@ class TestAgentMayNotApproveAtCreateTime:
                  patch.object(main_mod, "insert_connection_request", return_value=99) as insert:
                 main_mod.create_connection_request_endpoint(
                     main_mod.ConnectionRequestCreate(session_token="t",
-                                                     recipient_profile_url="https://example.com/in/x"))
+                                                     recipient_profile_url="https://www.linkedin.com/in/x"))
             assert insert.call_args.kwargs.get("status") == ConnectionRequestStatus.APPROVED
         finally:
             main_mod._request_session_scope.reset(token)

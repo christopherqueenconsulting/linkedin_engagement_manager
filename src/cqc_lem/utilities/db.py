@@ -471,6 +471,7 @@ from cqc_lem.platform.db.repositories.outreach import (
     get_orphaned_connection_requests,
     get_orphaned_scheduled_dms,
     get_outreach_target,
+    get_outreach_target_by_profile,
     get_outreach_target_by_url,
     get_outreach_target_user_id,
     get_outreach_targets,
@@ -529,6 +530,12 @@ from cqc_lem.platform.db.repositories.outreach import (
     upsert_dm_templates,
     upsert_engagement_targets,
     upsert_lead,
+)
+from cqc_lem.platform.db.repositories.pending_edits import (
+    PendingEdit,
+    attach_email_to_connection_request,
+    reject_pending_curated_source,
+    update_pending_row,
 )
 from cqc_lem.platform.db.repositories.posts import (
     _ALLOWED_POST_CLAUSES,
@@ -613,6 +620,7 @@ from cqc_lem.platform.db.repositories.posts import (
     insert_occasion_post,
     insert_planned_post,
     insert_post,
+    insert_post_returning_id,
     mark_post_avatar_media,
     mark_post_gate_demoted,
     post_avatar_media_state,
@@ -1288,6 +1296,7 @@ __all__ = [
     "get_orphaned_scheduled_posts",
     "get_posts_missing_their_seed_comment",
     "get_outreach_target",
+    "get_outreach_target_by_profile",
     "get_outreach_target_by_url",
     "get_outreach_target_user_id",
     "get_outreach_targets",
@@ -1459,6 +1468,11 @@ __all__ = [
     "insert_outreach_target",
     "insert_planned_post",
     "insert_post",
+    "insert_post_returning_id",
+    "PendingEdit",
+    "attach_email_to_connection_request",
+    "reject_pending_curated_source",
+    "update_pending_row",
     "insert_scheduled_dm",
     "is_premium_subscriber",
     "is_user_admin",
