@@ -160,7 +160,9 @@ class TestCommentsUseUnifiedFramework:
         assert "self-promotion" in system.lower()          # hard guardrail stays for comments
         assert "POST ABOUT WAREHOUSE ROBOTICS" in text
         assert "Build a genuine relationship" in text       # LEM relationship purpose
-        assert "END with a single, natural, open-ended question" in system
+        # #2626: no persona, no mandatory closing question.
+        assert "END with a single, natural, open-ended question" not in system
+        assert "EARN A REPLY" not in system
 
     def test_normal_comment_fires_no_research_call(self):
         """The cost contract end-to-end: default comment generation touches NO research API."""

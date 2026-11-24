@@ -63,7 +63,7 @@ disagreeing. `variants[0]` is always the control.
 | Key | Arms | Assignment | Metrics | Owner |
 |---|---|---|---|---|
 | `cost-routing-arm` | `control`, `treatment` | flag (10% start) | `post_outcome`, `$ai_generation` | cost |
-| `comment-contract-prompt` | `control`, `author-question` | flag (50/50) | `comment_outcome` | content |
+| `comment-contract-prompt` | `control`, `legacy-question` | flag (50/50) | `comment_outcome` | content |
 | `post-media-variant` | `control` + one per shipped combo | shipped | `post_outcome` | content |
 
 ### 1. `cost-routing-arm` — cohorting moved to the flag
@@ -118,12 +118,12 @@ is visible rather than inferred.
 
 ### 2. `comment-contract-prompt` — the pilot LLM prompt experiment
 
-The variable is the **closing ask** of the #617 feed-comment quality contract
-(`content_framework.comment_contract_directive`):
+The variable is the feed-comment **system prompt** (#2626; the `author-question` arm is retired):
 
-* `control` — four value-adds, any genuinely open question.
-* `author-question` — adds one rule: end on a question **only this author could answer** (their
-  numbers, their decision, what they saw). A question anyone in the thread could answer doesn't count.
+* `control` — no persona and no mandatory closing question; invented experience and numbers are
+  forbidden. This is also what an unresolvable flag falls back to.
+* `legacy-question` — the old "earn a reply" persona that always ends on a question (98% of shipped
+  comments did). Kept only as a named variant; the owner re-provisions the PostHog flag with it.
 
 Metric: **author-reply rate** (D4) from the #628 T+24h outcome sweep, carried on `comment_outcome`.
 
