@@ -1075,6 +1075,9 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
 
     ungrounded_attempts = 0
     last = {"checks": [], "invented": None}
+    # A draft that cleared every gate but drew a batch-lint hint (#2665): shipped if the
+    # regeneration it spent fails a gate, so the lint never turns a postable comment into a skip.
+    lint_fallback: list = []
 
     def _track(outcome: str, attempt: int, grounding: "str | None" = None) -> None:
         invented = last["invented"]
@@ -1090,6 +1093,9 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
     for attempt in range(1, attempts + 1):
         candidate = draft(fix_directive)
         if candidate is None:
+            if lint_fallback:
+                _track(GATE_SHIPPED, attempt - 1)
+                return lint_fallback[0]
             _track(GATE_NO_DRAFT, attempt)
             return None
         failures, blocking, similar, checks, invented = _grade(candidate)
@@ -1098,8 +1104,18 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
         if not failures:
             shipped, claim_failure = _review_claims(candidate)
             if shipped is not None:
-                _track(GATE_SHIPPED if shipped == candidate else GATE_STRIPPED, attempt)
-                return shipped
+                # Batch lint (#2665) steers, never skips: a hint spends one regeneration, and the
+                # last attempt ships whatever it has.
+                hints = (_framework.comment_batch_report(shipped, recent_comments)["hints"]
+                         if surface == "comment" and attempt < attempts else [])
+                if not hints:
+                    _track(GATE_SHIPPED if shipped == candidate else GATE_STRIPPED, attempt)
+                    return shipped
+                log_debug(f"Comment batch lint asked for a different shape: {'; '.join(hints)}",
+                          user_id=user_id, action_type="comment")
+                fix_directive = _framework.comment_retry_directive(hints)
+                lint_fallback[:] = [shipped]
+                continue
             failures = [claim_failure]
             last["checks"] = ["claims"]
         # Rewrite without the claim (issue #2136): drop the sentences carrying the invented
@@ -1117,6 +1133,9 @@ def _gated_comment(draft, post_content, recent_comments: list = None,
         if attempt < attempts:
             fix_directive = _framework.comment_retry_directive(
                 failures, offending_comment=similar["match"] if similar["too_similar"] else None)
+    if lint_fallback:
+        _track(GATE_SHIPPED, attempts)
+        return lint_fallback[0]
     log_warning(f"{COMMENT_QUALITY_SKIP_LOG_PREFIX}{attempts} attempt(s) — skipping this "
                 f"post: {'; '.join(failures)}", user_id=user_id, action_type="comment")
     _track(GATE_SKIPPED_GATE, attempts)
