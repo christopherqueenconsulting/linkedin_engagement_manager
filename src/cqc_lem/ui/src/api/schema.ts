@@ -2590,7 +2590,7 @@ export interface paths {
         };
         /**
          * Icp Audience Report Endpoint
-         * @description Who engages with the caller's posts versus who they want, by month (issue #2667).
+         * @description Return who engages with the caller's posts versus who they want (issue #2667).
          *
          *     On demand and in-app only. Reads the caller's own rows; 404 while `weekly-report-enabled` is off.
          */

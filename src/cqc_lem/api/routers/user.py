@@ -3431,7 +3431,7 @@ def weekly_report_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
 
 @router.get("/icp-audience-report")
 def icp_audience_report_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
-    """Who engages with the caller's posts versus who they want, by month (issue #2667).
+    """Return who engages with the caller's posts versus who they want (issue #2667).
 
     On demand and in-app only. Reads the caller's own rows; 404 while `weekly-report-enabled` is off.
     """
