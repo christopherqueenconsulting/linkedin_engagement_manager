@@ -156,6 +156,8 @@ from cqc_lem.utilities.db import (
     get_engagement_preferences,
     get_engagement_suggestions,
     get_engagement_targets,
+    get_leads,
+    get_profile_facts,
     get_follower_stats,
     get_latest_edition_scheduled_for,
     get_lead_magnet_settings,
