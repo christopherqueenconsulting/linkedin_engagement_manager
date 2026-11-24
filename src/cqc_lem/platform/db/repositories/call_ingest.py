@@ -1,0 +1,235 @@
+"""Every SQL statement behind call / voice-note ingest (issue #2629, Phase 1a).
+
+Re-exported by `cqc_lem.utilities.db`. The transcript column is sealed with the envelope scheme
+under the named AAD constant below — renaming it orphans every stored transcript.
+
+Fail-soft like the rest of the facade: a DB fault logs and returns the empty value, with ONE
+deliberate exception — `insert_call_ingest` returns None on a fault so the caller never believes a
+transcript was stored when it was not.
+"""
+
+import hashlib
+from datetime import datetime, timedelta
+from typing import Optional
+
+import mysql.connector
+
+from cqc_lem.platform.db.connection import db_cursor
+from cqc_lem.platform.db.repositories.feedback import _LEN_STORY_TITLE, STORY_BANK_KINDS
+from cqc_lem.utilities.crypto import decrypt_secret, encrypt_secret
+from cqc_lem.utilities.logger import log_error
+
+CALL_TRANSCRIPT_FIELD = "call_ingest.transcript"
+CALL_SOURCE_TYPES = ("otter", "wispr")
+CANDIDATE_REVIEW_STATUSES = ("accepted", "edited", "rejected")
+STORY_BANK_ORIGIN_CALL = "call"
+RETENTION_HARD_CAP_DAYS = 7
+
+
+def transcript_hash(transcript: str) -> str:
+    """Stable dedupe key for a transcript (one row per user + content)."""
+    return hashlib.sha256((transcript or "").encode("utf-8")).hexdigest()
+
+
+def create_call_source(user_id: int, source_type: str, label: Optional[str] = None,
+                       consent_attested: bool = False) -> Optional[int]:
+    """Register a source. It is enabled only when the consent attestation is given."""
+    if source_type not in CALL_SOURCE_TYPES:
+        return None
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT INTO call_source (user_id, source_type, label, consent_attested, "
+                "consent_attested_at, enabled) VALUES (%s,%s,%s,%s,%s,%s)",
+                (user_id, source_type, (label or None), 1 if consent_attested else 0,
+                 datetime.utcnow() if consent_attested else None, 1 if consent_attested else 0))
+            return int(cursor.lastrowid)
+    except mysql.connector.Error as err:
+        log_error("Could not create call source", exc=err, user_id=user_id)
+        return None
+
+
+def is_call_source_enabled(user_id: int, source_id: int) -> bool:
+    """True only for the user's own source that is attested AND enabled. A fault reads as False."""
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT enabled, consent_attested FROM call_source WHERE id=%s AND user_id=%s",
+                (int(source_id), user_id))
+            row = cursor.fetchone()
+            return bool(row and row[0] and row[1])
+    except mysql.connector.Error as err:
+        log_error("Could not read call source", exc=err, user_id=user_id)
+        return False
+
+
+def insert_call_ingest(user_id: int, redacted_transcript: str, source_id: Optional[int] = None,
+                       title: Optional[str] = None, own_speaker: Optional[str] = None,
+                       turn_count: int = 0, now: Optional[datetime] = None) -> Optional[int]:
+    """Store one REDACTED transcript, encrypted, with a hard `purge_after` cap.
+
+    Returns the new id, the existing id for a duplicate (same user + content), or None on a fault.
+    """
+    stamp = now or datetime.utcnow()
+    digest = transcript_hash(redacted_transcript)
+    sealed = encrypt_secret(redacted_transcript, user_id, CALL_TRANSCRIPT_FIELD)
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "SELECT id FROM call_ingest WHERE user_id=%s AND content_hash=%s",
+                (user_id, digest))
+            existing = cursor.fetchone()
+            if existing:
+                return int(existing[0])
+            cursor.execute(
+                "INSERT INTO call_ingest (user_id, source_id, title, content_hash, transcript_enc, "
+                "own_speaker, turn_count, purge_after) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                (user_id, source_id, (title or None), digest, sealed, own_speaker, int(turn_count),
+                 stamp + timedelta(days=RETENTION_HARD_CAP_DAYS)))
+            return int(cursor.lastrowid)
+    except mysql.connector.Error as err:
+        log_error("Could not store call ingest", exc=err, user_id=user_id)
+        return None
+
+
+def get_call_transcript(user_id: int, ingest_id: int) -> Optional[str]:
+    """The decrypted redacted transcript, or None when purged, missing or unreadable."""
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT transcript_enc FROM call_ingest WHERE id=%s AND user_id=%s",
+                (int(ingest_id), user_id))
+            row = cursor.fetchone()
+    except mysql.connector.Error as err:
+        log_error("Could not read call ingest", exc=err, user_id=user_id)
+        return None
+    if not row or not row[0]:
+        return None
+    return decrypt_secret(row[0], user_id, CALL_TRANSCRIPT_FIELD)
+
+
+def insert_extract_candidates(user_id: int, ingest_id: int, candidates: list) -> int:
+    """Insert VERIFIED candidates as `pending`. Returns how many rows were written."""
+    rows = []
+    for c in candidates or []:
+        quote = str(c.get("source_quote") or "").strip()
+        body = str(c.get("body") or "").strip()
+        if not quote or not body:
+            continue
+        kind = c.get("kind") if c.get("kind") in STORY_BANK_KINDS else "anecdote"
+        title = (str(c.get("title") or "").strip() or body[:80])[:_LEN_STORY_TITLE]
+        rows.append((user_id, int(ingest_id), kind, title, body, quote, c.get("t0"),
+                     float(c.get("confidence") or 0)))
+    if not rows:
+        return 0
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.executemany(
+                "INSERT INTO extract_candidate (user_id, ingest_id, kind, title, body, "
+                "source_quote, t0, confidence) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)", rows)
+            return len(rows)
+    except mysql.connector.Error as err:
+        log_error("Could not store extract candidates", exc=err, user_id=user_id)
+        return 0
+
+
+def get_pending_candidates(user_id: int, limit: int = 100) -> list:
+    """The user's review queue, newest call first."""
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT id, ingest_id, kind, title, body, source_quote, t0, confidence, status "
+                "FROM extract_candidate WHERE user_id=%s AND status='pending' "
+                "ORDER BY ingest_id DESC, id ASC LIMIT %s", (user_id, int(limit)))
+            return list(cursor.fetchall() or [])
+    except mysql.connector.Error as err:
+        log_error("Could not list extract candidates", exc=err, user_id=user_id)
+        return []
+
+
+def review_candidate(user_id: int, candidate_id: int, decision: str,
+                     edited_body: Optional[str] = None) -> Optional[int]:
+    """Apply a review decision. `accepted`/`edited` promote to `story_bank` and return its id.
+
+    Only a `pending` candidate owned by `user_id` moves, so a replay or a foreign id changes
+    nothing. A rejected candidate stays `rejected` and never returns to the queue.
+    """
+    if decision not in CANDIDATE_REVIEW_STATUSES:
+        return None
+    try:
+        with db_cursor(dictionary=True, commit=True) as cursor:
+            cursor.execute(
+                "SELECT id, ingest_id, kind, title, body, source_quote, t0 FROM extract_candidate "
+                "WHERE id=%s AND user_id=%s AND status='pending' FOR UPDATE",
+                (int(candidate_id), user_id))
+            cand = cursor.fetchone()
+            if not cand:
+                return None
+            bank_id = None
+            if decision == "rejected":
+                cursor.execute(
+                    "UPDATE extract_candidate SET status='rejected', reviewed_at=NOW() WHERE id=%s",
+                    (cand["id"],))
+                return None
+            body = str(edited_body).strip() if decision == "edited" and edited_body else cand["body"]
+            cursor.execute(
+                "INSERT INTO story_bank (user_id, kind, title, body, active, origin, ingest_id, "
+                "source_quote, candidate_id, review_status) "
+                "VALUES (%s,%s,%s,%s,1,%s,%s,%s,%s,'accepted')",
+                (user_id, cand["kind"], cand["title"], body, STORY_BANK_ORIGIN_CALL,
+                 cand["ingest_id"], cand["source_quote"], cand["id"]))
+            bank_id = int(cursor.lastrowid)
+            cursor.execute(
+                "UPDATE extract_candidate SET status=%s, story_bank_id=%s, reviewed_at=NOW() "
+                "WHERE id=%s", (decision, bank_id, cand["id"]))
+            return bank_id
+    except mysql.connector.Error as err:
+        log_error("Could not review extract candidate", exc=err, user_id=user_id)
+        return None
+
+
+def purge_call_transcripts(now: Optional[datetime] = None) -> int:
+    """Null every transcript past its `purge_after` cap. Derived rows keep only `source_quote`.
+
+    Runs regardless of the ingest kill switch. Returns the number of transcripts purged.
+    """
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE call_ingest SET transcript_enc=NULL, status='purged', purged_at=NOW() "
+                "WHERE transcript_enc IS NOT NULL AND purge_after <= %s",
+                (now or datetime.utcnow(),))
+            return int(cursor.rowcount or 0)
+    except mysql.connector.Error as err:
+        log_error("Could not purge call transcripts", exc=err)
+        return 0
+
+
+def purge_reviewed_call_transcripts(user_id: int) -> int:
+    """Null the transcript of every ingest whose candidates have all been reviewed."""
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE call_ingest ci SET ci.transcript_enc=NULL, ci.status='purged', "
+                "ci.purged_at=NOW() WHERE ci.user_id=%s AND ci.transcript_enc IS NOT NULL "
+                "AND NOT EXISTS (SELECT 1 FROM extract_candidate ec "
+                "WHERE ec.ingest_id=ci.id AND ec.status='pending')", (user_id,))
+            return int(cursor.rowcount or 0)
+    except mysql.connector.Error as err:
+        log_error("Could not purge reviewed call transcripts", exc=err, user_id=user_id)
+        return 0
+
+
+def purge_all_call_data(user_id: int) -> bool:
+    """Delete every call row for the user, including promoted story-bank rows (origin='call')."""
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("DELETE FROM story_bank WHERE user_id=%s AND origin=%s",
+                           (user_id, STORY_BANK_ORIGIN_CALL))
+            cursor.execute("DELETE FROM extract_candidate WHERE user_id=%s", (user_id,))
+            cursor.execute("DELETE FROM call_ingest WHERE user_id=%s", (user_id,))
+            cursor.execute("DELETE FROM call_source WHERE user_id=%s", (user_id,))
+            return True
+    except mysql.connector.Error as err:
+        log_error("Could not purge call data", exc=err, user_id=user_id)
+        return False
