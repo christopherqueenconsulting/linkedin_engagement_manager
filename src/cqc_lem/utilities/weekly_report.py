@@ -242,6 +242,76 @@ def build_weekly_report(
     }
 
 
+def has_activity(report: Mapping[str, Any]) -> bool:
+    """True when the week shows anything worth a report: a published post or an engager reading.
+
+    An unreadable posts count (None) is not activity, so a database fault sends nothing.
+    """
+    nums = report.get("numbers") or {}
+    return bool(nums.get("posts_published")) or report.get("icp_share") is not None
+
+
+def iso_year_week(now: datetime) -> str:
+    """The send-claim key, e.g. `2026-W48`."""
+    year, week, _ = now.isocalendar()
+    return f"{year}-W{week:02d}"
+
+
+def send_weekly_reports(now: Optional[datetime] = None) -> dict:
+    """The Friday beat body: one email per eligible user per ISO week.
+
+    Eligible = `get_active_user_ids` (connected, subscribed, not disabled), `WEEKLY_REPORT_ENABLED`
+    on for that user, not opted out, and some activity. The claim is taken before the send and
+    released if the send fails, so a retry can finish the week but nothing ever sends twice.
+    """
+    from cqc_lem.utilities.db import (
+        claim_weekly_report_send,
+        get_active_user_ids,
+        get_user_email,
+        get_weekly_report_enabled,
+        release_weekly_report_send,
+    )
+    from cqc_lem.utilities.email import send_weekly_report_email
+    from cqc_lem.utilities.flags import WEEKLY_REPORT, flag_enabled
+    from cqc_lem.utilities.logger import log_debug, log_info, log_warning
+
+    when = now or datetime.now(timezone.utc)
+    week = iso_year_week(when)
+    result = {"sent": 0, "skipped": 0, "failed": 0}
+    for user_id in get_active_user_ids() or []:
+        try:
+            if not flag_enabled(WEEKLY_REPORT, user_id) or not get_weekly_report_enabled(user_id):
+                result["skipped"] += 1
+                continue
+            email = get_user_email(user_id)
+            report = load_weekly_report(user_id, when)
+            if not email or not has_activity(report):
+                result["skipped"] += 1
+                continue
+            if not claim_weekly_report_send(user_id, week):
+                result["skipped"] += 1
+                continue
+            try:
+                delivered = send_weekly_report_email(email, report)
+            except Exception:
+                release_weekly_report_send(user_id, week)
+                raise
+            if delivered:
+                result["sent"] += 1
+            else:
+                release_weekly_report_send(user_id, week)
+                result["failed"] += 1
+        except Exception as e:
+            result["failed"] += 1
+            log_warning("Could not send the weekly report", exc=e, user_id=user_id,
+                        task_name="auto_weekly_report")
+    if result["sent"]:
+        log_info(f"Sent {result['sent']} weekly report(s) for {week}", task_name="auto_weekly_report")
+    else:
+        log_debug(f"No weekly reports sent for {week}", task_name="auto_weekly_report")
+    return result
+
+
 def load_weekly_report(user_id: int, now: Optional[datetime] = None) -> dict:
     """Read the inputs for the 7 days ending `now` and build the payload."""
     end = now or datetime.now(timezone.utc)

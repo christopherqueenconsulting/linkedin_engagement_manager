@@ -381,6 +381,12 @@ app.conf.update(
             # Sunday night's stats scrape, so cohort engagement lift covers the full week.
             'schedule': crontab(hour='12', minute='0', day_of_week='monday')
         },
+        'weekly-report': {
+            'task': 'cqc_lem.app.run_scheduler.auto_weekly_report',
+            # Fridays 13:00 UTC (issue #2666) — after the week's stats scrape. Off unless
+            # WEEKLY_REPORT_ENABLED; idempotent per user per ISO week.
+            'schedule': crontab(hour='13', minute='0', day_of_week='friday')
+        },
         'file-feedback-issues': {
             'task': 'cqc_lem.app.run_scheduler.auto_file_feedback_issues',
             # Every 30 min — captured feedback becomes a pipeline-ready issue the same hour it lands

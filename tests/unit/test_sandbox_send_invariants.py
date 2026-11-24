@@ -542,6 +542,8 @@ _NO_LINKEDIN_ACTION = {
     "render_avatar_samples_task": "image generation",
     "auto_notify_stale_approvals": "reads the approval queue and emails the owner a digest; no LinkedIn "
                                    "session is opened",
+    "auto_weekly_report": "reads post stats and emails the account owner a weekly report; no LinkedIn "
+                          "session is opened",
     "auto_generate_content": "content generation (LLM), stores drafts",
     "plan_content_for_user": "content planning (LLM), stores drafts",
     "regenerate_post_video_task": "media generation",
