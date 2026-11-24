@@ -44,7 +44,7 @@ _UNAUTHENTICATED_CASES = [
      f"{_M}.automate_reply_commenting", "apply_async"),
     ("schedule_post", "post", "/api/schedule_post/",
      {"content": "hello", "scheduled_datetime": "2026-07-10T15:00:00", "email": "a@x.com"},
-     f"{_M}.insert_post", None),
+     f"{_M}.insert_post_returning_id", None),
     ("create_weekly_content", "post", "/api/create_weekly_content/", None,
      f"{_M}.celery_chain", None),
     ("invite_to_company_page", "post", "/api/invite_to_li_company_page/", None,
@@ -103,18 +103,20 @@ class TestAutomationTriggerEndpoints:
         assert resp.status_code == 404
 
     def test_schedule_post_success(self, api_client, signed_in):
-        with patch(f"{_M}.insert_post", return_value=True) as ins:
+        with patch(f"{_M}.insert_post_returning_id", return_value=12) as ins:
             resp = api_client.post("/api/schedule_post/", json={
                 "session_token": SESSION_TOKEN,
                 "content": "hello", "scheduled_datetime": "2026-07-10T15:00:00",
                 "post_type": "text"})
         assert resp.status_code == 200
+        assert resp.json() == {"status_code": 200, "detail": "Post scheduled successfully",
+                               "post_id": 12}
         assert ins.call_args[1].get("video_quality") == "standard"
         # The row is written against the SESSION's address, never the body's.
         assert ins.call_args[0][0] == SESSION_EMAIL
 
     def test_schedule_post_403_writing_into_another_account(self, api_client, signed_in):
-        with patch(f"{_M}.insert_post") as ins:
+        with patch(f"{_M}.insert_post_returning_id") as ins:
             resp = api_client.post("/api/schedule_post/", json={
                 "session_token": SESSION_TOKEN,
                 "content": "hello", "scheduled_datetime": "2026-07-10T15:00:00",
@@ -123,7 +125,7 @@ class TestAutomationTriggerEndpoints:
         ins.assert_not_called()
 
     def test_schedule_post_404_on_insert_failure(self, api_client, signed_in):
-        with patch(f"{_M}.insert_post", return_value=False):
+        with patch(f"{_M}.insert_post_returning_id", return_value=None):
             resp = api_client.post("/api/schedule_post/", json={
                 "session_token": SESSION_TOKEN,
                 "content": "hello", "scheduled_datetime": "2026-07-10T15:00:00"})
@@ -131,7 +133,7 @@ class TestAutomationTriggerEndpoints:
 
     def test_schedule_post_forwards_approved_status(self, api_client, signed_in):
         from cqc_lem.utilities.db import PostStatus
-        with patch(f"{_M}.insert_post", return_value=True) as ins:
+        with patch(f"{_M}.insert_post_returning_id", return_value=12) as ins:
             resp = api_client.post("/api/schedule_post/", json={
                 "session_token": SESSION_TOKEN,
                 "content": "hello", "scheduled_datetime": "2026-07-10T15:00:00",
@@ -141,7 +143,7 @@ class TestAutomationTriggerEndpoints:
 
     def test_schedule_post_defaults_to_pending_status(self, api_client, signed_in):
         from cqc_lem.utilities.db import PostStatus
-        with patch(f"{_M}.insert_post", return_value=True) as ins:
+        with patch(f"{_M}.insert_post_returning_id", return_value=12) as ins:
             resp = api_client.post("/api/schedule_post/", json={
                 "session_token": SESSION_TOKEN,
                 "content": "hello", "scheduled_datetime": "2026-07-10T15:00:00",

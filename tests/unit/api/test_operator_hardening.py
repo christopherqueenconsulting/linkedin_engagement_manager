@@ -104,7 +104,9 @@ class TestOperatorRefusalsAreLoggedAtWarning:
     def test_the_operator_is_among_the_warned_scopes(self) -> None:
         main = _kernel()
         assert main._WARN_ON_REFUSAL_SCOPES == {main.SESSION_SCOPE_AGENT, main.SESSION_SCOPE_OBSERVER,
-                                                main.SESSION_SCOPE_OPERATOR, main.SESSION_SCOPE_ASSIST}
+                                                main.SESSION_SCOPE_OPERATOR, main.SESSION_SCOPE_ASSIST,
+                                                main.SESSION_SCOPE_MCP,
+                                                main.SESSION_SCOPE_MCP_OUTREACH}
 
 
 # ---------------------------------------------------------------------------
@@ -245,7 +247,7 @@ class TestOperatorAccessRecord:
              patch(f"{_M}.get_engagement_preferences", return_value={}), \
              patch(f"{_M}.insert_connection_request", return_value=90):
             api_client.post("/api/connection_request", json={
-                "session_token": _TOKEN, "recipient_profile_url": "https://example.com/in/x"})
+                "session_token": _TOKEN, "recipient_profile_url": "https://www.linkedin.com/in/x"})
         assert len(self._rows(recorded, "operator_access")) == 1
         assert len(self._rows(recorded, "operator_action")) == 1
 
@@ -434,8 +436,8 @@ class TestOperatorCannotMintOrConfigure:
                                       "/api/outreach/target"])
     def test_an_approved_create_on_a_standard_account_is_a_403(self, api_client: Any, path: str) -> None:
         body = {"session_token": _TOKEN, "status": "approved",
-                "recipient_profile_url": "https://example.com/in/x", "target_profile_url":
-                "https://example.com/in/x", "message": "hi", "scheduled_datetime": "2099-01-01T09:00:00"}
+                "recipient_profile_url": "https://www.linkedin.com/in/x", "target_profile_url":
+                "https://www.linkedin.com/in/x", "message": "hi", "scheduled_datetime": "2099-01-01T09:00:00"}
         with _session("operator"), _kind("standard"), \
              patch(f"{_M}.insert_connection_request") as c, \
              patch(f"{_M}.insert_scheduled_dm") as d, \

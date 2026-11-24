@@ -379,6 +379,18 @@ class AuthAuditEvent(StrEnum):
     OPERATOR_ACCESS = "operator_access"
     OPERATOR_APPROVAL = "operator_approval"
     ASSIST_TOKEN_MINTED = "assist_token_minted"
+    # End-user MCP seats (epic #2682, docs/agent-mcp-plan.md §8). All share the `mcp_` prefix so the
+    # Security card can exclude them and the Agents tab can select them by prefix.
+    MCP_TOKEN_MINTED = "mcp_token_minted"
+    MCP_TOKEN_ROTATED = "mcp_token_rotated"
+    # A token was presented in an MCP query string and revoked on the spot, whatever its scope.
+    MCP_TOKEN_EXPOSED = "mcp_token_exposed"
+    # At most one per MCP session per UTC day (utilities/observer_access.py): the access record.
+    MCP_ACCESS = "mcp_access"
+    MCP_WRITE = "mcp_write"
+    MCP_KILL_TOGGLED = "mcp_kill_toggled"
+    # Fleet-wide "revoke all" (`revoke_sessions_by_scope`): one row per affected user.
+    MCP_SESSIONS_REVOKED = "mcp_sessions_revoked"
     SESSIONS_REVOKED_ALL = "sessions_revoked_all"
     EMAIL_CHANGE_REQUESTED = "email_change_requested"
     EMAIL_CHANGED = "email_changed"

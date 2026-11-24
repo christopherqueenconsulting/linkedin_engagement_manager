@@ -166,6 +166,24 @@ everything else now — **there is one resolver, and a route that imports around
 `tests/unit/api/test_param_auth_scoping.py` is the standing proof: one 401 case and one 403 case per
 converted route, each asserting the db call behind it was never reached.
 
+### The one carve-out: `/api/mcp` authenticates itself (epic #2682)
+
+`POST /api/mcp`, the end-user MCP endpoint (`docs/agent-mcp-plan.md`), is the ONE public `/api`
+route that authenticates its own caller, and it does NOT go through `get_session_user_id()`. It is
+public at the edge by exact match only (`_PUBLIC_API_EXACT` in `api/main.py`, never a prefix, so
+`/api/mcp/x` stays gated), and its gate (`api/mcp/gate.py`) is the credential check:
+
+- **Bearer only.** It reads `Authorization: Bearer` and nothing else. A `lem_session` cookie is
+  ignored, and a cookie with no bearer is 401 `cookie_only`. A token in the query string is 400.
+- **`mcp` scopes only.** The gate resolves the bearer as an ordinary `sessions` row and accepts
+  only `mcp` / `mcp_outreach`. Any other scope, `full` included, is the same 401 as an unknown token.
+
+The tools still call the real routes, so every other route keeps resolving through
+`get_session_user_id()`. The carve-out is the gate and nothing behind it. The scopes, the
+per-worker dispatch secret that makes an `mcp` token useless against raw `/api`, and the test that
+pins the carve-out (`test_mcp_identity_carveout.py`; `test_api_route_identity.py` skips public
+paths, so it cannot) are in [§ The `mcp` scopes](#the-mcp-scopes--the-users-own-coding-agent-behind-one-gate-epic-2682).
+
 ## The `/api` bearer token is a non-browser credential (issue #950)
 
 #914 made the session the identity everywhere, which left `API_ACCESS_TOKENS` **still checked and
@@ -621,6 +639,85 @@ approval modes above and every per-day cap. A token that cannot approve one item
 configure the account into approving all of them. **This is the general hazard of a path-scoped
 surface: granting a path grants every method on it.** Check the verbs before adding an entry.
 
+### A queue-only seat edits only what is still pending (issue #2684, MCP W1)
+
+The approval guards stop a machine moving a draft INTO approved. They did not stop it editing or
+cancelling a row a human had already acted on: an agent could rewrite an approved DM before it sent,
+or cancel an approved invite. A path grants every verb, so the soft-cancel DELETEs counted too. Every
+write route below is now **pending-only, in SQL**, for a queue-only seat:
+
+| Route | Pending state |
+|---|---|
+| `PUT /dm`, `DELETE /dm` | `pending` |
+| `PUT /connection_request`, `DELETE /connection_request` | `pending` (one carve-out, below) |
+| `PUT /lead_signal` | `new` |
+| `PUT /catchup/touch`, `DELETE /catchup/touch` | `pending` |
+| `PUT /outreach/target`, `DELETE /outreach/target` | `pending` |
+| `PUT /curated/source` (reject) | post `pending` and source `new`/`drafted`, one transaction |
+| `POST /update_post/` | `pending` |
+
+- `update_pending_row` (`platform/db/repositories/pending_edits.py`) locks the row with
+  `SELECT … FOR UPDATE` and writes `UPDATE … WHERE id = %s AND user_id = %s AND status IN (…)`, so a
+  status that moves between the check and the write still refuses the write. A row that has left
+  pending is a **409 `edit_requires_pending`** and nothing is written. The locked read decides the
+  answer, not `rowcount`. The connection does not set `CLIENT.FOUND_ROWS`, so an identical re-save
+  changes zero rows, and it still counts as a success.
+- It covers `cancel` and `dismiss` too, not only field saves. A machine never stamps `approved_by`.
+- The curated reject (`reject_pending_curated_source`) locks and checks BOTH rows before writing
+  either, so it never half-applies.
+- **The backfill#44 carve-out** (ruled on #2684): a `PUT /connection_request` carrying
+  `recipient_email` and no other field or action may also land on a `failed` row whose
+  `failure_reason` is exactly `EMAIL_VERIFICATION_REQUIRED_MESSAGE`
+  (`attach_email_to_connection_request`, the same predicate in SQL). It writes the address only, and
+  the row stays `failed` until a human retries it. Any extra field takes the PUT back to the
+  pending-only rule.
+- **`PUT /lead` is a deliberate exception.** Of the agent surface's write routes, it is the only
+  edit that is NOT pending-only. A lead is a scored CRM record, not a queued send, and it has no
+  pending state. A seat may set its `notes`, manual `stage`, `deal_value` and dismiss/restore flag
+  in any state, and none of those dispatches anything (`NOT_AN_APPROVAL_VECTOR` in
+  `test_role_surface_invariants.py`). MCP W2's `lem_update_lead` relies on it.
+- The rest of that surface's writes are as follows. The four creates (`POST /schedule_dm`,
+  `/connection_request`, `/outreach/target` and `/curated/source`) make new rows under the approval
+  guards above, not edits. `PUT /user/engagement-preferences` is refused outright
+  (`agent_may_not_configure`). The operator adds `/leads/refresh` and the pause.
+- **Who is held:** `_edits_pending_only()` is `_agent_scoped() and not _operator_may_approve()`. The
+  operator exemption (an `operator` on an internal or sandbox account) keeps the human write path,
+  exactly as it keeps the approval verbs and the `operator_approval` audit row. A full session is
+  untouched.
+
+Three more rules ride the same seats:
+
+- **Text only, refused rather than downgraded.** On `POST /schedule_post/` and `POST /update_post/`,
+  a queue-only seat that supplies any media gets a **422 `machine_seat_text_only`** naming the
+  fields (`_refuse_machine_media`). "Media" means a non-text `post_type`, `video_url`,
+  `carousel_slides`, `image_url`, an explicit `use_avatar`, or a non-default `video_quality`.
+  `status="approved"` is a 403 on both routes. A created post is a PENDING text post.
+  - An edit writes `content` and `scheduled_time` only. An existing row's type, media, status,
+    avatar choice and rejection reason stay exactly as stored, so a seat can revise a pending
+    carousel's caption without stripping its slides.
+  - `auto_backfill_missing_assets` selects only video and carousel/document rows, so a text draft
+    is never the post it spends media on (`tests/integration/test_queue_only_edits_db.py`).
+  - `POST /posts/bulk_update/` refuses every queue-only seat.
+  - None of these four post routes is on a machine surface today. The guards are in place before
+    one is.
+- **A recipient is a LinkedIn profile, stored in one spelling.** Any recipient or target URL a
+  queue-only seat names goes through `_normalised_linkedin_profile_url`. That covers
+  `/schedule_dm`, `/connection_request` create and edit, `PUT /dm`, and the `/outreach/target`
+  create, where it runs before the duplicate lookup.
+  - Normalising strips whitespace, accepts `http`, lowercases the host, adds `www.`, and drops a
+    query string or fragment (`?originalSubdomain=uk`).
+  - The slug may be unicode or percent-encoded.
+  - The stored form is `https://www.linkedin.com/in/<slug>/`.
+  - Anything else gets **422 `linkedin_profile_url_required`**: another host, a company page, a
+    path beneath a profile, credentials or a port in the URL. That includes the exempt operator.
+  - A human's URL is neither checked nor rewritten.
+- **The inbound address stays with the human.** `GET /user/engagement-preferences` neither calls
+  `get_or_create_reply_inbound_token` nor returns `reply_inbound_address` for any non-human scope
+  (agent, operator, observer). The address embeds a bearer secret, and for an account that has none,
+  the read MINTS one.
+
+`POST /schedule_post/` now also returns the new row's `post_id`, for every caller.
+
 ### The TTL is fixed at mint, and never slid
 
 `create_session(ttl_hours=...)` grants an agent session a long life (`ttl_days`, default 90) because
@@ -653,7 +750,10 @@ That is why the surface list above is a **contract, not an internal detail**. Ad
 route on `_AGENT_SESSION_SURFACE` changes what an external system may send us — the live example is
 `recipient_email` on `/connection_request` (#1836, paired with
 `christopherqueenconsulting/backfill#44`), where a machine supplies a third party's address but a
-human still approves every send.
+human still approves every send. Since #2684 that supplier's `recipient_profile_url` must be a
+LinkedIn profile URL, stored normalised as `https://www.linkedin.com/in/<slug>/`, and a PUT edits
+only a `pending` request, except the address-only attach to an email-challenged `failed` one
+(backfill#44, above).
 
 ## The `observer` scope — a read-only seat for an operations agent
 
@@ -838,6 +938,85 @@ of the session, never the token), not an audit row.
 log. `GET /admin/task-status/{id}` **withholds the task's result text from an operator**
 (`result_withheld: true`): a task's return value can carry whatever the task touched, and an operator
 needs to know the job finished, not what it returned. The owner's bearer + secret pair still gets it.
+
+## The `mcp` scopes — the user's own coding agent, behind one gate (epic #2682)
+
+A user's own coding agent (Claude Code, Codex, Cursor, …) connects to `POST /api/mcp` with a URL and
+a bearer token. The token is an ordinary `sessions` row, scope **`mcp`** or **`mcp_outreach`**, so
+there is no new login and no new credential store. Full plan: `docs/agent-mcp-plan.md` §3.
+
+| Scope | Reaches | Verbs |
+|---|---|---|
+| `mcp` | `_MCP_READ_PATHS`: the user's own settings, automation state, dashboard, posts, plan, generation status, performance, engagement settings, voice kit and newsletter settings/draft | `GET` only, per path (`_SCOPE_PATH_METHODS`) |
+| `mcp_outreach` | `mcp` plus `_MCP_OUTREACH_EXTRA_READ_PATHS`: DMs, connection requests, leads, lead signals, catch-up touches, outreach targets, newsletter subscribers | `GET` only |
+
+`mcp_outreach` is opted into at mint (owner ruling O11), because those lists hold other people's
+data; its rows are cut to `_OBSERVER_ROW_FIELDS` exactly as an observer's are (`_FIELD_FILTERED_SCOPES`).
+Both scopes are in `FIXED_TTL_SCOPES`, `_QUEUE_ONLY_SCOPES` (so the W2 write tools inherit every
+approval guard and the `auto_approve` downgrade), `_WARN_ON_REFUSAL_SCOPES` and `_SCOPE_REFUSAL_CODE`.
+They are **never** in `_operator_may_approve`: owner ruling O1's internal/sandbox approval lands in W2
+as its own branch that mirrors the operator exemption. In P2 neither scope reaches a write verb;
+`test_role_surface_invariants.py` holds them in `READ_ONLY_ROLES`, and `FORBIDDEN_ROLE_ROUTES` now
+also lists `/user/mcp-token`, its `rotate` and `/admin/mcp-kill`. Never reachable either:
+`/user/token_status`, `/user/security`, `/user/posthog-stats`, `/user/affiliate`, billing, every
+`/admin/*` route, `/user/mcp-token/info` (`tests/unit/api/mcp/test_mcp_scope.py`).
+
+### The audience binding — an MCP token is dead on raw `/api`
+
+The tools (P3) call LEM's real routes through an in-process ASGI loopback, so those routes see an
+ordinary cookie request. A stolen `mcp` token sent straight at `/api` would otherwise skip the kill
+switch, the rollout flag, every limit and the access record. So each worker draws a random secret at
+import (`api/mcp/dispatch.py`), the loopback sends it as `X-LEM-MCP-Dispatch`, and `_scope_checked`
+refuses an mcp-scoped session without it: **403 `session_scope_forbidden` and a WARNING, before the
+path check and before anything is written.** The secret never leaves the process (the loopback's
+transport is `ASGITransport`, never a network one) and a restarted worker draws a new one.
+
+### The identity carve-out — the gate resolves its own bearer
+
+Every `/api` route learns its caller through `get_session_user_id()` (#914). `POST /api/mcp` is the
+**one** exception. It is public at the edge by exact match (`_PUBLIC_API_EXACT`, never a prefix, so
+`/api/mcp/x` stays gated), reads only `Authorization: Bearer` (an outer `lem_session` cookie is
+ignored; a cookie with no bearer is 401 `cookie_only`), and resolves the token itself with
+`resolve_session_checked`, imported through the `cqc_lem.utilities.db` facade. It admits **only**
+the two MCP scopes: any other live session is the same 401 `invalid_token` and a WARNING. This is
+the only path in `api/` other than `get_session_user_id` that calls a session resolver directly, and
+`tests/unit/api/mcp/test_mcp_identity_carveout.py` fails the build on a third
+(`test_api_route_identity.py` skips public paths, so it cannot see this one).
+
+`resolve_session_checked` exists because `resolve_session` answers None for a database fault, which
+for the gate would read as "invalid token, create a new one". It raises `SessionStoreUnavailable`
+instead, and the gate answers **503 `mcp_unavailable`**. It also returns the row id and expiry for
+the request's `McpPrincipal`. For the mcp scopes only, `last_seen_at` is written at most once every
+60 seconds (`MCP_LAST_SEEN_THROTTLE_SECONDS`), because one tool call resolves its token at the gate
+and again on every inner call; every other seat is unchanged.
+
+The gate's order after the HTTP checks (`api/mcp/gate.py`): a token in the query string is 400, and
+one that resolves to **any** session is revoked on the spot, audited `mcp_token_exposed` and its owner
+emailed (WARNING, never the value); then a per-(address, token digest) failure bucket (30 a minute);
+resolve; the `mcp-server-enabled` flag (403 `mcp_disabled`); concurrency (2 per user, 8 per worker);
+the per-user tool-call budget; the principal; and the once-a-day `mcp_access` row. Every Redis-backed
+limit fails CLOSED (503); `MCP_RATE_*` set to 0 refuses all.
+
+### Minting, rotating, revoking
+
+`POST /api/user/mcp-token {label, ttl_days, outreach}` (`api/routers/mcp_tokens.py`) is the observer
+mint tightened: 404 while the rollout flag is off for the account; a human session; **a strong factor
+first** (403 `mcp_needs_strong_factor`, owner ruling O3 — the check runs before the ceremony); then
+`_require_step_up` with `extension_scope_ok` **not** passed; `ttl_days` 1–90, default 30, fixed at
+mint (O2); at most 10 live MCP tokens (409 `mcp_token_limit`) and 10 mints an hour (429). The token
+is `lem_mcp_` + 64 hex, so a leaked one is recognisable; the stored hash covers the whole string.
+Every mint is audited `mcp_token_minted` and emailed to the owner; a failed email never fails the
+mint. `POST /api/user/mcp-token/rotate {session_id}` runs the same ceremony, checks ownership and
+scope in SQL (`get_owned_session`), **revokes the old token first**, then mints one with the same
+label, scope and TTL (`mcp_token_rotated`, emailed). `GET /api/user/mcp-token/info` lists the account's MCP
+tokens with no token or hash, plus Redis activity counts that are null, never 0, when unreadable.
+Revoking one is `POST /user/sessions/revoke`, as for every session.
+
+Fleet-wide controls are owner-run: `POST /api/admin/mcp-kill {on}` (admin human session, step-up,
+audited `mcp_kill_toggled`, hidden from the schema) or `scripts/mcp_kill.py on|off|status` sets the
+`mcp:kill` key; `scripts/mcp_revoke_all.py --reason …` revokes every MCP session with one
+`mcp_sessions_revoked` row per user, in the same transaction. `sessions.scope` is `VARCHAR(32)` and
+`auth_audit_log.event` `VARCHAR(50)`, so none of this needed a migration.
 
 ## The docs surface lives inside `/api` (issue #1020)
 

@@ -24,7 +24,7 @@ from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from enum import IntEnum
 from typing import Any, Awaitable, Callable, Dict, Iterator, List, Mapping, NoReturn, Optional, Union
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlencode, urlparse, urlsplit
 
 import requests
 from celery import chain as celery_chain
@@ -43,8 +43,12 @@ from linkedin_api.clients.auth.client import AuthClient
 from linkedin_api.clients.restli.client import RestliClient
 from linkedin_api.common.errors import ResponseFormattingError
 from pydantic import BaseModel, Field, field_validator
+from starlette.routing import Route
 
 from cqc_lem import assets_dir
+from cqc_lem.api.mcp.dispatch import DISPATCH_HEADER, dispatch_header_valid
+from cqc_lem.api.mcp.gate import McpGate
+from cqc_lem.api.mcp.lifespan import MCP_PATH, mcp_lifespan
 
 # Re-exported, not merely imported: 363 annotations in this file say `ResponseModel`, and every test
 # and router that reaches `cqc_lem.api.main.ResponseModel` keeps resolving. It lives in `api.models`
@@ -94,11 +98,14 @@ from cqc_lem.utilities.curated_sources import credit_line
 from cqc_lem.utilities.db import (
     EMAIL_VERIFICATION_REQUIRED_MESSAGE,
     INTERNAL_ACCOUNT_KINDS,
+    MCP_SESSION_SCOPES,
     SESSION_SCOPE_AGENT,
     SESSION_SCOPE_ASSIST,
     SESSION_SCOPE_ENROLL,
     SESSION_SCOPE_EXTENSION,
     SESSION_SCOPE_FULL,
+    SESSION_SCOPE_MCP,
+    SESSION_SCOPE_MCP_OUTREACH,
     SESSION_SCOPE_OBSERVER,
     SESSION_SCOPE_OPERATOR,
     SESSION_SCOPE_RECOVERY,
@@ -109,10 +116,12 @@ from cqc_lem.utilities.db import (
     LeadSignalStatus,
     LeadStage,
     OwnershipUnprovable,
+    PendingEdit,
     PostStatus,
     PostType,
     ScheduledDmStatus,
     add_user_with_access_token,
+    attach_email_to_connection_request,
     bulk_update_posts,
     count_hot_leads,
     count_new_lead_signals,
@@ -154,7 +163,7 @@ from cqc_lem.utilities.db import (
     get_video_credit_balance,
     insert_connection_request,
     insert_feedback,
-    insert_post,
+    insert_post_returning_id,
     insert_scheduled_dm,
     is_user_admin,
     record_auth_event,
@@ -170,6 +179,7 @@ from cqc_lem.utilities.db import (
     update_factor_counter,
     update_lead,
     update_lead_signal,
+    update_pending_row,
     update_post_use_avatar,
     update_post_video_quality,
     update_scheduled_dm,
@@ -238,12 +248,46 @@ from cqc_lem.utilities.webauthn_util import (
 # swagger_ui_oauth2_redirect_url must be set explicitly: FastAPI defaults it to the fixed literal
 # "/docs/oauth2-redirect" and does NOT derive it from docs_url, so moving docs_url alone strands
 # the helper outside /api and breaks Swagger's Authorize flow silently.
+#
+# `mcp_lifespan` starts the MCP SDK's session manager and fails OPEN (epic #2682): a broken MCP
+# stack makes `/api/mcp` answer 503 and leaves `/health` and every other route serving.
 app = FastAPI(
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
     swagger_ui_oauth2_redirect_url="/api/docs/oauth2-redirect",
+    lifespan=mcp_lifespan,
 )
+
+# The end-user MCP endpoint (epic #2682, `docs/agent-mcp-plan.md`). Registered first, so nothing
+# below — the /api routers or the SPA catch-all — can claim the path. `methods=None` hands EVERY
+# method to the gate, so a GET or DELETE gets the gate's JSON 405 rather than Starlette's plain-text
+# one. It is public at the edge (`_PUBLIC_API_EXACT`) because the gate does its own auth.
+app.router.routes.append(Route(MCP_PATH, McpGate, methods=None, include_in_schema=False))
+
+
+def _well_known_not_found() -> JSONResponse:
+    """No OAuth metadata is published here: the MCP server takes a LEM-minted bearer, not OAuth.
+
+    An explicit JSON 404 rather than the SPA shell, so an MCP client probing for OAuth discovery
+    gets a definite "no" instead of HTML. `no-store` is set here because these paths are outside
+    `/api`, where `api_cache_control_middleware` does not reach.
+    """
+    return JSONResponse(status_code=404, headers={"Cache-Control": NO_STORE_CACHE_CONTROL},
+                        content={"status_code": 404, "detail": "Not Found"})
+
+
+@app.get("/.well-known/oauth-protected-resource{suffix:path}", include_in_schema=False)
+async def well_known_oauth_protected_resource(suffix: str) -> JSONResponse:
+    """JSON 404 for RFC 9728 protected-resource metadata, including path-suffixed forms."""
+    return _well_known_not_found()
+
+
+@app.get("/.well-known/oauth-authorization-server{suffix:path}", include_in_schema=False)
+async def well_known_oauth_authorization_server(suffix: str) -> JSONResponse:
+    """JSON 404 for RFC 8414 authorization-server metadata, including path-suffixed forms."""
+    return _well_known_not_found()
+
 
 @app.exception_handler(DailyAICapReached)
 async def daily_ai_cap_handler(request: Request, exc: DailyAICapReached) -> JSONResponse:
@@ -402,11 +446,18 @@ _PUBLIC_API_PREFIXES = ("/api/auth/", "/api/billing/webhook", "/api/assets",
                         "/api/extension/", "/api/user/linkedin-cookie",
                         "/api/docs", "/api/redoc", "/api/openapi.json")
 
+# Public by EXACT match only, never a subtree (epic #2682). `/api/mcp` is the MCP gate, which
+# authenticates its own bearer; a prefix entry would also open `/api/mcp/x` and its like, which must
+# stay behind the edge gate. Kept out of `_PUBLIC_API_PREFIXES` for exactly that reason.
+_PUBLIC_API_EXACT = frozenset({MCP_PATH})
+
 
 def _is_public_api_path(path: str) -> bool:
     # An entry ending in "/" opens that whole subtree; every other entry matches only itself or a
     # path segment beneath it. Without the boundary, "/api/faq" would also unlock a future
     # "/api/faq-admin".
+    if path in _PUBLIC_API_EXACT:
+        return True
     for prefix in _PUBLIC_API_PREFIXES:
         if prefix.endswith("/"):
             if path.startswith(prefix):
@@ -665,12 +716,55 @@ _SCOPE_PATTERNS: Dict[str, tuple] = {
 # LEM Assist (#2647 P4): read the approved queue, report one comment posted. Each path takes ONE verb
 # (`_SCOPE_PATH_METHODS`), so the extension can neither write the queue nor read through the done path.
 _ASSIST_SESSION_SURFACE = frozenset({"/assist/queue", "/review/comment-posted"})
+
+# The end-user MCP seats (epic #2682, `docs/agent-mcp-plan.md` §3.2). Read-only in P2: every path is
+# granted `GET` and nothing else. They are reached ONLY through the in-process loopback behind
+# `POST /api/mcp` — `_scope_checked` refuses an mcp session without this worker's dispatch secret —
+# so this list is what a P3 tool may call, and a tool that needs a path not listed here cannot work.
+# Each entry is the user's OWN data. Deliberately absent: every credential, factor, step-up and
+# recovery route; session revoke and every token mint (including `/user/mcp-token`); billing,
+# `/user/affiliate`, `/user/security`, `/user/token_status` and `/user/posthog-stats` (three
+# sequential HogQL calls, plan §4); every `/admin/*` route; and `/review/*`, which lands with the
+# review-queue tool after #2653.
+_MCP_READ_PATHS = frozenset({
+    # who am I, and the state that decides whether automation is running safely
+    "/user/settings", "/user/automation-status", "/user/linkedin-signin-status",
+    "/user/account-readiness",
+    # dashboard, posts, plan and generation status
+    "/dashboard/stats", "/dashboard/planned-tasks", "/posts", "/post_url",
+    "/content_generation_status", "/activity",
+    # performance
+    "/user/post-stats", "/user/engagement-analytics", "/user/audience-growth",
+    "/user/weekly-report", "/leads/funnel",
+    # engagement settings (the prefs GET never mints or returns `reply_inbound_address` for a
+    # machine seat, MCP W1)
+    "/user/engagement-preferences", "/user/engagement-targets", "/user/dm-templates",
+    "/user/engagement-suggestions",
+    # voice kit: the user's own story bank, lead magnet, groups, skills and profile
+    "/user/story-bank", "/user/lead-magnet", "/user/groups", "/user/linkedin-profile-skills",
+    "/user/linkedin-profile",
+    # newsletter settings and draft (subscribers are outreach-only, owner ruling O5)
+    "/user/newsletter-settings", "/user/newsletter-draft",
+})
+# `mcp` plus the lists that hold OTHER people's data: who LEM messages, invites, scores and replies
+# to. Opted into at mint (owner ruling O11). Row fields are cut to `_OBSERVER_ROW_FIELDS`.
+_MCP_OUTREACH_EXTRA_READ_PATHS = frozenset({
+    "/dms", "/connection_requests", "/leads", "/lead_signals", "/catchup/touches",
+    "/outreach/targets", "/user/newsletter-subscribers",
+})
+_MCP_OUTREACH_READ_PATHS = _MCP_READ_PATHS | _MCP_OUTREACH_EXTRA_READ_PATHS
+_GET_ONLY = frozenset({"GET"})
+
 _SCOPE_PATH_METHODS: Dict[str, Dict[str, frozenset[str]]] = {
     SESSION_SCOPE_ASSIST: {"/assist/queue": frozenset({"GET"}),
                            "/review/comment-posted": frozenset({"POST"})},
+    SESSION_SCOPE_MCP: {path: _GET_ONLY for path in _MCP_READ_PATHS},
+    SESSION_SCOPE_MCP_OUTREACH: {path: _GET_ONLY for path in _MCP_OUTREACH_READ_PATHS},
 }
 
 _SCOPE_SURFACES: Dict[str, frozenset[str]] = {
+    SESSION_SCOPE_MCP: _MCP_READ_PATHS,
+    SESSION_SCOPE_MCP_OUTREACH: _MCP_OUTREACH_READ_PATHS,
     SESSION_SCOPE_ASSIST: _ASSIST_SESSION_SURFACE,
     SESSION_SCOPE_EXTENSION: _EXTENSION_SESSION_SURFACE,
     SESSION_SCOPE_ENROLL: _ENROLL_SESSION_SURFACE,
@@ -700,6 +794,8 @@ _SCOPE_REFUSAL_CODE = {
     SESSION_SCOPE_OBSERVER: "session_scope_forbidden",
     SESSION_SCOPE_OPERATOR: "session_scope_forbidden",
     SESSION_SCOPE_ASSIST: "session_scope_forbidden",
+    SESSION_SCOPE_MCP: "session_scope_forbidden",
+    SESSION_SCOPE_MCP_OUTREACH: "session_scope_forbidden",
     # The SPA reads this one and renders the enrolment gate instead of a dead page.
     SESSION_SCOPE_ENROLL: "enrollment_required",
 }
@@ -999,13 +1095,18 @@ _OBSERVER_ROW_FIELDS: Dict[str, frozenset] = {
 }
 
 
-def _observer_rows(kind: str, rows: Any) -> Any:
-    """Reduce an observer's list rows to the whitelisted fields; every other scope is untouched.
+# The read-only seats whose list rows are cut to `_OBSERVER_ROW_FIELDS`: the observer, and both MCP
+# seats (an `mcp` token never reaches these lists; an `mcp_outreach` one does).
+_FIELD_FILTERED_SCOPES = frozenset({SESSION_SCOPE_OBSERVER, *MCP_SESSION_SCOPES})
 
-    For an observer each row keeps only the fields `_OBSERVER_ROW_FIELDS[kind]` names. A non-list is
-    returned as it came.
+
+def _observer_rows(kind: str, rows: Any) -> Any:
+    """Reduce a read-only seat's list rows to the whitelisted fields; every other scope is untouched.
+
+    For an observer or MCP seat (`_FIELD_FILTERED_SCOPES`) each row keeps only the fields
+    `_OBSERVER_ROW_FIELDS[kind]` names. A non-list is returned as it came.
     """
-    if _request_session_scope.get() != SESSION_SCOPE_OBSERVER or not isinstance(rows, list):
+    if _request_session_scope.get() not in _FIELD_FILTERED_SCOPES or not isinstance(rows, list):
         return rows
     allowed = _OBSERVER_ROW_FIELDS[kind]
     return [{k: v for k, v in row.items() if k in allowed} if isinstance(row, dict) else row
@@ -1072,13 +1173,34 @@ def _record_observer_access(user_id: int, token: Optional[str], path: Optional[s
 # Machine seats whose refusal is a WARNING: a held token of one of these only reaches a path it was
 # not given when its holder is misconfigured or the token is stolen, so each refusal is worth seeing.
 _WARN_ON_REFUSAL_SCOPES = frozenset({SESSION_SCOPE_AGENT, SESSION_SCOPE_OBSERVER,
-                                     SESSION_SCOPE_OPERATOR, SESSION_SCOPE_ASSIST})
+                                     SESSION_SCOPE_OPERATOR, SESSION_SCOPE_ASSIST,
+                                     *MCP_SESSION_SCOPES})
+
+
+def _mcp_dispatch_bound() -> bool:
+    """Does THIS request carry the worker's MCP dispatch secret (`api/mcp/dispatch.py`)?
+
+    Read off the request ContextVar. No request object means no header, so the answer is False.
+    """
+    http_request = _request_object.get(None)
+    headers = getattr(http_request, "headers", None)
+    return dispatch_header_valid(headers.get(DISPATCH_HEADER) if headers is not None else None)
 
 
 def _scope_checked(resolved: Dict[str, Any], token: Optional[str]) -> int:
     scope = resolved.get("scope") or SESSION_SCOPE_FULL
     path = _request_path.get()
     user_id = resolved["user_id"]
+
+    if scope in MCP_SESSION_SCOPES and not _mcp_dispatch_bound():
+        # The audience binding (docs/agent-mcp-plan.md §3.4). An MCP token is only ever served
+        # through the gate's in-process loopback, which sends this worker's dispatch secret. Without
+        # it the token was taken to raw `/api`, around the kill switch, the rollout flag and every
+        # limit, so it is refused BEFORE the path check and before anything is written. WARNING:
+        # an MCP client never does this, so a holder that does is misusing or has stolen the token.
+        log_warning("MCP session refused without the dispatch binding", user_id=user_id,
+                    scope=scope, path=_scope_path(path), session=_session_log_id(token))
+        raise _scope_refusal(scope)
 
     if scope == SESSION_SCOPE_ENROLL and not enrollment_required(user_id):
         # **The hold belongs to the ACCOUNT, not to this session row.** Deciding it from the row
@@ -2645,20 +2767,34 @@ def automate_reply_commenting_for_post_id(post_id: int, session_token: Optional[
         raise HTTPException(status_code=404, detail=f"Could not schedule automation for post. Error: {e}")
 
 
+class PostScheduledResponse(ResponseModel[str]):
+    """`POST /schedule_post/`'s reply: the usual message, plus the new row's id (issue #2684)."""
+
+    post_id: int
+
+
 @router.post("/schedule_post/", responses={
     200: {"description": "Post scheduled successfully"},
     500: {"description": "Session resolved to an account with no address"},
     **{k: v for k, v in error_responses.items() if k in [401, 403, 404]}
 })
-def schedule_post(post: PostRequest) -> ResponseModel[str]:
+def schedule_post(post: PostRequest) -> PostScheduledResponse:
     """Create a post row from the composer — draft (`pending`) or queued (`approved`).
 
     Two things the body does NOT get to decide: the row is written against the SESSION's address
     read back from the account, and a compose-time `image_url` is kept only when it is a preview WE
     issued to this account (issue #1030) — anything else is dropped, never stored.
+
+    A queue-only machine seat (issue #2684) may only draft: `approved` is a 403, any media field is
+    a 422 `machine_seat_text_only`, and the row is a PENDING text post, so nothing is generated or
+    spent before a human approves it. The response carries the new `post_id`.
     """
     user_id = require_session_user_id(post.session_token)
     _reject_foreign_email(user_id, post.email)
+    _refuse_agent_approved_status(post.status)
+    if _edits_pending_only():
+        _refuse_machine_media(post)
+        post = post.model_copy(update={"post_type": PostType.TEXT, "status": PostStatus.PENDING})
     # The row is written against the SESSION's address, never the body's — a target that passed the
     # check is by definition the same string, and reading it back from the account is what keeps
     # that true if the check ever moves (issue #914).
@@ -2682,15 +2818,17 @@ def schedule_post(post: PostRequest) -> ResponseModel[str]:
 
     # SPA-created posts carry an explicit status: "Approve & Schedule" → approved,
     # "Save Draft" → pending. Auto-generated content sets its own status elsewhere.
-    if insert_post(email, post.content, post.scheduled_datetime, post.post_type,
-                   video_url=post.video_url, carousel_slides=post.carousel_slides,
-                   video_quality=post.video_quality or "standard",
-                   status=post.status or PostStatus.PENDING,
-                   use_avatar=post.use_avatar, image_url=image_url,
-                   approved_by=user_approver(user_id)):
-        return ResponseModel(status_code=200, detail="Post scheduled successfully")
-    else:
+    post_id = insert_post_returning_id(email, post.content, post.scheduled_datetime, post.post_type,
+                                       video_url=post.video_url,
+                                       carousel_slides=post.carousel_slides,
+                                       video_quality=post.video_quality or "standard",
+                                       status=post.status or PostStatus.PENDING,
+                                       use_avatar=post.use_avatar, image_url=image_url,
+                                       approved_by=user_approver(user_id))
+    if post_id is None:
         raise HTTPException(status_code=404, detail="Could not schedule post")
+    return PostScheduledResponse(status_code=200, detail="Post scheduled successfully",
+                                 post_id=post_id)
 
 
 @router.post("/create_weekly_content/", responses={
@@ -2902,6 +3040,13 @@ def bulk_update_posts_endpoint(request: BulkUpdateRequest) -> ResponseModel[str]
     scoped by `user_id=` — the check is the gate, the scope is what makes forgetting it harmless.
     """
     user_id = require_session_user_id(request.session_token)
+    if _agent_scoped():
+        # On no machine surface today; should it ever be, a batch restatus is a human's call
+        # (issue #2684) — it can approve, reject or reschedule rows a human already acted on.
+        raise HTTPException(status_code=403, detail={
+            "code": "agent_may_not_bulk_update",
+            "message": "This token cannot restatus or reschedule posts in bulk.",
+        })
     if not request.post_ids:
         raise HTTPException(status_code=400, detail="post_ids is required")
     _require_own_posts(user_id, request.post_ids)
@@ -2973,9 +3118,22 @@ def update_post(post_id: int, post: PostRequest) -> ResponseModel[str]:
     user_id = require_session_user_id(post.session_token)
     _reject_foreign_email(user_id, post.email)
     _require_own_posts(user_id, [post_id])
+    _refuse_agent_approved_status(post.status)
 
     _warn_if_naive_schedule(post.scheduled_datetime, "/update_post/", post_id=post_id,
                             user_id=user_id)
+
+    if _edits_pending_only():
+        # A queue-only seat revises a PENDING draft's text and slot only (issue #2684). The type,
+        # the stored media, the status, the avatar choice and the rejection reason are left exactly
+        # as stored: asking to change type or media is a 422, never a silent overwrite that would
+        # strip a carousel's slides or a video's render. Enforced in SQL, so a post approved a
+        # moment ago is a 409.
+        _refuse_machine_media(post)
+        _pending_edit_or_raise("post", post_id, user_id, {
+            "content": post.content, "scheduled_time": post.scheduled_datetime,
+        }, "Post could not be updated")
+        return ResponseModel(status_code=200, detail="Post updated successful")
 
     if update_db_post(post.content, post.video_url, post.scheduled_datetime, post.post_type, post_id,
                       post.status, user_id=user_id, approved_by=user_approver(user_id)):
@@ -3072,11 +3230,16 @@ def _challenge_expiry() -> datetime:
     return datetime.now(timezone.utc) + timedelta(seconds=AUTH_CHALLENGE_TTL_SECONDS)
 
 
-_QUEUE_ONLY_SCOPES = frozenset({SESSION_SCOPE_AGENT, SESSION_SCOPE_OPERATOR})
+# The MCP seats are queue-only from their first phase (docs/agent-mcp-plan.md §3.2). In P2 they reach
+# no write verb at all, so this changes nothing they can do today; it is in place so the W2 write
+# tools inherit every approval guard below, the `auto_approve` downgrade and `agent_may_not_configure`
+# without a second list to remember. They are NEVER added to `_operator_may_approve`: owner ruling
+# O1's internal/sandbox approval lands in W2 as its own mcp branch mirroring the operator exemption.
+_QUEUE_ONLY_SCOPES = frozenset({SESSION_SCOPE_AGENT, SESSION_SCOPE_OPERATOR, *MCP_SESSION_SCOPES})
 
 
 def _agent_scoped() -> bool:
-    """Is THIS request being served on a queue-only machine seat (`agent` or `operator`)?
+    """Is THIS request being served on a queue-only machine seat (`agent`, `operator` or an MCP seat)?
 
     Read off the ContextVar the resolver stamped, never a fresh lookup — same argument as
     `_enrollment_held`. The name is kept because every guard below calls it; for an `agent` it is
@@ -3179,6 +3342,137 @@ def _refuse_agent_approved_status(status: Optional[str]) -> None:
         _audit_operator_approval("status")
         return
     raise _agent_approval_refusal()
+
+
+def _edits_pending_only() -> bool:
+    """Is THIS request held to pending-only edits and text-only drafts (MCP W1, issue #2684)?
+
+    True for every queue-only seat except the operator exemption: an `operator` for which
+    `_operator_may_approve()` is True keeps the human's edit path, exactly as it keeps the approval
+    verbs. Never true for a full session, so the human path is untouched.
+    """
+    return _agent_scoped() and not _operator_may_approve()
+
+
+def _pending_edit_or_raise(kind: str, row_id: int, user_id: int, fields: Dict[str, Any],
+                           failure_detail: str) -> None:
+    """Apply a queue-only seat's edit in SQL, only while the row is still pending.
+
+    Args:
+        kind: The queue, as `update_pending_row` names it.
+        row_id: The row being edited; the handler has already proved the caller owns it.
+        user_id: The caller.
+        fields: Column to value, as `update_pending_row` writes them.
+        failure_detail: The handler's own 500 message for a database error.
+
+    Raises:
+        HTTPException: 409 `edit_requires_pending` when the row has left its pending state, 500
+            when the write failed.
+    """
+    _raise_unless_updated(update_pending_row(kind, row_id, user_id, fields), failure_detail)
+
+
+def _raise_unless_updated(outcome: PendingEdit, failure_detail: str) -> None:
+    """Map a pending-only write's outcome onto the response a queue-only seat gets.
+
+    Args:
+        outcome: What the repository write reported.
+        failure_detail: The handler's own 500 message for a database error.
+
+    Raises:
+        HTTPException: 409 `edit_requires_pending` for NOT_PENDING, 500 for FAILED.
+    """
+    if outcome == PendingEdit.NOT_PENDING:
+        raise HTTPException(status_code=409, detail={
+            "code": "edit_requires_pending",
+            "message": "This token can only edit items that are still pending review.",
+        })
+    if outcome != PendingEdit.UPDATED:
+        raise HTTPException(status_code=500, detail=failure_detail)
+
+
+# A LinkedIn member profile: `/in/<slug>` and nothing beneath it. The slug may be unicode or
+# percent-encoded (`\w` is unicode-aware), never a separator.
+_LINKEDIN_PROFILE_PATH = re.compile(r"/in/([\w\-%]+)/?")
+_LINKEDIN_PROFILE_HOSTS = frozenset({"linkedin.com", "www.linkedin.com"})
+
+
+def _normalised_linkedin_profile_url(url: str) -> Optional[str]:
+    """The one stored spelling of a LinkedIn profile URL, or None when `url` is not one.
+
+    The forms the scrapers and suppliers produce all collapse here: surrounding whitespace, `http`,
+    a bare `linkedin.com`, an upper-case host, a `?originalSubdomain=uk` or `#fragment` and a
+    missing trailing slash. The canonical form is `https://www.linkedin.com/in/<slug>/`.
+    """
+    try:
+        parts = urlsplit(url.strip())
+        port = parts.port  # raises ValueError on a malformed port, like urlsplit on a bad netloc
+    except ValueError:
+        return None
+    if parts.scheme.lower() not in ("http", "https") or parts.username or parts.password:
+        return None
+    if (parts.hostname or "") not in _LINKEDIN_PROFILE_HOSTS or port is not None:
+        return None
+    match = _LINKEDIN_PROFILE_PATH.fullmatch(parts.path)
+    if not match:
+        return None
+    return f"https://www.linkedin.com/in/{match.group(1)}/"
+
+
+def _linkedin_profile_url_for_seat(url: Optional[str]) -> Optional[str]:
+    """The recipient URL to store: normalised for a queue-only seat, untouched for a human.
+
+    A queue-only seat may only queue outreach to a LinkedIn member profile (MCP W1, issue #2684). A
+    machine seat is the caller that can be fed a stranger's text, so anything it names as a
+    recipient must be a profile URL and nothing else: not another site, not a company page, not a
+    path beneath a profile. A human typing a URL into the SPA is unchanged. None means the field was
+    not supplied and is left to the handler.
+
+    Args:
+        url: The recipient or target URL the request named.
+
+    Returns:
+        The canonical profile URL for a queue-only seat, `url` itself for anyone else.
+
+    Raises:
+        HTTPException: 422 `linkedin_profile_url_required` for a queue-only seat naming anything else.
+    """
+    if url is None or not _agent_scoped():
+        return url
+    normalised = _normalised_linkedin_profile_url(url)
+    if normalised is None:
+        raise HTTPException(status_code=422, detail={
+            "code": "linkedin_profile_url_required",
+            "message": "Recipient must be a LinkedIn profile URL (linkedin.com/in/<profile>).",
+        })
+    return normalised
+
+
+def _refuse_machine_media(post: "PostRequest") -> None:
+    """A queue-only seat writes TEXT drafts only, so any media in the body is a 422, never dropped.
+
+    A silent downgrade would let the caller believe it had queued the video or carousel it asked
+    for. "Supplied" is a value that would change what the post is or what a later step spends on:
+    a non-text `post_type`, a `video_url`, slides, an `image_url`, an explicit `use_avatar`, or a
+    `video_quality` other than the default.
+
+    Raises:
+        HTTPException: 422 `machine_seat_text_only`.
+    """
+    supplied = [name for name, present in (
+        ("post_type", post.post_type not in (None, PostType.TEXT)),
+        ("video_url", post.video_url is not None),
+        ("carousel_slides", bool(post.carousel_slides)),
+        ("image_url", post.image_url is not None),
+        ("use_avatar", post.use_avatar is not None),
+        ("video_quality", post.video_quality not in (None, "standard")),
+    ) if present]
+    if supplied:
+        raise HTTPException(status_code=422, detail={
+            "code": "machine_seat_text_only",
+            "message": "This token can only draft text posts; remove: " + ", ".join(supplied),
+            "fields": supplied,
+        })
 
 
 def _passkeys_or_503() -> RelyingParty:
@@ -3526,6 +3820,7 @@ def schedule_dm_endpoint(request: ScheduleDmRequest) -> ResponseModel[dict[str, 
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     _refuse_agent_approved_status(request.status)
+    request.recipient_profile_url = _linkedin_profile_url_for_seat(request.recipient_profile_url)
     status = ScheduledDmStatus.APPROVED if request.status == "approved" else ScheduledDmStatus.PENDING
     dm_id = insert_scheduled_dm(user_id, request.recipient_profile_url, request.message,
                                 request.scheduled_datetime, recipient_name=request.recipient_name,
@@ -3574,10 +3869,20 @@ def update_scheduled_dm_endpoint(request: UpdateDmRequest) -> ResponseModel[str]
         raise HTTPException(status_code=422,
                             detail=f"Unknown action '{request.action}' — expected 'approve' or 'cancel'")
     _refuse_agent_approval(request.action)
+    request.recipient_profile_url = _linkedin_profile_url_for_seat(request.recipient_profile_url)
     status = action_map.get(request.action)
     if status is None and all(v is None for v in (request.recipient_profile_url, request.recipient_name,
                                                   request.message, request.scheduled_datetime)):
         raise HTTPException(status_code=422, detail="Nothing to update — provide at least one field or an action")
+    if _edits_pending_only():
+        fields = {k: v for k, v in (("recipient_profile_url", request.recipient_profile_url),
+                                    ("recipient_name", request.recipient_name),
+                                    ("message", request.message),
+                                    ("scheduled_time", request.scheduled_datetime),
+                                    ("status", status)) if v is not None}
+        _pending_edit_or_raise("scheduled_dm", request.dm_id, user_id, fields,
+                               "Could not update scheduled DM")
+        return ResponseModel(status_code=200, detail="Scheduled DM updated")
     scheduled_time = request.scheduled_datetime
     if status == ScheduledDmStatus.APPROVED and scheduled_time is None:
         # The scanner returns a DM this far past its slot to 'pending' (#2103), so re-approving one
@@ -3600,6 +3905,11 @@ def delete_scheduled_dm_endpoint(request: DmDeleteRequest) -> ResponseModel[str]
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     if get_scheduled_dm_user_id(request.dm_id) != user_id:
         raise HTTPException(status_code=404, detail="Scheduled DM not found")
+    if _edits_pending_only():
+        # DELETE is an edit too (issue #2684): a queue-only seat cancels only a pending DM.
+        _pending_edit_or_raise("scheduled_dm", request.dm_id, user_id,
+                               {"status": ScheduledDmStatus.CANCELED}, "Could not cancel scheduled DM")
+        return ResponseModel(status_code=200, detail="Scheduled DM canceled")
     if not update_scheduled_dm_status(request.dm_id, ScheduledDmStatus.CANCELED):
         raise HTTPException(status_code=500, detail="Could not cancel scheduled DM")
     return ResponseModel(status_code=200, detail="Scheduled DM canceled")
@@ -3617,6 +3927,7 @@ def create_connection_request_endpoint(request: ConnectionRequestCreate) -> Resp
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     _refuse_agent_approved_status(request.status)
+    request.recipient_profile_url = _linkedin_profile_url_for_seat(request.recipient_profile_url)
     if request.status is None:
         mode = get_engagement_preferences(user_id).get("connection_request_mode", "auto_approve")
         # The PASSIVE half of the same guarantee, and the one with no field to refuse on. This
@@ -3682,7 +3993,14 @@ def update_connection_request_endpoint(request: ConnectionRequestUpdate) -> Resp
     `retry` action because reaching `approved` on a `failed` row is a human-only call (#1026). Firing the
     same transition as a side effect of the (permitted) field-only PUT would reach `approved` through a
     route that guard never inspects — laundering the refusal rather than removing it. So this only fires
-    for a human-surface session; an agent-scoped attach still saves the address and leaves the row `failed`.
+    for a human-surface session.
+
+    A queue-only seat (issue #2684) edits only a `pending` request, enforced in SQL; anything else is a
+    409 `edit_requires_pending`. ONE exception is the `backfill` supplier's contract
+    (christopherqueenconsulting/backfill#44): a PUT carrying `recipient_email` and no other field or
+    action may also land on a `failed` row whose `failure_reason` is `EMAIL_VERIFICATION_REQUIRED_MESSAGE`.
+    It writes the address only; the row stays `failed` until a human retries it. Adding any other field
+    to that PUT takes it back to the pending-only rule, so on a failed row it is a 409.
     """
     user_id = get_session_user_id(request.session_token)
     if not user_id:
@@ -3700,6 +4018,7 @@ def update_connection_request_endpoint(request: ConnectionRequestUpdate) -> Resp
         if not current or current["status"] != str(ConnectionRequestStatus.FAILED):
             raise HTTPException(status_code=422, detail="Only a 'failed' connection request can be retried")
     _refuse_agent_approval(request.action)
+    request.recipient_profile_url = _linkedin_profile_url_for_seat(request.recipient_profile_url)
     status = action_map.get(request.action)
     if request.action is None and request.recipient_email is not None and not _agent_scoped():
         current = current or get_connection_request(request.request_id)
@@ -3710,6 +4029,28 @@ def update_connection_request_endpoint(request: ConnectionRequestUpdate) -> Resp
                                                   request.recipient_name, request.message,
                                                   request.recipient_email)):
         raise HTTPException(status_code=422, detail="Nothing to update — provide at least one field or an action")
+    if _edits_pending_only():
+        if status is None and request.recipient_email is not None and all(
+                v is None for v in (request.recipient_profile_url, request.recipient_name,
+                                    request.message)):
+            _raise_unless_updated(attach_email_to_connection_request(
+                request.request_id, user_id, request.recipient_email),
+                "Could not update connection request")
+            return ResponseModel(status_code=200, detail="Connection request updated")
+        fields: Dict[str, Any] = {
+            k: v for k, v in (("recipient_profile_url", request.recipient_profile_url),
+                              ("recipient_name", request.recipient_name),
+                              ("message", request.message),
+                              ("recipient_email", request.recipient_email)) if v is not None}
+        if status is not None:
+            # The same side effects `update_connection_request` gives a status move: a cleared
+            # failure, and a cleared address on a move into a terminal status (issue #1836).
+            fields.update(status=status, failure_reason=None)
+            if request.recipient_email is None and status == ConnectionRequestStatus.CANCELED:
+                fields["recipient_email"] = None
+        _pending_edit_or_raise("connection_request", request.request_id, user_id, fields,
+                               "Could not update connection request")
+        return ResponseModel(status_code=200, detail="Connection request updated")
     if not update_connection_request(request.request_id,
                                      recipient_profile_url=request.recipient_profile_url,
                                      recipient_name=request.recipient_name, message=request.message,
@@ -3729,6 +4070,13 @@ def delete_connection_request_endpoint(request: ConnectionRequestDelete) -> Resp
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     if get_connection_request_user_id(request.request_id) != user_id:
         raise HTTPException(status_code=404, detail="Connection request not found")
+    if _edits_pending_only():
+        # The path grants every verb, so DELETE is an edit too (issue #2684). Same side effects as
+        # `update_connection_request_status` on a move into a terminal status.
+        _pending_edit_or_raise("connection_request", request.request_id, user_id,
+                               {"status": ConnectionRequestStatus.CANCELED, "failure_reason": None,
+                                "recipient_email": None}, "Could not cancel connection request")
+        return ResponseModel(status_code=200, detail="Connection request canceled")
     if not update_connection_request_status(request.request_id, ConnectionRequestStatus.CANCELED):
         raise HTTPException(status_code=500, detail="Could not cancel connection request")
     return ResponseModel(status_code=200, detail="Connection request canceled")
@@ -3789,6 +4137,12 @@ def update_lead_signal_endpoint(request: LeadSignalUpdate) -> ResponseModel[str]
     draft = request.draft_response if request.draft_response is not None else signal.get("draft_response")
     if status == LeadSignalStatus.APPROVED and not (draft or "").strip():
         raise HTTPException(status_code=422, detail="Cannot approve a lead with an empty response")
+    if _edits_pending_only():
+        fields = {k: v for k, v in (("draft_response", request.draft_response),
+                                    ("status", status)) if v is not None}
+        _pending_edit_or_raise("lead_signal", request.signal_id, user_id, fields,
+                               "Could not update lead signal")
+        return ResponseModel(status_code=200, detail="Lead signal updated")
     if not update_lead_signal(request.signal_id, draft_response=request.draft_response, status=status):
         raise HTTPException(status_code=500, detail="Could not update lead signal")
     if status == LeadSignalStatus.APPROVED:
@@ -3952,6 +4306,13 @@ def update_catchup_touch_endpoint(request: UpdateCatchupTouchRequest) -> Respons
     # SKIPPED — so an approval must always land on a real message, saved now or already stored.
     if status == CatchupTouchStatus.APPROVED and not (request.message or touch.get("message") or "").strip():
         raise HTTPException(status_code=422, detail="Add a message before approving this catch-up touch")
+    if _edits_pending_only():
+        fields = {k: v for k, v in (("message", request.message),
+                                    ("person_name", request.person_name),
+                                    ("status", status)) if v is not None}
+        _pending_edit_or_raise("catchup_touch", request.touch_id, user_id, fields,
+                               "Could not update catch-up touch")
+        return ResponseModel(status_code=200, detail="Catch-up touch updated")
     if not update_catchup_touch(request.touch_id, message=request.message,
                                 person_name=request.person_name, status=status):
         raise HTTPException(status_code=500, detail="Could not update catch-up touch")
@@ -3968,6 +4329,12 @@ def delete_catchup_touch_endpoint(request: CatchupTouchDeleteRequest) -> Respons
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     if get_catchup_touch_user_id(request.touch_id) != user_id:
         raise HTTPException(status_code=404, detail="Catch-up touch not found")
+    if _edits_pending_only():
+        # DELETE is an edit too (issue #2684): a queue-only seat cancels only a pending touch.
+        _pending_edit_or_raise("catchup_touch", request.touch_id, user_id,
+                               {"status": CatchupTouchStatus.CANCELED},
+                               "Could not cancel catch-up touch")
+        return ResponseModel(status_code=200, detail="Catch-up touch canceled")
     if not update_catchup_touch_status(request.touch_id, CatchupTouchStatus.CANCELED):
         raise HTTPException(status_code=500, detail="Could not cancel catch-up touch")
     return ResponseModel(status_code=200, detail="Catch-up touch canceled")
@@ -4248,6 +4615,7 @@ from cqc_lem.api.routers import (  # noqa: E402
     avatar as _avatar_router,
     billing as _billing_router,
     curated as _curated_router,
+    mcp_tokens as _mcp_tokens_router,
     outreach as _outreach_router,
     review as _review_router,
     user as _user_router,
@@ -4259,6 +4627,7 @@ app.include_router(_auth_router.router)
 app.include_router(_avatar_router.router)
 app.include_router(_billing_router.router)
 app.include_router(_curated_router.router)
+app.include_router(_mcp_tokens_router.router)
 app.include_router(_outreach_router.router)
 app.include_router(_review_router.router)
 app.include_router(_user_router.router)

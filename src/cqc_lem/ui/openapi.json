@@ -4111,6 +4111,76 @@
         "title": "LogoutRequest",
         "type": "object"
       },
+      "McpTokenRequest": {
+        "description": "Body of `POST /user/mcp-token`.",
+        "properties": {
+          "label": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "pattern": "^[A-Za-z0-9 ._:\\-]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "outreach": {
+            "default": false,
+            "description": "Also grant the outreach and leads lists (other people's data): scope `mcp_outreach`.",
+            "title": "Outreach",
+            "type": "boolean"
+          },
+          "session_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Token"
+          },
+          "ttl_days": {
+            "default": 30,
+            "maximum": 90.0,
+            "minimum": 1.0,
+            "title": "Ttl Days",
+            "type": "integer"
+          }
+        },
+        "title": "McpTokenRequest",
+        "type": "object"
+      },
+      "McpTokenRotateRequest": {
+        "description": "Body of `POST /user/mcp-token/rotate`.",
+        "properties": {
+          "session_id": {
+            "minimum": 1.0,
+            "title": "Session Id",
+            "type": "integer"
+          },
+          "session_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Token"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "McpTokenRotateRequest",
+        "type": "object"
+      },
       "NewsletterCoverDecisionRequest": {
         "description": "The human review verdict on a generated cover \u2014 the ONE thing that lets one reach LinkedIn.",
         "properties": {
@@ -5530,6 +5600,30 @@
           "post_id"
         ],
         "title": "PostRescoreRequest",
+        "type": "object"
+      },
+      "PostScheduledResponse": {
+        "description": "`POST /schedule_post/`'s reply: the usual message, plus the new row's id (issue #2684).",
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "post_id": {
+            "title": "Post Id",
+            "type": "integer"
+          },
+          "status_code": {
+            "title": "Status Code",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status_code",
+          "detail",
+          "post_id"
+        ],
+        "title": "PostScheduledResponse",
         "type": "object"
       },
       "PostStatus": {
@@ -9236,7 +9330,7 @@
         "summary": "Create Connection Request Endpoint"
       },
       "put": {
-        "description": "Edit a queued connection request, or approve/cancel/retry it.\n\n`approve` releases it to the invite drip and is refused for an `agent` session; an unknown action is a 422,\nnever a silent save. `retry` (issue #1735) is the ONLY way a `failed` request is ever sent again \u2014 LEM\nnever auto-retries a failed invite (repeat-inviting a decliner risks the account), so a stuck `failed`\nrow needs an explicit human decision every time. It is refused on anything but a `failed` row, and is\ngated the same as `approve` since it reaches the identical send-queue state.\n\nRevive-on-attach (issue #1881): a field-only save (no `action`) that supplies `recipient_email` on a\n`failed` row whose `failure_reason` is `EMAIL_VERIFICATION_REQUIRED_MESSAGE` (#1836's Class C \u2014 the\nONLY string `send_connection_request` ever writes for this challenge) moves that row straight to\n`approved` **in this same write**. `failed -> approved` must never pass through a terminal status on\nthe way \u2014 `update_connection_request` clears `recipient_email` on a move INTO a terminal status, so\nrouting the revival through one would erase the address just attached and walk the row straight back\ninto the same challenge (see #1881's write-up on PR #1840).\n\nGated on the CALLER, not the field: `_refuse_agent_approval` refuses an `agent`-scoped session the\n`retry` action because reaching `approved` on a `failed` row is a human-only call (#1026). Firing the\nsame transition as a side effect of the (permitted) field-only PUT would reach `approved` through a\nroute that guard never inspects \u2014 laundering the refusal rather than removing it. So this only fires\nfor a human-surface session; an agent-scoped attach still saves the address and leaves the row `failed`.",
+        "description": "Edit a queued connection request, or approve/cancel/retry it.\n\n`approve` releases it to the invite drip and is refused for an `agent` session; an unknown action is a 422,\nnever a silent save. `retry` (issue #1735) is the ONLY way a `failed` request is ever sent again \u2014 LEM\nnever auto-retries a failed invite (repeat-inviting a decliner risks the account), so a stuck `failed`\nrow needs an explicit human decision every time. It is refused on anything but a `failed` row, and is\ngated the same as `approve` since it reaches the identical send-queue state.\n\nRevive-on-attach (issue #1881): a field-only save (no `action`) that supplies `recipient_email` on a\n`failed` row whose `failure_reason` is `EMAIL_VERIFICATION_REQUIRED_MESSAGE` (#1836's Class C \u2014 the\nONLY string `send_connection_request` ever writes for this challenge) moves that row straight to\n`approved` **in this same write**. `failed -> approved` must never pass through a terminal status on\nthe way \u2014 `update_connection_request` clears `recipient_email` on a move INTO a terminal status, so\nrouting the revival through one would erase the address just attached and walk the row straight back\ninto the same challenge (see #1881's write-up on PR #1840).\n\nGated on the CALLER, not the field: `_refuse_agent_approval` refuses an `agent`-scoped session the\n`retry` action because reaching `approved` on a `failed` row is a human-only call (#1026). Firing the\nsame transition as a side effect of the (permitted) field-only PUT would reach `approved` through a\nroute that guard never inspects \u2014 laundering the refusal rather than removing it. So this only fires\nfor a human-surface session.\n\nA queue-only seat (issue #2684) edits only a `pending` request, enforced in SQL; anything else is a\n409 `edit_requires_pending`. ONE exception is the `backfill` supplier's contract\n(christopherqueenconsulting/backfill#44): a PUT carrying `recipient_email` and no other field or\naction may also land on a `failed` row whose `failure_reason` is `EMAIL_VERIFICATION_REQUIRED_MESSAGE`.\nIt writes the address only; the row stays `failed` until a human retries it. Adding any other field\nto that PUT takes it back to the pending-only rule, so on a failed row it is a 409.",
         "operationId": "update_connection_request_endpoint_api_connection_request_put",
         "requestBody": {
           "content": {
@@ -11342,7 +11436,7 @@
     },
     "/api/schedule_post/": {
       "post": {
-        "description": "Create a post row from the composer \u2014 draft (`pending`) or queued (`approved`).\n\nTwo things the body does NOT get to decide: the row is written against the SESSION's address\nread back from the account, and a compose-time `image_url` is kept only when it is a preview WE\nissued to this account (issue #1030) \u2014 anything else is dropped, never stored.",
+        "description": "Create a post row from the composer \u2014 draft (`pending`) or queued (`approved`).\n\nTwo things the body does NOT get to decide: the row is written against the SESSION's address\nread back from the account, and a compose-time `image_url` is kept only when it is a preview WE\nissued to this account (issue #1030) \u2014 anything else is dropped, never stored.\n\nA queue-only machine seat (issue #2684) may only draft: `approved` is a 403, any media field is\na 422 `machine_seat_text_only`, and the row is a PENDING text post, so nothing is generated or\nspent before a human approves it. The response carries the new `post_id`.",
         "operationId": "schedule_post_api_schedule_post__post",
         "requestBody": {
           "content": {
@@ -11359,7 +11453,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResponseModel_str_"
+                  "$ref": "#/components/schemas/PostScheduledResponse"
                 }
               }
             },
@@ -13540,6 +13634,170 @@
           }
         },
         "summary": "Set User Location By City Endpoint"
+      }
+    },
+    "/api/user/mcp-token": {
+      "post": {
+        "description": "Mint an MCP token for the user's own coding agent, shown exactly once in the response.\n\nScope `mcp` reads the account's own content, analytics, plan and settings; `outreach=true` mints\n`mcp_outreach`, which adds the lists holding other people's data. Neither can approve, send or\nconfigure anything, nor reach raw `/api` without the gate (`docs/identity-and-sessions.md`).",
+        "operationId": "mint_mcp_token_api_user_mcp_token_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpTokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Token minted; shown once"
+          },
+          "401": {
+            "description": "Invalid or expired session"
+          },
+          "403": {
+            "description": "Step-up required, or no strong factor enrolled"
+          },
+          "404": {
+            "description": "The MCP server is not enabled for this account"
+          },
+          "409": {
+            "description": "Already at the active-token limit"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too many mints this hour"
+          },
+          "503": {
+            "description": "The active-token count could not be read"
+          }
+        },
+        "summary": "Mint Mcp Token"
+      }
+    },
+    "/api/user/mcp-token/info": {
+      "get": {
+        "description": "The Agents tab's read: enabled, the URL to connect to, and every MCP token on the account.\n\nToken-free: rows carry their id, label and dates, never a token or a hash. `calls_7d` and\n`last_client_name` come from Redis and are null when it cannot be read: unknown, never 0.\nAnswered even when the rollout flag is off (`enabled: false`), so tokens minted before a\nrollback stay visible and revocable.",
+        "operationId": "get_mcp_info_api_user_mcp_token_info_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "session_token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Whether the MCP server is enabled, its URL, and this account's tokens"
+          },
+          "401": {
+            "description": "Invalid or expired session"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "description": "The token list could not be read"
+          }
+        },
+        "summary": "Get Mcp Info"
+      }
+    },
+    "/api/user/mcp-token/rotate": {
+      "post": {
+        "description": "Replace one of the caller's MCP tokens with a new one: same label, scope and TTL.\n\nThe old token is revoked FIRST. Rotation is what someone does when a token may have leaked, so\na failure part-way must leave no live old token behind; the cost is that a failed mint leaves\nthe user with none, and they mint again.",
+        "operationId": "rotate_mcp_token_api_user_mcp_token_rotate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpTokenRotateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Old token revoked, new token minted; shown once"
+          },
+          "401": {
+            "description": "Invalid or expired session"
+          },
+          "403": {
+            "description": "Step-up required, or no strong factor enrolled"
+          },
+          "404": {
+            "description": "No such live agent token on this account, or the server is not enabled"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too many mints this hour"
+          },
+          "503": {
+            "description": "The token could not be read"
+          }
+        },
+        "summary": "Rotate Mcp Token"
       }
     },
     "/api/user/member-post-analytics-connection": {

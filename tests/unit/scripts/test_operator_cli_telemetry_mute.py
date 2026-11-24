@@ -33,6 +33,8 @@ OPERATOR_CLIS = [
     "scripts/simulate_post_rhythm.py",
     "scripts/probe_research.py",
     "scripts/seed_demo_account.py",
+    "scripts/mcp_kill.py",
+    "scripts/mcp_revoke_all.py",
 ]
 
 _MUTE = re.compile(r'^os\.environ\.setdefault\(\s*"LEM_TELEMETRY_MUTED"\s*,\s*"1"\s*\)',

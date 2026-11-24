@@ -51,7 +51,7 @@ _CASES = [
      "update_user"),
     ("POST", "/api/schedule_post/", None,
      {"email": _OTHER_EMAIL, "content": "hi", "scheduled_datetime": "2026-07-10T15:00:00Z"},
-     "insert_post"),
+     "insert_post_returning_id"),
     ("POST", "/api/create_weekly_content/", {"user_id": _OTHER_USER_ID}, None, "mark_queued"),
     ("POST", "/api/invite_to_li_company_page/", {"user_id": _OTHER_USER_ID}, None,
      "automate_invites_to_company_page_for_user"),
@@ -420,7 +420,7 @@ class TestAResolvedSessionWithNoAddressIsOurFault:
         with patch(f"{_M}.get_session_user_id", return_value=SESSION_USER_ID), \
              patch(f"{_M}.get_user_email", return_value=None), \
              patch(f"{_M}.log_error") as err, \
-             patch(f"{_M}.insert_post") as inserted:
+             patch(f"{_M}.insert_post_returning_id") as inserted:
             resp = api_client.post("/api/schedule_post/",
                                json={"session_token": SESSION_TOKEN, "content": "hi",
                                      "scheduled_datetime": "2026-07-10T15:00:00Z"})

@@ -69,6 +69,11 @@ FORBIDDEN_ROLE_ROUTES: tuple[Forbidden, ...] = (
     Forbidden("/user/observer-token", _ANY, "mints an observer-scoped session"),
     Forbidden("/user/operator-token", _ANY, "mints an operator-scoped session"),
     Forbidden("/user/assist-token", _ANY, "mints an assist-scoped session"),
+    Forbidden("/user/mcp-token", _ANY, "mints an mcp-scoped session"),
+    Forbidden("/user/mcp-token/*", _ANY, "rotates an mcp token: revokes one and mints its successor"),
+    # -- the MCP server's own stop ----------------------------------------------------------------
+    Forbidden("/admin/mcp-kill", _ANY, "the MCP kill switch: a seat must never be able to turn off "
+                                       "the stop that contains it"),
     # -- caps and approval modes: the config that decides what runs without a human ---------------
     # The agent legitimately reaches this PATH (to read it), and refuses the write in the handler —
     # see HANDLER_GUARDED_ROUTES. So at the resolver it is forbidden only for the read-only role,
@@ -120,7 +125,8 @@ _APPROVAL_FIELDS = frozenset({"action", "status"})
 def _scopes() -> Any:
     from cqc_lem.api import main
     return {"observer": main.SESSION_SCOPE_OBSERVER, "agent": main.SESSION_SCOPE_AGENT,
-            "operator": main.SESSION_SCOPE_OPERATOR}
+            "operator": main.SESSION_SCOPE_OPERATOR, "mcp": main.SESSION_SCOPE_MCP,
+            "mcp_outreach": main.SESSION_SCOPE_MCP_OUTREACH}
 
 
 # The ONLY /admin routes any role may reach, by role. Every other /admin route stays behind
@@ -140,8 +146,9 @@ OPERATOR_EXTRA_NON_ADMIN_ROUTES = frozenset({("POST", "/leads/refresh")})
 
 # A new restricted machine role is one more entry here.
 ROLE_SCOPES = _scopes()
-# The roles that may write at all. The rest are held to read verbs.
-READ_ONLY_ROLES = ("observer",)
+# The roles held to read verbs. The MCP seats are read-only in P2 (epic #2682); W2 moves them out
+# when it grants exactly one write verb per write-tool path.
+READ_ONLY_ROLES = ("observer", "mcp", "mcp_outreach")
 
 
 @pytest.fixture(scope="module")
