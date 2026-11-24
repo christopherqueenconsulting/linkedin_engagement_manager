@@ -4130,6 +4130,10 @@ def update_connection_request_endpoint(request: ConnectionRequestUpdate) -> Resp
                                                   request.recipient_name, request.message,
                                                   request.recipient_email)):
         raise HTTPException(status_code=422, detail="Nothing to update — provide at least one field or an action")
+    stored_message = None
+    if request.message is not None or status == ConnectionRequestStatus.APPROVED:
+        stored_message = (current or get_connection_request(request.request_id) or {}).get("message")
+    _voice_note_edit(user_id, "connection_request", request.request_id, stored_message, request.message)
     if _edits_pending_only():
         if status is None and request.recipient_email is not None and all(
                 v is None for v in (request.recipient_profile_url, request.recipient_name,
@@ -4152,6 +4156,9 @@ def update_connection_request_endpoint(request: ConnectionRequestUpdate) -> Resp
                 fields["recipient_email"] = None
         _pending_edit_or_raise("connection_request", request.request_id, user_id, fields,
                                "Could not update connection request")
+        if status == ConnectionRequestStatus.APPROVED:
+            _voice_record_approval(user_id, "connection_request", request.request_id,
+                                   request.message or stored_message)
         return ResponseModel(status_code=200, detail="Connection request updated")
     if not update_connection_request(request.request_id,
                                      recipient_profile_url=request.recipient_profile_url,
@@ -4161,6 +4168,9 @@ def update_connection_request_endpoint(request: ConnectionRequestUpdate) -> Resp
                                                   if status == ConnectionRequestStatus.APPROVED
                                                   else None)):
         raise HTTPException(status_code=500, detail="Could not update connection request")
+    if status == ConnectionRequestStatus.APPROVED:
+        _voice_record_approval(user_id, "connection_request", request.request_id,
+                               request.message or stored_message)
     return ResponseModel(status_code=200, detail="Connection request updated")
 
 
@@ -4239,14 +4249,20 @@ def update_lead_signal_endpoint(request: LeadSignalUpdate) -> ResponseModel[str]
     draft = request.draft_response if request.draft_response is not None else signal.get("draft_response")
     if status == LeadSignalStatus.APPROVED and not (draft or "").strip():
         raise HTTPException(status_code=422, detail="Cannot approve a lead with an empty response")
+    _voice_note_edit(user_id, "lead_signal", request.signal_id, signal.get("draft_response"),
+                     request.draft_response)
     if _edits_pending_only():
         fields = {k: v for k, v in (("draft_response", request.draft_response),
                                     ("status", status)) if v is not None}
         _pending_edit_or_raise("lead_signal", request.signal_id, user_id, fields,
                                "Could not update lead signal")
+        if status == LeadSignalStatus.APPROVED:
+            _voice_record_approval(user_id, "lead_signal", request.signal_id, draft)
         return ResponseModel(status_code=200, detail="Lead signal updated")
     if not update_lead_signal(request.signal_id, draft_response=request.draft_response, status=status):
         raise HTTPException(status_code=500, detail="Could not update lead signal")
+    if status == LeadSignalStatus.APPROVED:
+        _voice_record_approval(user_id, "lead_signal", request.signal_id, draft)
     if status == LeadSignalStatus.APPROVED:
         send_lead_response.apply_async(kwargs={"signal_id": request.signal_id})
     return ResponseModel(status_code=200, detail="Lead signal updated")

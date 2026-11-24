@@ -21,7 +21,9 @@ from cqc_lem.utilities.db import (
     approve_comment_candidate,
     cancel_comment_candidate,
     get_catchup_touch,
+    get_connection_request,
     get_connection_request_user_id,
+    get_outreach_target,
     get_outreach_target_user_id,
     get_scheduled_dm,
     get_scheduled_dm_user_id,
@@ -88,8 +90,12 @@ def approve_connection_request(user_id: int, item_id: int) -> Optional[str]:
     """Approve a connection request, stamping `approved_by`."""
     if get_connection_request_user_id(item_id) != user_id:
         return NOT_FOUND
-    return None if update_connection_request(item_id, status=ConnectionRequestStatus.APPROVED,
-                                             approved_by=user_approver(user_id)) else WRITE_FAILED
+    stored = get_connection_request(item_id)
+    if not update_connection_request(item_id, status=ConnectionRequestStatus.APPROVED,
+                                     approved_by=user_approver(user_id)):
+        return WRITE_FAILED
+    _label_edited_approval(user_id, "connection_request", item_id, (stored or {}).get("message"))
+    return None
 
 
 def cancel_connection_request(user_id: int, item_id: int) -> Optional[str]:
@@ -104,8 +110,12 @@ def approve_funnel_target(user_id: int, item_id: int) -> Optional[str]:
     """Approve the funnel target's current stage, stamping `approved_by`."""
     if get_outreach_target_user_id(item_id) != user_id:
         return NOT_FOUND
-    return None if update_outreach_target(item_id, status=OutreachStatus.APPROVED,
-                                          approved_by=user_approver(user_id)) else WRITE_FAILED
+    stored = get_outreach_target(item_id)
+    if not update_outreach_target(item_id, status=OutreachStatus.APPROVED,
+                                  approved_by=user_approver(user_id)):
+        return WRITE_FAILED
+    _label_edited_approval(user_id, "outreach_target", item_id, (stored or {}).get("draft_text"))
+    return None
 
 
 def cancel_funnel_target(user_id: int, item_id: int) -> Optional[str]:
