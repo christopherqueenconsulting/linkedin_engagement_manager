@@ -143,9 +143,13 @@ SESSION_SCOPE_OBSERVER = "observer"
 # list of non-destructive maintenance routes, and approval authority ONLY on an account whose
 # `users.account_kind` is internal or sandbox. Same mint ceremony as `agent`.
 SESSION_SCOPE_OPERATOR = "operator"
+# An `assist` session (#2647 P4) is held by the LEM Assist browser extension: it may GET the approved
+# comment queue and POST that one comment as posted, and nothing else.
+SESSION_SCOPE_ASSIST = "assist"
 # Scopes whose expiry is fixed at mint and never slid by `resolve_session`. Every one of them is a
 # credential a machine holds on a schedule, so a sliding window would make it renew forever.
-FIXED_TTL_SCOPES = frozenset({SESSION_SCOPE_AGENT, SESSION_SCOPE_OBSERVER, SESSION_SCOPE_OPERATOR})
+FIXED_TTL_SCOPES = frozenset({SESSION_SCOPE_AGENT, SESSION_SCOPE_OBSERVER, SESSION_SCOPE_OPERATOR,
+                              SESSION_SCOPE_ASSIST})
 def resolve_session(token: str) -> Optional[dict]:
     """Validate a session token and, if live, slide its expiry forward — returning WHO it is and
     WHAT it may do in one read.

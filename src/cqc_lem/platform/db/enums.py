@@ -378,6 +378,7 @@ class AuthAuditEvent(StrEnum):
     # At most one per operator session per UTC day, reads included (utilities/observer_access.py).
     OPERATOR_ACCESS = "operator_access"
     OPERATOR_APPROVAL = "operator_approval"
+    ASSIST_TOKEN_MINTED = "assist_token_minted"
     SESSIONS_REVOKED_ALL = "sessions_revoked_all"
     EMAIL_CHANGE_REQUESTED = "email_change_requested"
     EMAIL_CHANGED = "email_changed"

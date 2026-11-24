@@ -82,6 +82,7 @@ from cqc_lem.platform.db.enums import (
 from cqc_lem.platform.db.repositories.auth import (
     AUTH_FACTOR_TOTP,
     SESSION_SCOPE_AGENT,
+    SESSION_SCOPE_ASSIST,
     SESSION_SCOPE_ENROLL,
     SESSION_SCOPE_OBSERVER,
     SESSION_SCOPE_OPERATOR,
@@ -190,7 +191,9 @@ from cqc_lem.platform.db.repositories.billing import (
     set_affiliate_status,
 )
 from cqc_lem.platform.db.repositories.comment_candidates import (
+    claim_approved_candidate_posted,
     count_comment_candidates,
+    get_approved_comment_candidates,
     get_comment_candidates,
     insert_comment_candidate,
 )
@@ -960,6 +963,7 @@ __all__ = [
     "SESSION_SCOPE_FULL",
     "SESSION_SCOPE_OBSERVER",
     "SESSION_SCOPE_OPERATOR",
+    "SESSION_SCOPE_ASSIST",
     "SESSION_SCOPE_RECOVERY",
     "STALE_INVITE_WITHDRAWN_MESSAGE",
     "STORY_BANK_KINDS",
@@ -1093,6 +1097,8 @@ __all__ = [
     "get_curated_neighbors",
     "get_curated_source",
     "count_comment_candidates",
+    "claim_approved_candidate_posted",
+    "get_approved_comment_candidates",
     "get_comment_candidates",
     "insert_comment_candidate",
     "get_curated_sources",

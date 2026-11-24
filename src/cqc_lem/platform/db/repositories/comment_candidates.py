@@ -96,3 +96,52 @@ def count_comment_candidates(user_id: int, day: Optional[date] = None,
     except mysql.connector.Error as err:
         log_error("Could not count comment candidates", exc=err, user_id=user_id)
         return None
+
+
+def get_approved_comment_candidates(user_id: int, limit: int = 150) -> Optional[list]:
+    """The user's candidates a human approved and nobody has posted, oldest approval first.
+
+    Posts already in the `commented_posts` ledger are excluded, so Assist never offers a post a
+    lane already commented on. Only rows with draft text qualify. None on a read error.
+    """
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT c.id, c.post_key, c.post_url, c.author, c.draft_text, c.approved_at "
+                "FROM comment_candidates c WHERE c.user_id = %s AND c.status = 'approved' "
+                "AND c.draft_text IS NOT NULL AND c.draft_text <> '' "
+                "AND NOT EXISTS (SELECT 1 FROM commented_posts p WHERE p.user_id = c.user_id "
+                "AND p.post_key = c.post_key) "
+                "ORDER BY c.approved_at ASC, c.id ASC LIMIT %s",
+                (user_id, int(limit)))
+            return list(cursor.fetchall() or [])
+    except mysql.connector.Error as err:
+        log_error("Could not read approved comment candidates", exc=err, user_id=user_id)
+        return None
+
+
+def claim_approved_candidate_posted(user_id: int, candidate_id: int) -> Optional[dict]:
+    """Atomically move ONE approved candidate to `posted`; return its row, or None.
+
+    The single UPDATE is conditioned on `status = 'approved'` and the caller's `user_id`, so a
+    candidate that was never approved, is someone else's, or was already reported posted changes
+    nothing and returns None: the done endpoint cannot be used to record an unapproved comment or
+    to count one twice.
+    """
+    try:
+        with db_cursor(commit=True, dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT id, post_key, post_url, author, draft_text FROM comment_candidates "
+                "WHERE id = %s AND user_id = %s AND status = 'approved' FOR UPDATE",
+                (int(candidate_id), user_id))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            cursor.execute(
+                "UPDATE comment_candidates SET status = 'posted', posted_at = CURRENT_TIMESTAMP "
+                "WHERE id = %s AND user_id = %s AND status = 'approved'",
+                (int(candidate_id), user_id))
+            return row if cursor.rowcount >= 1 else None
+    except mysql.connector.Error as err:
+        log_error("Could not claim an approved comment candidate", exc=err, user_id=user_id)
+        return None

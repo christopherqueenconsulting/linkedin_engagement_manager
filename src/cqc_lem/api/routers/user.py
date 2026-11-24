@@ -116,6 +116,7 @@ from cqc_lem.utilities.db import (
     ROSTER_FOLLOWS_PER_DAY_MAX,
     ROSTER_FOLLOWS_PER_DAY_MIN,
     SESSION_SCOPE_AGENT,
+    SESSION_SCOPE_ASSIST,
     SESSION_SCOPE_EXTENSION,
     SESSION_SCOPE_FULL,
     SESSION_SCOPE_OBSERVER,
@@ -369,6 +370,16 @@ class OperatorTokenRequest(BaseModel):
                     "digits, space and . _ : - only, 120 characters at most. It must not hold "
                     "personal data (no names or email addresses).")
     # Shorter than the agent's and observer's 90/365: this seat can pause automation for every user.
+    ttl_days: int = Field(default=30, ge=1, le=90)
+
+
+class AssistTokenRequest(BaseModel):
+    """Body of `POST /user/assist-token`: the credential the LEM Assist extension holds."""
+    session_token: SessionTokenField = None
+    label: Optional[str] = Field(
+        default=None, max_length=120, pattern=_TOKEN_LABEL_PATTERN,
+        description="Free text shown on the Security card and kept in the audit log. Letters, "
+                    "digits, space and . _ : - only, 120 characters at most.")
     ttl_days: int = Field(default=30, ge=1, le=90)
 
 
@@ -1580,6 +1591,34 @@ def mint_operator_token(request: OperatorTokenRequest,
                       ip=_main._client_ip(http_request), user_agent=_main._user_agent(http_request),
                       details={"scope": SESSION_SCOPE_OPERATOR, "ttl_days": request.ttl_days,
                                "label": request.label or "Maintenance operator"})
+    return ResponseModel(status_code=200,
+                         detail={"session_token": token, "expires_in_days": request.ttl_days})
+
+
+@router.post("/assist-token")
+def mint_assist_token(request: AssistTokenRequest,
+                      http_request: Request = None) -> ResponseModel[dict[str, Any]]:  # type: ignore[assignment]
+    """Mint the LEM Assist extension's session: it reads the approved queue and reports a post, only.
+
+    Same ceremony as the other machine seats: human session, step-up gated, `extension_scope_ok`
+    NOT passed (an assist token cannot mint a successor), fixed TTL never slid, revocable per device.
+    """
+    user_id = _main.get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    _require_step_up(user_id, request.session_token, "mint_assist_token",
+                     http_request=http_request)
+    token = create_session(user_id, user_agent=_main._user_agent(http_request),
+                           ip=_main._client_ip(http_request),
+                           label=(request.label or "LEM Assist extension"),
+                           scope=SESSION_SCOPE_ASSIST,
+                           ttl_hours=request.ttl_days * 24)
+    if not token:
+        raise HTTPException(status_code=500, detail="Could not create session")
+    record_auth_event(AuthAuditEvent.ASSIST_TOKEN_MINTED, user_id=user_id,
+                      ip=_main._client_ip(http_request), user_agent=_main._user_agent(http_request),
+                      details={"scope": SESSION_SCOPE_ASSIST, "ttl_days": request.ttl_days,
+                               "label": request.label or "LEM Assist extension"})
     return ResponseModel(status_code=200,
                          detail={"session_token": token, "expires_in_days": request.ttl_days})
 

@@ -661,3 +661,27 @@ probe, the load test) are not an account's and are outside this gate; `DEMO_MODE
 - **`account_kind_changed` has no actor.** The row records the change and the flags used, but not who
   ran it: the actor is whoever had host access (`ssh deploy@<vps>`), and the host's own login record is
   the only attribution.
+
+## Assist: the LEM Assist extension's seat (#2647 P4)
+
+`assist` is the credential the sideloaded **LEM Assist** extension (`src/cqc_lem/assist_extension/`)
+holds. It types a comment a human already approved into LinkedIn's own comment box; the human presses
+Post. Minted by `POST /user/assist-token` (human session, step-up, 30-day default TTL, fixed and never
+slid, revocable per device, cannot mint a successor).
+
+- **Surface is two paths, one verb each** (`_ASSIST_SESSION_SURFACE` + `_SCOPE_PATH_METHODS` in
+  `api/main.py`): `GET /assist/queue` and `POST /review/comment-posted`. Anything else, or the right
+  path with the wrong verb, is a 403 and a WARNING.
+- **The queue** is `comment_candidates` rows with `status='approved'` and draft text, minus posts already
+  in the `commented_posts` ledger, and no longer than `max_comments_per_day` (clamped to 100 here) minus
+  today's logged comments.
+- **The done endpoint refuses anything not approved.** `claim_approved_candidate_posted` is one
+  conditional UPDATE (`approved` to `posted`), so an unapproved, foreign or already-reported candidate is
+  a 409 and writes nothing.
+- **An Assist comment is an ordinary comment for every governor**: a `COMMENT`/`SUCCESS` log row (the
+  per-day cap and the suppression baseline both read `logs`), `record_action` (the pacing envelope),
+  the `commented_posts` ledger, and the roster author's weekly cap when the candidate's author is a
+  profile URL.
+- **No code path clicks Post.** `tests/unit/api/test_assist_scope.py` scans the extension's sources for
+  `.click()`, `.submit()`, synthetic events, forms and any request outside the two paths.
+- Nothing yet moves a candidate to `approved`; that is P3 (Daily review). Until it lands the queue is empty.
