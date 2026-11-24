@@ -435,6 +435,12 @@ app.conf.update(
             # is reported once, 14 days after publish, and the monthly baseline on the 1st.
             'schedule': crontab(hour='14', minute='30')
         },
+        'poll-calendly-bookings': {
+            'task': 'cqc_lem.app.run_scheduler.auto_poll_calendly_bookings',
+            # Hourly (issue #2658): Calendly Free has no webhooks. Does nothing unless
+            # BOOKING_HOOK_ENABLED is set.
+            'schedule': crontab(minute='17')
+        },
         'weekly-cost-routing': {
             'task': 'cqc_lem.app.run_scheduler.auto_weekly_cost_routing',
             # Mondays 14:00 UTC — after the margin report (12:00) and the alert sweep (13:00), so a

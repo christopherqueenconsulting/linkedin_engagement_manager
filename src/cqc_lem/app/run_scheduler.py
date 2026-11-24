@@ -74,7 +74,6 @@ from cqc_lem.utilities.db import (
     get_due_scheduled_dms,
     get_engagement_preferences,
     get_orphaned_catchup_touches,
-    get_user_ids_with_catchup_touches_in_flight,
     get_orphaned_connection_requests,
     get_orphaned_occasion_claims,
     get_orphaned_scheduled_dms,
@@ -82,6 +81,7 @@ from cqc_lem.utilities.db import (
     get_posts_missing_their_seed_comment,
     get_ready_occasion_posts,
     get_ready_to_post_posts,
+    get_user_ids_with_catchup_touches_in_flight,
     get_user_ids_with_dms_in_flight,
     get_user_timezone,
     get_users_with_reply_mode,
@@ -2928,6 +2928,17 @@ def auto_impact_report(self):
 
     result = run_impact_report_sweep()
     return lane_result(TaskOutcome.NO_OP, f"Impact report beat: {result.get('action')}")
+
+
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})
+def auto_poll_calendly_bookings(self):
+    """Poll Calendly hourly and move leads to `meeting_booked` or back (#2658).
+
+    Labels and counts only, sends nothing; a no-op unless `BOOKING_HOOK_ENABLED` is set.
+    """
+    from cqc_lem.utilities.booking_hook import poll_all_bookings
+
+    return lane_result(TaskOutcome.NO_OP, poll_all_bookings())
 
 
 if __name__ == "__main__":

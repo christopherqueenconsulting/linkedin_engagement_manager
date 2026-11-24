@@ -161,6 +161,14 @@ from cqc_lem.platform.db.repositories.avatar import (
     update_avatar_samples,
     update_avatar_training_status,
 )
+from cqc_lem.platform.db.repositories.booking import (
+    CALENDLY_TOKEN_FIELD,
+    apply_booking,
+    get_calendly_token,
+    get_calendly_user_ids,
+    touch_calendly_polled,
+    upsert_calendly_token,
+)
 from cqc_lem.platform.db.repositories.billing import (
     COST_ROLLUP_COLUMNS,
     EARLY_ADOPTER_COHORTS,
@@ -1047,7 +1055,13 @@ __all__ = [
     "add_user_with_access_token",
     "add_video_credits",
     "admin_email_allowlist",
+    "apply_booking",
     "apply_faq_entry_version",
+    "CALENDLY_TOKEN_FIELD",
+    "get_calendly_token",
+    "get_calendly_user_ids",
+    "touch_calendly_polled",
+    "upsert_calendly_token",
     "attach_curated_source_to_post",
     "build_content_search_clause",
     "bulk_update_posts",

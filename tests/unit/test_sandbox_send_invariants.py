@@ -585,6 +585,7 @@ _NO_LINKEDIN_ACTION = {
     "auto_weekly_cost_routing": "internal analytics",
     "auto_produce_feature_tutorial": "renders our own SPA; DEMO_MODE-gated, no account",
     "auto_weekly_youtube_token_check": "YouTube token health check",
+    "auto_poll_calendly_bookings": "reads Calendly and labels leads; sends nothing",
 }
 
 
