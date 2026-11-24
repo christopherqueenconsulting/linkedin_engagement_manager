@@ -2977,16 +2977,46 @@ _RECENT_ACTIVITY_CANDIDATES = (
     ("listitem", "[role='listitem']"),
     ("article", "article"),
 )
-# Bounded so a report stays readable; enough of one card to cut a unit-test fixture from.
-_RECENT_ACTIVITY_SAMPLE_CHARS = 6000
+# Per card, AFTER `_strip_svg_path_data`. The 6000 this replaced cut a card off mid-SVG, inside its
+# header (#2551): icon path data is most of a card's bytes and says nothing a fixture needs.
+_RECENT_ACTIVITY_SAMPLE_CHARS = 30000
+_RECENT_ACTIVITY_SAMPLE_CARDS = 3
+_SVG_PATH_D_RE = re.compile(r'(<path\b[^>]*?)\sd="[^"]*"', re.IGNORECASE)
+_FEED_UPDATE_ANCHOR_RE = re.compile(r"/feed/update/", re.IGNORECASE)
+_ACTIVITY_URN_RE = re.compile(r"urn:li:(?:activity|ugcPost|share):\d+", re.IGNORECASE)
 
-# The first SDUI text box's card, climbed the way the scrapper climbs it: up while the ancestor
-# still holds ONE post (Comment buttons when the page has any, else text boxes). Returns that card's
-# outerHTML so the next chain rung has a fixture.
+
+def _strip_svg_path_data(html: str) -> str:
+    """Drop the `d="…"` geometry from every `<path>`: bytes with no selector value."""
+    return _SVG_PATH_D_RE.sub(r"\1", html)
+
+
+def _select_activity_samples(cards: list, limit: int = _RECENT_ACTIVITY_SAMPLE_CARDS) -> list:
+    """Up to `limit` card sample strings: the first card, then one with NO `/feed/update/` anchor and
+    no activity URN anywhere (#2574 is grounded from that shape), then the rest in page order.
+
+    Each is path-stripped and capped at `_RECENT_ACTIVITY_SAMPLE_CHARS`. Never fabricates a card: a
+    page whose cards all carry a URN simply has no bare sample.
+    """
+    cards = [c for c in cards if isinstance(c, str) and c]
+    if not cards or limit < 1:
+        return []
+    bare = next((c for c in cards[1:]
+                 if not _FEED_UPDATE_ANCHOR_RE.search(c) and not _ACTIVITY_URN_RE.search(c)), None)
+    picked = [cards[0]]
+    if bare is not None:
+        picked.append(bare)
+    picked.extend(c for c in cards[1:] if c is not bare)
+    return [_strip_svg_path_data(c)[:_RECENT_ACTIVITY_SAMPLE_CHARS] for c in picked[:limit]]
+
+
+# Every SDUI text box's card, climbed the way the scrapper climbs it: up while the ancestor
+# still holds ONE post (Comment buttons when the page has any, else text boxes). Returns the distinct
+# cards' outerHTML, in page order, so the next chain rung has fixtures.
 _RECENT_ACTIVITY_SAMPLE_JS = r"""
 const sel = arguments[0];
-const box = document.querySelector(sel);
-if (!box) return null;
+const boxes = Array.from(document.querySelectorAll(sel));
+if (!boxes.length) return null;
 const isComment = (b) => {
   const aria = (b.getAttribute('aria-label') || '').trim().toLowerCase();
   return aria === 'comment' || aria.startsWith('comment on')
@@ -2995,12 +3025,18 @@ const isComment = (b) => {
 const comments = (root) =>
   Array.from(root.querySelectorAll("button, [role='button']")).filter(isComment).length;
 const byComment = comments(document) > 0;
-let scope = box, el = box.parentElement, d = 0;
-while (el && el !== document.body && d < 15) {
-  if ((byComment ? comments(el) : el.querySelectorAll(sel).length) > 1) break;
-  scope = el; el = el.parentElement; d++;
+const out = [], seen = new Set();
+for (const box of boxes) {
+  let scope = box, el = box.parentElement, d = 0;
+  while (el && el !== document.body && d < 15) {
+    if ((byComment ? comments(el) : el.querySelectorAll(sel).length) > 1) break;
+    scope = el; el = el.parentElement; d++;
+  }
+  if (seen.has(scope)) continue;
+  seen.add(scope);
+  out.push(scope.outerHTML);
 }
-return scope.outerHTML;
+return out;
 """
 
 
@@ -3030,9 +3066,13 @@ def recent_activity_locator_counts(driver) -> dict:
         reading["distinct_attr_urns"] = None
     try:
         sample = driver.execute_script(_RECENT_ACTIVITY_SAMPLE_JS, _RECENT_ACTIVITY_CANDIDATES[0][1])
-        reading["sample_card_html"] = sample[:_RECENT_ACTIVITY_SAMPLE_CHARS] if isinstance(sample, str) else None
+        cards = _select_activity_samples(sample if isinstance(sample, list) else [])
+        # `sample_card_html` stays the first card: the sweep and the #2551 notes read it by name.
+        reading["sample_card_html"] = cards[0] if cards else None
+        reading["sample_cards_html"] = cards
     except Exception:
         reading["sample_card_html"] = None
+        reading["sample_cards_html"] = []
     try:
         from bs4 import BeautifulSoup
 
