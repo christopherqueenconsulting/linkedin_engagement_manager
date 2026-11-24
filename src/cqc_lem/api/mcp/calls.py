@@ -114,7 +114,12 @@ def _ok(spec: registry.ToolSpec, payload: Any) -> CallToolResult:
 
 
 def _error(failure: ToolFailure) -> CallToolResult:
-    body = {"error": {"code": failure.code, "outcome": failure.outcome, "message": failure.message}}
+    body: dict[str, Any] = {"error": {"code": failure.code, "outcome": failure.outcome,
+                                      "message": failure.message}}
+    retry_after = getattr(failure, "retry_after", None)
+    if isinstance(retry_after, int):
+        # Seconds until the refusal lifts (a 429's `Retry-After`, e.g. `daily_ai_cap`).
+        body["error"]["retry_after"] = retry_after
     return CallToolResult(content=[TextContent(type="text", text=f"{failure.code}: {failure.message}")],
                           structured_content=body, is_error=True)
 

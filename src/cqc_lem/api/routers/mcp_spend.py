@@ -10,13 +10,19 @@ guarded on its own:
    not a second studio path for anyone. An MCP seat reaches these paths only through the gate's
    in-process loopback (the dispatch-secret binding), and only the three spend tools call them.
 2. **Behind `mcp-server-writes`.** Off is a 403 `mcp_writes_disabled`.
-3. **Media only for a PENDING post THIS token created** (`api/mcp/spend.py` keeps the mark). Another
-   user's post is a 404; a post that is not pending a 409 `requires_pending`; a post of the same
-   user that another token, or a human, created a 403 `not_created_by_this_token`.
-4. **The free-trial daily AI cap first** (429 `daily_ai_cap`, with `Retry-After`), **then the MCP
+3. **Media only for a PENDING text post THIS token created** (`api/mcp/spend.py` keeps the mark),
+   read owner-scoped (`get_post_for_user`; a DB fault is a 503 `mcp_unavailable`). Another user's
+   post is a 404; a post that is not pending a 409 `requires_pending`; a post of the same user that
+   another token, or a human, created a 403 `not_created_by_this_token`; a post that already has
+   the media a 409 `already_generated`.
+4. **One render per (post, kind) at a time.** The route takes an in-flight marker before anything
+   else spends; a second request while one is queued or running is a 409
+   `generation_in_progress`. The task releases it.
+5. **The free-trial daily AI cap first** (429 `daily_ai_cap`, with `Retry-After`), **then the MCP
    sub-cap** (429 `mcp_spend_cap`), so a capped account never burns a sub-cap unit.
-5. **Never inline.** Each route queues the existing generation path in Celery and answers
-   `status: queued` at once, inside the MCP tool's 20-second budget. Everything lands PENDING.
+6. **Never inline.** Each route queues the existing generation path in Celery and answers
+   `status: queued` at once, inside the MCP tool's 20-second budget. Everything lands PENDING, and
+   every result is written by a SQL-guarded update (`run_content_plan.generate_agent_post*`).
 
 Each accepted call writes one `mcp_write` audit row naming the tool and the post, never a body.
 """
@@ -33,9 +39,11 @@ from cqc_lem.api.mcp.spend import (
     SPEND_TEXT,
     SPEND_VIDEO,
     LimitsUnavailable,
+    claim_inflight,
     claim_spend,
     created_by_session,
     mark_created_post,
+    release_inflight,
 )
 from cqc_lem.api.models import ResponseModel, SessionTokenField
 from cqc_lem.utilities import ai_spend_cap
@@ -43,15 +51,13 @@ from cqc_lem.utilities.ai_spend_cap import DailyAICapReached
 from cqc_lem.utilities.db import (
     MCP_SESSION_SCOPES,
     AuthAuditEvent,
+    OwnershipUnprovable,
     PostStatus,
     PostType,
-    get_post_content,
-    get_post_status,
-    get_post_type,
-    get_post_user_id,
+    fail_agent_post_placeholder,
+    get_post_for_user,
     get_user_email,
     insert_post_returning_id,
-    update_db_post_status,
 )
 from cqc_lem.utilities.flags import MCP_SERVER_WRITES, flag_enabled
 from cqc_lem.utilities.logger import log_debug, log_error
@@ -137,25 +143,39 @@ def _admit_spend(user_id: int, kind: str) -> None:
                       f"This account's daily MCP {kind} generation limit is reached.")
 
 
-def _owned_pending_text_post(user_id: int, session_id: int, post_id: int) -> None:
+def _unavailable() -> HTTPException:
+    return _refuse(503, "mcp_unavailable",
+                   "The LEM MCP server is unavailable right now. Try again shortly.")
+
+
+# The column each media kind fills: a post that already has it is never rendered for again.
+_MEDIA_COLUMN = {SPEND_IMAGE: "image_url", SPEND_VIDEO: "video_url"}
+
+
+def _owned_pending_text_post(user_id: int, session_id: int, post_id: int, kind: str) -> None:
     """Refuse media for anything but a pending, fully written text post this token created."""
-    if get_post_user_id(post_id) != user_id:
+    try:
+        row = get_post_for_user(user_id, post_id)
+    except OwnershipUnprovable:
+        raise _unavailable() from None
+    if not row:
         raise _refuse(404, "not_found", "Post not found.")
-    if get_post_status(post_id) != PostStatus.PENDING.value:
+    if row.get("status") != PostStatus.PENDING.value:
         raise _refuse(409, "requires_pending", "Media can only be generated for a pending draft.")
     try:
         mine = created_by_session(post_id, user_id, session_id)
     except LimitsUnavailable:
-        raise _refuse(503, "mcp_unavailable",
-                      "The LEM MCP server is unavailable right now. Try again shortly.") from None
+        raise _unavailable() from None
     if not mine:
         raise _refuse(403, "not_created_by_this_token",
                       "Media can only be generated for a post this MCP token created.")
-    if get_post_type(post_id) not in (PostType.TEXT, PostType.TEXT.value):
+    if row.get("post_type") not in (PostType.TEXT, PostType.TEXT.value):
         raise _refuse(409, "requires_text_post", "Media can only be added to a text draft.")
-    if (get_post_content(post_id) or "").strip() in ("", PLACEHOLDER_CONTENT):
+    if (row.get("content") or "").strip() in ("", PLACEHOLDER_CONTENT):
         raise _refuse(409, "post_still_generating",
                       "This post's text is still being written. Try again in a few minutes.")
+    if row.get(_MEDIA_COLUMN[kind]):
+        raise _refuse(409, "already_generated", f"This post already has its {kind}.")
 
 
 def _audit(user_id: int, session_id: int, tool: str, post_id: int) -> None:
@@ -198,7 +218,7 @@ def mcp_generate_post(request: McpGeneratePostRequest) -> ResponseModel[dict[str
         generate_agent_post_task.apply_async(kwargs={"post_id": post_id,
                                                      "guidance": request.topic.strip()})
     except Exception as exc:  # noqa: BLE001 — a broker fault must not strand a placeholder.
-        update_db_post_status(post_id, PostStatus.ERROR)
+        fail_agent_post_placeholder(post_id, user_id, PLACEHOLDER_CONTENT)
         log_error("Could not queue the MCP agent's post generation", exc=exc, user_id=user_id,
                   post_id=post_id)
         raise _refuse(503, "upstream_error", "LEM could not queue the draft. Try again shortly.")
@@ -209,11 +229,23 @@ def mcp_generate_post(request: McpGeneratePostRequest) -> ResponseModel[dict[str
 def _queue_media(request: McpPostMediaRequest, kind: str, tool: str,
                  task: Any) -> ResponseModel[dict[str, Any]]:
     user_id, session_id = _mcp_caller(request.session_token)
-    _owned_pending_text_post(user_id, session_id, request.post_id)
-    _admit_spend(user_id, kind)
+    _owned_pending_text_post(user_id, session_id, request.post_id, kind)
     try:
+        claimed = claim_inflight(request.post_id, kind)
+    except LimitsUnavailable:
+        raise _unavailable() from None
+    if not claimed:
+        raise _refuse(409, "generation_in_progress",
+                      f"A {kind} for this post is already being generated. Check it with "
+                      "lem_get_post before asking again.")
+    try:
+        _admit_spend(user_id, kind)
         task.apply_async(kwargs={"post_id": request.post_id})
+    except HTTPException:
+        release_inflight(request.post_id, kind)
+        raise
     except Exception as exc:  # noqa: BLE001
+        release_inflight(request.post_id, kind)
         log_error("Could not queue the MCP agent's media generation", exc=exc, user_id=user_id,
                   post_id=request.post_id, action_type=kind)
         raise _refuse(503, "upstream_error", "LEM could not queue the render. Try again shortly.")

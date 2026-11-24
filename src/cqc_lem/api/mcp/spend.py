@@ -157,6 +157,73 @@ def created_by_session(post_id: int, user_id: int, session_id: Optional[int]) ->
     return stored == _owner_value(user_id, session_id)
 
 
-__all__ = ["PLACEHOLDER_CONTENT", "SPEND_TEXT", "SPEND_IMAGE", "SPEND_VIDEO", "ENV_SPEND",
+# --- per-post claims: one render per (post, kind) at a time, and one paid call per dispatch ---------
+#
+# Two keys per (post, kind), both `SET NX` with a TTL longer than the worst-case render:
+#
+# - `inflight`, taken by the ROUTE before it queues anything. A second request for the same post
+#   and kind while one is queued or running is a 409 `generation_in_progress`, never a second
+#   charge. The task releases it when it finishes, whatever the outcome.
+# - `run`, taken by the TASK immediately before the paid call. Celery redelivers a task whose worker
+#   died (`acks_late` / `reject_on_worker_lost`); the redelivered copy finds `run` held and skips,
+#   so the renderer is never called (and video credits never deducted) twice for one request. It is
+#   released on a terminal FAILURE, so the user can ask again; after a success it is left to expire,
+#   by which time the post already carries its result and the route refuses a repeat anyway.
+
+_CLAIM_TTL_SECONDS = {SPEND_TEXT: 2 * 60 * 60, SPEND_IMAGE: 2 * 60 * 60, SPEND_VIDEO: 4 * 60 * 60}
+
+
+def _claim_key(stage: str, kind: str, post_id: int) -> str:
+    return f"mcp:spend:{stage}:{kind}:{int(post_id)}"
+
+
+def _claim(stage: str, kind: str, post_id: int) -> bool:
+    client = _require_redis()
+    try:
+        return bool(client.set(_claim_key(stage, kind, post_id), "1",
+                               ex=_CLAIM_TTL_SECONDS[kind], nx=True))
+    except Exception as exc:  # noqa: BLE001 — an unreadable claim fails closed.
+        raise LimitsUnavailable() from exc
+
+
+def _release(stage: str, kind: str, post_id: int) -> None:
+    try:
+        client = _require_redis()
+        client.delete(_claim_key(stage, kind, post_id))
+    except Exception as exc:  # noqa: BLE001 — the TTL releases it anyway.
+        log_debug(f"Could not release an MCP spend claim ({type(exc).__name__})", post_id=post_id,
+                  action_type=kind)
+
+
+def claim_inflight(post_id: int, kind: str) -> bool:
+    """Take the route's in-flight marker for (post, kind). False when one is already held.
+
+    Raises:
+        LimitsUnavailable: Redis could not be read or written (fails closed).
+    """
+    return _claim("inflight", kind, post_id)
+
+
+def release_inflight(post_id: int, kind: str) -> None:
+    """Drop the in-flight marker for (post, kind). Never raises."""
+    _release("inflight", kind, post_id)
+
+
+def claim_run(post_id: int, kind: str) -> bool:
+    """Take the task's once-per-dispatch claim for (post, kind). False when already held.
+
+    Raises:
+        LimitsUnavailable: Redis could not be read or written (fails closed).
+    """
+    return _claim("run", kind, post_id)
+
+
+def release_run(post_id: int, kind: str) -> None:
+    """Drop the task's run claim after a terminal failure. Never raises."""
+    _release("run", kind, post_id)
+
+
+__all__ = ["PLACEHOLDER_CONTENT", "SPEND_TEXT", "claim_inflight", "release_inflight", "claim_run",
+           "release_run", "SPEND_IMAGE", "SPEND_VIDEO", "ENV_SPEND",
            "DEFAULT_SPEND", "spend_limit", "claim_spend", "mark_created_post", "created_by_session",
            "LimitsUnavailable"]

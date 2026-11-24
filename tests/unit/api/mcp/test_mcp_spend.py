@@ -10,7 +10,7 @@ dispatch are patched; no LLM is ever reached (`mock_openai_client` is asserted u
 
 import asyncio
 import logging
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator, Optional
 from unittest.mock import MagicMock, patch
@@ -59,14 +59,16 @@ def tasks() -> Iterator[dict[str, MagicMock]]:
 
 @contextmanager
 def post_row(*, owner: int = UID, status: str = "pending", post_type: Any = "text",
-             content: Optional[str] = "A finished draft about reporting.") -> Iterator[ExitStack]:
-    """The one post a media tool names, as the route reads it."""
-    with ExitStack() as stack:
-        stack.enter_context(patch(f"{_R}.get_post_user_id", return_value=owner))
-        stack.enter_context(patch(f"{_R}.get_post_status", return_value=status))
-        stack.enter_context(patch(f"{_R}.get_post_type", return_value=post_type))
-        stack.enter_context(patch(f"{_R}.get_post_content", return_value=content))
-        yield stack
+             content: Optional[str] = "A finished draft about reporting.",
+             image_url: Optional[str] = None, video_url: Optional[str] = None,
+             ) -> Iterator[MagicMock]:
+    """The post a media tool names, as the route reads it: owner-scoped, so a stranger's is None."""
+    row = {"status": status, "post_type": post_type, "content": content, "image_url": image_url,
+           "video_url": video_url}
+    with patch(f"{_R}.get_post_for_user",
+               side_effect=lambda user_id, post_id: dict(row, id=post_id) if user_id == owner
+               else None) as read:
+        yield read
 
 
 @contextmanager
@@ -118,9 +120,22 @@ class TestGeneratePost:
         with new_post() as insert:
             result = call(api_client, "lem_generate_post",
                           {"topic": _TOPIC, "scheduled_datetime": soon})
-        assert _error_code(result) == "invalid_arguments"  # a 422 never echoes its detail
+        # The route wrote this 422, so its own code and message reach the agent.
+        assert _error_code(result) == "schedule_out_of_range"
+        assert "1 hour and 90 days" in structured(result)["error"]["message"]
         insert.assert_not_called()
         assert not any(k.startswith("mcp:spend:text") for k in fake_redis.store)
+
+    def test_a_framework_validation_422_still_hides_its_body(self, api_client: Any,
+                                                             mcp: MagicMock) -> None:
+        """FastAPI's own 422 echoes the input, so it collapses to `invalid_arguments`."""
+        from cqc_lem.api.mcp.tools_spend import SPEND_POST_PATH, post_route
+
+        with pytest.raises(Exception) as err:
+            asyncio.run(post_route(_loopback(MagicMock(user_id=UID)), SPEND_POST_PATH,
+                                   {"topic": "zz-canary-short"[:3]}))
+        assert err.value.code == "invalid_arguments"
+        assert "zz-" not in err.value.message
 
     def test_a_named_slot_is_kept(self, api_client: Any, mcp: MagicMock, tasks: dict) -> None:
         when = datetime.now(timezone.utc) + timedelta(days=3)
@@ -132,10 +147,10 @@ class TestGeneratePost:
     def test_a_failed_dispatch_marks_the_placeholder_error(
             self, api_client: Any, mcp: MagicMock, tasks: dict) -> None:
         tasks["text"].side_effect = RuntimeError("broker down")
-        with new_post(502), patch(f"{_R}.update_db_post_status") as status:
+        with new_post(502), patch(f"{_R}.fail_agent_post_placeholder") as fail:
             result = call(api_client, "lem_generate_post", {"topic": _TOPIC})
         assert _error_code(result) == "upstream_error"
-        assert status.call_args.args[0] == 502 and status.call_args.args[1].value == "error"
+        fail.assert_called_once_with(502, UID, PLACEHOLDER_CONTENT)  # guarded: placeholder only
 
     def test_no_row_means_no_queue(self, api_client: Any, mcp: MagicMock, tasks: dict) -> None:
         with patch(f"{_R}.get_user_email", return_value=None), \
@@ -169,9 +184,12 @@ class TestTheCaps:
                                                ("lem_generate_post_video", "video", 1)])
     def test_media_refuses_at_its_cap(self, api_client: Any, mcp: MagicMock, tasks: dict,
                                       tool: str, kind: str, cap: int) -> None:
-        spend.mark_created_post(7, UID, _SESSION_ID)
+        # A different post each time: the same post twice is `generation_in_progress` (below).
+        for post_id in range(7, 7 + cap + 1):
+            spend.mark_created_post(post_id, UID, _SESSION_ID)
         with post_row():
-            results = [call(api_client, tool, {"post_id": 7}) for _ in range(cap + 1)]
+            results = [call(api_client, tool, {"post_id": post_id})
+                       for post_id in range(7, 7 + cap + 1)]
         assert [r["isError"] for r in results] == [False] * cap + [True]
         assert _error_code(results[-1]) == "mcp_spend_cap"
         assert tasks[kind].call_count == cap
@@ -200,7 +218,10 @@ class TestTheCaps:
                 patch("cqc_lem.utilities.ai_spend_cap._first_reach_today", return_value=False):
             result = call(api_client, "lem_generate_post", {"topic": _TOPIC})
         assert _error_code(result) == "daily_ai_cap"
-        assert structured(result)["error"]["outcome"] == "rate_limited"
+        error = structured(result)["error"]
+        assert error["outcome"] == "rate_limited"
+        # The route's `Retry-After` rides through: seconds to the next UTC midnight.
+        assert 0 < error["retry_after"] <= 24 * 60 * 60
         insert.assert_not_called()
         tasks["text"].assert_not_called()
         assert not any(k.startswith("mcp:spend:text") for k in fake_redis.store)
@@ -292,6 +313,89 @@ class TestMediaProvenance:
             assert _error_code(call(api_client, "lem_generate_post_image",
                                     {"post_id": 7})) == "mcp_unavailable"
         assert not any(t.called for t in tasks.values())
+
+
+# --- one render per (post, kind), and a post that already has the media ---------------------------
+
+
+class TestOneRenderAtATime:
+    @pytest.mark.parametrize("tool,kind", [("lem_generate_post_image", "image"),
+                                           ("lem_generate_post_video", "video")])
+    def test_a_second_request_while_one_is_in_flight_is_refused_without_spend(
+            self, api_client: Any, mcp: MagicMock, tasks: dict, fake_redis: Any, tool: str,
+            kind: str) -> None:
+        spend.mark_created_post(7, UID, _SESSION_ID)
+        with post_row():
+            first = call(api_client, tool, {"post_id": 7})
+            second = call(api_client, tool, {"post_id": 7})
+        assert first["isError"] is False
+        assert _error_code(second) == "generation_in_progress"
+        assert tasks[kind].call_count == 1
+        spent = [k for k in fake_redis.store if k.startswith(f"mcp:spend:{kind}:")]
+        assert [fake_redis.store[k] for k in spent] == [1]  # the refusal claimed no sub-cap unit
+
+    def test_the_marker_is_released_when_the_request_is_refused_after_claiming_it(
+            self, api_client: Any, mcp: MagicMock, tasks: dict, fake_redis: Any,
+            monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("MCP_SPEND_IMAGE", "0")
+        spend.mark_created_post(7, UID, _SESSION_ID)
+        with post_row():
+            assert _error_code(call(api_client, "lem_generate_post_image",
+                                    {"post_id": 7})) == "mcp_spend_cap"
+        assert "mcp:spend:inflight:image:7" not in fake_redis.store
+
+    def test_the_marker_is_released_when_the_dispatch_fails(
+            self, api_client: Any, mcp: MagicMock, tasks: dict, fake_redis: Any) -> None:
+        tasks["image"].side_effect = RuntimeError("broker down")
+        spend.mark_created_post(7, UID, _SESSION_ID)
+        with post_row():
+            assert _error_code(call(api_client, "lem_generate_post_image",
+                                    {"post_id": 7})) == "upstream_error"
+        assert "mcp:spend:inflight:image:7" not in fake_redis.store
+
+    @pytest.mark.parametrize("tool,column", [("lem_generate_post_image", "image_url"),
+                                             ("lem_generate_post_video", "video_url")])
+    def test_a_post_that_already_has_the_media_is_refused(
+            self, api_client: Any, mcp: MagicMock, tasks: dict, tool: str, column: str) -> None:
+        spend.mark_created_post(7, UID, _SESSION_ID)
+        with post_row(**{column: "/api/assets/existing"}):
+            assert _error_code(call(api_client, tool, {"post_id": 7})) == "already_generated"
+        assert not any(t.called for t in tasks.values())
+
+    def test_an_unreadable_post_is_503_not_404(self, api_client: Any, mcp: MagicMock,
+                                               tasks: dict) -> None:
+        from cqc_lem.utilities.db import OwnershipUnprovable
+
+        with patch(f"{_R}.get_post_for_user", side_effect=OwnershipUnprovable("db down")):
+            assert _error_code(call(api_client, "lem_generate_post_image",
+                                    {"post_id": 7})) == "mcp_unavailable"
+        assert not any(t.called for t in tasks.values())
+
+    def test_an_unreadable_marker_fails_closed(self, api_client: Any, mcp: MagicMock,
+                                               tasks: dict) -> None:
+        spend.mark_created_post(7, UID, _SESSION_ID)
+        with post_row(), patch(f"{_R}.claim_inflight", side_effect=LimitsUnavailable()):
+            assert _error_code(call(api_client, "lem_generate_post_image",
+                                    {"post_id": 7})) == "mcp_unavailable"
+        assert not any(t.called for t in tasks.values())
+
+
+class TestTheTruthTheAgentIsTold:
+    def test_lem_explain_lem_names_the_spend_tools_caps_pending_and_credits(self) -> None:
+        text = registry.EXPLANATIONS["agent_capabilities"]
+        for fragment in ("lem_generate_post", "10 posts, 3 images and 1 video", "daily AI limit",
+                         "PENDING", "premium video credits"):
+            assert fragment in text, fragment
+        assert "read-only" not in text
+        assert "it can only read" not in registry.EXPLANATIONS["approval"]
+
+    def test_every_spend_tool_states_its_caps_and_that_it_lands_pending(self) -> None:
+        for spec in registry.TOOLS:
+            if spec.write:
+                assert "10 posts, 3 images and 1 video" in spec.description, spec.name
+                assert "PENDING" in spec.description, spec.name
+        assert "premium video credits" in registry.TOOLS_BY_NAME[
+            "lem_generate_post_video"].description
 
 
 # --- the rollout flag, the seat rule and W1's untouched guard ------------------------------------
@@ -426,7 +530,7 @@ class TestTheSpendToolsInTheRegistry:
             call(api_client, "lem_generate_post", {"topic": _TOPIC})
             call(api_client, "lem_generate_post_image", {"post_id": 7})
             call(api_client, "lem_generate_post_video", {"post_id": 7})
-            call(api_client, "lem_generate_post_video", {"post_id": 7})  # refused: the cap
+            call(api_client, "lem_generate_post_video", {"post_id": 7})  # refused: in progress
         assert caplog.records
         for record in caplog.records:
             assert TOKEN not in record.getMessage()

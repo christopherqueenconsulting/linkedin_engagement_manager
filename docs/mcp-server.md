@@ -121,28 +121,49 @@ the route holds every rule, so a client cannot talk its way past one:
 
 1. **MCP seats only** (`mcp_only` for every other seat). `/schedule_post/` and `/update_post/` keep
    W1's rule unchanged: media fields from an MCP seat are still a 422 `machine_seat_text_only`.
-2. **Media only for a PENDING post THIS token created.** `api/mcp/spend.py` marks a post with
-   `(user_id, session_id)` when an MCP seat creates it (`lem_generate_post`, or a text draft through
-   `/schedule_post/`); the mark lives 90 days. Refusals: `not_found`, `requires_pending`,
-   `not_created_by_this_token`, `requires_text_post`, `post_still_generating`.
-3. **The free-trial daily AI cap first** (`daily_ai_cap`, 429 with `Retry-After`), **then the
-   sub-cap** (`mcp_spend_cap`), so a capped account burns no sub-cap unit. A unit is claimed before
-   dispatch and is not refunded when a render later fails: the cap bounds attempts.
-4. **Never inline**: each route queues a Celery task and answers `status: queued` with the
+2. **Media only for a PENDING text post THIS token created**, read owner-scoped
+   (`get_post_for_user`; a DB fault is 503 `mcp_unavailable`, never "not found"). `api/mcp/spend.py`
+   marks a post with `(user_id, session_id)` when an MCP seat creates it (`lem_generate_post`, or a
+   text draft through `/schedule_post/`); the mark lives 90 days. Refusals: `not_found`,
+   `requires_pending`, `not_created_by_this_token`, `requires_text_post`, `post_still_generating`,
+   `already_generated`.
+3. **One render per (post, kind) at a time.** The route takes an in-flight Redis marker
+   (`SET NX`, TTL 2h, 4h for video) before anything spends; a second request is 409
+   `generation_in_progress`. The task releases it; any refusal after the claim releases it too.
+4. **The free-trial daily AI cap first** (`daily_ai_cap`, with `retry_after` seconds from the
+   route's `Retry-After`), **then the sub-cap** (`mcp_spend_cap`: 10 text, 3 image, 1 video a day by
+   default), so a capped account burns no sub-cap unit. A unit is claimed before dispatch and is not
+   refunded when a render later fails: the cap bounds attempts. A route-authored 422 (e.g.
+   `schedule_out_of_range`) keeps its code; FastAPI's own validation 422 stays `invalid_arguments`.
+5. **Never inline**: each route queues a Celery task and answers `status: queued` with the
    `post_id`. The tasks (`run_content_plan.generate_agent_post*`) run the studio's own paths:
-   `regenerate_post` (text, the agent's topic as guidance), `post_image.generate_image_for_post`
-   (image, the gated engine with the avatar guardrails) and `_generate_video_src` +
-   `_store_video_asset` (video). Each is admitted under the daily cap at entry, so once it starts it
-   finishes.
+   `create_text_post` + `_apply_guidance_to_text_post` (the text branch of `regenerate_post`, the
+   agent's topic as guidance), `post_image.generate_image_for_post` (the gated engine with the avatar
+   guardrails) and `_generate_video_src` + `_store_video_asset` (video). Each is admitted under the
+   daily cap at entry, so once it starts it finishes.
 
-**Everything stays PENDING.** `lem_generate_post` inserts a PENDING text row holding a placeholder
-body, and `regenerate_post`'s own close-out leaves it PENDING; a run that writes nothing marks it
-`error`. The image attach and the text-to-video conversion are SQL-guarded to a pending row
-(`attach_image_to_pending_post`, `convert_pending_post_to_video`), so a post a human approved while
-the render ran is never changed. A video post is converted only AFTER its asset is stored, because
-the asset backfill selects a pending video post with no `video_url` and would queue a second paid
-render. A video render honours the user's own `default_video_quality`, exactly as an auto-planned
-post does, so an account that opted into premium may spend its video credits here too.
+**Money: one paid call per request.** Before the paid call each task takes a once-per-dispatch `run`
+claim per (post, kind) in Redis, so a Celery redelivery (a worker that died mid-render) skips instead
+of rendering, or deducting video credits, a second time. It is released on a terminal failure so the
+user can ask again. A task also skips when the post already carries the result.
+
+**Data: a human always wins.** No spend path ever sets a row back to PENDING. Every result lands
+through ONE SQL-guarded write that restates the conditions the task started from:
+
+| Write | Only when the row is |
+|---|---|
+| `write_agent_post_draft` | PENDING and still exactly the placeholder (status is not written) |
+| `fail_agent_post_placeholder` (→ `error`) | PENDING and still exactly the placeholder |
+| `attach_image_to_pending_post` | a PENDING text post with no image |
+| `convert_pending_post_to_video` (type, caption, `video_url`, caption record) | a PENDING text post with no video |
+
+So an edit, approve, reject or publish that lands while a render runs leaves the row exactly as the
+human left it, and the discarded image or MP4 is deleted. `_store_video_asset(..., captions=)`
+persists neither `video_url` nor the caption record for this path, and the post becomes a video post
+only AFTER its asset is stored: the asset backfill selects a pending video post with no `video_url`
+and would queue a second paid render. A video render honours the user's own `default_video_quality`,
+exactly as an auto-planned post does, so an account that defaults to premium spends its premium
+video credits here too. `lem_explain_lem` and each tool's description say all of this to the agent.
 
 A spend tool that outlives the 20s budget answers `unknown`, never a retryable `timeout`.
 

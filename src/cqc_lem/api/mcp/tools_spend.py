@@ -29,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from cqc_lem.api.mcp.lifespan import mcp_state
 from cqc_lem.api.mcp.limits import WRITE_BUDGETS, LimitsUnavailable, consume_budgets
 from cqc_lem.api.mcp.loopback import (
+    INVALID_ARGS,
     RATE_LIMITED,
     REFUSED,
     UPSTREAM_ERROR,
@@ -120,8 +121,30 @@ async def post_route(lb: Loopback, path: str, body: dict[str, Any]) -> Any:
     except ValueError:
         parsed = None
     if response.status_code != 200:
-        raise _refusal_from(response.status_code, parsed)
+        raise _spend_refusal(response.status_code, parsed, response.headers.get("Retry-After"))
     return parsed.get("detail") if isinstance(parsed, dict) else None
+
+
+def _spend_refusal(status: int, body: Any, retry_after: Optional[str]) -> ToolFailure:
+    """`_refusal_from`, plus the two things a spend route says that the agent needs.
+
+    - A 422 the ROUTE wrote (`detail: {code, message}`, e.g. `schedule_out_of_range`) keeps its code
+      and message. FastAPI's own validation 422 has a LIST `detail` that echoes the input, so it
+      still collapses to `invalid_arguments`.
+    - A 429's `Retry-After` rides along as `retry_after` (seconds), so a `daily_ai_cap` refusal
+      says when generation resumes.
+    """
+    detail = body.get("detail") if isinstance(body, dict) else None
+    if status == 422 and isinstance(detail, dict) and isinstance(detail.get("code"), str):
+        message = detail.get("message")
+        failure = ToolFailure(INVALID_ARGS, detail["code"][:64],
+                              message if isinstance(message, str) and len(message) <= 200
+                              else "LEM rejected the arguments for this call.", status)
+    else:
+        failure = _refusal_from(status, body)
+    if status == 429 and retry_after and retry_after.strip().isdigit():
+        failure.retry_after = int(retry_after.strip())  # type: ignore[attr-defined]
+    return failure
 
 
 def _review_url() -> Optional[str]:
@@ -151,9 +174,22 @@ async def _generate_post_video(lb: Loopback, args: SpendPostIdArgs) -> dict[str,
     return await _spend(lb, SPEND_VIDEO_PATH, {"post_id": args.post_id})
 
 
-_SPEND_RULES = (" Counts against the account's daily AI limit and a daily MCP limit; refused with "
-                "`daily_ai_cap` or `mcp_spend_cap` when either is reached. Returns at once with "
-                "`status: queued`; check the post later with `lem_get_post`.")
+_SPEND_RULES = (" Capped per account per day: 10 posts, 3 images and 1 video by default "
+                "(`mcp_spend_cap`), on top of the account's daily AI limit (`daily_ai_cap`). One "
+                "render per post at a time (`generation_in_progress`). Returns at once with "
+                "`status: queued`; the result lands as a PENDING draft for the user's approval, so "
+                "check it later with `lem_get_post` and never say it was posted.")
+_VIDEO_CREDITS = (" A video renders at the account's default video quality: when that is premium, "
+                  "it spends the account's premium video credits.")
+
+# What `lem_explain_lem` says about spend (topic `agent_capabilities`). `tools.EXPLANATIONS` reads it,
+# so the explanation and these tools' descriptions cannot drift; W2's write rules sit beside it.
+SPEND_EXPLANATION = (
+    "When writes are enabled for the account, it can also have LEM generate a new post "
+    "(`lem_generate_post`) and an image or a video for a post this token created "
+    "(`lem_generate_post_image`, `lem_generate_post_video`). Generation is capped per day at 10 "
+    "posts, 3 images and 1 video by default, plus the account's daily AI limit; everything it "
+    "makes lands as a PENDING draft for the user's approval." + _VIDEO_CREDITS)
 
 
 def spend_tools() -> "tuple[ToolSpec, ...]":
@@ -162,23 +198,23 @@ def spend_tools() -> "tuple[ToolSpec, ...]":
 
     return (
         ToolSpec("lem_generate_post", "Generate a post",
-                 "Have LEM write a new post about `topic` in the user's own voice and settings. It "
-                 "lands as a PENDING draft for the user's approval." + _SPEND_RULES,
+                 "Have LEM write a new post about `topic` in the user's own voice and settings."
+                 + _SPEND_RULES,
                  GeneratePostArgs, BOTH_SCOPES, ((POST, SPEND_POST_PATH),), _generate_post,
                  write=True),
         ToolSpec("lem_generate_post_image", "Generate a post image",
                  "Render an image for a pending text post THIS token created, once its text is "
-                 "written. The post stays PENDING." + _SPEND_RULES,
+                 "written and while it has no image. The post stays PENDING." + _SPEND_RULES,
                  SpendPostIdArgs, BOTH_SCOPES, ((POST, SPEND_IMAGE_PATH),), _generate_post_image,
                  write=True),
         ToolSpec("lem_generate_post_video", "Generate a post video",
                  "Render a video for a pending text post THIS token created, once its text is "
                  "written; the post becomes a video post when the video lands, still PENDING. "
-                 "Takes minutes." + _SPEND_RULES,
+                 "Takes minutes." + _VIDEO_CREDITS + _SPEND_RULES,
                  SpendPostIdArgs, BOTH_SCOPES, ((POST, SPEND_VIDEO_PATH),), _generate_post_video,
                  write=True),
     )
 
 
 __all__ = ["spend_tools", "post_route", "GeneratePostArgs", "SpendPostIdArgs", "PENDING_NOTE",
-           "SPEND_POST_PATH", "SPEND_IMAGE_PATH", "SPEND_VIDEO_PATH"]
+           "SPEND_EXPLANATION", "SPEND_POST_PATH", "SPEND_IMAGE_PATH", "SPEND_VIDEO_PATH"]

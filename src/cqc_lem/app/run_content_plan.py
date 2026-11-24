@@ -2504,7 +2504,8 @@ def _accept_probed_video(post_id: int, video_file_path: str, video_src_url: str,
 
 
 def _caption_video_asset(post_id: int, video_file_path: str, content: Optional[str],
-                         user_id: Optional[int] = None, task_name: str = "") -> None:
+                         user_id: Optional[int] = None, task_name: str = "",
+                         captions: Optional[dict] = None) -> None:
     """Burn the post's hook onto its rendered video for LinkedIn's muted autoplay (issue #1278).
 
     The ONE place a POST's video gets captioned, so the initial-generation path and the
@@ -2521,6 +2522,9 @@ def _caption_video_asset(post_id: int, video_file_path: str, content: Optional[s
     Never raises and never changes the stored URL: an off flag, an unusable hook, a missing
     ffmpeg, a failed burn or an output that fails the probe all leave the uncaptioned video
     exactly where it was.
+
+    `captions`, when given, receives `caption_text` and `caption_srt_url` INSTEAD of their being
+    written to the row: the MCP video path stores them in its one guarded write (issue #2689).
 
     The avatar question is asked three-valued and answered CLOSED: an unreadable
     `posts.avatar_media` counts as avatar-led, so the frame gets the sidecar and nothing else. The
@@ -2544,8 +2548,12 @@ def _caption_video_asset(post_id: int, video_file_path: str, content: Optional[s
     if result.srt_path:
         # The sidecar is recorded even when the burn was skipped for an avatar-led frame: the
         # author can still attach it on LinkedIn, and it is the record of what was offered.
-        update_db_post_captions(post_id, result.caption_text,
-                                caption_srt_asset_url(result.srt_path))
+        if captions is not None:
+            captions.update(caption_text=result.caption_text,
+                            caption_srt_url=caption_srt_asset_url(result.srt_path))
+        else:
+            update_db_post_captions(post_id, result.caption_text,
+                                    caption_srt_asset_url(result.srt_path))
 
 
 def _record_video_asset_measures(post_id: int, video_file_path: str,
@@ -2615,7 +2623,8 @@ def _store_video_asset(post_id: int, video_src_url: str, content: Optional[str] 
                        user_id: Optional[int] = None, brief=None,
                        gate_verdict: Optional[str] = None,
                        clip_check: Optional[dict] = None,
-                       signing: Optional[dict] = None) -> Optional[str]:
+                       signing: Optional[dict] = None,
+                       captions: Optional[dict] = None) -> Optional[str]:
     """Download a generated video into the shared assets volume, probe it, and attach C2PA
     credentials to AI output. Persist posts.video_url and return the public API asset URL only when
     the probe passes. The ONE place a regenerated video is stored — both the asset-only healer and
@@ -2628,6 +2637,11 @@ def _store_video_asset(post_id: int, video_src_url: str, content: Optional[str] 
     an empty receipt. `clip_check` is the post-render clip check's record (PR #2249), ridden along.
     `signing`, when given, is filled with ``ai`` (the asset is AI output) and ``signed`` (a manifest
     was written for it), which the caption's disclosure decision needs (issue #2634).
+
+    `captions`, when given, means the CALLER persists: neither `posts.video_url` nor the burned
+    caption record is written here, the caption record lands in the dict, and the caller stores
+    both in one guarded write. The MCP spend video path uses it (issue #2689), so a post a human
+    approved while the video rendered is never touched.
     """
     videos_dir = os.path.join(assets_dir, 'videos', 'runwayml')
     create_folder_if_not_exists(videos_dir)
@@ -2649,7 +2663,7 @@ def _store_video_asset(post_id: int, video_src_url: str, content: Optional[str] 
     # Captions BEFORE signing: the burn re-encodes the file, which would strip C2PA credentials
     # attached first.
     _caption_video_asset(post_id, video_file_path, content, user_id=user_id,
-                         task_name="regenerate_post_video_task")
+                         task_name="regenerate_post_video_task", captions=captions)
 
     # Only AI (Runway, http) output gets C2PA AI credentials — not Pexels stock.
     is_ai = str(video_src_url).startswith("http")
@@ -2669,8 +2683,33 @@ def _store_video_asset(post_id: int, video_src_url: str, content: Optional[str] 
     write_brief_receipt(api_video_url, brief, post_id=post_id, user_id=user_id,
                         gate_verdict=gate_verdict,
                         extra={"clip_check": clip_check} if clip_check else None)
-    update_db_post_video_url(post_id, api_video_url)
+    if captions is None:
+        update_db_post_video_url(post_id, api_video_url)
     return api_video_url
+
+
+def _stored_video_path(api_video_url: Optional[str]) -> Optional[str]:
+    """The local file behind a `_store_video_asset` URL, or None when it names none."""
+    marker = "file_name=videos/runwayml/"
+    if not api_video_url or marker not in api_video_url:
+        return None
+    name = os.path.basename(api_video_url.split(marker, 1)[1])
+    return os.path.join(assets_dir, "videos", "runwayml", name) if name else None
+
+
+def _remove_stored_video(api_video_url: Optional[str], *, post_id: int,
+                         user_id: Optional[int]) -> None:
+    """Delete a stored video nothing will ever reference. Never raises."""
+    path = _stored_video_path(api_video_url)
+    if not path:
+        return
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        return
+    except OSError as e:
+        log_warning("Could not delete an orphaned agent post video", exc=e, user_id=user_id,
+                    post_id=post_id, task_name="generate_agent_post_video")
 
 
 def regenerate_video_for_post(post_id: int) -> Optional[str]:
@@ -3068,29 +3107,91 @@ def draft_occasion_post_task(post_id: int, archetype: str, occasion: str):
 
 
 # --- MCP spend tools (W2b, issue #2689) -----------------------------------------------------------
-# Three thin wrappers that run an agent's spend through the SAME generation paths the Content Studio
-# uses: `regenerate_post` for text, `post_image.generate_image_for_post` for an image, and
-# `_generate_video_src` + `_store_video_asset` for a video. No prompt is written here. Each runs only
-# on a PENDING post and leaves it PENDING; the media writes are SQL-guarded to a pending row, so a
-# post a human approved while the render ran is never changed underneath them. Each is admitted
-# under the free-trial daily AI cap at its entry (`admit_pipeline`), so once it starts it finishes.
+# Three tasks that run an agent's spend through the SAME generation paths the Content Studio uses:
+# `create_text_post` + `_apply_guidance_to_text_post` for text (the text branch of
+# `regenerate_post`), `post_image.generate_image_for_post` for an image, and `_generate_video_src` +
+# `_store_video_asset` for a video. No prompt is written here.
+#
+# Money and data integrity, in order:
+# - Each runs only on the row it was queued for: PENDING, and for text still holding exactly the
+#   placeholder; for media a text post without that media yet. Anything else is skipped.
+# - Before the paid call each takes the once-per-dispatch `run` claim (`api/mcp/spend.py`), so a
+#   Celery redelivery after a worker died never renders, or deducts video credits, twice.
+# - Every result lands through ONE SQL-guarded write that restates those conditions, so an edit,
+#   approve, reject or publish that lands mid-render leaves the row exactly as the human left it;
+#   a discarded render's file is deleted. Nothing ever sets a row back to PENDING.
+# - Each is admitted under the free-trial daily AI cap at entry (`admit_pipeline`).
 
 
-def _still_pending(post_id: int) -> bool:
-    from cqc_lem.utilities.db import get_post_status
-    return get_post_status(post_id) == PostStatus.PENDING.value
+def _agent_post(post_id: int) -> Optional[tuple[int, dict]]:
+    """`(user_id, row)` for the post, read owner-scoped; None when absent or unreadable."""
+    from cqc_lem.utilities.db import OwnershipUnprovable, get_post_for_user, get_post_user_id
+
+    user_id = get_post_user_id(post_id)
+    if not user_id:
+        return None
+    try:
+        row = get_post_for_user(user_id, post_id)
+    except OwnershipUnprovable:
+        return None
+    return (user_id, row) if row else None
+
+
+def _is_pending_text(row: dict) -> bool:
+    post_type = row.get("post_type")
+    post_type = post_type.value if isinstance(post_type, PostType) else post_type
+    return row.get("status") == PostStatus.PENDING.value and post_type == PostType.TEXT.value
+
+
+def _claim_agent_run(post_id: int, kind: str, task_name: str) -> bool:
+    """The once-per-dispatch claim. False (and nothing spent) when held or unreadable."""
+    from cqc_lem.api.mcp.spend import LimitsUnavailable, claim_run
+
+    try:
+        if claim_run(post_id, kind):
+            return True
+    except LimitsUnavailable:
+        log_warning("Could not read the agent spend claim; not spending", post_id=post_id,
+                    task_name=task_name)
+        return False
+    log_info("Agent spend already ran for this request (redelivered task); not spending again",
+             post_id=post_id, task_name=task_name)
+    return False
+
+
+def _end_agent_run(post_id: int, kind: str, *, failed: bool) -> None:
+    """Release the route's in-flight marker, and the run claim too after a terminal failure."""
+    from cqc_lem.api.mcp.spend import release_inflight, release_run
+
+    release_inflight(post_id, kind)
+    if failed:
+        release_run(post_id, kind)
+
+
+def _write_agent_text(user_id: int, post_id: int, guidance: Optional[str]) -> Optional[str]:
+    """The text branch of `regenerate_post`, minus its unconditional row writes."""
+    from cqc_lem.utilities.db import get_post_buyer_stage
+
+    stage = get_post_buyer_stage(post_id) or "awareness"
+    user_profile = load_profile_for_user(user_id)
+    content = create_text_post(user_id, stage, user_profile=user_profile, post_id=post_id,
+                               content_mix=_post_content_mix(post_id))
+    if not content:
+        return None
+    content = _apply_guidance_to_text_post(user_id, post_id, content, user_profile, guidance)
+    if _needs_ai_disclosure(post_id, ai_video=False):
+        content = _apply_ai_disclosure(content)
+    return content
 
 
 def generate_agent_post(post_id: int, guidance: Optional[str]) -> Optional[str]:
-    """Write the text of a post an MCP agent created, then leave it PENDING for review.
+    """Write the text of a post an MCP agent created, leaving it PENDING for review.
 
-    The row was inserted PENDING with a placeholder body by `POST /user/mcp-spend/post`; this
-    replaces it through `regenerate_post`, which honours the user's saved voice and settings,
-    applies `guidance` (the agent's topic) the way the studio's "Added Guidance" does, and resets
-    the row to PENDING. A row still holding the placeholder is written even if someone approved it
-    first, because approving a placeholder approved no content; one whose text a human already
-    replaced is left alone. A run that writes nothing marks the post ERROR, so a placeholder is
-    never left looking like a draft.
+    Runs only while the row is PENDING and still holds exactly the placeholder
+    `POST /user/mcp-spend/post` created it with. The draft is written by
+    `write_agent_post_draft`, guarded on both again, so a human edit, reject, approve or publish
+    while the draft was being written wins. A run that writes nothing marks the row ERROR, guarded
+    the same way, so a placeholder is never left looking like a draft and no other row is moved.
 
     Args:
         post_id: The placeholder post.
@@ -3099,42 +3200,62 @@ def generate_agent_post(post_id: int, guidance: Optional[str]) -> Optional[str]:
     Returns:
         The persisted content, or None when nothing was written.
     """
-    from cqc_lem.api.mcp.spend import PLACEHOLDER_CONTENT
+    from cqc_lem.api.mcp.spend import PLACEHOLDER_CONTENT, SPEND_TEXT
     from cqc_lem.utilities.ai_spend_cap import DailyAICapReached, admit_pipeline
-    from cqc_lem.utilities.db import get_post_user_id
+    from cqc_lem.utilities.db import fail_agent_post_placeholder, write_agent_post_draft
 
-    user_id = get_post_user_id(post_id)
-    placeholder = (get_post_content(post_id) or "").strip() == PLACEHOLDER_CONTENT
-    if not user_id or not (placeholder or _still_pending(post_id)):
-        log_info("Agent post is no longer a pending draft; not generating", post_id=post_id,
-                 task_name="generate_agent_post")
+    task = "generate_agent_post"
+    found = _agent_post(post_id)
+    user_id, row = found if found else (None, {})
+    if not found or row.get("status") != PostStatus.PENDING.value \
+            or (row.get("content") or "").strip() != PLACEHOLDER_CONTENT:
+        log_info("Agent post is no longer an untouched pending placeholder; not generating",
+                 post_id=post_id, task_name=task)
+        return None
+    if not _claim_agent_run(post_id, SPEND_TEXT, task):
         return None
     try:
         with admit_pipeline(user_id):
-            content = regenerate_post(post_id, guidance)
+            content = _write_agent_text(user_id, post_id, guidance)
     except DailyAICapReached:
         content = None
+    except Exception:
+        fail_agent_post_placeholder(post_id, user_id, PLACEHOLDER_CONTENT)
+        _end_agent_run(post_id, SPEND_TEXT, failed=True)
+        raise
     if not content:
-        log_info("Agent post generation wrote nothing; marking the post error", user_id=user_id,
-                 post_id=post_id, task_name="generate_agent_post")
-        if placeholder or _still_pending(post_id):
-            update_db_post_status(post_id, PostStatus.ERROR)
+        log_info("Agent post generation wrote nothing; marking the placeholder error",
+                 user_id=user_id, post_id=post_id, task_name=task)
+        fail_agent_post_placeholder(post_id, user_id, PLACEHOLDER_CONTENT)
+        _end_agent_run(post_id, SPEND_TEXT, failed=True)
         return None
+    if not write_agent_post_draft(post_id, user_id, content, PLACEHOLDER_CONTENT):
+        log_info("Agent post changed while its draft was written; leaving it as it is",
+                 user_id=user_id, post_id=post_id, task_name=task)
+        _end_agent_run(post_id, SPEND_TEXT, failed=False)
+        return None
+    # The same close-out `_finish_regenerated_post` runs, on the draft just written, minus the
+    # status write: the guarded write already proved the row PENDING.
+    _score_and_persist_dwell(user_id, post_id, content)
+    _persist_gate_findings(user_id, post_id,
+                           _gate_findings_for_post(user_id, post_id, content, PostType.TEXT.value))
+    forget_supplied_material(post_id)
+    _end_agent_run(post_id, SPEND_TEXT, failed=False)
     return content
 
 
 @shared_task.task
-def generate_agent_post_task(post_id: int, guidance: Optional[str] = None):
+def generate_agent_post_task(post_id: int, guidance: Optional[str] = None) -> Optional[str]:
     """Celery wrapper: post text generation is a slow lem-complex pipeline."""
     return generate_agent_post(post_id, guidance)
 
 
 def generate_agent_post_image(post_id: int) -> Optional[str]:
-    """Render and attach an image for a PENDING post an MCP agent created.
+    """Render and attach an image for a PENDING text post an MCP agent created.
 
     The render is `generate_image_for_post`, the ONE post-image engine (brief, gated renderer,
-    avatar guardrails). The attach is guarded to a pending row; a render that lands after the post
-    left PENDING is deleted, never attached.
+    avatar guardrails). The attach is `attach_image_to_pending_post`, guarded to a pending text
+    post with no image; a render that lands after the post changed is deleted, never attached.
 
     Args:
         post_id: The post to illustrate.
@@ -3142,55 +3263,64 @@ def generate_agent_post_image(post_id: int) -> Optional[str]:
     Returns:
         The attached image URL, or None when nothing was attached.
     """
+    from cqc_lem.api.mcp.spend import PLACEHOLDER_CONTENT, SPEND_IMAGE
     from cqc_lem.utilities.ai_spend_cap import DailyAICapReached, admit_pipeline
-    from cqc_lem.utilities.db import (
-        attach_image_to_pending_post,
-        get_post_image_url,
-        get_post_user_id,
-    )
+    from cqc_lem.utilities.db import attach_image_to_pending_post
     from cqc_lem.utilities.observability import FEATURE_CONTENT, llm_trace
     from cqc_lem.utilities.post_image import generate_image_for_post, remove_post_image_file
 
-    user_id = get_post_user_id(post_id)
-    text = get_post_content(post_id)
-    if not user_id or not text or not _still_pending(post_id):
-        log_info("Agent post is no longer a pending draft; not rendering an image", post_id=post_id,
-                 task_name="generate_agent_post_image")
+    task = "generate_agent_post_image"
+    found = _agent_post(post_id)
+    user_id, row = found if found else (None, {})
+    text = (row.get("content") or "").strip()
+    if not found or not _is_pending_text(row) or row.get("image_url") \
+            or text in ("", PLACEHOLDER_CONTENT):
+        log_info("Agent post is no longer a pending text draft without an image; not rendering",
+                 post_id=post_id, task_name=task)
+        _end_agent_run(post_id, SPEND_IMAGE, failed=False)
         return None
-    previous = get_post_image_url(post_id)
+    if not _claim_agent_run(post_id, SPEND_IMAGE, task):
+        return None
     try:
         with admit_pipeline(user_id), llm_trace("post_image_generation", user_id=user_id,
                                                 feature=FEATURE_CONTENT):
             image_url, reason = generate_image_for_post(user_id, text, post_id=post_id)
     except DailyAICapReached:
+        _end_agent_run(post_id, SPEND_IMAGE, failed=True)
         return None
+    except Exception:
+        _end_agent_run(post_id, SPEND_IMAGE, failed=True)
+        raise
     if not image_url:
         log_info(f"Agent post image was not rendered: {reason}", user_id=user_id, post_id=post_id,
-                 task_name="generate_agent_post_image")
+                 task_name=task)
+        _end_agent_run(post_id, SPEND_IMAGE, failed=True)
         return None
     if not attach_image_to_pending_post(post_id, user_id, image_url):
         remove_post_image_file(image_url)
-        log_info("Agent post left pending while its image rendered; image discarded",
-                 user_id=user_id, post_id=post_id, task_name="generate_agent_post_image")
+        log_info("Agent post changed while its image rendered; image discarded",
+                 user_id=user_id, post_id=post_id, task_name=task)
+        _end_agent_run(post_id, SPEND_IMAGE, failed=False)
         return None
-    if previous and previous != image_url:
-        remove_post_image_file(previous)
+    _end_agent_run(post_id, SPEND_IMAGE, failed=False)
     return image_url
 
 
 @shared_task.task
-def generate_agent_post_image_task(post_id: int):
+def generate_agent_post_image_task(post_id: int) -> Optional[str]:
     """Celery wrapper: a gated render can outlast the MCP tool's 20-second budget."""
     return generate_agent_post_image(post_id)
 
 
 def generate_agent_post_video(post_id: int) -> Optional[str]:
-    """Render a video for a PENDING post an MCP agent created, then make it a video post.
+    """Render a video for a PENDING text post an MCP agent created, then make it a video post.
 
-    The same source + store steps `regenerate_post`'s video branch runs, on the post's own text.
-    The post becomes a video post only AFTER the asset is stored (see
-    `convert_pending_post_to_video`), and the AI-visuals line is decided by `_needs_ai_disclosure`,
-    the one decision every video path uses, from what `_store_video_asset` reports about signing.
+    The same source + store steps `regenerate_post`'s video branch runs, on the post's own text,
+    except that `_store_video_asset` is told to persist nothing (`captions=`): the type, caption,
+    `video_url` and caption record land together through `convert_pending_post_to_video`, guarded
+    to a pending text post with no video, and only after the asset is stored. A refused conversion
+    deletes the MP4. The AI-visuals line comes from `_needs_ai_disclosure`, the one decision every
+    video path uses, fed what `_store_video_asset` reports about signing.
 
     Args:
         post_id: The post to render a video for.
@@ -3198,17 +3328,25 @@ def generate_agent_post_video(post_id: int) -> Optional[str]:
     Returns:
         The stored video URL, or None when the post was not converted.
     """
+    from cqc_lem.api.mcp.spend import PLACEHOLDER_CONTENT, SPEND_VIDEO
     from cqc_lem.utilities.ai_spend_cap import DailyAICapReached, admit_pipeline
-    from cqc_lem.utilities.db import convert_pending_post_to_video, get_post_user_id
+    from cqc_lem.utilities.db import convert_pending_post_to_video
 
-    user_id = get_post_user_id(post_id)
-    text = get_post_content(post_id)
-    if not user_id or not text or not _still_pending(post_id):
-        log_info("Agent post is no longer a pending draft; not rendering a video", post_id=post_id,
-                 task_name="generate_agent_post_video")
+    task = "generate_agent_post_video"
+    found = _agent_post(post_id)
+    user_id, row = found if found else (None, {})
+    text = (row.get("content") or "").strip()
+    if not found or not _is_pending_text(row) or row.get("video_url") \
+            or text in ("", PLACEHOLDER_CONTENT):
+        log_info("Agent post is no longer a pending text draft without a video; not rendering",
+                 post_id=post_id, task_name=task)
+        _end_agent_run(post_id, SPEND_VIDEO, failed=False)
+        return None
+    if not _claim_agent_run(post_id, SPEND_VIDEO, task):
         return None
     brief_info: dict = {}
     signing: dict = {}
+    captions: dict = {}
     try:
         with admit_pipeline(user_id):
             video_src_url = _generate_video_src(user_id, text, load_profile_for_user(user_id),
@@ -3217,31 +3355,39 @@ def generate_agent_post_video(post_id: int) -> Optional[str]:
                                                user_id=user_id, brief=brief_info.get("brief"),
                                                gate_verdict=brief_info.get("gate_verdict"),
                                                clip_check=brief_info.get("clip_check"),
-                                               signing=signing) \
+                                               signing=signing, captions=captions) \
                 if video_src_url else None
     except DailyAICapReached:
+        _end_agent_run(post_id, SPEND_VIDEO, failed=True)
         return None
     except Exception as e:
         log_warning("Could not store the agent post video asset", exc=e, user_id=user_id,
-                    post_id=post_id, task_name="generate_agent_post_video")
+                    post_id=post_id, task_name=task)
+        _end_agent_run(post_id, SPEND_VIDEO, failed=True)
         return None
     if not api_video_url:
         log_info("Agent post video was not rendered", user_id=user_id, post_id=post_id,
-                 task_name="generate_agent_post_video")
+                 task_name=task)
+        _end_agent_run(post_id, SPEND_VIDEO, failed=True)
         return None
     # The ONE disclosure decision (issue #2634), fed exactly as `regenerate_video_for_post` feeds it.
     needs_line = _needs_ai_disclosure(post_id, ai_video=bool(signing.get("ai")),
                                       ai_video_signed=bool(signing.get("signed")))
     caption = _apply_ai_disclosure(text) if needs_line else text
-    if not convert_pending_post_to_video(post_id, user_id, caption):
-        log_info("Agent post left pending while its video rendered; post not converted",
-                 user_id=user_id, post_id=post_id, task_name="generate_agent_post_video")
+    if not convert_pending_post_to_video(post_id, user_id, caption, api_video_url,
+                                         captions.get("caption_text"),
+                                         captions.get("caption_srt_url")):
+        _remove_stored_video(api_video_url, post_id=post_id, user_id=user_id)
+        log_info("Agent post changed while its video rendered; video discarded",
+                 user_id=user_id, post_id=post_id, task_name=task)
+        _end_agent_run(post_id, SPEND_VIDEO, failed=False)
         return None
+    _end_agent_run(post_id, SPEND_VIDEO, failed=False)
     return api_video_url
 
 
 @shared_task.task
-def generate_agent_post_video_task(post_id: int):
+def generate_agent_post_video_task(post_id: int) -> Optional[str]:
     """Celery wrapper: a video render takes minutes."""
     return generate_agent_post_video(post_id)
 

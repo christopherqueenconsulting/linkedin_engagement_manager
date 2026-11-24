@@ -32,7 +32,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from cqc_lem.api.mcp.lifespan import mcp_state
 from cqc_lem.api.mcp.loopback import FAN_OUT_CONCURRENCY, REFUSED, Loopback, ToolFailure
 from cqc_lem.api.mcp.redact import THIRD_PARTY_NOTE, fence_row, fence_rows
-from cqc_lem.api.mcp.tools_spend import spend_tools
+from cqc_lem.api.mcp.tools_spend import SPEND_EXPLANATION, spend_tools
 from cqc_lem.utilities.db import SESSION_SCOPE_MCP, SESSION_SCOPE_MCP_OUTREACH, PostStatus
 
 GET = "GET"
@@ -611,13 +611,16 @@ EXPLANATIONS: dict[str, str] = {
         "fails is held at pending with `gate_reason` saying why."),
     "approval": (
         "Approval is a human action in LEM. An agent connected through MCP can never approve, "
-        "send, publish, delete or change settings; it can only read. Anything an agent later "
-        "creates lands as pending for the user to review."),
-    "agent_capabilities": (
-        "This MCP server is read-only. It can read the user's posts, plan, performance, settings, "
-        "voice kit, newsletter and (with an outreach token) the outreach queues. It cannot send, "
-        "approve, publish, delete, spend credits, run the browser automation or change settings: "
-        "for those, use `lem_open_in_lem` and ask the user to act in LEM."),
+        "send, publish, delete or change settings. Anything an agent creates lands as pending for "
+        "the user to review."),
+    # Read rules, then each write family's own sentence (spend: `tools_spend.SPEND_EXPLANATION`),
+    # then what no tool can do. A write family adds its sentence here, never a second explanation.
+    "agent_capabilities": " ".join((
+        "This MCP server can read the user's posts, plan, performance, settings, voice kit, "
+        "newsletter and (with an outreach token) the outreach queues.",
+        SPEND_EXPLANATION,
+        "It cannot send, approve, publish, delete, run the browser automation or change settings: "
+        "for those, use `lem_open_in_lem` and ask the user to act in LEM.")),
 }
 
 DESTINATIONS: dict[str, str] = {

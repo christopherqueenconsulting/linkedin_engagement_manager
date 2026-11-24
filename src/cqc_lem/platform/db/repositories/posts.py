@@ -2832,12 +2832,75 @@ def get_held_pending_posts(user_id: int) -> list[dict]:
         return []
 
 
-def attach_image_to_pending_post(post_id: int, user_id: int, image_url: str) -> bool:
-    """Point a still-PENDING post of this user at a newly rendered image (MCP W2b, issue #2689).
 
-    The MCP spend tools render media in the background, so a human may approve the post while the
-    render runs. Guarding the write in SQL means a render that lands late never changes what an
-    approved post will publish: the row has to be PENDING at the moment of the write.
+# --- MCP spend tools (W2b, issue #2689): writes guarded in SQL ------------------------------------
+# The spend tools generate in the background, so a human may edit, approve, reject or publish the
+# post while a render runs. Each write below states, in its WHERE clause, the exact row it is allowed
+# to change, so a late result can never land on a row a human has acted on. Each answers True only
+# when exactly one row matched.
+
+_TEXT_PENDING = "WHERE id = %s AND user_id = %s AND status = %s AND post_type = %s"
+
+
+def _guarded_update(sql: str, params: tuple, what: str, post_id: int, user_id: int) -> bool:
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(sql, params)
+            return cursor.rowcount == 1
+    except mysql.connector.Error as err:
+        log_error(f"Could not {what}", exc=err, user_id=user_id, post_id=post_id)
+        return False
+
+
+def write_agent_post_draft(post_id: int, user_id: int, content: str, placeholder: str) -> bool:
+    """Replace an MCP agent post's placeholder body with the generated draft.
+
+    Only while the row is still PENDING AND still holds exactly `placeholder`: a human edit, a
+    reject, an approve or a publish while the draft was being written leaves the row as the human
+    left it. The status is not written at all; the guard already proves it is PENDING.
+
+    Args:
+        post_id: The agent's post.
+        user_id: Its owner; a row of any other user is never touched.
+        content: The generated draft.
+        placeholder: The body the row was created with.
+
+    Returns:
+        True when exactly one row was updated.
+    """
+    return _guarded_update(
+        "UPDATE posts SET content = %s WHERE id = %s AND user_id = %s AND status = %s "
+        "AND content = %s",
+        (content, post_id, user_id, PostStatus.PENDING.value, placeholder),
+        "write an agent post draft", post_id, user_id)
+
+
+def fail_agent_post_placeholder(post_id: int, user_id: int, placeholder: str) -> bool:
+    """Mark an MCP agent post ERROR when its draft could not be written.
+
+    Only a row still PENDING and still holding exactly `placeholder` is touched, so a row a human
+    edited, approved, rejected or published is never moved, and nothing is ever set back to PENDING.
+
+    Args:
+        post_id: The agent's post.
+        user_id: Its owner.
+        placeholder: The body the row was created with.
+
+    Returns:
+        True when exactly one row was updated.
+    """
+    return _guarded_update(
+        "UPDATE posts SET status = %s WHERE id = %s AND user_id = %s AND status = %s "
+        "AND content = %s",
+        (PostStatus.ERROR.value, post_id, user_id, PostStatus.PENDING.value, placeholder),
+        "mark an agent post placeholder error", post_id, user_id)
+
+
+def attach_image_to_pending_post(post_id: int, user_id: int, image_url: str) -> bool:
+    """Point a PENDING text post of this user, with no image yet, at a newly rendered image.
+
+    A render that lands after the post was approved, rejected, published, converted to video or
+    given an image has nowhere to go: no row matches, and the caller deletes the file.
 
     Args:
         post_id: The post to attach the image to.
@@ -2845,44 +2908,40 @@ def attach_image_to_pending_post(post_id: int, user_id: int, image_url: str) -> 
         image_url: The stored image's public URL.
 
     Returns:
-        True when exactly one pending row was updated; False when none matched or on a fault.
+        True when exactly one row was updated.
     """
-    try:
-        with db_cursor(commit=True) as cursor:
-            cursor.execute(
-                "UPDATE posts SET image_url = %s WHERE id = %s AND user_id = %s AND status = %s",
-                (image_url, post_id, user_id, PostStatus.PENDING.value))
-            return cursor.rowcount == 1
-    except mysql.connector.Error as err:
-        log_error("Could not attach an image to a pending post", exc=err, user_id=user_id,
-                  post_id=post_id)
-        return False
+    return _guarded_update(
+        f"UPDATE posts SET image_url = %s {_TEXT_PENDING} "
+        "AND (image_url IS NULL OR image_url = '')",
+        (image_url, post_id, user_id, PostStatus.PENDING.value, PostType.TEXT.value),
+        "attach an image to a pending post", post_id, user_id)
 
 
-def convert_pending_post_to_video(post_id: int, user_id: int, content: str) -> bool:
-    """Make a still-PENDING post of this user a video post, after its video landed (MCP W2b).
+def convert_pending_post_to_video(post_id: int, user_id: int, content: str, video_url: str,
+                                  caption_text: Optional[str] = None,
+                                  caption_srt_url: Optional[str] = None) -> bool:
+    """Make a PENDING text post of this user a video post, in ONE guarded write.
 
-    Called only once the video asset is stored, never before: a video post with no `video_url`
-    is what `get_unposted_posts_missing_assets` selects, so flipping the type first would let the
-    asset backfill queue a second paid render of the same post. `content` carries the caption with
-    any AI-visuals disclosure applied.
+    The type, caption, `video_url` and burned-caption record are written together and only after
+    the video is stored, never before: a video post with no `video_url` is what
+    `get_unposted_posts_missing_assets` selects, so a type flipped first would let the asset
+    backfill queue a second paid render. A post that left PENDING (or stopped being a text post, or
+    gained a video) while the video rendered matches nothing, and the caller deletes the file.
 
     Args:
         post_id: The post to convert.
         user_id: Its owner; a row of any other user is never touched.
-        content: The caption to store with the video.
+        content: The caption, with any AI-visuals disclosure applied.
+        video_url: The stored video's public URL.
+        caption_text: The burned-in caption text, when captioning ran.
+        caption_srt_url: The caption sidecar's URL, when one was written.
 
     Returns:
-        True when exactly one pending row was updated; False when none matched or on a fault.
+        True when exactly one row was updated.
     """
-    try:
-        with db_cursor(commit=True) as cursor:
-            cursor.execute(
-                "UPDATE posts SET post_type = %s, content = %s "
-                "WHERE id = %s AND user_id = %s AND status = %s",
-                (PostType.VIDEO.value, content, post_id, user_id, PostStatus.PENDING.value))
-            return cursor.rowcount == 1
-    except mysql.connector.Error as err:
-        log_error("Could not convert a pending post to video", exc=err, user_id=user_id,
-                  post_id=post_id)
-        return False
+    return _guarded_update(
+        "UPDATE posts SET post_type = %s, content = %s, video_url = %s, caption_text = %s, "
+        f"caption_srt_url = %s {_TEXT_PENDING} AND (video_url IS NULL OR video_url = '')",
+        (PostType.VIDEO.value, content, video_url, caption_text, caption_srt_url, post_id, user_id,
+         PostStatus.PENDING.value, PostType.TEXT.value),
+        "convert a pending post to video", post_id, user_id)

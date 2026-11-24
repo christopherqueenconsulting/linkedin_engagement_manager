@@ -579,6 +579,7 @@ from cqc_lem.platform.db.repositories.posts import (
     count_pending_drafts,
     count_ready_posts_within_buffer,
     delete_planned_posts,
+    fail_agent_post_placeholder,
     get_carousel_slides,
     get_content_mix_counts,
     get_content_quality_scores,
@@ -684,6 +685,7 @@ from cqc_lem.platform.db.repositories.posts import (
     upsert_engager,
     user_approver,
     user_owns_posts,
+    write_agent_post_draft,
 )
 from cqc_lem.platform.db.repositories.users import (
     _ADMIN_USER_DETAIL_FIELDS,
@@ -1530,6 +1532,8 @@ __all__ = [
     "insert_post_returning_id",
     "attach_image_to_pending_post",
     "convert_pending_post_to_video",
+    "fail_agent_post_placeholder",
+    "write_agent_post_draft",
     "PendingEdit",
     "attach_email_to_connection_request",
     "reject_pending_curated_source",
