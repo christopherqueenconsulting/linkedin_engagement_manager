@@ -3746,7 +3746,9 @@ def process_outreach_funnel(self, user_id: int, max_per_run: int = 25):
     """Advance a user's APPROVED comment->connect->DM funnel targets one stage each (issue #399).
     Every stage is approval-gated: only status='approved' rows are acted on, and each fired stage
     drops the target to the NEXT stage as 'pending' — requiring a fresh human approval — so no step
-    ever auto-fires at volume. Reuses comment_on_post / invite_to_connect / send_private_dm and the
+    ever auto-fires at volume. The one exception is `funnel_stage_mode=auto_approve` (issue #2664),
+    which approves the comment->connect step under a `system:` approver; the DM stage never is.
+    Reuses comment_on_post / invite_to_connect / send_private_dm and the
     DM follow-up machinery; daily comment/DM caps defer a stage rather than fire it.
     """
     if skip_browser_lane(user_id, "process_outreach_funnel"):
