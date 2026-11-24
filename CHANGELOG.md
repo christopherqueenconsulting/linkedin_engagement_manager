@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.215.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.214.0...v0.215.0) (2026-11-24)
+
+
+### Features
+
+* **engagement:** session window gate, Phase 1 shadow mode (refs [#2628](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2628)) ([#2742](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2742)) ([368a67f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/368a67fa93dd99ee22c126ef0df397588fa94d45))
+* **mcp:** read-only LEM tools via in-process loopback ([#2721](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2721)) ([bebb140](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/bebb140a473f98237fe126af013486fd116f4d78))
+* **voice:** call-ingest upload, ingest task, review API, purge beat, Phase 1b (refs [#2629](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2629)) ([#2740](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2740)) ([9449963](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/94499635cd7eb8a5c72475d3ae99d938a3a4201f))
+
 ## [0.214.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.213.0...v0.214.0) (2026-11-24)
 
 
