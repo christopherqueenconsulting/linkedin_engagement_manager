@@ -76,7 +76,11 @@ try:
         0, int(get_constant_from_env('LI_MEMBER_POST_ANALYTICS_MAX_POSTS_PER_SWEEP', default_value='20')))
 except ValueError:
     LI_MEMBER_POST_ANALYTICS_MAX_POSTS_PER_SWEEP = 20
-PEXELS_API_KEY = get_constant_from_env('PEXELS_API_KEY')
+# Daily API follower/connection counts (#2702 Phase 2). OFF until the owner reconnects the analytics
+# app with the new scopes; a missing granted scope also falls back silently to scraping.
+LI_MEMBER_AUDIENCE_API_ENABLED = isTrue(
+    get_constant_from_env('LI_MEMBER_AUDIENCE_API_ENABLED', default_value='False'))
+PEXELS_API_KEY =get_constant_from_env('PEXELS_API_KEY')
 PERPLEXITY_API_KEY = get_constant_from_env('PERPLEXITY_API_KEY')
 HF_TOKEN = get_constant_from_env('HF_TOKEN')
 REPLICATE_API_TOKEN = get_constant_from_env('REPLICATE_API_TOKEN')
