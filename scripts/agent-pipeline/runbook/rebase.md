@@ -30,7 +30,10 @@ Rebase it cleanly onto current `main`:
    starts from, and the snapshot test compares against `main`'s lock, so starting from the PR's lock
    can leave a prompt `main` also bumped at the same version with a different hash. If `main` deleted
    the file (`--ours` has no version), `git rm <that path>` instead; regeneration recreates it if the
-   PR still needs it.
+   PR still needs it. The `captured/` directory form fails as a whole (`error: path '…' does not have
+   our version`, nothing checked out) when any capture in it was deleted on `main`: `git rm` each
+   capture git names in that error first, then rerun the directory form. Never `git add captured/`
+   while a file in it still has conflict markers.
 3. **Regenerate after a generated-file conflict** — once `git rebase` has finished, never mid-rebase.
    API side (any of the first three paths conflicted): `poetry run python scripts/dump_openapi.py`,
    then `npm --prefix src/cqc_lem/ui run gen:api-types`. Prompt side (any of the last three):
