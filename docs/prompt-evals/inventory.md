@@ -16,7 +16,7 @@
 | `classify.post_reaction` | `cqc_lem.utilities.ai.ai_helper` | `choose_post_reaction` | classifier | exempt:fallback transport — resends #0's prompt to OPENAI_FALLBACK_MODEL | 2 | source | not yet measured |
 | `comment.feed` | `cqc_lem.utilities.ai.ai_helper` | `generate_ai_response._draft` | comment | evaluated | 3 | rendered text | not yet measured |
 | `smoke.ai_response_test` | `cqc_lem.utilities.ai.ai_helper` | `generate_ai_response_test` | — | exempt:connectivity smoke test, not a product prompt | — | — | — |
-| `post.carousel` | `cqc_lem.utilities.ai.ai_helper` | `generate_carousel_content._draft` | json_planner | planned | 3 | source | not yet measured |
+| `post.carousel` | `cqc_lem.utilities.ai.ai_helper` | `generate_carousel_content._draft` | json_planner | planned | 4 | source | not yet measured |
 | `comment.reply_followup` | `cqc_lem.utilities.ai.ai_helper` | `generate_comment_reply_followup._draft` | comment | planned | 1 | source | not yet measured |
 | `post.engagement_prompt` | `cqc_lem.utilities.ai.ai_helper` | `generate_engagement_prompt_post` | post_longform | planned | 1 | source | not yet measured |
 | `post.group` | `cqc_lem.utilities.ai.ai_helper` | `generate_group_post._draft` | post_longform | planned | 1 | source | not yet measured |

@@ -4283,7 +4283,7 @@ def _resolve_user_profile(user_id: int) -> LinkedInProfile:
             # Outside the session window (#2628): write from the cached profile below.
             log_debug(f"Live profile scrape deferred ({deferred.reason}) — using cached profile",
                       user_id=user_id)
-            driver = wait = None
+            driver = None
         if driver is not None:
             try:
                 user_profile = get_my_profile(driver, wait, user_email, user_password, user_id=user_id)
