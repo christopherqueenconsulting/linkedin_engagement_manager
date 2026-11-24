@@ -2589,9 +2589,9 @@ def _comment_opener_family(text: str) -> str:
 
 
 def comment_batch_report(draft: Optional[str], recent_comments: list) -> dict:
-    """Batch structural lint (#2665): is this draft one more of the same shape as the user's last
-    `COMMENT_BATCH_WINDOW` comments? Deterministic, no LLM call.
+    """Batch structural lint (#2665): is this draft one more of the same shape as the recent batch?
 
+    Deterministic, no LLM call. The batch is the user's last `COMMENT_BATCH_WINDOW` comments.
     Three checks over the batch rather than the draft: the share of comments ending on a question
     (at most `COMMENT_QUESTION_RATE_MAX` once the draft is counted), the draft opening in a family
     the window already used, and a spread of lengths. It only ever returns hints — the caller spends
