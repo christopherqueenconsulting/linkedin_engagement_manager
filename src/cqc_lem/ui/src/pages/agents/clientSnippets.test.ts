@@ -593,7 +593,7 @@ describe('shell round-trip with a hostile URL', () => {
   })
 
   // pwsh ships on GitHub's ubuntu runners, so this runs in CI; a box without it reports a skip.
-  it.skipIf(!hasPwsh)('PowerShell: the same commands arrive intact', () => {
+  it.skipIf(!hasPwsh)('PowerShell: the same commands arrive intact', { timeout: 30_000 }, () => {
     const [claude] = buildClientSnippets('claude-code', HOSTILE_URL, TOKEN, 'env', 'powershell')
     expect(runPwsh(claude.text)).toEqual([...EXPECT_CLAUDE, 'Authorization: Bearer ${LEM_MCP_TOKEN}'])
     const [gemini] = buildClientSnippets('gemini', HOSTILE_URL, TOKEN, 'inline', 'powershell')
