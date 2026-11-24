@@ -154,7 +154,7 @@ image: `write_ai_source_metadata` embeds the IPTC `DigitalSourceType = trainedAl
 property (PNG iTXt, JPEG APP1, WEBP lossless re-save; no certificate needed) BEFORE C2PA, so the
 manifest hashes it. It runs on the file that ships, after the last crop, composite or copy
 (a Pillow re-save strips both layers): `image_gen._sign_final` at the end of `render_image_gated`
-and `render_image_from_prompt`, the stored newsletter cover, the `generate_variants` image copy, and
+and `render_image_from_prompt` (the newsletter cover is a byte copy of that file, never re-signed), the `generate_variants` image copy, and
 the carousel slide PNGs when the cover art is AI. With `post_id` and `C2PA_ENABLED` it persists
 `posts.c2pa_signed` (1 signed, 0 attempted and failed, NULL never recorded). `read_ai_source_type`
 re-reads it; `tests/unit/utilities/test_c2pa_iptc.py` holds the per-format fixture. The avatar
