@@ -11,6 +11,7 @@ Templated grants (`_SCOPE_PATH_PATTERN_METHODS`) are compared by the registry's 
 literal (`/posts/{post_id}`), which the pattern must match the way it matches a real request.
 """
 
+import re
 from typing import Any
 
 import pytest
@@ -37,7 +38,7 @@ def _granted(main_mod: Any, scope: str) -> set[tuple[str, str]]:
 
 
 def _pattern_granted(main_mod: Any, scope: str, verb: str, path: str) -> bool:
-    return any(pattern.fullmatch(path) and verb in verbs
+    return any(pattern.fullmatch(_concrete(path)) and verb in verbs
                for pattern, verbs in main_mod._SCOPE_PATH_PATTERN_METHODS.get(scope, ()))
 
 
@@ -47,12 +48,33 @@ def test_every_grant_is_called_by_a_tool(main_mod: Any, scope: str) -> None:
     assert unused == set(), f"{scope} grants paths no tool calls: {sorted(unused)}"
 
 
+def _concrete(path: str) -> str:
+    """A registry template with each `{param}` filled by a sample id, as a real call would be."""
+    return re.sub(r"\{[^}]+\}", "12", path)
+
+
 @pytest.mark.parametrize("scope", MCP_SCOPES)
 def test_every_templated_grant_is_called_by_a_tool(main_mod: Any, scope: str) -> None:
     templated = [call for call in registry.registry_grants(scope) if "{" in call[1]]
     for pattern, verbs in main_mod._SCOPE_PATH_PATTERN_METHODS.get(scope, ()):
-        assert any(pattern.fullmatch(path) and verb in verbs for verb, path in templated), (
-            f"{scope} grants {pattern.pattern} but no tool calls it")
+        assert any(pattern.fullmatch(_concrete(path)) and verb in verbs
+                   for verb, path in templated), f"{scope} grants {pattern.pattern} but no tool calls it"
+
+
+# Paths a templated grant must never open: siblings, deeper paths, and non-numeric ids.
+_MUST_NOT_MATCH = ("/posts/bulk_update", "/posts/abc", "/posts/12/x", "/posts/", "/posts/12a",
+                   "/posts/-1", "/posts/1.5", "/posts/%31")
+
+
+@pytest.mark.parametrize("scope", MCP_SCOPES)
+def test_no_templated_grant_is_over_broad(main_mod: Any, scope: str) -> None:
+    """Each pattern accepts a numeric id and nothing a looser `[^/]+` or `.*` would also let in."""
+    for pattern, _verbs in main_mod._SCOPE_PATH_PATTERN_METHODS.get(scope, ()):
+        assert "[0-9]+" in pattern.pattern and "[^/]" not in pattern.pattern
+        assert ".*" not in pattern.pattern and ".+" not in pattern.pattern
+        for path in _MUST_NOT_MATCH:
+            assert not pattern.fullmatch(path), f"{pattern.pattern} opens {path}"
+        assert pattern.fullmatch("/posts/12")
 
 
 @pytest.mark.parametrize("scope", MCP_SCOPES)

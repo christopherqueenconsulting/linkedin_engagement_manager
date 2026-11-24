@@ -49,6 +49,7 @@ from cqc_lem.api.mcp.loopback import (
     loopback_for,
 )
 from cqc_lem.api.mcp.redact import finalize
+from cqc_lem.api.mcp.server import GUIDE_URI, POLICY_URI
 from cqc_lem.utilities.logger import log_error, log_info
 from cqc_lem.utilities.observability import capture_mcp_analytics, track_mcp_tool_call
 
@@ -155,7 +156,14 @@ async def call_tool(request: Optional[Request], name: str,
             raise _validation_failure(exc) from None
         loopback = loopback_for(request)
         payload = await asyncio.wait_for(spec.run(loopback, args), TOOL_TIMEOUT_SECONDS)
-        result = _ok(spec, finalize(payload))
+        shaped = finalize(payload)
+        if (isinstance(shaped, dict) and shaped.get("truncated")
+                and "limit" in spec.args_model.model_fields):
+            # A page trimmed to fit 64 KB would have a cursor that skips the rows it cut. A tool
+            # with a `limit` refuses instead, so every row stays reachable with a smaller page.
+            raise ToolFailure(INVALID_ARGS, "result_too_large",
+                              "This result is over 64 KB. Ask again with a lower `limit`.")
+        result = _ok(spec, shaped)
     except ToolFailure as failure:
         outcome = failure.outcome
         result = _error(failure)
@@ -201,8 +209,6 @@ def _report(principal: Any, tool: str, outcome: str, started: float,
 
 # --- resources (each has a tool equivalent) ---------------------------------------------------------
 
-GUIDE_URI = "lem://guide/how-lem-works"
-POLICY_URI = "lem://policy/write-rules"
 OVERVIEW_URI = "lem://account/overview"
 PLAN_URI = "lem://plan/upcoming"
 POST_TEMPLATE = "lem://post/{post_id}"
