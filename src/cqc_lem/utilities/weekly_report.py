@@ -10,12 +10,17 @@ The week-over-week ICP-share delta is deliberately NOT measured: `post_engagers`
 with no event history, so last week's share cannot be reconstructed.
 """
 
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from statistics import median
 from typing import Any, Mapping, Optional, Sequence
 
+from cqc_lem.utilities.comment_outcomes import summarize_outcomes
 from cqc_lem.utilities.db import (
     count_pending_drafts,
+    get_assist_activity,
+    get_comment_log_times,
+    get_comment_outcomes,
     get_follower_stats,
     get_weekly_engager_icp_scores,
     get_weekly_post_rows,
@@ -43,7 +48,13 @@ NOT_MEASURED_LABELS = {
     "sends": "sends (official analytics read not enabled)",
     "new_conversations": "new conversations (reply detection not trustworthy yet)",
     "calls_booked": "calls booked (no meeting stage yet)",
+    "comment_volume": "comments per day by mode (comment or Assist records unreadable)",
+    "review_seconds": "seconds per review decision (too few approvals in one sitting)",
+    "comment_outcomes": "comment outcome rates (no checked comments)",
 }
+# Approvals further apart than this are different sittings, not one decision's thinking time.
+REVIEW_SITTING_GAP_S = 300
+REVIEW_MIN_GAPS = 3
 # Always unmeasured in phase 1: named every week so a silence is never read as a zero.
 _ALWAYS_NOT_MEASURED = ("icp_share_delta", "saves", "sends", "new_conversations", "calls_booked")
 
@@ -106,6 +117,58 @@ def icp_share(scores: Optional[Sequence[Optional[int]]]) -> Optional[dict]:
             "engagers": len(scores)}
 
 
+def _day_counts(times: Optional[Sequence[datetime]]) -> Optional[dict]:
+    return None if times is None else dict(Counter(t.date().isoformat() for t in times))
+
+
+def review_seconds_median(approved_at: Optional[Sequence[datetime]]) -> Optional[float]:
+    """Median seconds between consecutive approvals made in one sitting.
+
+    No draft-shown timestamp is stored, so the pace of approving is the reading: a gap above
+    REVIEW_SITTING_GAP_S starts a new sitting and is dropped, and fewer than REVIEW_MIN_GAPS gaps is
+    too thin to report (None, never 0).
+    """
+    if not approved_at:
+        return None
+    ordered = sorted(approved_at)
+    gaps = [(b - a).total_seconds() for a, b in zip(ordered, ordered[1:])]
+    gaps = [g for g in gaps if g <= REVIEW_SITTING_GAP_S]
+    return float(median(gaps)) if len(gaps) >= REVIEW_MIN_GAPS else None
+
+
+def comment_volume(logged: Optional[Sequence[datetime]],
+                   assist: Optional[Mapping[str, Sequence[datetime]]],
+                   outcome_rows: Optional[Sequence[Mapping[str, Any]]]) -> dict:
+    """Comments per day by mode, review pace and outcome rates, each None when unreadable.
+
+    Every comment, Assist included, writes a SUCCESS comment log, so Assist is the `posted_at`
+    count and automated is the logged count minus it. Per-day numbers need BOTH reads; one
+    missing makes the split unknown rather than a guess.
+    """
+    logged_by_day = _day_counts(logged)
+    assist_by_day = _day_counts(assist["posted_at"]) if assist is not None else None
+    per_day = None
+    if logged_by_day is not None and assist_by_day is not None:
+        per_day = [{"date": d, "assist": assist_by_day.get(d, 0),
+                    "automated": max(0, logged_by_day.get(d, 0) - assist_by_day.get(d, 0))}
+                   for d in sorted(set(logged_by_day) | set(assist_by_day))]
+    summary = summarize_outcomes(outcome_rows) if outcome_rows else None
+    return {
+        "per_day": per_day,
+        "automated_total": sum(r["automated"] for r in per_day) if per_day is not None else None,
+        "assist_total": sum(r["assist"] for r in per_day) if per_day is not None else None,
+        "review_seconds_median": review_seconds_median(
+            assist["approved_at"] if assist is not None else None),
+        "outcomes": None if summary is None else {
+            "checked": summary["checked"],
+            "reply_rate": summary["reply_rate"],
+            "author_reply_rate": summary["author_reply_rate"],
+            "like_rate": summary["like_rate"],
+            "demotion_rate": summary["demotion_rate"],
+        },
+    }
+
+
 def _actions(pending_drafts: Optional[int], posts_published: Optional[int],
              organic_rate: Optional[float], icp: Optional[dict]) -> list:
     """At most MAX_ACTIONS rule-based actions; the pending-drafts one always leads."""
@@ -139,6 +202,9 @@ def build_weekly_report(
     follower_snapshots: Optional[Sequence[Mapping[str, Any]]],
     engager_icp_scores: Optional[Sequence[Optional[int]]],
     pending_drafts: Optional[int],
+    comment_log_times: Optional[Sequence[datetime]] = None,
+    assist_activity: Optional[Mapping[str, Sequence[datetime]]] = None,
+    outcome_rows: Optional[Sequence[Mapping[str, Any]]] = None,
 ) -> dict:
     """The report payload. Pure: no I/O, every unreadable input is None and listed in `not_measured`."""
     this_week = _week_numbers(this_week_rows)
@@ -153,9 +219,17 @@ def build_weekly_report(
         missing.append("follower_delta")
     if icp is None:
         missing.append("icp_share")
+    volume = comment_volume(comment_log_times, assist_activity, outcome_rows)
+    if volume["per_day"] is None:
+        missing.append("comment_volume")
+    if volume["review_seconds_median"] is None:
+        missing.append("review_seconds")
+    if volume["outcomes"] is None:
+        missing.append("comment_outcomes")
     missing.extend(_ALWAYS_NOT_MEASURED)
 
     return {
+        "comment_volume": volume,
         "week_start": week_start.isoformat(),
         "week_end": week_end.isoformat(),
         "numbers": {**this_week, "follower_delta": followers},
@@ -179,4 +253,8 @@ def load_weekly_report(user_id: int, now: Optional[datetime] = None) -> dict:
         follower_snapshots=get_follower_stats(user_id, days=_FOLLOWER_LOOKBACK_DAYS),
         engager_icp_scores=get_weekly_engager_icp_scores(user_id, start, end),
         pending_drafts=count_pending_drafts(user_id),
+        comment_log_times=get_comment_log_times(user_id, start, end),
+        assist_activity=get_assist_activity(user_id, start, end),
+        # get_comment_outcomes returns [] on a fault, so an empty list reads as unknown here.
+        outcome_rows=get_comment_outcomes(user_id, days=7),
     )
