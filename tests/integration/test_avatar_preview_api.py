@@ -246,7 +246,7 @@ class TestGuardrailPreferencesEndpoints:
 class TestComposeHonoursUseAvatar:
     def test_use_avatar_reaches_the_post_row(self, api_client):
         """PostRequest.use_avatar was accepted by the API and dropped (issue #744 §2.4)."""
-        with _signed_in(), patch(f"{_M}.insert_post", return_value=True) as insert:
+        with _signed_in(), patch(f"{_M}.insert_post_returning_id", return_value=41) as insert:
             r = api_client.post("/api/schedule_post/", json={
                 "session_token": _SESSION_TOKEN,
                 "content": "body", "post_type": "text",
@@ -255,7 +255,7 @@ class TestComposeHonoursUseAvatar:
         assert insert.call_args.kwargs["use_avatar"] is False
 
     def test_omitting_it_leaves_the_choice_to_the_user_preferences(self, api_client):
-        with _signed_in(), patch(f"{_M}.insert_post", return_value=True) as insert:
+        with _signed_in(), patch(f"{_M}.insert_post_returning_id", return_value=41) as insert:
             api_client.post("/api/schedule_post/", json={
                 "session_token": _SESSION_TOKEN,
                 "content": "body", "post_type": "text",

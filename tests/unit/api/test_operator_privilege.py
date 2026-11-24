@@ -27,7 +27,7 @@ _RATE = "cqc_lem.utilities.linkedin.rate_limit"
 _UID = 81
 _TOKEN = "operator-privilege-token"
 _SECRET = "break-glass-value"
-_PROFILE = "https://example.com/in/someone"
+_PROFILE = "https://www.linkedin.com/in/someone"
 
 
 def _kernel() -> Any:

@@ -53,7 +53,7 @@ class _PostStore:
 
     def insert(self, *args, **kwargs):
         self.inserted.append(kwargs)
-        return True
+        return len(self.inserted)  # the new row's id, as insert_post_returning_id answers
 
 
 @pytest.fixture
@@ -74,7 +74,7 @@ def store(tmp_path):
          patch("cqc_lem.api.routers.user.get_post_content", side_effect=s.content), \
          patch("cqc_lem.api.routers.user.get_post_image_url", side_effect=s.image_url), \
          patch("cqc_lem.api.routers.user.update_db_post_image_url", side_effect=s.set_image_url), \
-         patch("cqc_lem.api.main.insert_post", side_effect=s.insert), \
+         patch("cqc_lem.api.main.insert_post_returning_id", side_effect=s.insert), \
          patch("cqc_lem.utilities.post_image.assets_dir", str(tmp_path)):
         s.assets_dir = str(tmp_path)
         yield s
