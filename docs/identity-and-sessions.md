@@ -1089,7 +1089,7 @@ Revoking one is `POST /user/sessions/revoke`, as for every session.
 
 Fleet-wide controls are owner-run: `POST /api/admin/mcp-kill {on}` (admin human session, step-up,
 audited `mcp_kill_toggled`, hidden from the schema) or `scripts/mcp_kill.py on|off|status` sets the
-`mcp:kill` key; `scripts/mcp_revoke_all.py --reason …` revokes every MCP session with one
+`mcp:kill` key; `scripts/mcp_revoke_all.py --reason <why> --yes` revokes every MCP session with one
 `mcp_sessions_revoked` row per user, in the same transaction. `sessions.scope` is `VARCHAR(32)` and
 `auth_audit_log.event` `VARCHAR(50)`, so none of this needed a migration.
 

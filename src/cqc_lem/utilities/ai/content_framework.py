@@ -2570,6 +2570,65 @@ def comment_contract_directive() -> str:
     )
 
 
+COMMENT_BATCH_WINDOW = 20
+COMMENT_BATCH_MIN_HISTORY = 5
+COMMENT_QUESTION_RATE_MAX = 0.40
+# Coefficient of variation of word counts below which the recent batch reads as one template length.
+COMMENT_LENGTH_CV_MIN = 0.20
+# A draft within this fraction of the batch's median word count adds no spread.
+COMMENT_LENGTH_NEAR_MEDIAN = 0.10
+_SECOND_PERSON_OPENERS = frozenset(("you", "your", "youre", "yours"))
+
+
+def _comment_opener_family(text: str) -> str:
+    """The family a comment opens in: its first two words, with every "You/Your" opener one family."""
+    words = re.findall(r"[a-z']+", (text or "").lower().replace("'", ""))[:2]
+    if words and words[0] in _SECOND_PERSON_OPENERS:
+        return "you"
+    return " ".join(words)
+
+
+def comment_batch_report(draft: Optional[str], recent_comments: list) -> dict:
+    """Batch structural lint (#2665): is this draft one more of the same shape as the recent batch?
+
+    Deterministic, no LLM call. The batch is the user's last `COMMENT_BATCH_WINDOW` comments.
+    Three checks over the batch rather than the draft: the share of comments ending on a question
+    (at most `COMMENT_QUESTION_RATE_MAX` once the draft is counted), the draft opening in a family
+    the window already used, and a spread of lengths. It only ever returns hints — the caller spends
+    a regeneration on them and ships the draft anyway when the budget is gone. A window thinner than
+    `COMMENT_BATCH_MIN_HISTORY` is no batch, so it says nothing.
+
+    Args:
+        draft: The candidate comment.
+        recent_comments: The user's recent comments, newest first.
+
+    Returns:
+        `{"hints": [...], "question_rate": float | None}`.
+    """
+    text = (draft or "").strip()
+    window = [c.strip() for c in (recent_comments or []) if (c or "").strip()][:COMMENT_BATCH_WINDOW]
+    if not text or len(window) < COMMENT_BATCH_MIN_HISTORY:
+        return {"hints": [], "question_rate": None}
+    hints = []
+    asks = sum(c.endswith("?") for c in window)
+    rate = (asks + text.endswith("?")) / (len(window) + 1)
+    if text.endswith("?") and rate > COMMENT_QUESTION_RATE_MAX:
+        hints.append(f"{round(rate * 100)}% of the recent comments end on a question (cap "
+                     f"{round(COMMENT_QUESTION_RATE_MAX * 100)}%) — end on a statement instead")
+    family = _comment_opener_family(text)
+    if family and any(_comment_opener_family(c) == family for c in window):
+        hints.append(f"a recent comment already opens '{family}...' — open a different way")
+    lengths = sorted(len(c.split()) for c in window)
+    median = lengths[len(lengths) // 2]
+    mean = sum(lengths) / len(lengths)
+    spread = (sum((n - mean) ** 2 for n in lengths) / len(lengths)) ** 0.5 / mean if mean else 0.0
+    if median and spread < COMMENT_LENGTH_CV_MIN \
+            and abs(len(text.split()) - median) <= median * COMMENT_LENGTH_NEAR_MEDIAN:
+        hints.append("recent comments are all about the same length — write this one noticeably "
+                     "shorter or longer")
+    return {"hints": hints, "question_rate": round(rate, 4)}
+
+
 def comment_retry_directive(failures: list, offending_comment: Optional[str] = None) -> str:
     """The regeneration steer after a draft fails the gate: name exactly what went wrong and, for a
     near-duplicate, show the earlier comment the retry must not resemble.

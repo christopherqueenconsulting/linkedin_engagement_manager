@@ -137,6 +137,19 @@ for the caption band. It is stored, probed and captioned like any other video, n
 `title_card_*` so `video_model_tier` (and `posts.video_model` = `title_card`) never reads it
 as Runway or stock; it is not AI output, so it gets no C2PA credentials or AI disclosure.
 
+### AI disclosure: visible line vs metadata (#2634, Phase 1)
+
+`_needs_ai_disclosure` in `run_content_plan.py` is the ONE decision, used by create,
+`_finish_regenerated_post` and `regenerate_video_for_post` (which never disclosed before).
+`AI_DISCLOSURE_METADATA_MODE` (default off, read at the call site) takes effect only with
+`C2PA_ENABLED`; otherwise the legacy rule (any AI video or avatar media) applies. When on, the
+visible "(Visuals created with AI)" line stays for avatar likeness, read with
+`post_avatar_media_state` so an unreadable flag DISCLOSES. Any other AI video drops it only when
+`add_ai_content_credentials` signed THIS asset in this run (`_store_video_asset(signing=...)`); a
+signing failure keeps it with one WARNING. Carousels ship as a Pillow PDF that cannot carry C2PA,
+so a non-avatar AI carousel has no embedded or visible disclosure (owner-accepted). IPTC and signing
+at every image surface are Phase 2.
+
 Pexels survives only behind `VIDEO_PEXELS_FALLBACK_ENABLED` (default off), and then only with a
 query from Stage 1's concrete visual anchors (`stock_query_from_concept`): an anchor carrying a
 `STOCK_HOMONYMS` word (retirement, model, pipeline, cloud…) or a person is dropped whole, and no

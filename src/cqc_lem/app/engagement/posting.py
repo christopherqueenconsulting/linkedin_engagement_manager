@@ -130,6 +130,7 @@ from cqc_lem.utilities.db import (
     record_connection_accepted,
     record_follower_stat,
     record_lead_magnet_sent,
+    record_lead_reply_event,
     record_post_stats,
     set_profile_synthesis,
     update_commented_post_key,
@@ -813,11 +814,25 @@ def capture_follower_stats(self, user_id: int):
             candidate = getattr(my_profile, "profile_url", None)
             profile_url = str(candidate) if candidate else None
         counts = capture_audience_snapshot(driver, profile_url)
-        if not record_follower_stat(user_id, **counts):
+        from cqc_lem.utilities.linkedin.member_post_analytics import member_audience_counts
+        try:
+            api_counts = member_audience_counts(user_id)
+        except Exception as e:
+            log_debug("API audience counts unavailable; keeping scraped values",
+                      error_type=type(e).__name__, user_id=user_id,
+                      task_name="capture_follower_stats")
+            api_counts = {}
+        sources: dict = {}
+        for key, source_key in (("follower_count", "follower_source"),
+                                ("connection_count", "connection_source")):
+            if api_counts.get(key) is not None:
+                counts[key] = api_counts[key]
+                sources[source_key] = "api"
+        if not record_follower_stat(user_id, **counts, **sources):
             log_warning("No audience signal readable — snapshot skipped", user_id=user_id,
                         task_name="capture_follower_stats")
             return "No audience signals readable"
-        track_audience_snapshot(user_id=user_id, **counts)
+        track_audience_snapshot(user_id=user_id, **counts, **sources)
         log_info("Audience snapshot captured", user_id=user_id, task_name="capture_follower_stats")
         return (f"Followers: {counts['follower_count'] if counts['follower_count'] is not None else 'unknown'}; "
                 f"profile views: {counts['profile_views'] if counts['profile_views'] is not None else 'unknown'}")
@@ -2481,6 +2496,8 @@ def _read_comment_outcome(driver, wait, user_id: int, post_url: str, our_slug: s
         for _c, a in replies if not _href_is_profile(a, our_slug))
     if v2:
         outcome["reader_version"] = 2
+    if outcome["author_replied"]:
+        outcome["_author_slug"] = author_slug  # popped by the sweep before the row is written
     return outcome
 
 
@@ -2577,7 +2594,13 @@ def _run_comment_outcomes_sweep(user_id: int) -> str:
                 log_warning("Comment outcome check failed", exc=e, user_id=user_id,
                             task_name="sweep_comment_outcomes")
                 continue
+            author_slug = outcome.pop("_author_slug", None)
             record_comment_outcome(user_id, row.get("log_id"), post_key=key, **outcome)
+            if author_slug:
+                # Outcome tracking (#2658 P4): the post author answered our comment — one event per
+                # comment (log id), from the read just made; no extra navigation, nothing sent.
+                record_lead_reply_event(user_id, "comment", f"comment:{row.get('log_id')}",
+                                        person_profile_url=f"https://www.linkedin.com/in/{author_slug}/")
             track_comment_outcome(user_id, row.get("log_id"), outcome, post_key=key)
             if outcome["status"] == "skipped":
                 skipped += 1

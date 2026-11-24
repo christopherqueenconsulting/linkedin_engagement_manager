@@ -7,12 +7,13 @@ which would revoke the same rows and leave no trail.
 
 Owner-run (Tier 2). Revert order: kill switch ON first (`scripts/mcp_kill.py on`), then this, then
 revert the code — revoking before the revert means old code never meets an `mcp` scope it does
-not know. Runs from STDIN inside the production image:
+not know. Runs from STDIN inside the production image, exactly as written:
 
-    sudo docker exec -i celery_worker python - --reason incident-2026-11 < scripts/mcp_revoke_all.py
+    sudo docker exec -i celery_worker python - --reason incident-2026-11 --yes < scripts/mcp_revoke_all.py
 
-Without `--yes` it asks for confirmation on a terminal and refuses when STDIN is not one; pass
-`--yes` for a non-interactive run.
+`--yes` is REQUIRED in that form: the script itself arrives on STDIN, so there is no terminal left
+to answer a prompt, and without `--yes` it refuses (exit 1) rather than wait. The same command from
+a checkout is `PYTHONPATH=src poetry run python scripts/mcp_revoke_all.py --reason <why> --yes`.
 
 Exit codes: 0 done (including "nothing to revoke"), 1 refused (no confirmation), 2 the transaction
 failed and nothing was revoked.
@@ -49,7 +50,8 @@ def main(argv: Optional[Sequence[str]] = None, out: TextIO = sys.stdout,
     if not args.yes:
         if confirm is None:
             if not sys.stdin.isatty():
-                print("Refusing: not a terminal. Pass --yes to revoke without a prompt.", file=out)
+                print("Refusing: STDIN is not a terminal, so nothing can answer the prompt. "
+                      "Re-run with --yes.", file=out)
                 return 1
             confirm = input
         if confirm("Revoke EVERY mcp/mcp_outreach token? Type 'revoke' to continue: ") != "revoke":

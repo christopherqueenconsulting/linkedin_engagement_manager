@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.212.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.211.0...v0.212.0) (2026-11-24)
+
+
+### Features
+
+* **analytics:** API follower and connection counts, source-tagged, flag off (closes [#2702](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2702)) ([#2714](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2714)) ([78df22f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/78df22f192058904484184f32a3db7d0e9ded0ca))
+* **comments:** batch structural lint for feed comments, phase 3 (closes [#2665](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2665)) ([#2708](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2708)) ([4af7677](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4af7677127af17fa8cb11011fc2a9f5b247c0f7f))
+* **leads:** inbound reply events, Phase 4 (closes [#2658](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2658)) ([#2706](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2706)) ([cbc9a18](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/cbc9a188a2e7cce90b7262f58ef8dc3ff7b2eeab))
+* **mcp:** mount inert stateless MCP endpoint behind flag and kill switch ([#2695](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2695)) ([8d69e75](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8d69e751da319f96a5160d498e50aa4cda25216c))
+
+
+### Bug Fixes
+
+* **api:** queue-only seats edit only pending rows, draft text-only posts, cannot leak inbound address ([#2696](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2696)) ([604a042](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/604a0421cc4f958543176dd5c74dcd15976a56e1))
+* **errors:** instrument recent-activity zero-walk warning (closes [#2574](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2574)) ([#2718](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2718)) ([a3bf247](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a3bf2473bf9801cc1c7eb27a6461ef7a852a4b8b))
+* **errors:** instrument recent-activity zero-walk warning with author, shape and lane (closes [#2574](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2574)) ([a3bf247](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/a3bf2473bf9801cc1c7eb27a6461ef7a852a4b8b))
+* **probe:** sample whole path-stripped /recent-activity/ cards, up to 3 (refs [#2551](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2551)) ([#2716](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2716)) ([6596a67](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6596a676004c0aa7c90873cc36ee8ad59265dbfb))
+* **probe:** sample whole path-stripped /recent-activity/ cards, up to 3 incl. a bare one (refs [#2551](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2551)) ([6596a67](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/6596a676004c0aa7c90873cc36ee8ad59265dbfb))
+
 ## [0.211.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.210.0...v0.211.0) (2026-11-24)
 
 
