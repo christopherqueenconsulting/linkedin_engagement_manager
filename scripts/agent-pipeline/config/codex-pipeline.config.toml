@@ -1,0 +1,20 @@
+# lem-pipeline-managed: codex-pipeline.config.toml
+# Installed as $CODEX_HOME/config.toml by lib/run_lane.sh (_install_codex_config, #2562) ONLY when
+# that file is absent or still carries the marker line above. Delete the marker to take it over.
+#
+# Tool parity with config/claude-headless.json: the Claude profile allows mcp__graft, mcp__playwright
+# and the two mcp__perplexity tools, so these are the same three servers. looot is deliberately
+# absent; add it only after the owner asks for it in a comment on #2562, on BOTH harnesses.
+#
+# Caveman reaches Codex through the repo's AGENTS.md, which Codex reads from the worktree root.
+
+[mcp_servers.graft]
+command = "graft"
+args = ["mcp"]
+
+[mcp_servers.playwright]
+command = "/home/linuxbrew/.linuxbrew/opt/node@24/bin/npx"
+args = ["-y", "@playwright/mcp@latest", "--headless", "--isolated"]
+
+[mcp_servers.perplexity]
+url = "http://127.0.0.1:8765/mcp"

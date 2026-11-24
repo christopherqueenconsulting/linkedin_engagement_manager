@@ -983,6 +983,25 @@ never touched. It runs from STDIN inside the production image
 (`sudo docker exec -i celery_worker python - [--cancel] [--json] < scripts/audit_outbound_drafts.py`),
 against `mysql_db`, never `lem-it-mysql`.
 
+## Session window gate — Phase 1, shadow only (`utilities/engagement_window.py`, issue #2628)
+
+`session_window_decision(user_id, lane, now, tz, sessions_today)` is the pure answer to "may a
+BACKGROUND browser session open now": Monday–Friday, 07:00–19:00 in the user's own timezone,
+inside window A (08:00–08:45) or C (12:30–13:15), at most 3 sessions per local day. Window B
+(post-tied), volume-scaled blocks, deferral with an eta and per-user windows are later phases.
+
+- `SESSION_WINDOW_MODE=off|shadow`, read at call time, default **off**. `enforce` is not built and
+  reads as `shadow`. Shadow NEVER refuses: `observe_session_window` runs at `get_docker_driver`,
+  the one seam every `get_driver_wait_pair` lane reaches (DMs, invites, stale-invite withdrawal,
+  `comment_on_post`, content generation), so counts are complete.
+- A would-defer is an INFO line plus one `session_window_shadow` event (`reason`, `lane`, `window`),
+  never `log_warning`. Reasons: `weekend`, `night`, `outside_window`, `over_daily_target`.
+- A NULL or unparseable `users.timezone` falls back to America/New_York, NOT UTC; a bad value warns
+  once per process. The per-local-day session counter is Redis and fails OPEN.
+- Sessions the user starts (profile refresh, Publish click, login) are exempt, matched on the
+  session name (`USER_STARTED_SESSION_MARKERS`).
+- Owner action: run shadow for 7 days or more, then ask for enforcement (Phase 2).
+
 ## Human pacing (`utilities/human_pacing.py`, issue #626)
 
 The ONE place cadence is decided.

@@ -62,6 +62,8 @@ from cqc_lem.api.response_schemas import (
     detail_model_from,
 )
 from cqc_lem.app.engagement.posting import update_stale_profile
+from cqc_lem.utilities import db as _call_db
+from cqc_lem.utilities.ai import call_ingest as _call_ingest
 from cqc_lem.utilities.ai.audience_mix import parse_audience_mix
 from cqc_lem.utilities.ai.content_alignment import profile_niche_anchors
 from cqc_lem.utilities.ai.content_framework import GROUP_POST_BEST_PRACTICES
@@ -3859,6 +3861,173 @@ def delete_story_bank_endpoint(request: StoryBankDeleteRequest) -> ResponseModel
     if not delete_story_bank_entry(user_id, request.entry_id):
         raise HTTPException(status_code=500, detail="Could not remove story bank entry")
     return ResponseModel(status_code=200, detail="Story bank entry removed")
+
+
+# --- Call / voice-note ingest (issue #2629, Phase 1b) ---------------------------------------------
+# Intake is behind CALL_INGEST_ENABLED (default off => 404, nothing written). Review, listing and
+# the purge always work: the kill switch stops ingest, never a user's way to see or delete data.
+
+_CALL_UPLOAD_MAX_BYTES = 2 * 1024 * 1024
+_CALL_UPLOAD_SUFFIXES = (".vtt", ".srt", ".txt")
+
+
+class CallSourceRequest(BaseModel):
+    """Body of `POST /user/call-ingest/source`."""
+
+    session_token: str
+    source_type: str
+    label: Optional[str] = Field(default=None, max_length=120)
+    consent_attested: bool = False
+
+
+class CallReviewRequest(BaseModel):
+    """Body of `POST /user/call-ingest/review`."""
+
+    session_token: str
+    candidate_id: int
+    decision: str
+    edited_body: Optional[str] = Field(default=None, max_length=5000)
+
+
+class CallBulkAcceptRequest(BaseModel):
+    """Body of `POST /user/call-ingest/accept-bulk`."""
+
+    session_token: str
+    min_confidence: float = Field(default=0.8, ge=0, le=1)
+    ingest_id: Optional[int] = None
+
+
+class CallPurgeRequest(BaseModel):
+    """Body of `DELETE /user/call-ingest`."""
+
+    session_token: str
+
+
+def _call_user(session_token: str) -> int:
+    user_id = _main.get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    return user_id
+
+
+def _require_call_ingest() -> None:
+    if not _call_ingest.call_ingest_enabled():
+        raise HTTPException(status_code=404, detail="Not found")
+
+
+@router.post("/call-ingest/source")
+def create_call_source_endpoint(request: CallSourceRequest) -> ResponseModel[dict[str, Any]]:
+    """Register a transcript source. It stays disabled until the consent attestation is given."""
+    _require_call_ingest()
+    user_id = _call_user(request.session_token)
+    if not request.consent_attested:
+        raise HTTPException(status_code=400, detail="Consent attestation is required")
+    source_id = _call_db.create_call_source(user_id, request.source_type, request.label, True)
+    if not source_id:
+        raise HTTPException(status_code=400, detail="Could not register the source")
+    return ResponseModel(status_code=200, detail={"source_id": source_id})
+
+
+@router.post("/call-ingest/upload")
+async def upload_call_transcript_endpoint(
+    session_token: str = Form(...),
+    source_id: int = Form(...),
+    source_type: str = Form(...),
+    own_speaker: Optional[str] = Form(default=None),
+    title: Optional[str] = Form(default=None),
+    file: UploadFile = File(...),
+) -> ResponseModel[dict[str, Any]]:
+    """Take a VTT, SRT or TXT transcript (Otter export or Wispr Flow text) and queue extraction.
+
+    Only the user's OWN redacted turns are stored. When the user's speaker label is missing or
+    matches nobody the answer is 409 with the speaker list — never a guess.
+    """
+    _require_call_ingest()
+    user_id = _call_user(session_token)
+    if not (file.filename or "").lower().endswith(_CALL_UPLOAD_SUFFIXES):
+        raise HTTPException(status_code=400, detail="Upload a .vtt, .srt or .txt transcript")
+    if not _call_db.is_call_source_enabled(user_id, source_id):
+        raise HTTPException(status_code=403, detail="Source is not enabled for this account")
+    spooled = None
+    try:
+        spooled, size = await _spool_upload(file, _CALL_UPLOAD_MAX_BYTES)
+        if size > _CALL_UPLOAD_MAX_BYTES:
+            raise HTTPException(status_code=400, detail="Transcript is larger than 2 MB")
+        with open(spooled, "rb") as fh:
+            raw = fh.read().decode("utf-8-sig", errors="replace")
+    finally:
+        _drop_temp_upload(spooled)
+    try:
+        prepared = _call_ingest.prepare_upload(raw, source_type, own_speaker)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Unsupported source type")
+    if prepared["state"] != _call_ingest.OWN_KNOWN:
+        raise HTTPException(status_code=409, detail={"needs_own_speaker": True,
+                                                     "speakers": prepared["speakers"]})
+    if not prepared["text"].strip():
+        raise HTTPException(status_code=400, detail="No readable speech in the transcript")
+    ingest_id = _call_db.insert_call_ingest(
+        user_id, prepared["text"], source_id=source_id, title=(title or None),
+        own_speaker=prepared["own_speaker"], turn_count=prepared["turn_count"])
+    if not ingest_id:
+        raise HTTPException(status_code=500, detail="Could not store the transcript")
+    from cqc_lem.app.run_call_ingest import ingest_call_transcript
+    ingest_call_transcript.apply_async(kwargs={"user_id": user_id, "ingest_id": ingest_id})
+    return ResponseModel(status_code=200, detail={"ingest_id": ingest_id})
+
+
+@router.get("/call-ingest/calls")
+def list_call_ingests_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
+    """The user's calls with how many candidates each still has pending."""
+    user_id = _call_user(session_token)
+    return ResponseModel(status_code=200, detail={"calls": _call_db.list_call_ingests(user_id)})
+
+
+@router.get("/call-ingest/candidates")
+def list_call_candidates_endpoint(session_token: str,
+                                  ingest_id: Optional[int] = None) -> ResponseModel[dict[str, Any]]:
+    """Pending candidates, for one call or the whole queue."""
+    user_id = _call_user(session_token)
+    rows = (_call_db.get_candidates_for_call(user_id, ingest_id) if ingest_id is not None
+            else _call_db.get_pending_candidates(user_id))
+    return ResponseModel(status_code=200, detail={"candidates": rows})
+
+
+@router.post("/call-ingest/review")
+def review_call_candidate_endpoint(request: CallReviewRequest) -> ResponseModel[dict[str, Any]]:
+    """Accept, edit or reject one candidate. Promotion writes `origin` and `source_quote`."""
+    user_id = _call_user(request.session_token)
+    decisions = {"accept": "accepted", "edit": "edited", "reject": "rejected"}
+    decision = decisions.get(request.decision)
+    if not decision:
+        raise HTTPException(status_code=400, detail="decision must be accept, edit or reject")
+    if decision == "edited" and not (request.edited_body or "").strip():
+        raise HTTPException(status_code=400, detail="edited_body is required to edit")
+    bank_id = _call_db.review_candidate(user_id, request.candidate_id, decision,
+                                        request.edited_body)
+    if decision != "rejected" and not bank_id:
+        raise HTTPException(status_code=404, detail="No pending candidate with that id")
+    purged = _call_db.purge_reviewed_call_transcripts(user_id)
+    return ResponseModel(status_code=200, detail={"story_bank_id": bank_id, "purged": purged})
+
+
+@router.post("/call-ingest/accept-bulk")
+def accept_call_candidates_bulk_endpoint(
+        request: CallBulkAcceptRequest) -> ResponseModel[dict[str, Any]]:
+    """Accept every pending candidate at or above `min_confidence` (default 0.8)."""
+    user_id = _call_user(request.session_token)
+    accepted = _call_db.accept_candidates_above(user_id, request.min_confidence, request.ingest_id)
+    purged = _call_db.purge_reviewed_call_transcripts(user_id)
+    return ResponseModel(status_code=200, detail={"accepted": accepted, "purged": purged})
+
+
+@router.delete("/call-ingest")
+def purge_all_call_data_endpoint(request: CallPurgeRequest) -> ResponseModel[str]:
+    """Delete every call row the user has — transcripts, candidates, sources and promoted facts."""
+    user_id = _call_user(request.session_token)
+    if not _call_db.purge_all_call_data(user_id):
+        raise HTTPException(status_code=500, detail="Could not purge call data")
+    return ResponseModel(status_code=200, detail="Call data purged")
 
 
 @router.put("/linkedin-password", deprecated=True)

@@ -13,6 +13,13 @@
     "source_hash": "sha256:badaf144af0044e80bea3db7dbbdd82cab19284a4a7649ed9eb8900e6887ca2c",
     "version": 1
   },
+  "call_ingest.extract": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:b17e3322bc37a6d668424cab78b22b3479170980f615ab642074718ca3ec9ffc",
+    "version": 1
+  },
   "carousel.image_query": {
     "changed_in": null,
     "content_hash": null,

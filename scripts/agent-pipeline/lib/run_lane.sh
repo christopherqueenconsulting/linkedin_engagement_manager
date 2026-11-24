@@ -296,6 +296,22 @@ _lane_base_url() {
   esac
 }
 
+# _install_codex_config <codex-home> -> gives Codex the same MCP tools the Claude profile allows
+# (graft, playwright, perplexity; #2562). The template carries a marker line, and only a file that
+# is absent or already carries it is rewritten: a hand-edited config.toml is never overwritten.
+# Fails open — a Codex review without graft is weaker, not wrong.
+CODEX_CONFIG_MARKER="# lem-pipeline-managed: codex-pipeline.config.toml"
+_install_codex_config() {
+  local home="$1" tpl="$BASE/config/codex-pipeline.config.toml" dest="$1/config.toml"
+  [ -f "$tpl" ] || return 0
+  if [ -f "$dest" ] && ! grep -qF "$CODEX_CONFIG_MARKER" "$dest" 2>/dev/null; then
+    log "codex config: $dest is not pipeline-managed; leaving it untouched."
+    return 0
+  fi
+  cp "$tpl" "$dest" 2>/dev/null || log "codex config: could not install $dest; Codex runs without graft."
+  return 0
+}
+
 # _codex_fallback <wt> <prompt> <hint> <class> -> pauses Codex and re-runs on the next provider.
 _codex_fallback() {
   local wt="$1" prompt="$2" hint="$3" cls="$4" rc
@@ -349,6 +365,7 @@ _run_codex_lane() {
     log "run_lane: REFUSING to dispatch to Codex — cannot install the rules under '$home'. NOT a lane failure."
     return "$CODEX_REFUSED"; }
 
+  _install_codex_config "$home"
   _emit "issue_assigned"; _emit "ai_call_started"
   log "using lane=codex model=${AGENT_MODEL} base_url=$(_lane_base_url codex) (reason=${ROUTE_REASON:-})"
   out="$(mktemp "${LOGDIR:-/tmp}/run.XXXXXX")"; t0="$(date +%s)"
@@ -495,6 +512,9 @@ never run in the shared checkout. MODE=${MODE:-?} BRANCH=${BRANCH:-?} ISSUE=${IS
       ANTHROPIC_BASE_URL="$OLLAMA_LITELLM_URL" \
       ANTHROPIC_AUTH_TOKEN="$LITELLM_MASTER_KEY" \
       ANTHROPIC_API_KEY="$LITELLM_MASTER_KEY" \
+      ANTHROPIC_DEFAULT_SONNET_MODEL="${AGENT_TIER}" \
+      ANTHROPIC_DEFAULT_OPUS_MODEL="${AGENT_TIER}" \
+      ANTHROPIC_DEFAULT_HAIKU_MODEL="${AGENT_TIER}" \
       timeout "${CLAUDE_TIMEOUT:-45m}" claude -p "$prompt" \
         "${perm_args[@]}" --add-dir "$runbook_dir" "${model_arg[@]}" "${mcp_arg[@]}" ) >"$out" 2>&1
     rc=$?
