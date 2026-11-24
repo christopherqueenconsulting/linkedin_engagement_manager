@@ -112,3 +112,50 @@ class TestEmailBudget:
         assert "/account" in html and "/account" in text
         assert "unsubscribe" not in html.lower()
         assert html.count("<li>") <= 5 + 3
+
+
+def test_send_exception_releases_the_claim():
+    base = "cqc_lem.utilities.db."
+    with patch(base + "get_active_user_ids", return_value=[1]), \
+         patch("cqc_lem.utilities.flags.flag_enabled", return_value=True), \
+         patch(base + "get_weekly_report_enabled", return_value=True), \
+         patch(base + "get_user_email", return_value="a@b.co"), \
+         patch.object(wr, "load_weekly_report", return_value=_ACTIVE), \
+         patch(base + "claim_weekly_report_send", return_value=True), \
+         patch(base + "release_weekly_report_send") as release_m, \
+         patch.object(email_mod, "send_weekly_report_email", side_effect=RuntimeError("boom")):
+        result = wr.send_weekly_reports(_NOW)
+    assert result["failed"] == 1 and result["sent"] == 0
+    release_m.assert_called_once_with(1, "2026-W48")
+
+
+def _cursor(row=None, rowcount=1, err=False):
+    import mysql.connector
+    from unittest.mock import MagicMock
+    cur = MagicMock()
+    if err:
+        cur.execute.side_effect = mysql.connector.Error("x")
+    cur.fetchone.return_value = row
+    cur.rowcount = rowcount
+    ctx = MagicMock()
+    ctx.__enter__.return_value = cur
+    return ctx
+
+
+@pytest.mark.parametrize("row,err,expected", [
+    (None, False, True), ({"weekly_report_enabled": None}, False, True),
+    ({"weekly_report_enabled": 1}, False, True), ({"weekly_report_enabled": 0}, False, False),
+    (None, True, False)])
+def test_get_weekly_report_enabled(row, err, expected):
+    from cqc_lem.platform.db.repositories import users
+    with patch.object(users, "db_cursor", return_value=_cursor(row=row, err=err)):
+        assert users.get_weekly_report_enabled(1) is expected
+
+
+@pytest.mark.parametrize("rowcount,err,expected", [(1, False, True), (0, False, False),
+                                                   (0, True, False)])
+def test_claim_and_release_weekly_report_send(rowcount, err, expected):
+    from cqc_lem.platform.db.repositories import users
+    with patch.object(users, "db_cursor", return_value=_cursor(rowcount=rowcount, err=err)):
+        assert users.claim_weekly_report_send(1, "2026-W48") is expected
+        assert users.release_weekly_report_send(1, "2026-W48") is expected

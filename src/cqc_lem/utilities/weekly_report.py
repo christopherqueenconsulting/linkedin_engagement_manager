@@ -291,7 +291,12 @@ def send_weekly_reports(now: Optional[datetime] = None) -> dict:
             if not claim_weekly_report_send(user_id, week):
                 result["skipped"] += 1
                 continue
-            if send_weekly_report_email(email, report):
+            try:
+                delivered = send_weekly_report_email(email, report)
+            except Exception:
+                release_weekly_report_send(user_id, week)
+                raise
+            if delivered:
                 result["sent"] += 1
             else:
                 release_weekly_report_send(user_id, week)
