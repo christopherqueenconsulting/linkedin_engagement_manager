@@ -748,6 +748,8 @@ class EngagementPreferencesRequest(BaseModel):
     followup_step_mode: Optional[str] = None
     appreciation_dm_mode: Optional[str] = None
     funnel_stage_mode: Optional[str] = None
+    # Daily-review stale digest email (#2669). None = leave what is stored; a stored NULL is on.
+    review_digest_enabled: Optional[bool] = None
     # Opt-in auto-connect for roster targets following did not unlock (issue #979), OFF by default
     # and independent of roster_auto_follow. No cap of its own — roster invites take at most a
     # minority share of whatever max_invites_per_day has left.
@@ -2380,6 +2382,8 @@ def update_engagement_preferences_endpoint(request: EngagementPreferencesRequest
                      "followup_step_mode", "appreciation_dm_mode", "funnel_stage_mode"):
         if prefs.get(mode_key) is None:
             prefs.pop(mode_key, None)
+    if prefs.get("review_digest_enabled") is None:
+        prefs.pop("review_digest_enabled", None)
     # Same rule for the forbidden-claim list (issue #2047): omitted or null is "leave what is
     # stored", never "store an empty list" — the saved subjects must survive a partial PUT.
     if prefs.get("forbidden_claim_terms") is None:

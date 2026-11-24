@@ -2016,6 +2016,23 @@ def stop_followup_unreadable(followup_id: int, reason: str = "unreadable_thread"
     except mysql.connector.Error as err:
         log_error(f"Could not stop unreadable followup {followup_id}", exc=err)
         return False
+def get_recent_unreadable_stopped_followups(user_id: int, within_hours: int) -> list:
+    """This user's follow-ups stopped as `unreadable_thread` in the last `within_hours` (#2669).
+
+    Read-only fodder for the Daily review: the stop is one-way and sends nothing, so the author
+    only needs to know the sequence ended and why.
+    """
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT id, profile_url, first_name, event_type, next_step, updated_at "
+                "FROM dm_followups WHERE user_id = %s AND status = %s AND stop_reason = %s "
+                "AND updated_at >= UTC_TIMESTAMP() - INTERVAL %s HOUR ORDER BY updated_at",
+                (user_id, str(FollowupStatus.STOPPED), "unreadable_thread", int(within_hours)))
+            return cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        log_error("Could not get unreadable-stopped followups", exc=err, user_id=user_id)
+        return []
 def defer_followup(followup_id: int, due_at: datetime) -> bool:
     """Push a still-pending follow-up's `due_at` out without touching anything else (issue #2115).
 

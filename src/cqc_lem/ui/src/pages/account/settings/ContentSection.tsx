@@ -65,6 +65,12 @@ export default function ContentSection() {
               hold_repaired_posts_for_review: !(eng.hold_repaired_posts_for_review ?? true),
             })} />
         </Field>
+        <Field settingKey="review_digest_enabled">
+          <Toggle on={eng.review_digest_enabled ?? true}
+            onClick={() => setEng({
+              review_digest_enabled: !(eng.review_digest_enabled ?? true),
+            })} />
+        </Field>
         <Field settingKey="link_in_first_comment">
           <Toggle on={eng.link_in_first_comment}
             onClick={() => setEng({ link_in_first_comment: !eng.link_in_first_comment })} />
