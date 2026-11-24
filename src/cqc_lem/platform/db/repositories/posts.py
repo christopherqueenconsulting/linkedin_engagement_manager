@@ -2070,7 +2070,9 @@ def get_variant_outcome_rows(user_id: int) -> list:
 def record_follower_stat(user_id: int, follower_count: Optional[int] = None,
                          connection_count: Optional[int] = None,
                          profile_views: Optional[int] = None,
-                         search_appearances: Optional[int] = None) -> bool:
+                         search_appearances: Optional[int] = None,
+                         follower_source: str = "scrape",
+                         connection_source: str = "scrape") -> bool:
     """Append one audience snapshot for the user (issue #627). Every count is optional: a value the
     capture could not read is stored as NULL, never 0, so the growth deltas can tell "not measured"
     apart from "the audience really is that size". Returns False when NOTHING was readable — there
@@ -2082,8 +2084,10 @@ def record_follower_stat(user_id: int, follower_count: Optional[int] = None,
         with db_cursor(commit=True) as cursor:
             cursor.execute(
                 "INSERT INTO follower_stats (user_id, follower_count, connection_count, profile_views, "
-                "search_appearances) VALUES (%s, %s, %s, %s, %s)",
-                (user_id, follower_count, connection_count, profile_views, search_appearances))
+                "search_appearances, follower_source, connection_source) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (user_id, follower_count, connection_count, profile_views, search_appearances,
+                 follower_source, connection_source))
             return cursor.rowcount == 1
     except mysql.connector.Error as err:
         log_error("Could not record follower stat", exc=err, user_id=user_id)
@@ -2091,15 +2095,16 @@ def record_follower_stat(user_id: int, follower_count: Optional[int] = None,
 def get_follower_stats(user_id: int, days: Optional[int] = None, limit: int = 400) -> list:
     """The user's audience snapshots, most recent first (issue #627). `days` optionally windows to
     captures within the last N days. Each item:
-    id, follower_count, connection_count, profile_views, search_appearances, captured_at.
+    id, follower_count, connection_count, follower_source, connection_source, profile_views,
+    search_appearances, captured_at.
     """
     try:
         with db_cursor(dictionary=True) as cursor:
             window = "AND captured_at >= (NOW() - INTERVAL %s DAY) " if days is not None else ""
             params = (user_id, days, limit) if days is not None else (user_id, limit)
             cursor.execute(
-                "SELECT id, follower_count, connection_count, profile_views, search_appearances, "
-                "captured_at FROM follower_stats WHERE user_id = %s " + window +
+                "SELECT id, follower_count, connection_count, follower_source, connection_source, "
+                "profile_views, search_appearances, captured_at FROM follower_stats WHERE user_id = %s " + window +
                 "ORDER BY captured_at DESC, id DESC LIMIT %s", params)
             return cursor.fetchall() or []
     except mysql.connector.Error as err:

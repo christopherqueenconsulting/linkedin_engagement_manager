@@ -1636,6 +1636,42 @@ def record_derived_stage_changes(user_id: int, before: dict) -> int:
     except mysql.connector.Error as err:
         log_error("Could not record derived lead stage changes", exc=err, user_id=user_id)
         return 0
+def record_lead_reply_event(user_id: int, channel: str, evidence_ref: str, person_name: str = None,
+                            person_profile_url: str = None) -> bool:
+    """Write ONE `derived` stage event when a lead's inbound reply was seen (#2658 P4).
+
+    `channel` is 'dm' or 'comment'; the event's `to_stage` is `reply:<channel>`, outside the funnel
+    stages, so it counts nothing there. `evidence_ref` identifies the reply (a hash of its text, or
+    the post key) and is the dedup key: the same (lead, channel, evidence) is never written twice.
+    A lead we do not yet hold is created cold, the same shape the nightly re-score upserts onto.
+    Read-only on LinkedIn: this only records what a reader already saw. True only when a row landed.
+    """
+    from cqc_lem.utilities.lead_scoring import person_key
+    key = person_key(person_name, person_profile_url)
+    if not key or channel not in ("dm", "comment") or not evidence_ref:
+        return False
+    to_stage = f"reply:{channel}"
+    ref = str(evidence_ref)[:255]
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT INTO leads (user_id, person_key, person_name, person_profile_url, stage) "
+                "VALUES (%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id)",
+                (user_id, key[:255], person_name or None, person_profile_url or None,
+                 LeadStage.COLD.value))
+            lead_id = cursor.lastrowid
+            cursor.execute("SELECT 1 FROM lead_stage_events WHERE lead_id=%s AND to_stage=%s "
+                           "AND evidence_ref=%s LIMIT 1", (lead_id, to_stage, ref))
+            if cursor.fetchone():
+                return False
+            cursor.execute(
+                "INSERT INTO lead_stage_events (lead_id, user_id, from_stage, to_stage, source, "
+                "evidence_ref) SELECT id, user_id, stage, %s, %s, %s FROM leads WHERE id=%s",
+                (to_stage, LeadStageSource.DERIVED.value, ref, lead_id))
+            return True
+    except mysql.connector.Error as err:
+        log_error("Could not record lead reply event", exc=err, user_id=user_id)
+        return False
 def get_lead_funnel_counts(user_id: int, months: int = 12) -> Optional[list]:
     """Rows of `(month 'YYYY-MM', to_stage, distinct leads)` over the last `months` months.
 
