@@ -30,7 +30,7 @@ class TestGetPostQualityRows:
                            "authenticity_score": 82}
         sql, params = cur.execute.call_args[0]
         assert "status='posted'" in sql
-        assert "MAX(id) FROM post_stats" in sql  # latest stats row per post
+        assert "PARTITION BY post_id" in sql  # latest stats row per post
         assert params == (date(2026, 7, 1), date(2026, 8, 1))
 
     def test_unknown_impressions_and_scores_stay_none(self, fake_cursor):
