@@ -2379,6 +2379,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/user/icp-definition": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Icp Definition Endpoint
+         * @description The caller's ICP definition, builder flag and a roster/leads pre-fill draft (issue #2655).
+         */
+        get: operations["get_icp_definition_endpoint_api_user_icp_definition_get"];
+        /**
+         * Update Icp Definition Endpoint
+         * @description Save the caller's ICP definition and/or builder flag; omitted fields are left as stored.
+         */
+        put: operations["update_icp_definition_endpoint_api_user_icp_definition_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/user/lead-magnet": {
         parameters: {
             query?: never;
@@ -5192,6 +5216,44 @@ export interface components {
             detail?: components["schemas"]["ValidationError"][];
         };
         /**
+         * IcpDefinitionDetail
+         * @description `detail` of `GET`/`PUT /user/icp-definition` (#2655).
+         *
+         *     `draft` is a suggestion built from the roster and best leads, present only while no definition
+         *     is saved; it is never stored until the user confirms it.
+         */
+        IcpDefinitionDetail: {
+            /** Draft */
+            draft: {
+                [key: string]: unknown;
+            } | null;
+            /** Draft Sample Size */
+            draft_sample_size: number;
+            /** Icp Builder Enabled */
+            icp_builder_enabled: boolean;
+            /** Icp Definition */
+            icp_definition: {
+                [key: string]: unknown;
+            } | null;
+        };
+        /**
+         * IcpDefinitionRequest
+         * @description Body of `PUT /user/icp-definition` (#2655). Omitted fields keep what is stored.
+         *
+         *     A definition is checked against the rubric's own model, so what saves is what the scan reads:
+         *     `{}` clears it, anything else must parse and carry at least one segment with a unique id.
+         */
+        IcpDefinitionRequest: {
+            /** Icp Builder Enabled */
+            icp_builder_enabled?: boolean | null;
+            /** Icp Definition */
+            icp_definition?: {
+                [key: string]: unknown;
+            } | null;
+            /** Session Token */
+            session_token: string;
+        };
+        /**
          * LeadMagnetDetail
          * @description `detail` of `GET /user/lead-magnet` — the comment keyword and the DM it pays out (#624).
          */
@@ -6081,6 +6143,12 @@ export interface components {
         /** ResponseModel[EngagementTargetsDetail] */
         ResponseModel_EngagementTargetsDetail_: {
             detail: components["schemas"]["EngagementTargetsDetail"];
+            /** Status Code */
+            status_code: number;
+        };
+        /** ResponseModel[IcpDefinitionDetail] */
+        ResponseModel_IcpDefinitionDetail_: {
+            detail: components["schemas"]["IcpDefinitionDetail"];
             /** Status Code */
             status_code: number;
         };
@@ -10921,6 +10989,70 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ResponseModel_str_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_icp_definition_endpoint_api_user_icp_definition_get: {
+        parameters: {
+            query: {
+                session_token: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_IcpDefinitionDetail_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_icp_definition_endpoint_api_user_icp_definition_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IcpDefinitionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_IcpDefinitionDetail_"];
                 };
             };
             /** @description Validation Error */

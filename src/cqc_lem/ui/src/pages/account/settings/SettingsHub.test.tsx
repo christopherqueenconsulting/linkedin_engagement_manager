@@ -55,6 +55,7 @@ vi.mock('../NewsletterCard', () => ({ default: () => <div data-testid="newslette
 vi.mock('../GroupsCard', () => ({ default: () => <div data-testid="groups-card" /> }))
 vi.mock('../DmTemplatesCard', () => ({ default: () => <div data-testid="dm-templates-card" /> }))
 vi.mock('../EngagementRosterCard', () => ({ default: () => <div data-testid="engagement-roster-card" /> }))
+vi.mock('../IcpDefinitionCard', () => ({ default: () => <div data-testid="icp-definition-card" /> }))
 vi.mock('../LeadMagnetCard', () => ({ default: () => <div data-testid="lead-magnet-card" /> }))
 vi.mock('../AffiliateCard', () => ({ default: () => <div data-testid="affiliate-card" /> }))
 vi.mock('../SecurityCard', () => ({ default: () => <div data-testid="security-card" /> }))

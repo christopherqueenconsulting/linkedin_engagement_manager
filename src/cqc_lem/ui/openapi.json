@@ -3511,6 +3511,88 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "IcpDefinitionDetail": {
+        "description": "`detail` of `GET`/`PUT /user/icp-definition` (#2655).\n\n`draft` is a suggestion built from the roster and best leads, present only while no definition\nis saved; it is never stored until the user confirms it.",
+        "properties": {
+          "draft": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Draft"
+          },
+          "draft_sample_size": {
+            "title": "Draft Sample Size",
+            "type": "integer"
+          },
+          "icp_builder_enabled": {
+            "title": "Icp Builder Enabled",
+            "type": "boolean"
+          },
+          "icp_definition": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Icp Definition"
+          }
+        },
+        "required": [
+          "icp_builder_enabled",
+          "icp_definition",
+          "draft",
+          "draft_sample_size"
+        ],
+        "title": "IcpDefinitionDetail",
+        "type": "object"
+      },
+      "IcpDefinitionRequest": {
+        "description": "Body of `PUT /user/icp-definition` (#2655). Omitted fields keep what is stored.\n\nA definition is checked against the rubric's own model, so what saves is what the scan reads:\n`{}` clears it, anything else must parse and carry at least one segment with a unique id.",
+        "properties": {
+          "icp_builder_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Icp Builder Enabled"
+          },
+          "icp_definition": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Icp Definition"
+          },
+          "session_token": {
+            "title": "Session Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_token"
+        ],
+        "title": "IcpDefinitionRequest",
+        "type": "object"
+      },
       "LeadMagnetDetail": {
         "description": "`detail` of `GET /user/lead-magnet` \u2014 the comment keyword and the DM it pays out (#624).",
         "properties": {
@@ -5644,6 +5726,23 @@
           "detail"
         ],
         "title": "ResponseModel[EngagementTargetsDetail]",
+        "type": "object"
+      },
+      "ResponseModel_IcpDefinitionDetail_": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/IcpDefinitionDetail"
+          },
+          "status_code": {
+            "title": "Status Code",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status_code",
+          "detail"
+        ],
+        "title": "ResponseModel[IcpDefinitionDetail]",
         "type": "object"
       },
       "ResponseModel_LeadMagnetDetail_": {
@@ -12703,6 +12802,83 @@
           }
         },
         "summary": "Update User Groups Endpoint"
+      }
+    },
+    "/api/user/icp-definition": {
+      "get": {
+        "description": "The caller's ICP definition, builder flag and a roster/leads pre-fill draft (issue #2655).",
+        "operationId": "get_icp_definition_endpoint_api_user_icp_definition_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "session_token",
+            "required": true,
+            "schema": {
+              "title": "Session Token",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_IcpDefinitionDetail_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Icp Definition Endpoint"
+      },
+      "put": {
+        "description": "Save the caller's ICP definition and/or builder flag; omitted fields are left as stored.",
+        "operationId": "update_icp_definition_endpoint_api_user_icp_definition_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IcpDefinitionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_IcpDefinitionDetail_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Icp Definition Endpoint"
       }
     },
     "/api/user/lead-magnet": {
