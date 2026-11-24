@@ -18,7 +18,11 @@ from typing import Tuple
 
 from cqc_lem import assets_dir
 from cqc_lem.app.celeryconfig import SE_PREPOST_QUEUE, visibility_timeout
-from cqc_lem.app.engagement.feed import auto_seed_comment_on_post, automate_commenting
+from cqc_lem.app.engagement.feed import (
+    auto_seed_comment_on_post,
+    automate_commenting,
+    crawl_comment_candidates,
+)
 from cqc_lem.app.engagement.invites import (
     automate_invites_to_company_page_for_user,
     clean_stale_invites,
@@ -788,6 +792,38 @@ def dispatch_comment_outcome_sweeps():
                                                countdown=dispatch_jitter_seconds())
             dispatched += 1
     return f"Comment outcome sweeps dispatched for {dispatched}/{len(users)} user(s)"
+
+
+@shared_task.task
+def dispatch_comment_candidate_crawls():
+    """Beat (hourly): dispatch the roster candidate crawl for users inside their window (#2647).
+
+    A user qualifies when their local weekday daytime window is open and both crawl flags are on.
+    A per-user Redis claim keeps it to one crawl a day; with Redis unavailable nothing is
+    dispatched, since a missing claim must never mean a second crawl.
+    """
+    if _skip_if_throttled("dispatch_comment_candidate_crawls"):
+        return "Automation throttled"
+    from cqc_lem.utilities.comment_candidate_crawl import crawl_due
+    from cqc_lem.utilities.linkedin.rate_limit import _redis_client
+    users = _browser_lane_users(get_active_user_ids(), "dispatch_comment_candidate_crawls")
+    client = _redis_client()
+    if not users or client is None:
+        return "No active users" if not users else "Skipped — no Redis for the daily claim"
+    dispatched = 0
+    for user_id in users:
+        if not has_linkedin_session(user_id) or not crawl_due(user_id):
+            continue
+        try:
+            claimed = bool(client.set(f"linkedin:last_candidate_crawl:{user_id}", "1",
+                                      nx=True, ex=20 * 60 * 60))
+        except Exception:
+            claimed = False
+        if claimed:
+            crawl_comment_candidates.apply_async(kwargs={'user_id': user_id},
+                                                 countdown=dispatch_jitter_seconds())
+            dispatched += 1
+    return f"Candidate crawls dispatched for {dispatched}/{len(users)} user(s)"
 
 
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})

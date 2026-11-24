@@ -192,6 +192,12 @@ app.conf.update(
             # demoted out of 'Most relevant' (issue #628).
             'schedule': crontab(hour='8', minute='45', day_of_week='monday')
         },
+        'candidate-crawl-dispatch': {
+            'task': 'cqc_lem.app.run_scheduler.dispatch_comment_candidate_crawls',
+            # Hourly at :20. The task itself opens only inside each user's own weekday 09:00-16:59
+            # window and claims one crawl a day, so the other hours are cheap no-ops (issue #2647).
+            'schedule': crontab(minute='20')
+        },
         'suppression-tripwire': {
             'task': 'cqc_lem.app.run_scheduler.auto_suppression_tripwire',
             # Daily 09:15 UTC — after the 08:00 comment-outcome sweep (so the demotion signal is

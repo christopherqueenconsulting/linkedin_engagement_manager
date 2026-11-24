@@ -84,9 +84,20 @@ ANIMATED_POST = "animated-post-enabled"
 CURATED_SOURCES = "curated-sources-enabled"
 COMMENT_CANDIDATE_POOL = "comment-candidate-pool-enabled"
 WEEKLY_REPORT = "weekly-report-enabled"
+COMMENT_CANDIDATE_CRAWL = "comment-candidate-crawl-enabled"
 
 FLAGS: Dict[str, FlagSpec] = {
     spec.key: spec for spec in (
+        FlagSpec(
+            key=COMMENT_CANDIDATE_CRAWL,
+            env_var="COMMENT_CANDIDATE_CRAWL_ENABLED",
+            default=False,
+            owner="engagement",
+            description=("Nightly roster crawl that fills `comment_candidates` with source `crawl` "
+                         "(issue #2647, Phase 2). Read-only on LinkedIn, weekday daytime hours in "
+                         "the user's timezone only, capped per day. Also needs the pool flag. "
+                         "OFF by default."),
+        ),
         FlagSpec(
             key=COMMENT_CANDIDATE_POOL,
             env_var="COMMENT_CANDIDATE_POOL_ENABLED",
