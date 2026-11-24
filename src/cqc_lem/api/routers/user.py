@@ -29,7 +29,7 @@ import json
 import os
 import tempfile
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 import requests
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
@@ -56,6 +56,7 @@ from cqc_lem.api.response_schemas import (
     NewsletterDraftDetail,
     NewsletterSettingsDetail,
     NewsletterSubscribersDetail,
+    ProfileAuditDetail,
     StoryBankDetail,
     UserGroup,
     UserSettingsDetail,
@@ -2227,6 +2228,70 @@ def get_engagement_suggestions_endpoint(session_token: str) -> ResponseModel[dic
             for row in rows
         ],
     })
+
+
+def _profile_audit_user(session_token: str) -> int:
+    """The caller, or 401; 404 while `profile-audit-enabled` is off for them."""
+    from cqc_lem.utilities.flags import PROFILE_AUDIT, flag_enabled
+    user_id = _main.get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    if not flag_enabled(PROFILE_AUDIT, user_id):
+        raise HTTPException(status_code=404, detail="Not found")
+    return user_id
+
+
+@router.get("/profile-audit", responses={200: {"model": ResponseModel[ProfileAuditDetail]}})
+def get_profile_audit_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
+    """The caller's profile audit history: score trend, latest findings, follower join (#2753).
+
+    Read-only; LEM never edits the LinkedIn profile. A failed read is 503, never an empty answer —
+    "no audits yet" (`latest: null`) is only said when it is true. 404 while the flag is off.
+    """
+    from cqc_lem.utilities.profile_audit_view import load_audit_view
+    user_id = _profile_audit_user(session_token)
+    view = load_audit_view(user_id)
+    if view is None:
+        raise HTTPException(status_code=503, detail="Profile audit is temporarily unavailable")
+    return ResponseModel(status_code=200, detail=view)
+
+
+class ProfileAuditActionRequest(BaseModel):
+    """Body of `POST /user/profile-audit/finding`: what the user says about one finding.
+
+    `reopen` clears an earlier done or ignore.
+    """
+
+    session_token: str
+    check_id: str = Field(max_length=40)
+    action: Literal["done", "ignored", "reopen"]
+
+
+@router.post("/profile-audit/finding")
+def post_profile_audit_finding_endpoint(request: ProfileAuditActionRequest) -> ResponseModel[str]:
+    """Mark a finding of the latest audit done, ignore it, or reopen it (#2753).
+
+    An ignore holds across later audits; a done covers the audit it was pressed on, and the next
+    audit re-grades. 404 for an unknown check or before the first audit; 503 if it could not be
+    stored — never a success that did not persist.
+    """
+    from cqc_lem.utilities.db import (
+        get_latest_profile_audit,
+        set_profile_finding_action,
+    )
+    from cqc_lem.utilities.profile_audit_view import known_check_ids
+    user_id = _profile_audit_user(request.session_token)
+    if request.check_id not in known_check_ids():
+        raise HTTPException(status_code=404, detail="Unknown check")
+    latest = get_latest_profile_audit(user_id)
+    if not latest:
+        raise HTTPException(status_code=404, detail="No audit yet")
+    stored = set_profile_finding_action(
+        user_id, request.check_id, None if request.action == "reopen" else request.action,
+        int(latest["id"]))
+    if not stored:
+        raise HTTPException(status_code=503, detail="Could not save. Try again shortly")
+    return ResponseModel(status_code=200, detail="ok")
 
 
 @router.put("/settings")

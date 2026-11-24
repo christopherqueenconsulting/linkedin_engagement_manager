@@ -6039,6 +6039,353 @@
         "title": "PostsPage",
         "type": "object"
       },
+      "ProfileAuditActionRequest": {
+        "description": "Body of `POST /user/profile-audit/finding`: what the user says about one finding.\n\n`reopen` clears an earlier done or ignore.",
+        "properties": {
+          "action": {
+            "enum": [
+              "done",
+              "ignored",
+              "reopen"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "check_id": {
+            "maxLength": 40,
+            "title": "Check Id",
+            "type": "string"
+          },
+          "session_token": {
+            "title": "Session Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_token",
+          "check_id",
+          "action"
+        ],
+        "title": "ProfileAuditActionRequest",
+        "type": "object"
+      },
+      "ProfileAuditCorrelation": {
+        "description": "The follower join: a note saying what it does not claim, and the rows (#2753).",
+        "properties": {
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/ProfileAuditCorrelationRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "note",
+          "rows"
+        ],
+        "title": "ProfileAuditCorrelation",
+        "type": "object"
+      },
+      "ProfileAuditCorrelationRow": {
+        "description": "An audit beside the audience reading nearest before it. Correlation display only (#2753).",
+        "properties": {
+          "follower_change": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Follower Change"
+          },
+          "follower_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Follower Count"
+          },
+          "open_count": {
+            "title": "Open Count",
+            "type": "integer"
+          },
+          "period_key": {
+            "title": "Period Key",
+            "type": "string"
+          },
+          "profile_views": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Views"
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score"
+          }
+        },
+        "required": [
+          "period_key",
+          "score",
+          "open_count",
+          "follower_count",
+          "profile_views",
+          "follower_change"
+        ],
+        "title": "ProfileAuditCorrelationRow",
+        "type": "object"
+      },
+      "ProfileAuditDetail": {
+        "description": "`detail` of `GET /user/profile-audit` (#2753): `latest` is None before the first audit.",
+        "properties": {
+          "correlation": {
+            "$ref": "#/components/schemas/ProfileAuditCorrelation"
+          },
+          "latest": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProfileAuditLatest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "trend": {
+            "items": {
+              "$ref": "#/components/schemas/ProfileAuditTrendPoint"
+            },
+            "title": "Trend",
+            "type": "array"
+          }
+        },
+        "required": [
+          "latest",
+          "trend",
+          "correlation"
+        ],
+        "title": "ProfileAuditDetail",
+        "type": "object"
+      },
+      "ProfileAuditFinding": {
+        "description": "One rubric check of the latest audit, with the user's state for it (#2753).",
+        "properties": {
+          "check_id": {
+            "title": "Check Id",
+            "type": "string"
+          },
+          "delta": {
+            "anyOf": [
+              {
+                "enum": [
+                  "closed",
+                  "new",
+                  "still_open"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delta"
+          },
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "fix_hint": {
+            "title": "Fix Hint",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "open",
+              "done",
+              "ignored",
+              "passing",
+              "unknown"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "pass",
+              "warn",
+              "fail",
+              "unknown"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "weight": {
+            "title": "Weight",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "check_id",
+          "status",
+          "weight",
+          "detail",
+          "fix_hint",
+          "state",
+          "delta"
+        ],
+        "title": "ProfileAuditFinding",
+        "type": "object"
+      },
+      "ProfileAuditLatest": {
+        "description": "The newest audit and its findings (#2753).",
+        "properties": {
+          "audit_id": {
+            "title": "Audit Id",
+            "type": "integer"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/ProfileAuditFinding"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "kind": {
+            "enum": [
+              "weekly",
+              "monthly"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "open_count": {
+            "title": "Open Count",
+            "type": "integer"
+          },
+          "period_key": {
+            "title": "Period Key",
+            "type": "string"
+          },
+          "rubric_version": {
+            "title": "Rubric Version",
+            "type": "string"
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score"
+          }
+        },
+        "required": [
+          "audit_id",
+          "period_key",
+          "kind",
+          "score",
+          "rubric_version",
+          "created_at",
+          "open_count",
+          "findings"
+        ],
+        "title": "ProfileAuditLatest",
+        "type": "object"
+      },
+      "ProfileAuditTrendPoint": {
+        "description": "One audit on the score trend, oldest first (#2753).",
+        "properties": {
+          "closed_count": {
+            "title": "Closed Count",
+            "type": "integer"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "kind": {
+            "enum": [
+              "weekly",
+              "monthly"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "opened_count": {
+            "title": "Opened Count",
+            "type": "integer"
+          },
+          "period_key": {
+            "title": "Period Key",
+            "type": "string"
+          },
+          "score": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score"
+          }
+        },
+        "required": [
+          "period_key",
+          "kind",
+          "score",
+          "opened_count",
+          "closed_count",
+          "created_at"
+        ],
+        "title": "ProfileAuditTrendPoint",
+        "type": "object"
+      },
       "ResponseModel_DashboardStats_": {
         "properties": {
           "detail": {
@@ -6304,6 +6651,23 @@
           "detail"
         ],
         "title": "ResponseModel[PostsPage]",
+        "type": "object"
+      },
+      "ResponseModel_ProfileAuditDetail_": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/ProfileAuditDetail"
+          },
+          "status_code": {
+            "title": "Status Code",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status_code",
+          "detail"
+        ],
+        "title": "ResponseModel[ProfileAuditDetail]",
         "type": "object"
       },
       "ResponseModel_StoryBankDetail_": {
@@ -15563,6 +15927,85 @@
           }
         },
         "summary": "Get Posthog Stats Endpoint"
+      }
+    },
+    "/api/user/profile-audit": {
+      "get": {
+        "description": "The caller's profile audit history: score trend, latest findings, follower join (#2753).\n\nRead-only; LEM never edits the LinkedIn profile. A failed read is 503, never an empty answer \u2014\n\"no audits yet\" (`latest: null`) is only said when it is true. 404 while the flag is off.",
+        "operationId": "get_profile_audit_endpoint_api_user_profile_audit_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "session_token",
+            "required": true,
+            "schema": {
+              "title": "Session Token",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_ProfileAuditDetail_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Profile Audit Endpoint"
+      }
+    },
+    "/api/user/profile-audit/finding": {
+      "post": {
+        "description": "Mark a finding of the latest audit done, ignore it, or reopen it (#2753).\n\nAn ignore holds across later audits; a done covers the audit it was pressed on, and the next\naudit re-grades. 404 for an unknown check or before the first audit; 503 if it could not be\nstored \u2014 never a success that did not persist.",
+        "operationId": "post_profile_audit_finding_endpoint_api_user_profile_audit_finding_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileAuditActionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_str_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Post Profile Audit Finding Endpoint"
       }
     },
     "/api/user/recovery-codes/regenerate": {

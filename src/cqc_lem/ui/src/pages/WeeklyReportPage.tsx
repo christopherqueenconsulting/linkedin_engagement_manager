@@ -24,6 +24,7 @@ interface WeeklyReport {
   deltas: Record<string, number | null>
   icp_share: { share: number; inside: number; n: number; engagers: number } | null
   comment_volume: { automated_total: number | null; assist_total: number | null } | null
+  profile_audit?: { score: number; change: number | null; open_count: number; line: string } | null
   actions: Action[]
   not_measured: NotMeasured[]
 }
@@ -118,6 +119,13 @@ function ReportContent() {
         <Metric label="Automated comments" value={show(volume?.automated_total)} />
         <Metric label="Assist comments" value={show(volume?.assist_total)} />
       </dl>
+
+      {report.data.profile_audit && (
+        <p className="text-sm text-fg" data-testid="wr-profile-audit">
+          {report.data.profile_audit.line}.{' '}
+          <Link className="text-accent underline" to="/account">Open the audit</Link>
+        </p>
+      )}
 
       {report.data.actions.length > 0 && (
         <section aria-labelledby="wr-actions">

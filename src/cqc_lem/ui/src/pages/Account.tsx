@@ -6,6 +6,7 @@ import SuppressionBanner from '../components/SuppressionBanner'
 import AffiliateNotice from '../components/AffiliateNotice'
 import SettingsHub from './account/settings/SettingsHub'
 import EngagementSuggestionsCard from './account/EngagementSuggestionsCard'
+import ProfileAuditCard from './account/ProfileAuditCard'
 
 export default function Account() {
   const queryClient = useQueryClient()
@@ -78,6 +79,9 @@ export default function Account() {
 
       {/* Suggested engagement (issue #2367) — drafts a suggest-only account copies and posts itself */}
       <EngagementSuggestionsCard />
+
+      {/* Profile audit (issue #2753) — score trend, open findings, mark done / ignore */}
+      <ProfileAuditCard />
 
       {/* Account setup checklist — exactly what automation needs, from the readiness API */}
       {readiness && !readiness.ready && (

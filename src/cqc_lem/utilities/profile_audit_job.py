@@ -60,6 +60,7 @@ def audit_user(user_id: int, kind: str, now: datetime) -> str:
     from cqc_lem.utilities.db import (
         get_latest_profile_audit,
         get_profile_audit_findings,
+        get_profile_finding_actions,
         insert_profile_audit,
         profile_audit_exists,
     )
@@ -80,6 +81,10 @@ def audit_user(user_id: int, kind: str, now: datetime) -> str:
         llm_finding = llm_audit_profile(profile, terms, post_texts, user_id)
         if llm_finding:
             findings.append(llm_finding)
+    # An ignored finding is the user's call to stop hearing about it: it never counts as opened.
+    actions = get_profile_finding_actions(user_id) or {}
+    ignored = {c for c, a in actions.items() if a["action"] == "ignored"}
+    delta["opened"] = [c for c in delta["opened"] if c not in ignored]
     audit_id = insert_profile_audit(
         user_id, kind, key, PROFILE_RUBRIC_VERSION, score_results(results), findings,
         previous_audit_id=previous["id"] if previous else None,
