@@ -32,3 +32,14 @@ privacy text stays DRAFT.
   the image and pinned by SHA-256 — never fetched at runtime. Unset or missing raises
   `SpeakerSetupError` (503 on enroll, a failed ingest with one ERROR on upload).
 * Never add this feature to `LLM_PROMPT_LOGGING_FEATURES`.
+
+## Image size
+
+The API and main Celery worker share the runtime image. Both use
+`CALL_SPEAKER_MODEL_PATH=/opt/models/campplus_en_16k.onnx`. The `final` stage inherits
+`ffmpeg` from `base` for decoding audio in both services.
+
+The baked CAM++ model adds 29,596,979 bytes. On Linux x86-64, the Python 3.13
+`sherpa-onnx` 2.0.3 wheel pinned in `poetry.lock` is 4,644,006 bytes, and its locked
+`sherpa-onnx-core` 2.0.3 wheel is 10,943,178 bytes. Wheel sizes describe the compressed
+downloads. The post-merge CI image build will provide the exact image size delta.

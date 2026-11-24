@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent } from 'react'
 import { isAxiosError } from 'axios'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -27,7 +27,9 @@ export const BULK_CONFIDENCE = 0.8
 const SOURCE_TYPES = [
   { key: 'otter', label: 'Otter.ai transcript (TXT, SRT, VTT)' },
   { key: 'wispr', label: 'Wispr Flow voice-note text' },
+  { key: 'audio', label: 'Audio recording' },
 ]
+const AUDIO_FILES = '.m4a,.mp3,.wav,.webm'
 
 const errorText = (err: unknown): string => {
   if (isAxiosError(err) && err.response?.status === 404) {
@@ -37,7 +39,7 @@ const errorText = (err: unknown): string => {
 }
 
 /**
- * Call and voice-note intake (issue #2629, Phase 1c). Owner-only until counsel signs off on the
+ * Call and voice-note intake (issues #2629 and #2780). Owner-only until counsel signs off on the
  * privacy text: the caller renders it for admins, and the server keeps intake behind
  * `CALL_INGEST_ENABLED`. A source is registered only with the consent attestation, so there is no
  * way to upload without one. Candidates stay PENDING until reviewed here; only accepted or edited
@@ -51,11 +53,16 @@ export default function CallIngestPanel() {
   const [sourceType, setSourceType] = useState('otter')
   const [consent, setConsent] = useState(false)
   const [file, setFile] = useState<File | null>(null)
+  const [voiceSample, setVoiceSample] = useState<File | null>(null)
+  const [needsEnrollment, setNeedsEnrollment] = useState(false)
+  const uploadInput = useRef<HTMLInputElement>(null)
+  const voiceInput = useRef<HTMLInputElement>(null)
   const [speakers, setSpeakers] = useState<string[] | null>(null)
   const [sourceIds, setSourceIds] = useState<Record<string, number>>({})
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [focusId, setFocusId] = useState<number | null>(null)
   const [editing, setEditing] = useState<{ id: number; body: string } | null>(null)
+  const isAudio = sourceType === 'audio'
 
   const { data: candidates = [] } = useQuery({
     queryKey: ['call-candidates', sessionToken],
@@ -77,10 +84,13 @@ export default function CallIngestPanel() {
     queryClient.invalidateQueries({ queryKey: ['call-calls'] }),
     queryClient.invalidateQueries({ queryKey: ['story-bank'] }),
   ])
-  const flash = (ok: boolean, text: string) => {
-    setMsg({ ok, text })
-    setTimeout(() => setMsg(null), 5000)
-  }
+  const flash = (ok: boolean, text: string) => setMsg({ ok, text })
+
+  useEffect(() => {
+    if (!msg) return
+    const timer = setTimeout(() => setMsg(null), 5000)
+    return () => clearTimeout(timer)
+  }, [msg])
 
   const uploadMutation = useMutation({
     mutationFn: async (ownSpeaker: string | null) => {
@@ -100,21 +110,46 @@ export default function CallIngestPanel() {
       form.append('file', file!)
       return api.post('/user/call-ingest/upload', form)
     },
-    onSuccess: async () => {
+    onSuccess: async (response) => {
       setSpeakers(null)
       setFile(null)
-      flash(true, 'Transcript received. Candidates appear here once extraction finishes.')
+      if (uploadInput.current) uploadInput.current.value = ''
+      const received = isAudio ? 'Recording received.' : 'Transcript received.'
+      flash(true, response.data.detail.duplicate ? 'This recording was already uploaded.'
+        : `${received} Candidates appear here once extraction finishes.`)
       await refresh()
     },
     onError: (err) => {
-      // 409 is the "Is this you?" question, never a failure: the server will not guess whose
-      // turns are the user's.
       if (isAxiosError(err) && err.response?.status === 409) {
-        setSpeakers((err.response.data?.detail?.speakers ?? []) as string[])
-        return
+        const detail = err.response.data?.detail
+        if (isAudio && detail?.needs_enrollment === true) {
+          setNeedsEnrollment(true)
+          setMsg(null)
+          return
+        }
+        if (detail?.needs_own_speaker === true) {
+          setSpeakers((detail.speakers ?? []) as string[])
+          return
+        }
       }
       flash(false, errorText(err))
     },
+  })
+
+  const enrollMutation = useMutation({
+    mutationFn: (sample: File) => {
+      const form = new FormData()
+      form.append('session_token', sessionToken!)
+      form.append('file', sample)
+      return api.post('/user/call-ingest/enroll', form)
+    },
+    onSuccess: () => {
+      setVoiceSample(null)
+      if (voiceInput.current) voiceInput.current.value = ''
+      setNeedsEnrollment(false)
+      flash(true, 'Voice enrolled. You can now upload a recording.')
+    },
+    onError: (err) => flash(false, errorText(err)),
   })
 
   const reviewMutation = useMutation({
@@ -145,8 +180,8 @@ export default function CallIngestPanel() {
   })
 
   const purgeAll = () => {
-    if (window.confirm('Delete every call transcript, candidate, source and story-bank entry '
-      + 'learned from calls? This cannot be undone.')) {
+    if (window.confirm('Delete your voice enrollment, call transcripts, candidates, sources '
+      + 'and story-bank entries learned from calls? This cannot be undone.')) {
       purgeMutation.mutate()
     }
   }
@@ -175,35 +210,68 @@ export default function CallIngestPanel() {
   const callTitle = (id: number) => calls.find((c) => c.id === id)?.title || `Call #${id}`
   const activeId = focusId ?? candidates[0]?.id ?? null
   const above = candidates.filter((c) => c.confidence >= BULK_CONFIDENCE).length
+  const intakePending = uploadMutation.isPending || enrollMutation.isPending || purgeMutation.isPending
 
   return (
     <div className="border border-hairline rounded-panel p-4 space-y-4" data-testid="call-ingest">
       <h3 className="text-sm font-semibold text-fg">Learn from calls and voice notes</h3>
       <p className="text-xs text-fg-muted">
-        Upload a transcript and LEM proposes facts you actually said, each with the quote it came
-        from. Only YOUR turns are kept, with other people's names, emails, phones and links removed
+        Upload a transcript or recording and LEM proposes facts you actually said, each with the quote
+        it came from. Only YOUR turns are kept, with other people's names, emails, phones and links removed
         first. Nothing reaches your posts until you accept it. The transcript is deleted once the
         call is fully reviewed, and always within 7 days.{' '}
         <a href="/privacy-policy" className="text-accent underline">Privacy policy (DRAFT)</a>
       </p>
 
       <div className="space-y-2">
-        <select value={sourceType} aria-label="Source" onChange={(e) => setSourceType(e.target.value)}
+        <select value={sourceType} aria-label="Source" disabled={intakePending}
+          onChange={(e) => {
+            const next = e.target.value
+            if ((next === 'audio') !== isAudio) {
+              setFile(null)
+              setVoiceSample(null)
+            }
+            setSourceType(next)
+            setSpeakers(null)
+          }}
           className="border border-field rounded-control px-2 py-1 text-sm">
           {SOURCE_TYPES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
         </select>
+        {isAudio && (
+          <div className="border border-hairline rounded-panel p-3 space-y-2">
+            {needsEnrollment && (
+              <p role="alert" className="text-sm font-medium text-warning">
+                Enroll your voice before uploading this recording.
+              </p>
+            )}
+            <p className="text-xs text-fg-muted" id="call-voice-sample-help">
+              Upload a 5-second to 2-minute sample of you speaking alone (up to 8 MB).
+            </p>
+            <input ref={voiceInput} type="file" accept={AUDIO_FILES} aria-label="Voice sample"
+              aria-describedby="call-voice-sample-help" disabled={intakePending}
+              onChange={(e) => setVoiceSample(e.target.files?.[0] ?? null)}
+              {...maskProps('block min-h-11 text-xs')} />
+            <button type="button" onClick={() => voiceSample && enrollMutation.mutate(voiceSample)}
+              disabled={!voiceSample || intakePending}
+              className="border border-field text-accent min-h-11 px-3 rounded-control text-sm font-semibold disabled:opacity-50">
+              {enrollMutation.isPending ? 'Enrolling…' : 'Enroll voice'}
+            </button>
+          </div>
+        )}
         <label className="flex items-start gap-2 text-xs text-fg">
-          <input type="checkbox" checked={consent} aria-label="Consent attestation"
+          <input type="checkbox" checked={consent} aria-label="Consent attestation" disabled={intakePending}
             onChange={(e) => setConsent(e.target.checked)} />
           Everyone on this call was told it was recorded.
         </label>
-        <input type="file" accept=".vtt,.srt,.txt" aria-label="Transcript file"
+        <input key={isAudio ? 'audio' : 'transcript'} ref={uploadInput} type="file"
+          accept={isAudio ? AUDIO_FILES : '.vtt,.srt,.txt'}
+          aria-label={isAudio ? 'Recording file' : 'Transcript file'} disabled={intakePending}
           onChange={(e) => { setFile(e.target.files?.[0] ?? null); setSpeakers(null) }}
-          className="block text-xs" />
+          {...maskProps('block min-h-11 text-xs')} />
         <button type="button" onClick={() => uploadMutation.mutate(null)}
-          disabled={!consent || !file || uploadMutation.isPending}
-          className="bg-accent text-white px-3 py-1 rounded-control text-sm font-semibold disabled:opacity-50">
-          {uploadMutation.isPending ? 'Uploading…' : 'Upload transcript'}
+          disabled={!consent || !file || intakePending || (isAudio && needsEnrollment)}
+          className="bg-accent text-white min-h-11 px-3 rounded-control text-sm font-semibold disabled:opacity-50">
+          {uploadMutation.isPending ? 'Uploading…' : `Upload ${isAudio ? 'recording' : 'transcript'}`}
         </button>
         {!consent && (
           <p className="text-xs text-fg-muted">Tick the attestation to enable upload.</p>
@@ -216,7 +284,8 @@ export default function CallIngestPanel() {
           <div className="flex flex-wrap gap-2">
             {speakers.map((s) => (
               <button key={s} type="button" onClick={() => uploadMutation.mutate(s)}
-                className="border border-field rounded-control px-3 py-1 text-sm hover:bg-sunken">
+                disabled={!consent || !file || intakePending}
+                className="border border-field rounded-control px-3 py-1 text-sm hover:bg-sunken disabled:opacity-50">
                 {s}
               </button>
             ))}
@@ -224,7 +293,7 @@ export default function CallIngestPanel() {
         </div>
       )}
 
-      {msg && <p className={`text-sm font-medium ${msg.ok ? 'text-success' : 'text-danger'}`}>{msg.text}</p>}
+      {msg && <p role="status" className={`text-sm font-medium ${msg.ok ? 'text-success' : 'text-danger'}`}>{msg.text}</p>}
 
       {candidates.length > 0 && (
         <div className="space-y-3" tabIndex={0} onKeyDown={onKeyDown} data-testid="call-review"
@@ -285,7 +354,7 @@ export default function CallIngestPanel() {
         </div>
       )}
 
-      <button type="button" onClick={purgeAll} disabled={purgeMutation.isPending}
+      <button type="button" onClick={purgeAll} disabled={intakePending}
         className="text-xs text-danger font-medium">
         Purge all call data
       </button>

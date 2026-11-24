@@ -71,29 +71,107 @@ describe('CallIngestPanel opt-in gate', () => {
 
   it('asks "Is this you?" on a 409 and re-uploads with the chosen speaker', async () => {
     serve([])
-    let uploads = 0
-    post.mockImplementation((url: string) => {
-      if (url.endsWith('/source')) return Promise.resolve({ data: { detail: { source_id: 3 } } })
-      uploads += 1
-      if (uploads === 1) {
-        return Promise.reject(Object.assign(new Error('409'), {
-          isAxiosError: true,
-          response: { status: 409, data: { detail: { needs_own_speaker: true, speakers: ['Ann', 'Bob'] } } },
-        }))
-      }
-      return Promise.resolve({ data: { detail: { ingest_id: 2 } } })
-    })
+    post.mockResolvedValueOnce({ data: { detail: { source_id: 3 } } })
+      .mockRejectedValueOnce(Object.assign(new Error('409'), {
+        isAxiosError: true,
+        response: { status: 409, data: { detail: { needs_own_speaker: true, speakers: ['Ann', 'Bob'] } } },
+      }))
+      .mockResolvedValueOnce({ data: { detail: { ingest_id: 2 } } })
     harness(<CallIngestPanel />)
     pickFile()
     fireEvent.click(screen.getByLabelText('Consent attestation'))
     fireEvent.click(upload())
-    await waitFor(() => expect(screen.getByTestId('own-speaker')).toBeTruthy())
-    fireEvent.click(screen.getByText('Bob'))
-    await waitFor(() => expect(uploads).toBe(2))
+    const speaker = await screen.findByRole('button', { name: 'Bob' }) as HTMLButtonElement
+    await waitFor(() => expect(speaker.disabled).toBe(false))
+    fireEvent.click(speaker)
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(3))
     const form = post.mock.calls[post.mock.calls.length - 1][1] as FormData
     expect(form.get('own_speaker')).toBe('Bob')
     // The source is reused, not re-registered.
     expect(post.mock.calls.filter((c) => String(c[0]).endsWith('/source'))).toHaveLength(1)
+  })
+})
+
+describe('CallIngestPanel audio', () => {
+  const selectAudio = () => fireEvent.change(screen.getByLabelText('Source'), { target: { value: 'audio' } })
+  const selectAudioFile = (label: string, name: string) => {
+    const file = new File(['audio'], name, { type: 'audio/wav' })
+    fireEvent.change(screen.getByLabelText(label), { target: { files: [file] } })
+    return file
+  }
+  const recordingUpload = () => screen.getByRole('button', { name: 'Upload recording' }) as HTMLButtonElement
+  const enroll = () => screen.getByRole('button', { name: 'Enroll voice' }) as HTMLButtonElement
+
+  it('enrolls a voice sample separately from the call recording', async () => {
+    serve([])
+    post.mockResolvedValueOnce({ data: { detail: { enrolled: true } } })
+    harness(<CallIngestPanel />)
+    selectAudio()
+    expect(enroll().disabled).toBe(true)
+    const sample = selectAudioFile('Voice sample', 'sample.wav')
+    fireEvent.click(enroll())
+    await screen.findByText('Voice enrolled. You can now upload a recording.')
+    expect(post).toHaveBeenCalledTimes(1)
+    const [url, form] = post.mock.calls[0]
+    expect(url).toBe('/user/call-ingest/enroll')
+    expect(form.get('session_token')).toBe('tok')
+    expect(form.get('file')).toBe(sample)
+  })
+
+  it('registers an audio source with consent and uploads the recording', async () => {
+    serve([])
+    post.mockResolvedValueOnce({ data: { detail: { source_id: 8 } } })
+      .mockResolvedValueOnce({ data: { detail: { ingest_id: 3 } } })
+    harness(<CallIngestPanel />)
+    selectAudio()
+    const recording = selectAudioFile('Recording file', 'call.wav')
+    expect(recordingUpload().disabled).toBe(true)
+    fireEvent.click(screen.getByLabelText('Consent attestation'))
+    fireEvent.click(recordingUpload())
+    await screen.findByText(/Recording received/)
+    expect(post).toHaveBeenNthCalledWith(1, '/user/call-ingest/source', {
+      session_token: 'tok', source_type: 'audio', consent_attested: true,
+    })
+    const [url, form] = post.mock.calls[1]
+    expect(url).toBe('/user/call-ingest/upload')
+    expect(form.get('session_token')).toBe('tok')
+    expect(form.get('source_id')).toBe('8')
+    expect(form.get('source_type')).toBe('audio')
+    expect(form.get('file')).toBe(recording)
+    expect(form.has('own_speaker')).toBe(false)
+  })
+
+  it('prompts enrollment on a 409 and retains the recording for retry', async () => {
+    serve([])
+    post.mockResolvedValueOnce({ data: { detail: { source_id: 8 } } })
+      .mockRejectedValueOnce(Object.assign(new Error('409'), {
+        isAxiosError: true,
+        response: { status: 409, data: { detail: { needs_enrollment: true } } },
+      }))
+      .mockResolvedValueOnce({ data: { detail: { enrolled: true } } })
+      .mockResolvedValueOnce({ data: { detail: { ingest_id: 3 } } })
+    harness(<CallIngestPanel />)
+    selectAudio()
+    const recording = selectAudioFile('Recording file', 'call.wav')
+    fireEvent.click(screen.getByLabelText('Consent attestation'))
+    fireEvent.click(recordingUpload())
+    expect((await screen.findByRole('alert')).textContent).toContain('Enroll your voice')
+    expect(screen.queryByTestId('own-speaker')).toBeNull()
+    expect(recordingUpload().disabled).toBe(true)
+
+    selectAudioFile('Voice sample', 'sample.wav')
+    fireEvent.click(enroll())
+    await screen.findByText('Voice enrolled. You can now upload a recording.')
+    expect(screen.queryByRole('alert')).toBeNull()
+    fireEvent.click(recordingUpload())
+    await screen.findByText(/Recording received/)
+    expect(post.mock.calls.map(([url]) => url)).toEqual([
+      '/user/call-ingest/source', '/user/call-ingest/upload',
+      '/user/call-ingest/enroll', '/user/call-ingest/upload',
+    ])
+    const retry = post.mock.calls[3][1] as FormData
+    expect(retry.get('file')).toBe(recording)
+    expect(retry.get('source_id')).toBe('8')
   })
 })
 

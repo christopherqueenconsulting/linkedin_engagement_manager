@@ -28,6 +28,7 @@ services:
     # backend, and a green-only failure must never block the edge from starting.
     depends_on: !reset []
     env_file: !reset []
+    environment: !reset []
     volumes: !override
       - ./deploy/nginx:/etc/nginx/conf.d:ro
     ports: !reset []
@@ -54,6 +55,7 @@ services:
       # into this volume and serves a miss out of it, so those tabs keep working instead of 404ing.
       # Both colors share it, and it outlives the image — which is the whole point.
       - SPA_ASSET_ARCHIVE_DIR=/app/spa_asset_archive
+      - CALL_SPEAKER_MODEL_PATH=/opt/models/campplus_en_16k.onnx
     # Ship code in the image — no dev source/test bind-mounts (see the note that used to live on
     # web_app: a ./src mount would mask the image's built SPA and 404 "/").
     volumes:
