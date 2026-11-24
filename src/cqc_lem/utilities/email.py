@@ -634,7 +634,8 @@ def send_stale_approvals_email(to_email: str, total: int, stale: int, oldest_age
     <p><a href="{url}" style="background:#0a66c2;color:#fff;padding:10px 16px;border-radius:6px;
     text-decoration:none;">Review now</a></p>
     <p style="color:#888;font-size:12px;">You get this reminder once a day, and only while
-    something has waited over {stale_hours} hours.</p>
+    something has waited over {stale_hours} hours. Turn it off in
+    <a href="{html_escape(_account_url())}">your account settings</a>.</p>
     </body></html>
     """
     return _dispatch_email(

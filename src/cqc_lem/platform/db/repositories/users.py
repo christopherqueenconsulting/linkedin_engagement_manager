@@ -2618,6 +2618,9 @@ _ENGAGEMENT_DEFAULTS: dict = {
     "group_post_mode": "pre_review",
     "followup_step_mode": "pre_review", "appreciation_dm_mode": "pre_review",
     "funnel_stage_mode": "pre_review",
+    # Daily-review stale digest opt-out (#2669). NULL in the column = on, so it is read apart from
+    # `_ENGAGEMENT_BOOL_FIELDS` (which would turn NULL into off and silence every existing user).
+    "review_digest_enabled": True,
 }
 _ENGAGEMENT_JSON_FIELDS = ("include_topics", "exclude_topics", "include_keywords",
                            "exclude_keywords", "include_authors", "exclude_authors", "post_types",
@@ -2649,7 +2652,8 @@ _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "us
                     "profile_viewer_dm_auto_send", "forbidden_claim_terms", "brand_kit",
                     "audience_mix", "icp_builder_enabled", "icp_definition",
                     "nurture_dm_mode", "artifact_dm_mode", "group_post_mode",
-                    "followup_step_mode", "appreciation_dm_mode", "funnel_stage_mode")
+                    "followup_step_mode", "appreciation_dm_mode", "funnel_stage_mode",
+                    "review_digest_enabled")
 _APPROVAL_MODE_COLS = ("nurture_dm_mode", "artifact_dm_mode", "group_post_mode",
                        "followup_step_mode", "appreciation_dm_mode", "funnel_stage_mode")
 VALID_APPROVAL_MODES = ("pre_review", "auto_approve")
@@ -2751,6 +2755,8 @@ def _select_engagement_row(user_id: int) -> Optional[dict]:
         row["posting_days"] = normalize_posting_days(row.get("posting_days"))
         for f in _ENGAGEMENT_BOOL_FIELDS:
             row[f] = bool(row.get(f))
+        row["review_digest_enabled"] = row.get("review_digest_enabled") is None or bool(
+            row["review_digest_enabled"])
         row["brand_kit"] = _decode_brand_kit(row.get("brand_kit"), user_id)
         row["audience_mix"] = parse_audience_mix(row.get("audience_mix"))
         row["icp_definition"] = _decode_json_object(row.get("icp_definition"))
@@ -2935,7 +2941,7 @@ def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
             return None if v is None else json.dumps(v)
         if col in _ENGAGEMENT_JSON_FIELDS:
             return json.dumps(v or [])
-        if col in _ENGAGEMENT_BOOL_FIELDS:
+        if col in _ENGAGEMENT_BOOL_FIELDS or col == "review_digest_enabled":
             return 1 if v else 0
         return v
 

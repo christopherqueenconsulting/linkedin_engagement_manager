@@ -4597,6 +4597,8 @@ export interface components {
             reply_sweeps_per_day: number;
             /** Reply To Own Comments */
             reply_to_own_comments: boolean;
+            /** Review Digest Enabled */
+            review_digest_enabled: boolean | null;
             /** Roster Auto Connect */
             roster_auto_connect: boolean;
             /** Roster Auto Follow */
@@ -4850,6 +4852,8 @@ export interface components {
              * @default true
              */
             reply_to_own_comments: boolean;
+            /** Review Digest Enabled */
+            review_digest_enabled?: boolean | null;
             /**
              * Roster Auto Connect
              * @default false
