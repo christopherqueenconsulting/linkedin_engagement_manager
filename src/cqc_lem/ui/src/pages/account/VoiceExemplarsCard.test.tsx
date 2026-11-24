@@ -62,9 +62,10 @@ describe('VoiceExemplarsCard (issue #2627, Phase 1b)', () => {
   })
 
   it('surfaces the server’s row error on a 400', async () => {
-    post.mockRejectedValue(Object.assign(new Error('bad'), {
+    const err = Object.assign(new Error('bad'), {
       isAxiosError: true, response: { status: 400, data: { detail: 'No text column found in that file' } },
-    }))
+    })
+    post.mockImplementation(() => Promise.reject(err))
     harness(<VoiceExemplarsCard />)
     choose(csv())
     fireEvent.click(button())
@@ -72,7 +73,8 @@ describe('VoiceExemplarsCard (issue #2627, Phase 1b)', () => {
   })
 
   it('reads a 404 as not enabled', async () => {
-    post.mockRejectedValue(Object.assign(new Error('nf'), { isAxiosError: true, response: { status: 404 } }))
+    const err = Object.assign(new Error('nf'), { isAxiosError: true, response: { status: 404 } })
+    post.mockImplementation(() => Promise.reject(err))
     harness(<VoiceExemplarsCard />)
     choose(csv())
     fireEvent.click(button())
