@@ -180,6 +180,12 @@ moment, not from an incident the older script already handled. `events.jsonl` ca
 `/health` stays trivial: it gates the blue/green flip, so it must never depend on Redis, MySQL or
 Celery being reachable. A test pins that.
 
+`/health/deep` also reports the escalated egress failure streak (#2620): `egress_down_since`
+(epoch seconds), `egress_failures` (sessions) and `egress_failure_kind` (a word). They are null
+when Redis is unreadable, `egress_failures` is 0 with no outage, and they never change `status`.
+The same streak emails the account owner once at escalation (3 sessions and 2 h), at most once per
+24 h after, and once on recovery; `EGRESS_DOWN_EMAIL_ENABLED=false` turns the email off.
+
 `/health/deep` answers what a monitor actually wants to know — it reaches every worker over the
 broker's control channel (`_health_active_queues()`: one `active_queues()` broadcast with a
 `HEALTH_DEEP_INSPECT_TIMEOUT` wait, default 2 s, reused per API process for

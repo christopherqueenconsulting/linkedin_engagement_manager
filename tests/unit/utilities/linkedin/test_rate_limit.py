@@ -663,7 +663,8 @@ class TestEgressStreak:
     def test_a_single_failure_does_not_escalate(self, hash_redis):
         from cqc_lem.utilities.linkedin.rate_limit import record_egress_failure
         state = record_egress_failure(7, now=1000)
-        assert state == {"first_at": 1000, "count": 1, "elapsed_seconds": 0, "escalate_now": False}
+        assert state == {"first_at": 1000, "count": 1, "elapsed_seconds": 0, "escalate_now": False,
+                         "notify_now": False, "kind": None, "host_class": None}
         assert hash_redis.ttl_set["linkedin:egress_streak:7"] > 0
 
     def test_many_failures_inside_the_window_do_not_escalate(self, hash_redis):
@@ -776,7 +777,7 @@ class TestEgressStreakEdges:
         assert _decode_streak({}) is None
         assert _decode_streak({b"count": b"3"}) is None
         assert _decode_streak({"first_at": "10", "count": "x", "junk": "y"}) == {
-            "first_at": 10, "count": 0, "escalated_at": None}
+            "first_at": 10, "count": 0, "escalated_at": None, "notified": 0}
 
     def test_an_unreadable_streak_is_none(self):
         client = MagicMock()

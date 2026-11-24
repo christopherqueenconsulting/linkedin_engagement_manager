@@ -146,7 +146,7 @@ class TestLoginGateMarksTheTask:
             with patch.object(helper, "record_egress_failure",
                               return_value={"escalate_now": False}) as recorded:
                 helper._note_egress_failure(5)
-            recorded.assert_called_once_with(5)
+            recorded.assert_called_once_with(5, kind="unknown", host_class="unknown")
             assert egress_unreachable_in_task() is True
         finally:
             end_egress_task_scope(token)

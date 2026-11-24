@@ -187,7 +187,8 @@ class TestLoginToLinkedinCookiePath:
              pytest.raises(LinkedInEgressUnreachable):
             from cqc_lem.utilities.linkedin.helper import login_to_linkedin
             login_to_linkedin(driver, _make_wait(), "user@e.com", "pw")
-        record.assert_called_once_with(7)
+        record.assert_called_once_with(7, kind="base_page_not_origin",
+                                       host_class="browser_error_page")
         err.assert_not_called()  # one failure is still only the gate's WARNING
 
     def test_persistent_wrong_origin_escalates_once_with_the_egress_named(self):
@@ -276,7 +277,7 @@ class TestLoginToLinkedinCookiePath:
              pytest.raises(LinkedInEgressUnreachable, match="proxy/network error"):
             from cqc_lem.utilities.linkedin.helper import login_to_linkedin
             login_to_linkedin(driver, _make_wait(), "user@e.com", "pw")
-        record.assert_called_once_with(7)
+        record.assert_called_once_with(7, kind="feed_transport_error", host_class="linkedin")
         mark_breaker.assert_not_called()
 
     def test_challenge_for_an_unresolvable_account_trips_the_ip_breaker(self):

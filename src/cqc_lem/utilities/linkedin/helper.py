@@ -18,6 +18,7 @@ import random
 import re
 import time
 from typing import Optional
+from urllib.parse import urlparse
 
 from selenium.common.exceptions import (
     InvalidCookieDomainException,
@@ -494,7 +495,44 @@ def _egress_label_for_user(user_id: int) -> str:
         return "unknown"
 
 
-def _note_egress_failure(user_id: Optional[int]) -> None:
+def _egress_host_class(driver: WebDriver) -> str:
+    """Class of the page the browser sits on: `linkedin`, `browser_error_page`, `other`, `unknown`.
+
+    A word only — the URL itself never reaches a log, an email or the streak hash.
+    """
+    try:
+        url = (driver.current_url or "").lower()
+    except Exception:
+        return "unknown"
+    if not url:
+        return "unknown"
+    if url.startswith(("chrome-error:", "about:", "data:")):
+        return "browser_error_page"
+    host = urlparse(url).hostname or ""
+    if host == "linkedin.com" or host.endswith(".linkedin.com"):
+        return "linkedin"
+    return "other"
+
+
+def _email_egress_notice(user_id: int, **kwargs) -> None:
+    """Best-effort owner email for an egress outage or its recovery; never raises.
+
+    `EGRESS_DOWN_EMAIL_ENABLED=false` (default true) restores the pre-#2620 behaviour.
+    """
+    if os.getenv("EGRESS_DOWN_EMAIL_ENABLED", "true").strip().lower() in ("0", "false", "no", "off"):
+        return
+    try:
+        from cqc_lem.utilities.db import get_user_email
+        from cqc_lem.utilities.email import send_egress_down_email
+        to_email = get_user_email(user_id)
+        if to_email:
+            send_egress_down_email(to_email, **kwargs)
+    except Exception as e:
+        log_debug(f"Could not send the egress notice: {type(e).__name__}", action_type="login")
+
+
+def _note_egress_failure(user_id: Optional[int], kind: str = "unknown",
+                         host_class: str = "unknown") -> None:
     """Count a session that never reached linkedin.com, and escalate ONCE when it persists (#2346).
 
     Each failure on its own stays a transient back-off (#2320) — the WARNING at the login gate, no
@@ -515,13 +553,19 @@ def _note_egress_failure(user_id: Optional[int]) -> None:
     mark_egress_unreachable_in_task()
     if not user_id:
         return
-    state = record_egress_failure(user_id)
-    if not state or not state.get("escalate_now"):
+    state = record_egress_failure(user_id, kind=kind, host_class=host_class)
+    if not state:
         return
-    hours = round(state["elapsed_seconds"] / 3600, 1)
+    hours = round(state.get("elapsed_seconds", 0) / 3600, 1)
+    if state.get("notify_now"):
+        _email_egress_notice(user_id, hours=hours, failures=state["count"],
+                             failure_kind=kind, host_class=host_class)
+    if not state.get("escalate_now"):
+        return
     message = (
         f"LinkedIn browser egress has not reached linkedin.com for {hours}h "
-        f"({state['count']} sessions in a row, egress={_egress_label_for_user(user_id)}). "
+        f"({state['count']} sessions in a row, kind={kind}, host_class={host_class}, "
+        f"egress={_egress_label_for_user(user_id)}). "
         "Likely causes, in order: the egress proxy is unreachable or refusing connections, "
         "LinkedIn is down, the host network is down. Every Selenium lane for this user is "
         "deferring until a login succeeds.")
@@ -549,6 +593,8 @@ def _clear_egress_streak(user_id: Optional[int]) -> None:
     if state and state.get("escalated_at"):
         log_info(f"LinkedIn browser egress recovered after {state.get('count', 0)} failed sessions",
                  user_id=user_id, action_type="login")
+        if state.get("notified") and user_id:
+            _email_egress_notice(user_id, hours=0, failures=state.get("count", 0), recovered=True)
 
 
 def _persist_session_cookies(driver: WebDriver, user_email: str) -> bool:
@@ -827,7 +873,7 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
             # and land on the password login (the path that draws a challenge) plus a false
             # "reconnect" email, so treat it like the feed transport error below: transient,
             # retried later, breaker untouched.
-            _note_egress_failure(challenge_uid)
+            _note_egress_failure(challenge_uid, "base_page_not_origin", _egress_host_class(driver))
             raise LinkedInEgressUnreachable(
                 f"Base page did not load on LinkedIn's origin ({driver.current_url}) — stored "
                 "cookies could not be installed; transient, retrying later without tripping the "
@@ -886,7 +932,7 @@ def login_to_linkedin(driver: WebDriver, wait: WebDriverWait, user_email: str, u
     # otherwise be mistaken for a live session below — clearing the breaker and storing junk cookies.
     # Raise a transient error WITHOUT tripping the 429 breaker so the task simply retries later.
     if _is_logged_in(driver.current_url) and _page_is_transport_error(driver):
-        _note_egress_failure(challenge_uid)
+        _note_egress_failure(challenge_uid, "feed_transport_error", _egress_host_class(driver))
         raise LinkedInEgressUnreachable(
             "Feed did not load (proxy/network error) — transient, retrying later without "
             "tripping the rate-limit breaker.")

@@ -61,6 +61,51 @@ def _session_unknown():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _no_egress_streak():
+    """Default every test to "Redis unreadable" for the streak so nothing reaches Redis (#2620)."""
+    with patch("cqc_lem.utilities.linkedin.rate_limit.egress_streak_summary", return_value=None):
+        yield
+
+
+class TestEgressStreakFields:
+    """#2620: the escalated egress streak is visible to an external monitor — words and counts."""
+
+    def _deep(self):
+        insp = MagicMock()
+        insp.active_queues.return_value = {"celery@w": [{"name": "default"}]}
+        with patch("cqc_lem.utilities.maintenance._inspect", return_value=insp):
+            return _call()
+
+    def test_redis_down_reads_null(self):
+        out = self._deep()
+        assert out["egress_down_since"] is None
+        assert out["egress_failures"] is None
+        assert out["egress_failure_kind"] is None
+
+    def test_escalated_streak_is_reported(self):
+        summary = {"down_since": 1000, "failures": 12, "kind": "base_page_not_origin"}
+        with patch("cqc_lem.utilities.linkedin.rate_limit.egress_streak_summary",
+                   return_value=summary):
+            out = self._deep()
+        assert out["egress_down_since"] == 1000
+        assert out["egress_failures"] == 12
+        assert out["egress_failure_kind"] == "base_page_not_origin"
+        assert out["status"] == "healthy"  # report-only: never changes `status`
+
+    def test_no_outage_reads_zero_failures(self):
+        with patch("cqc_lem.utilities.linkedin.rate_limit.egress_streak_summary",
+                   return_value={"down_since": None, "failures": 0, "kind": None}):
+            out = self._deep()
+        assert out["egress_failures"] == 0 and out["egress_down_since"] is None
+
+    def test_a_raising_reader_never_breaks_the_endpoint(self):
+        with patch("cqc_lem.utilities.linkedin.rate_limit.egress_streak_summary",
+                   side_effect=RuntimeError("boom")):
+            out = self._deep()
+        assert out["egress_failures"] is None
+
+
 class TestHealthDeep:
     def test_counts_workers_and_consumers_without_naming_them(self):
         """The counts are derived from the per-worker lane map, but only the COUNTS ship.
@@ -96,7 +141,8 @@ class TestHealthDeep:
             out = _call()
         assert set(out) == {"status", "workers", "consuming", "maintenance", "egress",
                             "egress_checked", "egress_failing", "linkedin_session",
-                            "session_checked", "session_failing"}
+                            "session_checked", "session_failing", "egress_down_since",
+                            "egress_failures", "egress_failure_kind"}
         assert "3571c22235c8" not in json.dumps(out)
         assert "se_engage" not in json.dumps(out)
 
@@ -112,7 +158,8 @@ class TestHealthDeep:
             out = _call()
         assert list(out) == ["status", "workers", "consuming", "maintenance", "egress",
                              "egress_checked", "egress_failing", "linkedin_session",
-                             "session_checked", "session_failing"]
+                             "session_checked", "session_failing", "egress_down_since",
+                             "egress_failures", "egress_failure_kind"]
         assert json.dumps(out).startswith('{"status": "healthy"')
 
     def test_registered_but_consuming_nothing_is_degraded(self):

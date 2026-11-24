@@ -653,6 +653,12 @@ _DEFAULT_EGRESS_ESCALATE_MIN_FAILURES = 3
 # Long enough to span any realistic outage, short enough that a streak abandoned by a user who
 # stopped automating does not sit in Redis forever. Refreshed on every failure.
 _EGRESS_STREAK_TTL_SECONDS = 7 * 24 * 3600
+# Owner email cadence (#2620): one per 24h slot counted from the escalation. Each slot is claimed
+# with an HSETNX on `notified_<slot>`, so two workers failing together cannot both send.
+_EGRESS_RENOTIFY_SECONDS = 24 * 3600
+_EGRESS_NOTIFIED_PREFIX = "notified_"
+# Words only (failure kind, host class) — never a host, port or credential.
+_EGRESS_LABEL_FIELDS = ("kind", "host_class")
 
 
 def _egress_escalate_after_seconds() -> int:
@@ -676,36 +682,51 @@ def _decode_streak(raw: "dict | None") -> "dict | None":
     if not raw:
         return None
     out: dict = {}
+    notified = 0
     for k, v in raw.items():
         key = k.decode("utf-8", "ignore") if isinstance(k, bytes) else str(k)
         val = v.decode("utf-8", "ignore") if isinstance(v, bytes) else v
+        if key in _EGRESS_LABEL_FIELDS:
+            out[key] = str(val)[:64]
+            continue
+        if key.startswith(_EGRESS_NOTIFIED_PREFIX):
+            notified += 1
+            continue
         try:
             out[key] = int(val)
         except (TypeError, ValueError):
             continue
     if "first_at" not in out:
         return None
+    out["notified"] = notified
     out.setdefault("count", 0)
     out.setdefault("escalated_at", None)
     return out
 
 
-def record_egress_failure(user_id: int, now: "float | None" = None) -> "dict | None":
+def record_egress_failure(user_id: int, now: "float | None" = None, kind: "str | None" = None,
+                          host_class: "str | None" = None) -> "dict | None":
     """Count one session whose browser never reached linkedin.com, and say whether to escalate.
 
     Args:
         user_id: The account whose session failed.
         now: Epoch seconds; defaults to the wall clock (tests pass it).
+        kind: Failure kind word (``base_page_not_origin``, ``feed_transport_error``); the latest
+            one is kept on the streak.
+        host_class: Class of the page the browser sat on (``linkedin``, ``browser_error_page``,
+            ``other``, ``unknown``).
 
     Returns:
-        ``{"first_at", "count", "elapsed_seconds", "escalate_now"}``, or None when Redis is
+        ``{"first_at", "count", "elapsed_seconds", "escalate_now", "notify_now", "kind",
+        "host_class"}``, or None when Redis is
         unavailable (fail open: nothing counted, nothing escalates). ``escalate_now`` is True for
         exactly ONE failure per streak — the first one at which the streak is both at least
         ``LINKEDIN_EGRESS_ESCALATE_MIN_FAILURES`` sessions long AND older than
         ``LINKEDIN_EGRESS_ESCALATE_AFTER_SECONDS``. Both, not either: the session floor alone
         would page on a burst of retries inside a few minutes (a deploy, a proxy blip), and the
         window alone would page on two sessions hours apart. The once-only claim is an ``HSETNX``,
-        so two workers failing at the same moment cannot both escalate.
+        so two workers failing at the same moment cannot both escalate. ``notify_now`` is True when
+        the owner email is due: at the escalation, then at most once per 24h while the streak lasts.
     """
     client = _redis_client()
     if client is None:
@@ -715,6 +736,9 @@ def record_egress_failure(user_id: int, now: "float | None" = None) -> "dict | N
     try:
         client.hsetnx(key, "first_at", ts)
         client.hincrby(key, "count", 1)
+        for field, value in (("kind", kind), ("host_class", host_class)):
+            if value:
+                client.hset(key, field, str(value)[:64])
         client.expire(key, _EGRESS_STREAK_TTL_SECONDS)
         state = _decode_streak(client.hgetall(key))
     except Exception as e:
@@ -730,16 +754,26 @@ def record_egress_failure(user_id: int, now: "float | None" = None) -> "dict | N
             escalate_now = bool(client.hsetnx(key, "escalated_at", ts))
         except Exception:
             escalate_now = False
+    notify_now = False
+    escalated_at = ts if escalate_now else state["escalated_at"]
+    if escalated_at is not None:
+        slot = max(0, ts - escalated_at) // _EGRESS_RENOTIFY_SECONDS
+        try:
+            notify_now = bool(client.hsetnx(key, f"{_EGRESS_NOTIFIED_PREFIX}{slot}", ts))
+        except Exception:
+            notify_now = False
     return {"first_at": state["first_at"], "count": state["count"], "elapsed_seconds": elapsed,
-            "escalate_now": escalate_now}
+            "escalate_now": escalate_now, "notify_now": notify_now,
+            "kind": state.get("kind"), "host_class": state.get("host_class")}
 
 
 def clear_egress_failures(user_id: "int | None") -> "dict | None":
     """Forget this user's egress failure streak — a successful login proves the route works.
 
     Returns:
-        The streak that was cleared (``first_at``, ``count``, ``escalated_at``), so the caller can
-        log a recovery for one that had escalated; None when there was none or Redis is down.
+        The streak that was cleared (``first_at``, ``count``, ``escalated_at``, ``notified`` — the
+        number of owner emails sent), so the caller can log a recovery for one that had escalated;
+        None when there was none or Redis is down.
     """
     if not user_id:
         return None
@@ -770,6 +804,32 @@ def egress_streak_state(user_id: int) -> "dict | None":
         return _decode_streak(client.hgetall(_EGRESS_STREAK_KEY.format(user_id=int(user_id))))
     except Exception:
         return None
+
+
+def egress_streak_summary() -> "dict | None":
+    """Fleet-wide egress outage reading for `/health/deep` (#2620): only escalated streaks count.
+
+    Returns:
+        ``{"down_since", "failures", "kind"}`` — ``down_since`` is the earliest ``first_at`` among
+        escalated streaks (None when none), ``failures`` their summed session count and ``kind``
+        the oldest streak's failure kind. None when Redis is unavailable, so callers report nulls.
+    """
+    client = _redis_client()
+    if client is None:
+        return None
+    try:
+        streaks = []
+        for key in client.scan_iter(match=_EGRESS_STREAK_KEY.format(user_id="*"), count=100):
+            state = _decode_streak(client.hgetall(key))
+            if state is not None and state.get("escalated_at") is not None:
+                streaks.append(state)
+    except Exception:
+        return None
+    if not streaks:
+        return {"down_since": None, "failures": 0, "kind": None}
+    oldest = min(streaks, key=lambda st: st["first_at"])
+    return {"down_since": oldest["first_at"], "failures": sum(st["count"] for st in streaks),
+            "kind": oldest.get("kind")}
 
 
 # --- egress failure inside the current task (#2620) -------------------------------

@@ -400,6 +400,36 @@ def send_session_revalidation_email(to_email: str, account_url: Optional[str] = 
         to_email, "⚠️ Action needed: reconnect your LinkedIn session", html, high_priority=True)
 
 
+def send_egress_down_email(to_email: str, hours: float, failures: int,
+                           failure_kind: Optional[str] = None, host_class: Optional[str] = None,
+                           recovered: bool = False) -> bool:
+    """Tell the account owner the automation browser cannot reach LinkedIn (issue #2620).
+
+    Sent when an egress failure streak escalates, again at most once per 24h while it lasts, and
+    once more with ``recovered=True`` when a login gets through. Only words are interpolated — the
+    failure kind and host class — never a host, port or credential.
+    """
+    if recovered:
+        subject = "LinkedIn automation is back online"
+        body = (f"<h2>LinkedIn automation recovered</h2><p>The browser reached LinkedIn again "
+                f"after {int(failures)} failed sessions. Nothing for you to do.</p>")
+    else:
+        kind = html_escape(failure_kind or "unknown")
+        where = html_escape(host_class or "unknown")
+        subject = "⚠️ LinkedIn automation cannot reach LinkedIn"
+        body = (f"<h2>LinkedIn automation is stalled</h2>"
+                f"<p>For about <strong>{hours:g} hours</strong> ({int(failures)} sessions in a "
+                f"row) the automation browser has not reached LinkedIn, so comments, replies, "
+                f"invites and messages are deferred.</p>"
+                f"<p>Failure kind: <code>{kind}</code>. Page the browser landed on: "
+                f"<code>{where}</code>.</p>"
+                f"<p>The usual cause is the egress proxy. Check your proxy provider's dashboard "
+                f"for an IP or subnet change.</p>")
+    html = (f'<html><body style="font-family:Arial,Helvetica,sans-serif;color:#222;">{body}'
+            f'</body></html>')
+    return _dispatch_email(to_email, subject, html, high_priority=not recovered)
+
+
 def _human_date(value: Optional[str]) -> Optional[str]:
     """The only producer of an expiry string is `resolve_token_status`, which emits ISO-8601 —
     "expires on 2026-09-14T08:30:12+00:00" is not something to put in front of a customer. Anything
