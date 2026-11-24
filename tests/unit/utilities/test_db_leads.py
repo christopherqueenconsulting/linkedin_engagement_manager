@@ -78,6 +78,22 @@ class TestGetProfileFacts:
         params = cursor.execute.call_args[0][1]
         assert len(params) == len(set(params))
 
+    def test_size_geography_and_timing_facts_stay_neutral_when_unscraped(self, fake_cursor):
+        """#2655: unscraped values read None (neutral credit), never "null" / False."""
+        conn, _ = fake_cursor(fetch_all=[
+            {"profile_url": "a", "company_size": "null", "location": None,
+             "recent_job_change": None},
+            {"profile_url": "b", "company_size": "120", "location": "Austin, US",
+             "recent_job_change": "true"},
+            {"profile_url": "c", "recent_job_change": "false"}])
+        with patch(f"{_GET_CONN}", return_value=conn):
+            from cqc_lem.utilities.db import get_profile_facts
+            facts = get_profile_facts(["a", "b", "c"])
+        assert (facts["a"]["company_size"], facts["a"]["location"],
+                facts["a"]["recent_job_change"]) == (None, None, None)
+        assert facts["b"]["company_size"] == "120" and facts["b"]["recent_job_change"] is True
+        assert facts["c"]["recent_job_change"] is False
+
     def test_no_urls_skips_the_query(self):
         with patch(f"{_GET_CONN}") as get:
             from cqc_lem.utilities.db import get_profile_facts

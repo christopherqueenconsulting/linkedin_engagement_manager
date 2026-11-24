@@ -110,11 +110,14 @@ from cqc_lem.utilities.brand_account import (
     held_connect_sources,
 )
 from cqc_lem.utilities.connection_targeting import (
+    COOLDOWN_DAYS,
     SOURCE_ADJACENT_POST,
     SOURCE_OWN_POST,
     CandidateSignal,
     apply_icp_rubric,
+    held_candidate_urls,
     rank_candidates,
+    recently_touched_slugs,
     target_terms_from_prefs,
 )
 from cqc_lem.utilities.date import convert_viewed_on_to_date
@@ -156,6 +159,7 @@ from cqc_lem.utilities.db import (
     get_engagement_preferences,
     get_engagement_targets,
     get_engager_candidates,
+    get_lead_activity,
     get_lead_signal,
     get_linkedin_profile_url_by_user_id,
     get_outreach_target_by_url,
@@ -166,6 +170,7 @@ from cqc_lem.utilities.db import (
     get_user_blog_url,
     get_user_id,
     get_user_password_pair_by_id,
+    get_user_timezone,
     has_appreciation_touch,
     has_catchup_touch,
     has_dm_within_days,
@@ -216,6 +221,7 @@ from cqc_lem.utilities.human_pacing import (
     remaining_actions,
 )
 from cqc_lem.utilities.icp_rubric import ICP_RUBRIC_VERSION, parse_icp_definition
+from cqc_lem.utilities.icp_scrape_queue import claim_batch, enqueue_held, in_scrape_window, requeue
 from cqc_lem.utilities.lead_scoring import (
     _author_display_name,
     _flag_lead_signal,
@@ -301,6 +307,7 @@ __all__ = [
     "process_user_followups",
     "report_catchup_run",
     "scan_connection_candidates",
+    "scrape_held_icp_candidates",
     "scan_outreach_funnel_targets",
     "send_catchup_touch",
     "send_lead_response",
@@ -3426,8 +3433,15 @@ def scan_connection_candidates(self, user_id: int, max_new: int = None):
     if icp_definition is not None:
         ranked_all = rank_candidates(signals, now, facts_by_url=facts_by_url, target_terms=terms,
                                      min_icp=0, exclude_keys=get_requested_person_keys(user_id))
+        touched = recently_touched_slugs(get_lead_activity(user_id, days=COOLDOWN_DAYS))
         candidates, rubric_scores, held = apply_icp_rubric(
-            ranked_all, icp_definition, facts_by_url=facts_by_url, min_score=min_icp, limit=budget)
+            ranked_all, icp_definition, facts_by_url=facts_by_url, min_score=min_icp, limit=budget,
+            touched_slugs=touched)
+        if held:
+            # Never scored blind, never dropped: parked for the paced scrape (#2655).
+            held_urls = [u for u in held_candidate_urls(ranked_all, facts_by_url)
+                         if profile_slug(u) not in touched]
+            enqueue_held(user_id, held_urls)
         if held:
             log_info(f"ICP rubric held {held} candidate(s) with no scraped profile facts",
                      user_id=user_id, task_name="scan_connection_candidates",
@@ -3493,6 +3507,67 @@ def scan_connection_candidates(self, user_id: int, max_new: int = None):
 CONNECTION_REQUEST_SOURCE_OUTREACH_FUNNEL = "outreach_funnel"
 _FUNNEL_CONNECT_NOTE = ("Hi {first_name}, I've been enjoying your posts and the perspective you "
                         "share — would love to connect and keep in touch.")
+
+
+@shared_task.task(name='cqc_lem.app.run_automation.scrape_held_icp_candidates',
+                  bind=True, base=QueueOnce,
+                  once={'graceful': True, 'unlock_before_run': True, 'keys': ['user_id']},
+                  reject_on_worker_lost=True, rate_limit='1/m', queue='se_outreach')
+def scrape_held_icp_candidates(self, user_id: int):
+    """Scrape the profiles the ICP rubric is holding (issue #2655, Phase 2 of #2630).
+
+    A candidate with no scraped facts is never scored blind: the scan parks it in the hold queue and
+    this task reads a few profiles per day through the existing scrape path (`profiles` cache), only
+    inside the weekday-daytime window and under the per-day cap. READ-only — nothing is sent. The
+    next scan finds the facts and scores them. A rate-limited or unavailable page stops the batch and
+    gives the unreached URLs back.
+    """
+    task = "scrape_held_icp_candidates"
+    if skip_browser_lane(user_id, task):
+        return SUGGEST_ONLY_SKIP_MESSAGE
+    if not get_engagement_preferences(user_id).get("icp_builder_enabled"):
+        return f"ICP builder off for user {user_id}"
+    now = datetime.now(timezone.utc)
+    if not in_scrape_window(now, get_user_timezone(user_id)):
+        log_debug("ICP profile scrape outside its window", user_id=user_id, task_name=task)
+        return f"Outside the scrape window for user {user_id}"
+    batch = claim_batch(user_id, now)
+    if not batch:
+        log_debug("No held ICP candidates to scrape (queue empty or daily cap spent)",
+                  user_id=user_id, task_name=task)
+        return f"Nothing to scrape for user {user_id}"
+
+    scraped = 0
+    driver = None
+    try:
+        driver, wait, _email, _me = get_current_profile(
+            user_id=user_id, session_name="ICP Profile Scrape", needs_images=True)
+        for index, url in enumerate(batch):
+            try:
+                get_linkedin_profile_from_url(driver, wait, url)
+                scraped += 1
+            except (ProfileUnavailableError, LinkedInRateLimited) as e:
+                log_info("ICP profile scrape stopped: page unavailable", exc=e, user_id=user_id,
+                         task_name=task, action_type="connection_targeting")
+                requeue(user_id, batch[index:])
+                break
+            time.sleep(random.uniform(20, 60))
+    except LinkedInRateLimited as e:
+        requeue(user_id, batch[scraped:])
+        log_debug("ICP profile scrape deferred — LinkedIn rate-limited or cooling down", exc=e,
+                  user_id=user_id, task_name=task)
+        return lane_result(TaskOutcome.NO_OP, f"Skipped — rate limited: {e}")
+    except Exception as e:
+        requeue(user_id, batch[scraped:])
+        log_warning("ICP profile scrape session failed", exc=e, user_id=user_id, task_name=task)
+        return lane_result(TaskOutcome.FAILED, f"ICP profile scrape failed for user {user_id}",
+                           cause=e)
+    finally:
+        if driver is not None:
+            quit_gracefully(driver)
+    log_info(f"ICP profile scrape read {scraped} of {len(batch)} held profile(s)", user_id=user_id,
+             task_name=task, action_type="connection_targeting")
+    return f"Scraped {scraped} held profile(s) for user {user_id}"
 
 
 def _funnel_first_name(target: dict) -> str:

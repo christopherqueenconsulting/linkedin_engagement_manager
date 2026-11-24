@@ -2236,9 +2236,24 @@ def get_profile_facts(profile_urls: list) -> dict:
                 "JSON_UNQUOTE(JSON_EXTRACT(data, '$.job_title')) AS job_title, "
                 "JSON_UNQUOTE(JSON_EXTRACT(data, '$.company_name')) AS company_name, "
                 "JSON_UNQUOTE(JSON_EXTRACT(data, '$.industry')) AS industry, "
-                "JSON_UNQUOTE(JSON_EXTRACT(data, '$.full_name')) AS full_name "
+                "JSON_UNQUOTE(JSON_EXTRACT(data, '$.full_name')) AS full_name, "
+                "JSON_UNQUOTE(JSON_EXTRACT(data, '$.company_size')) AS company_size, "
+                "JSON_UNQUOTE(JSON_EXTRACT(data, '$.location')) AS location, "
+                "JSON_UNQUOTE(JSON_EXTRACT(data, '$.recent_job_change')) AS recent_job_change "
                 f"FROM profiles WHERE profile_url IN ({placeholders})", tuple(urls))
-            return {r["profile_url"]: r for r in cursor.fetchall() if r.get("profile_url")}
+            facts = {}
+            for r in cursor.fetchall():
+                if not r.get("profile_url"):
+                    continue
+                # Segment filters read these; an unscraped value must stay None (neutral credit),
+                # never "null" / False (a hard mismatch).
+                for key in ("company_size", "location"):
+                    if str(r.get(key) or "").strip().lower() in ("", "null", "none"):
+                        r[key] = None
+                changed = str(r.get("recent_job_change") or "").strip().lower()
+                r["recent_job_change"] = {"true": True, "false": False}.get(changed)
+                facts[r["profile_url"]] = r
+            return facts
     except mysql.connector.Error as err:
         log_error("Could not read profile facts", exc=err)
         return {}

@@ -148,6 +148,8 @@ class TestNeedsImagesExemptionIsScoped:
         ("app/engagement/outreach.py", "automate_appreciation_dms_for_user"),
         # #2456 — adjacent-author harvest: `/recent-activity/*` (#1979) then permalinks (#2020).
         ("app/engagement/outreach.py", "scan_connection_candidates"),
+        # #2655 — held ICP candidates: profile pages read with images on (same fastboot hazard).
+        ("app/engagement/outreach.py", "scrape_held_icp_candidates"),
         ("app/engagement/feed.py", "auto_sync_user_groups"),
         ("app/engagement/feed.py", "auto_comment_in_groups"),
         ("app/engagement/feed.py", "auto_post_to_group"),

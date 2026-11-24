@@ -241,25 +241,66 @@ def rank_candidates(signals: Iterable[CandidateSignal], now: datetime, facts_by_
     return out if limit is None else out[:max(0, int(limit))]
 
 
+# Touch kinds that start the 90-day cooldown (#2655). Values mirror `LeadSignalKind` — this module
+# stays free of DB imports. Engaging and viewing are not touches: they are how a person got here.
+COOLDOWN_DAYS = 90
+_TOUCH_KINDS = frozenset({"dm", "connect", "funnel"})
+_BOT_TERMS = ("crypto signal", "forex", "whatsapp", "telegram", "dm for", "binary option",
+              "make money online", "passive income")
+
+
+def recently_touched_slugs(activity_rows: Iterable[dict]) -> set:
+    """Profile slugs we DM'd, invited or funneled inside the lookback the rows were read with."""
+    slugs = {profile_slug(r.get("person_profile_url") or "") for r in activity_rows or []
+             if str(r.get("kind") or "") in _TOUCH_KINDS}
+    slugs.discard("")
+    return slugs
+
+
+def suspected_bot(facts: dict, name: Optional[str] = None) -> bool:
+    """A scraped profile that is anonymous or pitches spam in its headline or company."""
+    shown = " ".join(str((facts or {}).get("full_name") or name or "").lower().split())
+    if shown == "linkedin member":
+        return True
+    text = " ".join(str((facts or {}).get(k) or "").lower() for k in ("job_title", "company_name"))
+    return any(term in text for term in _BOT_TERMS)
+
+
+def held_candidate_urls(candidates: Iterable[ScoredCandidate], facts_by_url: dict = None) -> list:
+    """Profile URLs of candidates never scraped (no `profiles` row), in rank order."""
+    scraped = {profile_slug(k) for k in (facts_by_url or {}) if profile_slug(k)}
+    return [c.person_profile_url for c in candidates or []
+            if c.person_profile_url and profile_slug(c.person_profile_url) not in scraped]
+
+
 def apply_icp_rubric(candidates: Iterable[ScoredCandidate], definition: IcpDefinition,
-                     facts_by_url: dict = None, min_score: int = 0, limit: int = None
-                     ) -> tuple:
+                     facts_by_url: dict = None, min_score: int = 0, limit: int = None,
+                     touched_slugs: Optional[set] = None) -> tuple:
     """Re-score ranked candidates with the #2630 rubric (flag-on path only).
 
     Returns `(kept, scores, held)`. `kept` are copies of the candidates with `icp_score` /
     `reasons` carrying the rubric's total and one-line reason, best first; `scores` maps
-    `person_key` to its `IcpScore` for the provenance columns. `held` is how many people had NO
-    scraped facts: they are neither scored blind nor excluded, so a later scan picks them up once
-    a profile scrape has run. A hard-filter failure or a total under `min_score` is dropped.
+    `person_key` to its `IcpScore` for the provenance columns. `held` is how many people were never
+    scraped: neither scored blind nor excluded, they wait for a profile scrape
+    (`held_candidate_urls`). Dropped before scoring: anyone in the 90-day cooldown
+    (`touched_slugs`), a scraped profile with no facts (an empty profile) and a suspected bot.
+    A hard-filter failure or a total under `min_score` is dropped after. These only ADD
+    exclusions — the forever dedup runs upstream and is unchanged.
     """
     facts_by_slug = {profile_slug(k): v for k, v in (facts_by_url or {}).items() if profile_slug(k)}
+    touched = touched_slugs or set()
     kept: list = []
     scores: dict = {}
     held = 0
     for c in candidates or []:
-        facts = facts_by_slug.get(profile_slug(c.person_profile_url or ""), {})
-        if not has_facts(facts):
+        slug = profile_slug(c.person_profile_url or "")
+        if slug and slug in touched:
+            continue
+        facts = facts_by_slug.get(slug)
+        if facts is None:
             held += 1
+            continue
+        if not has_facts(facts) or suspected_bot(facts, c.person_name):
             continue
         result: IcpScore = score_person(definition, facts, c.person_profile_url or "",
                                         warmth=c.warmth_score, connection_degree=c.connection_degree)

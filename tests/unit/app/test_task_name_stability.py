@@ -77,6 +77,7 @@ FROZEN_TASK_NAMES = frozenset({
     "cqc_lem.app.run_automation.send_scheduled_dm",
     "cqc_lem.app.run_automation.send_lead_response",
     "cqc_lem.app.run_automation.scan_connection_candidates",
+    "cqc_lem.app.run_automation.scrape_held_icp_candidates",
     "cqc_lem.app.run_automation.process_outreach_funnel",
     "cqc_lem.app.run_automation.scan_outreach_funnel_targets",
     "cqc_lem.app.run_automation.automate_catchup_touches",

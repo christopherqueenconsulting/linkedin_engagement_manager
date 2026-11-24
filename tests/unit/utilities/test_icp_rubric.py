@@ -1,5 +1,6 @@
 """ICP rubric (issue #2630, Phase 1): filters first, weights sum to 100, deterministic components."""
 
+import inspect
 from datetime import datetime
 
 import pytest
@@ -8,7 +9,10 @@ from cqc_lem.utilities import icp_rubric as r
 from cqc_lem.utilities.connection_targeting import (
     CandidateSignal,
     apply_icp_rubric,
+    held_candidate_urls,
     rank_candidates,
+    recently_touched_slugs,
+    suspected_bot,
 )
 
 NOW = datetime(2026, 11, 23, 12, 0, 0)
@@ -104,3 +108,55 @@ def test_apply_rubric_floor_and_limit():
     facts = {f"https://www.linkedin.com/in/{n}": GOOD for n in "ab"}
     assert apply_icp_rubric(ranked, DEFINITION, facts, min_score=101)[0] == []
     assert len(apply_icp_rubric(ranked, DEFINITION, facts, limit=1)[0]) == 1
+
+
+# --- Phase 2 (#2655): cooldown, bot and empty-profile exclusions, held URLs ---------------------
+def _ranked(*names):
+    return rank_candidates(_signals(*names), NOW, min_icp=0)
+
+
+def _facts(*names, **over):
+    return {f"https://www.linkedin.com/in/{n}": {**GOOD, **over} for n in names}
+
+
+def test_recent_touch_is_excluded_before_hold_or_scoring():
+    rows = [{"kind": "dm", "person_profile_url": "https://www.linkedin.com/in/bob/?trk=x"},
+            {"kind": "engaged", "person_profile_url": "https://www.linkedin.com/in/amy"}]
+    touched = recently_touched_slugs(rows)
+    assert touched == {"bob"}  # engaging is how they got here, not a touch
+    kept, _scores, held = apply_icp_rubric(_ranked("bob", "amy", "nofacts"), DEFINITION,
+                                           _facts("bob", "amy"), touched_slugs=touched)
+    assert [c.person_name for c in kept] == ["amy"]
+    assert held == 1
+
+
+def test_touched_person_without_facts_is_not_held():
+    _kept, _scores, held = apply_icp_rubric(_ranked("bob"), DEFINITION, {}, touched_slugs={"bob"})
+    assert held == 0
+
+
+def test_empty_scraped_profile_is_excluded_not_held():
+    facts = {"https://www.linkedin.com/in/bob": {"full_name": "Bob"}}
+    kept, _scores, held = apply_icp_rubric(_ranked("bob"), DEFINITION, facts)
+    assert kept == [] and held == 0
+
+
+@pytest.mark.parametrize("over", [{"full_name": "LinkedIn Member"},
+                                  {"job_title": "Crypto signals | DM for VIP"},
+                                  {"company_name": "Forex Pro"}])
+def test_suspected_bot_is_excluded(over):
+    kept, _scores, held = apply_icp_rubric(_ranked("bob"), DEFINITION, _facts("bob", **over))
+    assert kept == [] and held == 0
+
+
+def test_normal_profile_is_not_a_bot():
+    assert not suspected_bot(GOOD, "Bob")
+
+
+def test_held_candidate_urls_lists_only_never_scraped():
+    urls = held_candidate_urls(_ranked("bob", "nofacts"), _facts("bob"))
+    assert urls == ["https://www.linkedin.com/in/nofacts"]
+
+
+def test_forever_dedup_signature_is_unchanged():
+    assert "touched_slugs" not in inspect.signature(rank_candidates).parameters

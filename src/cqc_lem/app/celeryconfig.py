@@ -251,6 +251,7 @@ task_routes = {
     'cqc_lem.app.run_automation.update_stale_profile': {'queue': 'se_outreach'},
     'cqc_lem.app.run_automation.send_lead_response': {'queue': 'se_outreach'},
     'cqc_lem.app.run_automation.scan_connection_candidates': {'queue': 'se_outreach'},
+    'cqc_lem.app.run_automation.scrape_held_icp_candidates': {'queue': 'se_outreach'},
     'cqc_lem.app.run_automation.automate_catchup_touches': {'queue': 'se_outreach'},
     'cqc_lem.app.run_automation.send_catchup_touch': {'queue': 'se_outreach'},
     # --- se_content: seeding, stats, group + newsletter publishing --------

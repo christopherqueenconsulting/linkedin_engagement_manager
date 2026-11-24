@@ -1909,6 +1909,21 @@ def auto_scan_connection_candidates():
 
 
 @shared_task.task
+def auto_scrape_held_icp_candidates():
+    """Dispatch the paced profile scrape for ICP candidates held without facts (issue #2655).
+    It reads third-party profiles, so it IS gated on the 429 breaker / manual pause; each task
+    also checks the weekday-daytime window and the per-day cap itself.
+    """
+    if _skip_if_throttled("auto_scrape_held_icp_candidates"):
+        return "Automation throttled"
+    from cqc_lem.app.engagement.outreach import scrape_held_icp_candidates
+    user_ids = _browser_lane_users(get_active_user_ids(), "auto_scrape_held_icp_candidates")
+    for uid in user_ids:
+        scrape_held_icp_candidates.apply_async(kwargs={"user_id": uid})
+    return f"Dispatched held-candidate profile scrape for {len(user_ids)} user(s)"
+
+
+@shared_task.task
 def auto_scan_outreach_funnel_targets():
     """Dispatch per-user sourcing for the comment-first outreach funnel (issue #623). The funnel
     processor (#399) has always existed; nothing ever fed it, so outreach_funnel_targets had zero

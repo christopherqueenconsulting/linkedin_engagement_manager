@@ -73,6 +73,7 @@ _SKIP_LANES = [
       {"status": "approved", "user_id": 1, "draft_response": "hi", "channel": "dm",
        "person_profile_url": "u"}}),
     (_OUT, "scan_connection_candidates", {"user_id": 1}, {}),
+    (_OUT, "scrape_held_icp_candidates", {"user_id": 1}, {}),
     (_OUT, "process_outreach_funnel", {"user_id": 1}, {}),
     (_OUT, "scan_outreach_funnel_targets", {"user_id": 1}, {}),
     (_OUT, "automate_catchup_touches", {"user_id": 1}, {}),
