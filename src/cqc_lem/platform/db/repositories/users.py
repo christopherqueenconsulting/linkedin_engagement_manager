@@ -2617,6 +2617,7 @@ _ENGAGEMENT_DEFAULTS: dict = {
     "nurture_dm_mode": "pre_review", "artifact_dm_mode": "pre_review",
     "group_post_mode": "pre_review",
     "followup_step_mode": "pre_review", "appreciation_dm_mode": "pre_review",
+    "funnel_stage_mode": "pre_review",
 }
 _ENGAGEMENT_JSON_FIELDS = ("include_topics", "exclude_topics", "include_keywords",
                            "exclude_keywords", "include_authors", "exclude_authors", "post_types",
@@ -2648,9 +2649,9 @@ _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "us
                     "profile_viewer_dm_auto_send", "forbidden_claim_terms", "brand_kit",
                     "audience_mix", "icp_builder_enabled", "icp_definition",
                     "nurture_dm_mode", "artifact_dm_mode", "group_post_mode",
-                    "followup_step_mode", "appreciation_dm_mode")
+                    "followup_step_mode", "appreciation_dm_mode", "funnel_stage_mode")
 _APPROVAL_MODE_COLS = ("nurture_dm_mode", "artifact_dm_mode", "group_post_mode",
-                       "followup_step_mode", "appreciation_dm_mode")
+                       "followup_step_mode", "appreciation_dm_mode", "funnel_stage_mode")
 VALID_APPROVAL_MODES = ("pre_review", "auto_approve")
 VALID_REPLY_MODES = ("event", "scheduled", "off")
 # Approval posture for the proactive connect flow (issue #398 owner review).

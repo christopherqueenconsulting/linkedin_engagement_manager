@@ -1507,6 +1507,17 @@
             ],
             "title": "Forbidden Claim Terms"
           },
+          "funnel_stage_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Funnel Stage Mode"
+          },
           "gate_defaults": {
             "$ref": "#/components/schemas/GateDefaults"
           },
@@ -1817,6 +1828,7 @@
           "group_post_mode",
           "followup_step_mode",
           "appreciation_dm_mode",
+          "funnel_stage_mode",
           "roster_auto_connect",
           "hold_repaired_posts_for_review",
           "profile_viewer_dm_auto_send",
@@ -2048,6 +2060,17 @@
               }
             ],
             "title": "Forbidden Claim Terms"
+          },
+          "funnel_stage_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Funnel Stage Mode"
           },
           "group_post_mode": {
             "anyOf": [

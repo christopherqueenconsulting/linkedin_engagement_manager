@@ -106,6 +106,8 @@ from cqc_lem.utilities.ai.outbound_qa import (
 from cqc_lem.utilities.approval_modes import (
     APPRECIATION_DM_MODE,
     FOLLOWUP_STEP_MODE,
+    FUNNEL_STAGE_APPROVER,
+    FUNNEL_STAGE_MODE,
     NURTURE_DM_MODE,
     may_auto_approve,
 )
@@ -3722,6 +3724,14 @@ def _fire_funnel_stage(user_id: int, target: dict, invites_queued: int = 0) -> s
         return f"target {target_id}: nothing to do (stage={stage})"
 
     next_draft = _draft_funnel_stage(user_id, next_stage, target)
+    # Issue #2664: under `funnel_stage_mode=auto_approve` the LATER stage is approved by the mode,
+    # recorded as a `system:` approver (never `user:<id>`, so the brand hold of #2376 still applies).
+    # An empty draft is never auto-approved — `_fire_funnel_stage` would only skip it next run.
+    if next_draft and may_auto_approve(user_id, FUNNEL_STAGE_MODE, prefs):
+        update_outreach_target(target_id, stage=next_stage, status=OutreachStatus.APPROVED,
+                               draft_text=next_draft, notes="",
+                               approved_by=FUNNEL_STAGE_APPROVER)
+        return f"target {target_id}: {stage} fired -> {next_stage} auto-approved"
     update_outreach_target(target_id, stage=next_stage, status=OutreachStatus.PENDING,
                            draft_text=next_draft, notes="")
     return f"target {target_id}: {stage} fired -> {next_stage} pending approval"

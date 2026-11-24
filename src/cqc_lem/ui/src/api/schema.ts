@@ -4394,6 +4394,8 @@ export interface components {
             followup_step_mode: string | null;
             /** Forbidden Claim Terms */
             forbidden_claim_terms: string[] | null;
+            /** Funnel Stage Mode */
+            funnel_stage_mode: string | null;
             gate_defaults: components["schemas"]["GateDefaults"];
             gmail_forward_confirmation: components["schemas"]["GmailForwardConfirmation"] | null;
             /** Group Post Mode */
@@ -4581,6 +4583,8 @@ export interface components {
             followup_step_mode?: string | null;
             /** Forbidden Claim Terms */
             forbidden_claim_terms?: string[] | null;
+            /** Funnel Stage Mode */
+            funnel_stage_mode?: string | null;
             /** Group Post Mode */
             group_post_mode?: string | null;
             /**

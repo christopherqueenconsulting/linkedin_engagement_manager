@@ -97,6 +97,12 @@ flowchart TD
    users to `auto_approve`, and `pre_review` files a `pending` `scheduled_dms` row (`source='followup'` /
    `'appreciation'`) instead of dispatching. A reviewed appreciation DM starts no follow-up ladder.
    `DM_FOLLOWUP_AUTO_APPROVE` / `DM_APPRECIATION_AUTO_APPROVE` force-off only.
+   Phase 3 (#2664) adds `funnel_stage_mode` for the outreach funnel's LATER stages: a stage that fires
+   drops the target to the next stage `pending` (today's behaviour, so the migration backfills
+   `pre_review`); under `auto_approve` it is `approved` with `approved_by='system:funnel_stage_mode'`,
+   a `system:` approver, so the brand acquisition hold (#2376) is not released. The first stage still
+   follows `connection_request_mode`. An empty next draft stays pending. `FUNNEL_STAGE_AUTO_APPROVE`
+   force-off only.
 2. **Keyword-triggered artifact/lead-magnet delivery** (`resolve_artifact_delivery` in
    `content_alignment.py` + `_queue_artifact_delivery`) lands the same way: a `pending`
    `scheduled_dms` row, `source='artifact'`, blocked by an open draft from either mechanic in

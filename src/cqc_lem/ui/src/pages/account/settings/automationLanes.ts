@@ -4,6 +4,7 @@ export type ModeKey =
   | 'group_post_mode'
   | 'followup_step_mode'
   | 'appreciation_dm_mode'
+  | 'funnel_stage_mode'
 
 // One row per lane that has a per-user approval mode (issue #2624). `auto` says, in one sentence,
 // what switching the lane to auto-approve means.
@@ -37,5 +38,11 @@ export const AUTOMATION_LANES: { key: ModeKey; label: string; review: string; au
     label: 'Appreciation DMs',
     review: 'Each thank-you DM waits as a draft for your approval.',
     auto: 'Thank-you DMs to people who accept, recommend or collaborate with you are sent without you seeing them.',
+  },
+  {
+    key: 'funnel_stage_mode',
+    label: 'Outreach funnel stages',
+    review: 'After a comment or connect step fires, the next step waits for your approval.',
+    auto: 'After a comment or connect step fires, the next connect note or DM goes out without you seeing it.',
   },
 ]
