@@ -3442,7 +3442,10 @@ def icp_audience_report_endpoint(session_token: str) -> ResponseModel[dict[str, 
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     if not flag_enabled(WEEKLY_REPORT, user_id):
         raise HTTPException(status_code=404, detail="Not found")
-    return ResponseModel(status_code=200, detail=load_icp_audience_report(user_id))
+    from cqc_lem.utilities.db import get_latest_icp_audience_report
+    return ResponseModel(status_code=200, detail={
+        **load_icp_audience_report(user_id),
+        "latest_monthly": get_latest_icp_audience_report(user_id)})
 
 
 def _suppression_status(user_id: int) -> dict:

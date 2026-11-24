@@ -24,7 +24,11 @@ def test_bad_session_is_401(api_client):
 
 def test_returns_payload_for_the_caller_only(api_client):
     with patch(f"{_M}.get_session_user_id", return_value=7), patch(_F, return_value=True), \
-         patch(_L, return_value={"readable": True}) as load:
+         patch(_L, return_value={"readable": True}) as load, \
+         patch("cqc_lem.utilities.db.get_latest_icp_audience_report",
+               return_value={"period_key": "2026-11"}) as latest:
         resp = api_client.get(_URL, params={"session_token": "t"})
-    assert resp.status_code == 200 and resp.json()["detail"] == {"readable": True}
+    assert resp.status_code == 200
+    assert resp.json()["detail"] == {"readable": True, "latest_monthly": {"period_key": "2026-11"}}
     load.assert_called_once_with(7)
+    latest.assert_called_once_with(7)

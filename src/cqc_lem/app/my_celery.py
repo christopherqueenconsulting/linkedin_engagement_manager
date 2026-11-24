@@ -421,6 +421,11 @@ app.conf.update(
             # 1st of the month 06:00 UTC (issue #2631). Idempotent per user per month.
             'schedule': crontab(hour='6', minute='0', day_of_month='1')
         },
+        'icp-audience-report-monthly': {
+            'task': 'cqc_lem.app.run_scheduler.auto_icp_audience_report_monthly',
+            # 1st of the month 06:30 UTC (issue #2758). In-app only; idempotent per user per month.
+            'schedule': crontab(hour='6', minute='30', day_of_month='1')
+        },
         'file-feedback-issues': {
             'task': 'cqc_lem.app.run_scheduler.auto_file_feedback_issues',
             # Every 30 min — captured feedback becomes a pipeline-ready issue the same hour it lands

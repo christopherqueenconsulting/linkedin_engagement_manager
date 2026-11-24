@@ -562,6 +562,7 @@ _NO_LINKEDIN_ACTION = {
     "auto_weekly_content_quality": "analytics over stored posts",
     "auto_profile_audit_weekly": "rubric grading of a cached profile; opens no browser, sends nothing",
     "auto_profile_audit_monthly": "rubric grading of a cached profile; opens no browser, sends nothing",
+    "auto_icp_audience_report_monthly": "analytics over stored engagers; stores a report, sends nothing",
     "auto_media_integrity_scan": "checks stored media files",
     "auto_generate_newsletter_drafts": "content generation (LLM), stores drafts",
     "generate_newsletter_drafts_for_user": "content generation (LLM), stores drafts",
