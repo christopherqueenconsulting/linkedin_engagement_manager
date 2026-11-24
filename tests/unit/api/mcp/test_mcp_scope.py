@@ -29,16 +29,16 @@ EXPECTED_MCP_PATHS = frozenset({
     "/user/account-readiness", "/dashboard/stats", "/dashboard/planned-tasks", "/posts",
     "/post_url", "/content_generation_status", "/activity", "/user/post-stats",
     "/user/engagement-analytics", "/user/audience-growth", "/user/weekly-report", "/leads/funnel",
-    "/user/engagement-preferences", "/user/engagement-targets", "/user/dm-templates",
-    "/user/engagement-suggestions", "/user/story-bank", "/user/lead-magnet", "/user/groups",
-    "/user/linkedin-profile-skills", "/user/linkedin-profile", "/user/newsletter-settings",
-    "/user/newsletter-draft",
+    "/user/engagement-preferences", "/user/dm-templates", "/user/story-bank", "/user/lead-magnet",
+    "/user/groups", "/user/linkedin-profile-skills", "/user/linkedin-profile",
+    "/user/newsletter-settings", "/user/newsletter-draft",
     # P3: counts only (LEM stores no subscriber identities), so `mcp` reads the latest count.
     "/user/newsletter-subscribers",
 })
+# Everything that holds OTHER people's data (owner ruling O11): opted into at mint, never on `mcp`.
 EXPECTED_OUTREACH_EXTRA = frozenset({
     "/dms", "/connection_requests", "/leads", "/lead_signals", "/catchup/touches",
-    "/outreach/targets",
+    "/outreach/targets", "/user/engagement-targets", "/user/engagement-suggestions",
 })
 
 # Plan §4 "never read" and §5 "never exposed", as (method, path): each must be refused to both.

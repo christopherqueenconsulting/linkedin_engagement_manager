@@ -76,7 +76,7 @@ class TestTheRegistry:
 
     def test_open_world_is_set_on_exactly_the_linkedin_sourced_tools(self) -> None:
         assert {s.name for s in registry.TOOLS if s.open_world} == {
-            "lem_get_activity", "lem_list_outreach", "lem_get_engagement_settings",
+            "lem_get_activity", "lem_list_outreach", "lem_list_engagement_targets",
             "lem_get_voice_kit"}
         for spec in registry.TOOLS:
             if spec.open_world:
@@ -84,7 +84,8 @@ class TestTheRegistry:
 
     def test_pii_lists_are_outreach_only(self) -> None:
         outreach_only = {s.name for s in registry.TOOLS if s.scopes == registry.OUTREACH_ONLY}
-        assert outreach_only == {"lem_list_outreach", "lem_list_newsletter_subscribers"}
+        assert outreach_only == {"lem_list_outreach", "lem_list_newsletter_subscribers",
+                                 "lem_list_engagement_targets"}
         assert {s.name for s in registry.tools_for_scope("mcp")}.isdisjoint(outreach_only)
 
     def test_no_review_queue_tool_until_2653(self) -> None:
@@ -144,17 +145,19 @@ class TestArguments:
 
 
 class TestWhoami:
-    def test_whoami_names_the_account_and_never_returns_billing_ids(
+    def test_whoami_names_the_account_and_never_reads_billing(
             self, api_client: Any, mcp: MagicMock) -> None:
         with ExitStack() as stack:
             _settings_patches(stack)
+            billing = stack.enter_context(patch(f"{_U}.get_user_subscription_info"))
             result = call(api_client, "lem_whoami")
         body = structured(result)
         assert result["isError"] is False
         assert body["account_name"] == "jane-doe"
         assert body["scope"] == "mcp"
         assert body["token_expires_at"].startswith("2099-01-01")
-        assert body["subscription"] == {"status": "active", "tier": "pro", "trial_ends_at": None}
+        assert "subscription" not in body
+        billing.assert_not_called()
         assert "stripe_customer_id" not in json.dumps(result)
         assert _CANARY not in json.dumps(result)
 
@@ -302,18 +305,35 @@ class TestEngagementSettings:
         with patch(f"{_U}.get_engagement_preferences", return_value=dict(prefs)), \
              patch(f"{_U}.has_engagement_preferences", return_value=True), \
              patch(f"{_M}.get_gmail_forward_confirmation", return_value={"code": _CANARY}), \
-             patch(f"{_U}.max_catchup_touches_allowed", return_value=3), \
-             patch(f"{_U}.get_engagement_targets", return_value=[{"profile_url": "u"}]), \
-             patch(f"{_U}.suggest_engagement_targets", return_value=[]), \
-             patch(f"{_U}.get_engagement_suggestions",
-                   return_value=[{"id": 1, "kind": "comment", "body": "draft " + _CANARY}]), \
-             patch(f"{_U}.resolve_engagement_mode", return_value=MagicMock(value="suggest")):
+             patch(f"{_U}.max_catchup_touches_allowed", return_value=3):
             body = structured(call(api_client, "lem_get_engagement_settings"))
         text = json.dumps(body)
         for key in ("reply_inbound_address", "reply_inbound_token", "gmail_forward_confirmation"):
             assert key not in text
         assert _CANARY not in text
-        assert body["roster"] == {"targets": 1, "suggestions": 0}
+        assert body["preferences"]["posting_days"] == [0]
+
+    def test_the_roster_is_outreach_only(self, api_client: Any, mcp: MagicMock) -> None:
+        result = call(api_client, "lem_list_engagement_targets")
+        assert result["isError"] is True
+        assert structured(result)["error"]["code"] == "unknown_tool"
+
+    def test_the_roster_names_people_and_fences_ai_drafts(self, api_client: Any,
+                                                          outreach: MagicMock) -> None:
+        with patch(f"{_U}.get_engagement_preferences", return_value={}), \
+             patch(f"{_U}.get_engagement_targets",
+                   return_value=[{"profile_url": "https://www.linkedin.com/in/pat/", "name": "Pat"}]), \
+             patch(f"{_U}.suggest_engagement_targets", return_value=[]), \
+             patch(f"{_U}.get_engagement_suggestions",
+                   return_value=[{"id": 1, "kind": "comment", "body": "draft " + _CANARY}]), \
+             patch(f"{_U}.resolve_engagement_mode", return_value=MagicMock(value="suggest")):
+            body = structured(call(api_client, "lem_list_engagement_targets"))
+            fenced = structured(call(api_client, "lem_list_engagement_targets",
+                                     {"include_text": True}))
+        assert body["roster"]["targets"][0]["name"] == "Pat"
+        assert _CANARY not in json.dumps(body)
+        draft = fenced["suggestions"]["suggestions"][0]["third_party"]
+        assert draft["body"].endswith(_CANARY) and draft["note"] == THIRD_PARTY_NOTE
 
 
 class TestStaticTools:

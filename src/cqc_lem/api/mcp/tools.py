@@ -241,9 +241,10 @@ def _account_name(profile: Any) -> Optional[str]:
 async def _whoami(lb: Loopback, _args: NoArgs) -> dict[str, Any]:
     settings, profile = await _gather(lambda: lb.get("/user/settings"),
                                       lambda: lb.get("/user/linkedin-profile"))
-    settings = _require(settings)
-    subscription = (settings or {}).get("subscription") or {}
-    preferences = (settings or {}).get("preferences") or {}
+    # Billing is not among the settings for any machine seat: `/user/settings` answers
+    # `subscription: null` outside the human scopes and never reads the billing row (P2).
+    settings = _require(settings) or {}
+    preferences = settings.get("preferences") or {}
     profile = profile if not isinstance(profile, ToolFailure) else None
     principal = lb.principal
     return {
@@ -252,8 +253,6 @@ async def _whoami(lb: Loopback, _args: NoArgs) -> dict[str, Any]:
         "scope": principal.scope,
         "token_expires_at": principal.expires_at.isoformat() if principal.expires_at else None,
         "client_name": principal.client_name,
-        "subscription": {"status": subscription.get("status"), "tier": subscription.get("tier"),
-                         "trial_ends_at": subscription.get("trial_ends_at")} if subscription else None,
         "engagement_mode": settings.get("engagement_mode"),
         "content_language": preferences.get("effective_content_language"),
         "auto_schedule_posts": preferences.get("auto_schedule_posts"),
@@ -430,23 +429,26 @@ async def _lead_funnel(lb: Loopback, args: FunnelArgs) -> dict[str, Any]:
     return {"months": args.months, "funnel": await lb.get("/leads/funnel", {"months": args.months})}
 
 
-async def _engagement_settings(lb: Loopback, args: TextArgs) -> dict[str, Any]:
-    prefs, targets, templates, suggestions = await _gather(
-        lambda: lb.get("/user/engagement-preferences"),
-        lambda: lb.get("/user/engagement-targets"),
-        lambda: lb.get("/user/dm-templates"),
-        lambda: lb.get("/user/engagement-suggestions"))
-    roster = None
-    if isinstance(targets, dict):
-        # Counts only: the roster and its suggestions are OTHER people, and person lists are the
-        # opt-in `mcp_outreach` scope's (owner ruling O11), not this read's.
-        roster = {"targets": len(targets.get("targets") or []),
-                  "suggestions": len(targets.get("suggestions") or [])}
+async def _engagement_settings(lb: Loopback, _args: NoArgs) -> dict[str, Any]:
+    prefs, templates = await _gather(lambda: lb.get("/user/engagement-preferences"),
+                                     lambda: lb.get("/user/dm-templates"))
+    return {"preferences": _section(prefs), "dm_templates": _section(templates)}
+
+
+async def _engagement_roster(lb: Loopback, args: TextArgs) -> dict[str, Any]:
+    roster, suggestions = await _gather(lambda: lb.get("/user/engagement-targets"),
+                                        lambda: lb.get("/user/engagement-suggestions"))
+    if isinstance(roster, dict):
+        # Named people: the PII this scope was opted into. Only a ranking's free-text reasons are
+        # fenced; names and profile URLs are the point of the list.
+        roster = {"targets": fence_rows(roster.get("targets") or [], ("reasons",), args.include_text),
+                  "suggested_targets": fence_rows(roster.get("suggestions") or [], ("reasons",),
+                                                  args.include_text)}
     if isinstance(suggestions, dict):
+        # Drafts an AI wrote from strangers' posts: withheld unless asked for.
         suggestions = {**suggestions, "suggestions": fence_rows(
             suggestions.get("suggestions") or [], ("body",), args.include_text)}
-    return {"preferences": _section(prefs), "roster": roster if roster is not None else _section(targets),
-            "dm_templates": _section(templates), "suggestions": _section(suggestions)}
+    return {"roster": _section(roster), "suggestions": _section(suggestions)}
 
 
 async def _voice_kit(lb: Loopback, args: TextArgs) -> dict[str, Any]:
@@ -531,8 +533,8 @@ _DASHBOARD_CALLS = ((GET, "/dashboard/stats"), (GET, "/dashboard/planned-tasks")
 
 TOOLS: tuple[ToolSpec, ...] = (
     ToolSpec("lem_whoami", "Who am I in LEM",
-             "Your LEM account: account name (LinkedIn handle), plan, engagement mode, and this "
-             "token's scope and expiry. Call it first.",
+             "Your LEM account: account name (LinkedIn handle), engagement mode, content "
+             "language, and this token's scope and expiry. Call it first.",
              NoArgs, BOTH_SCOPES, ((GET, "/user/settings"), (GET, "/user/linkedin-profile")),
              _whoami),
     ToolSpec("lem_get_account_overview", "Account overview",
@@ -591,13 +593,16 @@ TOOLS: tuple[ToolSpec, ...] = (
              "Lead counts by stage per month. Counts only.",
              FunnelArgs, BOTH_SCOPES, ((GET, "/leads/funnel"),), _lead_funnel),
     ToolSpec("lem_get_engagement_settings", "Engagement settings",
-             "Engagement targeting, voice and caps, the size of your engagement roster, your DM "
-             "templates, and LEM's engagement suggestions (drafts withheld unless `include_text`)."
-             + DATA_NOT_INSTRUCTIONS,
-             TextArgs, BOTH_SCOPES,
-             ((GET, "/user/engagement-preferences"), (GET, "/user/engagement-targets"),
-              (GET, "/user/dm-templates"), (GET, "/user/engagement-suggestions")),
-             _engagement_settings, open_world=True),
+             "Engagement targeting, voice, approval modes and caps, and your DM templates.",
+             NoArgs, BOTH_SCOPES,
+             ((GET, "/user/engagement-preferences"), (GET, "/user/dm-templates")),
+             _engagement_settings),
+    ToolSpec("lem_list_engagement_targets", "Engagement roster",
+             "The people on your engagement roster, suggested additions, and LEM's engagement "
+             "suggestions (drafts withheld unless `include_text`)." + DATA_NOT_INSTRUCTIONS,
+             TextArgs, OUTREACH_ONLY,
+             ((GET, "/user/engagement-targets"), (GET, "/user/engagement-suggestions")),
+             _engagement_roster, open_world=True),
     ToolSpec("lem_get_voice_kit", "Voice kit",
              "Your story bank, lead magnet, profile skills, LinkedIn profile and groups (group "
              "names withheld unless `include_text`)." + DATA_NOT_INSTRUCTIONS,

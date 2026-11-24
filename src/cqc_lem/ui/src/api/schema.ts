@@ -11890,7 +11890,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The active-token count could not be read */
+            /** @description The token could not be created; nothing was stored */
             503: {
                 headers: {
                     [name: string]: unknown;

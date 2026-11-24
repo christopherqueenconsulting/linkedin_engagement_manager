@@ -21,7 +21,9 @@ class FakeRedis:
     """An in-memory Redis for the gate: the kill key, plus the counters the later limits use.
 
     `kill_value` answers `get("mcp:kill")` (P1's shape); every other key lives in `store`.
-    `raises` makes every call fail like a dropped connection.
+    `raises` makes every call fail like a dropped connection; `fail_on` fails only the named
+    commands, for a fault in the middle of a sequence. `expiries` records every TTL set, so a test
+    can tell a TTL set once from one refreshed.
     """
 
     def __init__(self, kill_value: Optional[bytes] = None, raises: bool = False) -> None:
@@ -30,9 +32,11 @@ class FakeRedis:
         self.keys_read: list[str] = []
         self.store: dict[str, Any] = {}
         self.expiries: dict[str, int] = {}
+        self.ttl_writes: list[str] = []
+        self.fail_on: set[str] = set()
 
-    def _check(self) -> None:
-        if self.raises:
+    def _check(self, command: str = "") -> None:
+        if self.raises or command in self.fail_on:
             raise ConnectionError("redis down")
 
     def get(self, key: str) -> Optional[Any]:
@@ -45,7 +49,7 @@ class FakeRedis:
 
     def set(self, key: str, value: Any, ex: Optional[int] = None, nx: bool = False) -> bool:
         """Store a value; `nx` refuses an existing key."""
-        self._check()
+        self._check("set")
         if key == "mcp:kill":
             self.kill_value = value if isinstance(value, bytes) else str(value).encode()
             return True
@@ -54,6 +58,7 @@ class FakeRedis:
         self.store[key] = value
         if ex is not None:
             self.expiries[key] = ex
+            self.ttl_writes.append(key)
         return True
 
     def delete(self, key: str) -> int:
@@ -66,20 +71,21 @@ class FakeRedis:
 
     def incr(self, key: str) -> int:
         """Increment a counter."""
-        self._check()
+        self._check("incr")
         self.store[key] = int(self.store.get(key) or 0) + 1
         return self.store[key]
 
     def decr(self, key: str) -> int:
         """Decrement a counter."""
-        self._check()
+        self._check("decr")
         self.store[key] = int(self.store.get(key) or 0) - 1
         return self.store[key]
 
     def expire(self, key: str, seconds: int) -> bool:
         """Record a TTL."""
-        self._check()
+        self._check("expire")
         self.expiries[key] = seconds
+        self.ttl_writes.append(key)
         return True
 
 

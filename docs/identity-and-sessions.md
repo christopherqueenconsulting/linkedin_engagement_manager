@@ -711,12 +711,75 @@ Three more rules ride the same seats:
   - Anything else gets **422 `linkedin_profile_url_required`**: another host, a company page, a
     path beneath a profile, credentials or a port in the URL. That includes the exempt operator.
   - A human's URL is neither checked nor rewritten.
+  - **Existing rows are never rewritten.** Only a row a queue-only seat creates or edits from
+    #2684 on is stored canonically; older rows keep the spelling their scraper or supplier saw.
+    `GET /connection_requests`, `/dms` and `/outreach/targets` return stored values unchanged, so
+    a supplier such as backfill sees the canonical URL on new rows only.
+  - The outreach-target duplicate check therefore matches on the profile, not the string, for a
+    queue-only seat. `get_outreach_target_by_profile` compares `profile_url_key`, which is the
+    slug, percent-decoded and lowercased (`utilities/linkedin/profile_url.py`). An old
+    `https://linkedin.com/in/jane-doe` row is a 409 for a new `…/in/Jane-Doe?originalSubdomain=uk`
+    create, not a second row. A human's create keeps today's exact match.
+  - `POST /connection_request` and `POST /schedule_dm` have no duplicate check to adjust.
 - **The inbound address stays with the human.** `GET /user/engagement-preferences` neither calls
   `get_or_create_reply_inbound_token` nor returns `reply_inbound_address` for any non-human scope
   (agent, operator, observer). The address embeds a bearer secret, and for an account that has none,
   the read MINTS one.
 
 `POST /schedule_post/` now also returns the new row's `post_id`, for every caller.
+
+#### Healthy or broken
+
+Every refusal above leaves one INFO line in the production log, with the code in the message and no
+URL or email in it:
+
+```
+<UTC stamp> Queue-only seat refused: <code> | user_id=<id> action_type=<queue>
+```
+
+The code is one of `edit_requires_pending`, `machine_seat_text_only`,
+`linkedin_profile_url_required` or `agent_may_not_bulk_update`. To read a day:
+
+```bash
+grep -c 'Queue-only seat refused: ' /opt/lem/logs/cqc_lem_YYYY_MM_DD.log
+grep -o 'Queue-only seat refused: [a-z_]* | user_id=[0-9]*' /opt/lem/logs/cqc_lem_YYYY_MM_DD.log \
+  | sort | uniq -c | sort -rn
+```
+
+- **Healthy:** zero lines, or a few for a seat that tried something it may not do once and then
+  stopped.
+- **Broken:** a steady run of one code for one `user_id`. That is a machine client retrying a
+  refused write, and its owner should fix the client; the guard is working. Watch for a burst of
+  `linkedin_profile_url_required` on `action_type=connection_request` right after a release. That
+  is the backfill supplier sending URLs the normaliser rejects, so check its URL source before
+  touching this code.
+- A 409 a human reports is never one of these lines: full sessions do not take this path.
+
+#### Rollback
+
+**The revert is the only lever, by design. There is no flag, and none should be added.** Every
+change here narrows what a machine seat may do, so reverting returns the seats to their previous,
+wider behaviour and harms no data. A flag would itself be a path back to that wider behaviour, one
+that a config change or a mistaken PostHog rollout could take without review. That is exactly the
+weakening this change exists to prevent.
+
+- **Schema-safe.** No migration ships with this change, so a revert touches no table.
+- **Normal path:** `git revert <merge sha>` on a branch, a PR to `main`, then the normal release.
+- **Urgent path:** `release:now` is allowed for this revert (`docs/release-fast-lane.md`). If even
+  that is too slow, redeploy the previous release tag from the box, exactly as `docs/DEPLOYMENT.md`
+  gives it (as the owner):
+
+  ```bash
+  cd /opt/lem && sudo ./scripts/backup.sh          # deploy.sh runs migrations and takes no backup
+  sudo ls -t backups/ | grep '^db-' | head -1        # confirm a dump stamped just now exists
+  sudo env DOCKER_CONFIG=/home/deploy/.docker bash ./scripts/deploy.sh vX.Y.Z
+  sudo chown -R deploy:deploy /opt/lem/.git
+  ```
+
+  Use the tag before the release that shipped #2684 as `vX.Y.Z`.
+- **Who runs it:** the operator on call, or the owner.
+- Rows written canonically before the revert stay canonical afterwards. That is harmless, because
+  every reader accepts that spelling.
 
 ### The TTL is fixed at mint, and never slid
 
@@ -947,8 +1010,8 @@ there is no new login and no new credential store. Full plan: `docs/agent-mcp-pl
 
 | Scope | Reaches | Verbs |
 |---|---|---|
-| `mcp` | `_MCP_READ_PATHS`: the user's own settings, automation state, dashboard, posts, plan, generation status, performance, engagement settings, voice kit, newsletter settings/draft and subscriber counts, plus one templated grant, `GET /posts/{post_id}` (`_SCOPE_PATH_PATTERN_METHODS`) | `GET` only, per path (`_SCOPE_PATH_METHODS`) |
-| `mcp_outreach` | `mcp` plus `_MCP_OUTREACH_EXTRA_READ_PATHS`: DMs, connection requests, leads, lead signals, catch-up touches, outreach targets | `GET` only |
+| `mcp` | `_MCP_READ_PATHS`: the user's own settings, automation state, dashboard, posts, plan, generation status, performance, engagement preferences and DM templates, voice kit, newsletter settings/draft and subscriber counts, plus one templated grant, `GET /posts/{post_id}` (`_SCOPE_PATH_PATTERN_METHODS`). `/user/settings` returns `subscription: null` to any seat outside the human scopes, and the billing row is not read | `GET` only, per path (`_SCOPE_PATH_METHODS`) |
+| `mcp_outreach` | `mcp` plus `_MCP_OUTREACH_EXTRA_READ_PATHS`: DMs, connection requests, leads, lead signals, catch-up touches, outreach targets, engagement targets (named people) and engagement suggestions (drafts written from strangers' posts) | `GET` only |
 
 `mcp_outreach` is opted into at mint (owner ruling O11), because those lists hold other people's
 data; its rows are cut to `_OBSERVER_ROW_FIELDS` exactly as an observer's are (`_FIELD_FILTERED_SCOPES`).
@@ -986,17 +1049,24 @@ the only path in `api/` other than `get_session_user_id` that calls a session re
 
 `resolve_session_checked` exists because `resolve_session` answers None for a database fault, which
 for the gate would read as "invalid token, create a new one". It raises `SessionStoreUnavailable`
-instead, and the gate answers **503 `mcp_unavailable`**. It also returns the row id and expiry for
+instead, and the gate answers **503 `mcp_unavailable`**. The gate calls it with
+`mutate_scopes=MCP_SESSION_SCOPES`, so a session of any other scope presented there is only READ: its
+idle window is not slid and `last_seen_at` is not touched. It also returns the row id and expiry for
 the request's `McpPrincipal`. For the mcp scopes only, `last_seen_at` is written at most once every
 60 seconds (`MCP_LAST_SEEN_THROTTLE_SECONDS`), because one tool call resolves its token at the gate
 and again on every inner call; every other seat is unchanged.
 
 The gate's order after the HTTP checks (`api/mcp/gate.py`): a token in the query string is 400, and
 one that resolves to **any** session is revoked on the spot, audited `mcp_token_exposed` and its owner
-emailed (WARNING, never the value); then a per-(address, token digest) failure bucket (30 a minute);
-resolve; the `mcp-server-enabled` flag (403 `mcp_disabled`); concurrency (2 per user, 8 per worker);
-the per-user tool-call budget; the principal; and the once-a-day `mcp_access` row. Every Redis-backed
-limit fails CLOSED (503); `MCP_RATE_*` set to 0 refuses all.
+emailed (WARNING, never the value); then two failure buckets, per client address (60 a minute) and
+per (address, token digest) (30 a minute), checked BEFORE the session lookup so a flood of random
+tokens never reaches the database (query-string lookups run under the per-address one too, at most 4
+values a request); resolve; the `mcp-server-enabled` flag (403 `mcp_disabled`); concurrency (2 per
+user, 8 per worker); the per-user tool-call budget; the principal; and the once-a-day `mcp_access`
+row. Every Redis-backed limit fails CLOSED (503); `MCP_RATE_*` set to 0 refuses all. Every counter is
+created with its TTL (`SET NX EX`, then `INCR`), so a refused attempt never refreshes it and none can
+exist without one. Everything from the first concurrency slot to the SDK's last byte runs inside ONE
+try/finally that returns both slots on every exit, cancellation included.
 
 ### Minting, rotating, revoking
 
@@ -1004,13 +1074,18 @@ limit fails CLOSED (503); `MCP_RATE_*` set to 0 refuses all.
 mint tightened: 404 while the rollout flag is off for the account; a human session; **a strong factor
 first** (403 `mcp_needs_strong_factor`, owner ruling O3 — the check runs before the ceremony); then
 `_require_step_up` with `extension_scope_ok` **not** passed; `ttl_days` 1–90, default 30, fixed at
-mint (O2); at most 10 live MCP tokens (409 `mcp_token_limit`) and 10 mints an hour (429). The token
+mint (O2); at most 10 live MCP tokens (409 `mcp_token_limit`), counted and inserted in one
+transaction that holds the user's row lock (`create_session_within_cap`), so concurrent mints cannot
+overshoot it; and 10 mints an hour (429, a Redis limiter that fails open). The token
 is `lem_mcp_` + 64 hex, so a leaked one is recognisable; the stored hash covers the whole string.
 Every mint is audited `mcp_token_minted` and emailed to the owner; a failed email never fails the
 mint. `POST /api/user/mcp-token/rotate {session_id}` runs the same ceremony, checks ownership and
 scope in SQL (`get_owned_session`), **revokes the old token first**, then mints one with the same
 label, scope and TTL (`mcp_token_rotated`, emailed). `GET /api/user/mcp-token/info` lists the account's MCP
-tokens with no token or hash, plus Redis activity counts that are null, never 0, when unreadable.
+tokens with no token or hash, live ones first so a live token never drops off the list, plus
+Redis activity counts that are null, never 0, when unreadable. The Security card's recent events
+leave out every `mcp_*` row (`list_auth_audit_events(exclude_prefix="mcp_")`), so an agent's access
+and mint rows cannot push the account's human sign-ins out of its window.
 Revoking one is `POST /user/sessions/revoke`, as for every session.
 
 Fleet-wide controls are owner-run: `POST /api/admin/mcp-kill {on}` (admin human session, step-up,

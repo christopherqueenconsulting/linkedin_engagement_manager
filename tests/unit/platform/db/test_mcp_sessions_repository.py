@@ -258,3 +258,93 @@ class TestRevokes:
         conn, _ = fake_cursor(execute_error=_ERR)
         with _conn(conn):
             assert revoke_sessions_by_scope(("mcp",), reason="x") is None
+
+
+class TestTheGateLookupIsReadOnlyForOtherScopes:
+    def _resolve(self, fake_cursor: Any, scope: str) -> list[str]:
+        from cqc_lem.utilities.db import MCP_SESSION_SCOPES, resolve_session_checked
+
+        conn, cursor = fake_cursor(fetch_one={"id": 1, "user_id": 7, "scope": scope,
+                                              "created_at": None, "expires_at": None,
+                                              "last_seen_at": None})
+        with _conn(conn):
+            found = resolve_session_checked("tok", mutate_scopes=MCP_SESSION_SCOPES)
+        assert found["scope"] == scope
+        return _sql(cursor)
+
+    @pytest.mark.parametrize("scope", ["full", "recovery", "agent", "observer", "operator",
+                                       "assist", "extension", "enroll"])
+    def test_a_non_mcp_session_is_read_and_nothing_is_written(self, fake_cursor: Any,
+                                                              scope: str) -> None:
+        sql = self._resolve(fake_cursor, scope)
+        assert len(sql) == 1 and sql[0].startswith("SELECT")
+
+    @pytest.mark.parametrize("scope", ["mcp", "mcp_outreach"])
+    def test_an_mcp_session_still_records_last_seen(self, fake_cursor: Any, scope: str) -> None:
+        assert self._resolve(fake_cursor, scope)[-1].startswith("UPDATE sessions SET last_seen_at")
+
+
+class TestTheCappedMint:
+    def _mint(self, fake_cursor: Any, fetch_one_side_effect: Any, **kwargs: Any) -> tuple:
+        from cqc_lem.utilities.db import MCP_SESSION_SCOPES, create_session_within_cap
+
+        conn, cursor = fake_cursor(fetch_one_side_effect=fetch_one_side_effect, lastrowid=88,
+                                   **kwargs)
+        with _conn(conn):
+            result = create_session_within_cap(7, MCP_SESSION_SCOPES, 10, "mcp", label="L",
+                                               ttl_hours=24, token_prefix="lem_mcp_")
+        return result, conn, cursor
+
+    def test_under_the_cap_it_locks_counts_and_inserts_in_one_transaction(
+            self, fake_cursor: Any) -> None:
+        (token, session_id), conn, cursor = self._mint(fake_cursor, [{"id": 7}, (9,)])
+        assert token.startswith("lem_mcp_") and session_id == 88
+        sql = _sql(cursor)
+        assert sql[0] == "SELECT id FROM users WHERE id = %s FOR UPDATE"
+        assert sql[1].startswith("SELECT COUNT(*) FROM sessions") and "revoked_at IS NULL" in sql[1]
+        assert sql[2].startswith("INSERT INTO sessions")
+        assert cursor.execute.call_args_list[2].args[1][0] == _sha(token)
+        assert len(conn.cursor.call_args_list) == 1, "one cursor, one transaction"
+        conn.commit.assert_called_once()
+
+    def test_at_the_cap_nothing_is_inserted(self, fake_cursor: Any) -> None:
+        from cqc_lem.utilities.db import SessionCapReached
+
+        with pytest.raises(SessionCapReached):
+            self._mint(fake_cursor, [{"id": 7}, (10,)])
+
+    def test_a_dict_row_count_is_read_too(self, fake_cursor: Any) -> None:
+        from cqc_lem.utilities.db import SessionCapReached
+
+        with pytest.raises(SessionCapReached):
+            self._mint(fake_cursor, [{"id": 7}, {"COUNT(*)": 12}])
+
+    def test_no_such_user_mints_nothing(self, fake_cursor: Any) -> None:
+        result, _conn_, cursor = self._mint(fake_cursor, [None])
+        assert result == (None, None)
+        assert len(_sql(cursor)) == 1
+
+    def test_a_fault_mints_nothing(self, fake_cursor: Any) -> None:
+        result, _conn_, _cursor = self._mint(fake_cursor, [{"id": 7}], execute_error=_ERR)
+        assert result == (None, None)
+
+
+class TestListingAndAuditColumns:
+    def test_live_tokens_come_first_in_sql(self, fake_cursor: Any) -> None:
+        from cqc_lem.utilities.db import list_sessions_by_scope
+
+        conn, cursor = fake_cursor(fetch_all=[])
+        with _conn(conn):
+            list_sessions_by_scope(7, ("mcp",), limit=3)
+        sql, params = cursor.execute.call_args.args
+        assert "ORDER BY (revoked_at IS NULL AND expires_at > %s) DESC, id DESC LIMIT %s" in sql
+        assert isinstance(params[-2], datetime) and params[-1] == 3
+
+    def test_the_audit_list_carries_user_agent_for_the_security_card(
+            self, fake_cursor: Any) -> None:
+        from cqc_lem.utilities.db import list_auth_audit_events
+
+        conn, cursor = fake_cursor(fetch_all=[])
+        with _conn(conn):
+            list_auth_audit_events(7, exclude_prefix="mcp_")
+        assert "user_agent" in cursor.execute.call_args.args[0]

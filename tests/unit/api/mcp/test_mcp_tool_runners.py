@@ -100,7 +100,8 @@ async def test_whoami_survives_an_unreadable_profile() -> None:
     lb = FakeLoopback({"/user/settings": {"subscription": None, "preferences": None},
                        "/user/linkedin-profile": _down()})
     body = await registry._whoami(lb, registry.NoArgs())
-    assert body["account_name"] is None and body["subscription"] is None
+    assert body["account_name"] is None and body["linkedin_profile_url"] is None
+    assert "subscription" not in body
 
 
 async def test_a_weekly_report_error_other_than_404_is_raised() -> None:

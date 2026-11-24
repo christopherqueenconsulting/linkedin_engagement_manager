@@ -89,6 +89,8 @@ IMPACT_REPORT = "impact-report-enabled"
 MCP_SERVER = "mcp-server-enabled"
 MCP_SERVER_WRITES = "mcp-server-writes"
 COMMENT_RAMP = "comment-ramp-enabled"
+MCP_SERVER = "mcp-server-enabled"
+MCP_SERVER_WRITES = "mcp-server-writes"
 
 FLAGS: Dict[str, FlagSpec] = {
     spec.key: spec for spec in (

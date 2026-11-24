@@ -15,12 +15,15 @@ steps 1-6, with the kill switch split so every check that needs no I/O runs befo
 6. A streamed body over 256 KB -> 413; a client gone mid-body still gets a (400) response.
 7. A token in the query string (`token`, `session_token`, `access_token`) -> 400
    `token_in_url_refused`. A value that resolves to ANY session is revoked at once, audited as
-   `mcp_token_exposed` and its owner emailed (WARNING); one that resolves to nothing is INFO.
+   `mcp_token_exposed` and its owner emailed (WARNING); one that resolves to nothing is INFO and
+   counts against the per-address bucket, which is checked BEFORE any lookup (at most 4 values).
 8. Only `Authorization: Bearer` is read; an outer `lem_session` cookie is ignored, and a cookie with
    no bearer -> 401 `cookie_only`.
-9. Pre-auth failure bucket, per (client address, token digest): 30 failures a minute -> 429.
+9. Pre-auth failure buckets: per client address (60 failures a minute, so a flood of random tokens
+   is refused before the database) and per (address, token digest) (30 a minute) -> 429.
 10. Resolve: a database fault -> 503 `mcp_unavailable`; unknown, expired or revoked -> 401
-   `invalid_token` (DEBUG); a live session of any other scope -> the same 401 (WARNING).
+   `invalid_token` (DEBUG); a live session of any other scope -> the same 401 (WARNING). The
+   lookup writes nothing for a non-MCP session: its expiry and `last_seen_at` are left as they were.
 11. Rollout flag `mcp-server-enabled` off for the user -> 403 `mcp_disabled`.
 12. Concurrency: 2 in flight per user (Redis), 8 per worker (in process) -> 429 with `Retry-After`.
 13. Budget: each JSON-RPC `tools/call` spends the per-user tool-call budget -> 429 when exhausted.
@@ -31,7 +34,8 @@ steps 1-6, with the kill switch split so every check that needs no I/O runs befo
 Steps 9-15 are the plan's §3.3 steps 7-13 (P2).
 
 Then the request goes to the SDK's session manager with the body the gate already read. Every
-blocking call (resolve, Redis, flag, audit) runs in the thread pool.
+blocking call (resolve, Redis, flag, audit) runs in the thread pool. Steps 12-15 and the SDK call
+sit inside ONE try/finally, so a slot is returned on every exit, a cancellation included.
 
 This is the ONE public `/api` path that resolves a session, and it admits only the two MCP scopes
 (`docs/identity-and-sessions.md`, the MCP carve-out). The token is never logged, put in a response
@@ -44,6 +48,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Generator, MutableMapping, Optional
 
+import anyio
 from fastapi.concurrency import run_in_threadpool
 from starlette.datastructures import Headers, QueryParams
 from starlette.requests import Request
@@ -55,6 +60,7 @@ from cqc_lem.api.mcp.limits import (
     KillState,
     LimitsUnavailable,
     acquire_user_slot,
+    address_failures_exceeded,
     auth_failures_exceeded,
     consume_budgets,
     kill_env_set,
@@ -284,20 +290,26 @@ def _user_agent(scope: Scope) -> Optional[str]:
 _MAX_EXPOSED_VALUES = 4
 
 
-def _revoke_exposed(scope: Scope, query: QueryParams, params: list[str]) -> list[dict[str, Any]]:
+def _revoke_exposed(scope: Scope, query: QueryParams,
+                    params: list[str]) -> tuple[list[dict[str, Any]], int]:
     """Revoke every live session a query-string value names, and audit and email each. Blocking.
 
     A token in a URL is in a log somewhere already (a proxy, a terminal, shell history), so it is
     treated as exposed whatever its scope: revoked at once, audited as `mcp_token_exposed`, and its
-    owner emailed. Never logs or returns the value.
+    owner emailed. Never logs or returns the value. At most `_MAX_EXPOSED_VALUES` are looked up.
+
+    Returns:
+        `(revoked, misses)`: one entry per revoked session, and how many values matched nothing.
     """
     from cqc_lem.api.mcp.notify import notify_token_event
 
     values = [(name, v.strip()) for name in params for v in query.getlist(name) if v.strip()]
     revoked: list[dict[str, Any]] = []
+    misses = 0
     for param, value in values[:_MAX_EXPOSED_VALUES]:
         found = revoke_session_by_token(value)
         if not found:
+            misses += 1
             continue
         record_auth_event(AuthAuditEvent.MCP_TOKEN_EXPOSED, user_id=found["user_id"],
                           session_id=found["session_id"], ip=_client_ip(scope),
@@ -306,16 +318,31 @@ def _revoke_exposed(scope: Scope, query: QueryParams, params: list[str]) -> list
         notify_token_event(found["user_id"], "exposed", label=found.get("label"),
                            scope=found["scope"])
         revoked.append({"user_id": found["user_id"], "scope": found["scope"]})
-    return revoked
+    return revoked, misses
 
 
 async def _query_token_refusal(scope: Scope) -> Optional[JSONResponse]:
-    """Step 5. Any token parameter is refused; one that resolves is revoked on the spot."""
+    """Step 7. Any token parameter is refused; one that resolves is revoked on the spot.
+
+    The lookups run under the per-address failure bucket: an address already over it gets 429 and
+    no lookup at all, and every value that matches nothing counts against it, so the query string
+    cannot be used to walk the sessions table either.
+    """
     query = QueryParams(scope.get("query_string", b"").decode("latin-1"))
     params = sorted(name for name in QUERY_TOKEN_PARAMS if name in query)
     if not params:
         return None
-    revoked = await run_in_threadpool(_revoke_exposed, scope, query, params)
+    client_ip = _client_ip(scope)
+    try:
+        if await run_in_threadpool(address_failures_exceeded, client_ip):
+            log_debug("MCP request refused: too many failed attempts from this address")
+            return _rate_limited("rate_limited", 60)
+    except LimitsUnavailable:
+        log_debug("MCP request refused: endpoint unavailable", cause="limits_unreadable")
+        return _unavailable()
+    revoked, misses = await run_in_threadpool(_revoke_exposed, scope, query, params)
+    for _ in range(misses):
+        await run_in_threadpool(record_auth_failure, client_ip, None)
     if revoked:
         # WARNING, never the value: a live credential was sent in a URL, and its owner has to
         # create a new one. Unlike a typo'd parameter, this is worth a grouped issue if it recurs.
@@ -452,7 +479,12 @@ class McpPrincipal:
 
 @dataclass
 class _Admission:
-    """An admitted request: who it is, and the concurrency slots it holds until it finishes."""
+    """An authenticated request: who it is, and the concurrency slots it holds until it finishes.
+
+    The flags are set the moment a slot is taken, so `_release` gives back exactly what is held, from
+    the `finally` in `McpGate.dispatch`, whatever ended the request: a refusal, an exception or a
+    cancellation.
+    """
 
     principal: McpPrincipal
     holds_user_slot: bool = False
@@ -460,16 +492,23 @@ class _Admission:
 
 
 async def _release(admission: _Admission) -> None:
+    """Give back every slot the admission holds. Safe on any exit path, cancellation included.
+
+    The worker slot is given back first and synchronously, so no cancellation can interrupt it. The
+    Redis slot needs a thread, so that call is shielded: a request cancelled mid-release still
+    returns it rather than leaving it to the counter's TTL.
+    """
     if admission.holds_worker_slot:
-        worker_slots.release()
         admission.holds_worker_slot = False
+        worker_slots.release()
     if admission.holds_user_slot:
-        await run_in_threadpool(release_user_slot, admission.principal.user_id)
         admission.holds_user_slot = False
+        with anyio.CancelScope(shield=True):
+            await run_in_threadpool(release_user_slot, admission.principal.user_id)
 
 
 def _record_access(principal: McpPrincipal, token: str, summary: RpcSummary) -> None:
-    """Step 13: the once-a-day `mcp_access` row and the Agents tab's activity counts. Never raises."""
+    """Step 15: the once-a-day `mcp_access` row and the Agents tab's activity counts. Never raises."""
     from cqc_lem.api.main import _record_daily_access  # lazy: main imports this module
 
     _record_daily_access(AuthAuditEvent.MCP_ACCESS, principal.scope, claim_mcp_access,
@@ -479,11 +518,20 @@ def _record_access(principal: McpPrincipal, token: str, summary: RpcSummary) -> 
     record_activity(principal.session_id, principal.client_name, summary.tool_calls > 0)
 
 
-async def _admit(scope: Scope, headers: Headers, token: str,
-                 summary: RpcSummary) -> tuple[Optional[_Admission], Optional[JSONResponse]]:
-    """Steps 7-13. Return `(admission, None)`, or `(None, refusal)` with nothing left held."""
+async def _authenticate(scope: Scope, headers: Headers, token: str,
+                        summary: RpcSummary) -> tuple[Optional[McpPrincipal], Optional[JSONResponse]]:
+    """Steps 9-11: who is calling, and may they. Holds nothing, so a refusal has nothing to release.
+
+    Returns:
+        `(principal, None)` for an admitted MCP session, or `(None, refusal)`.
+    """
     client_ip = _client_ip(scope)
     try:
+        # Per address first: a flood of random tokens starts a fresh per-token bucket each time, so
+        # only this one stops it before the session lookup.
+        if await run_in_threadpool(address_failures_exceeded, client_ip):
+            log_debug("MCP request refused: too many failed attempts from this address")
+            return None, _rate_limited("rate_limited", 60)
         if await run_in_threadpool(auth_failures_exceeded, client_ip, token):
             log_debug("MCP request refused: too many failed attempts")
             return None, _rate_limited("rate_limited", 60)
@@ -492,7 +540,10 @@ async def _admit(scope: Scope, headers: Headers, token: str,
         return None, _unavailable()
 
     try:
-        resolved = await run_in_threadpool(resolve_session_checked, token)
+        # Writes only for an MCP session: any other session is refused below, and must leave this
+        # lookup exactly as it came in (its idle window unslid, `last_seen_at` untouched).
+        resolved = await run_in_threadpool(resolve_session_checked, token,
+                                           mutate_scopes=MCP_SESSION_SCOPES)
     except SessionStoreUnavailable:
         # The repository already logged the fault at ERROR. 503, never "create a new token".
         log_debug("MCP request refused: endpoint unavailable", cause="session_store")
@@ -514,37 +565,39 @@ async def _admit(scope: Scope, headers: Headers, token: str,
         log_debug("MCP request refused: rollout flag off", user_id=user_id)
         return None, _refusal(403, "mcp_disabled",
                               "The LEM MCP server is not enabled for this account yet.")
+    return McpPrincipal(user_id=user_id, session_id=resolved.get("session_id"),
+                        scope=resolved["scope"], expires_at=resolved.get("expires_at"),
+                        client_name=_client_name(summary, headers)), None
 
-    principal = McpPrincipal(user_id=user_id, session_id=resolved.get("session_id"),
-                             scope=resolved["scope"], expires_at=resolved.get("expires_at"),
-                             client_name=_client_name(summary, headers))
-    admission = _Admission(principal)
+
+async def _take_slots(admission: _Admission, summary: RpcSummary) -> Optional[JSONResponse]:
+    """Steps 12-13: concurrency, then the tool-call budget. None when the request may proceed.
+
+    Only ever called inside `dispatch`'s try/finally, which releases whatever this took. Each flag
+    is set with no `await` between taking the slot and recording it, and the Redis acquire is
+    shielded, so a cancellation cannot land between the two and strand a slot.
+    """
+    user_id = admission.principal.user_id
     if not worker_slots.try_acquire():
         log_debug("MCP request refused: worker concurrency", user_id=user_id)
-        return None, _rate_limited("concurrency_limited", 1)
+        return _rate_limited("concurrency_limited", 1)
     admission.holds_worker_slot = True
     try:
-        admission.holds_user_slot = await run_in_threadpool(acquire_user_slot, user_id)
+        with anyio.CancelScope(shield=True):
+            admission.holds_user_slot = await run_in_threadpool(acquire_user_slot, user_id)
         if not admission.holds_user_slot:
-            await _release(admission)
             log_debug("MCP request refused: user concurrency", user_id=user_id)
-            return None, _rate_limited("concurrency_limited", 1)
-        retry_after = None
+            return _rate_limited("concurrency_limited", 1)
         if summary.tool_calls:
             retry_after = await run_in_threadpool(
                 consume_budgets, user_id, [TOOL_CALLS_PER_MIN] * summary.tool_calls)
-        if retry_after is not None:
-            await _release(admission)
-            log_debug("MCP request refused: tool-call budget", user_id=user_id)
-            return None, _rate_limited("rate_limited", retry_after)
+            if retry_after is not None:
+                log_debug("MCP request refused: tool-call budget", user_id=user_id)
+                return _rate_limited("rate_limited", retry_after)
     except LimitsUnavailable:
-        await _release(admission)
         log_debug("MCP request refused: endpoint unavailable", cause="limits_unreadable")
-        return None, _unavailable()
-
-    scope.setdefault("state", {})["mcp_principal"] = principal
-    await run_in_threadpool(_record_access, principal, token, summary)
-    return admission, None
+        return _unavailable()
+    return None
 
 
 def _replay_receive(body: bytes, receive: Receive) -> Receive:
@@ -619,15 +672,27 @@ class McpGate:
         token: Optional[str] = None
         if response is None:
             token, response = _bearer_refusal(headers)
-        admission: Optional[_Admission] = None
+        summary = _rpc_summary(body)
+        principal: Optional[McpPrincipal] = None
         if response is None and token is not None:
-            admission, response = await _admit(scope, headers, token, _rpc_summary(body))
-        if response is not None or admission is None:
+            principal, response = await _authenticate(scope, headers, token, summary)
+        if response is not None or principal is None or token is None:
             response = response or _unavailable()
             _report_refusal(response)
             await response(scope, receive, send)
             return
+
+        # From the first slot taken to the last byte sent, ONE try/finally: every exit path,
+        # cancellation and any exception included, gives back exactly what was taken.
+        admission = _Admission(principal)
         try:
+            response = await _take_slots(admission, summary)
+            if response is not None:
+                _report_refusal(response)
+                await response(scope, receive, send)
+                return
+            scope.setdefault("state", {})["mcp_principal"] = principal
+            await run_in_threadpool(_record_access, principal, token, summary)
             await mcp_server.session_manager.handle_request(scope, _replay_receive(body, receive),
                                                             send)
         finally:

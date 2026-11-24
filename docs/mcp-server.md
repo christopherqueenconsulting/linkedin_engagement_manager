@@ -43,7 +43,7 @@ that needs a new path is therefore a reviewed edit to the scope table as well.
 
 | Tool | `mcp` | `mcp_outreach` | Reads | Notes |
 |---|---|---|---|---|
-| `lem_whoami` | yes | yes | `/user/settings`, `/user/linkedin-profile` | `account_name` is the LinkedIn handle from the user's own profile URL (no display name is on the MCP surface); billing ids never returned |
+| `lem_whoami` | yes | yes | `/user/settings`, `/user/linkedin-profile` | `account_name` is the LinkedIn handle from the user's own profile URL (no display name is on the MCP surface); no billing: `/user/settings` never reads it for a machine seat |
 | `lem_get_account_overview` | yes | yes | dashboard, health and generation status (fan-out) | |
 | `lem_get_dashboard` | yes | yes | `/dashboard/stats`, `/dashboard/planned-tasks` | |
 | `lem_get_automation_health` | yes | yes | `/user/automation-status`, `/user/linkedin-signin-status`, `/user/account-readiness` | pause and breaker labelled fleet-global; `unknown` is not broken |
@@ -58,7 +58,8 @@ that needs a new path is therefore a reviewed edit to the scope table as well.
 | `lem_get_activity` | yes | yes | `/activity` | open-world; `message` fenced; `feedpost://` keys never returned |
 | `lem_list_outreach` | no | yes | `/dms`, `/connection_requests`, `/leads`, `/lead_signals`, `/catchup/touches`, `/outreach/targets` | open-world; names and profile URLs (the opted-in PII), free text fenced |
 | `lem_get_lead_funnel` | yes | yes | `/leads/funnel` | counts only |
-| `lem_get_engagement_settings` | yes | yes | prefs, `/user/engagement-targets`, `/user/dm-templates`, `/user/engagement-suggestions` | open-world; the roster as COUNTS only (people lists are outreach-only, O11); suggestion drafts fenced |
+| `lem_get_engagement_settings` | yes | yes | `/user/engagement-preferences`, `/user/dm-templates` | the inbound-mail address and Gmail confirmation never returned |
+| `lem_list_engagement_targets` | no | yes | `/user/engagement-targets`, `/user/engagement-suggestions` | open-world; the roster is named people and the suggestions are AI drafts from strangers' posts, so both are outreach-only (P2 review); drafts fenced |
 | `lem_get_voice_kit` | yes | yes | story bank, lead magnet, groups, skills, profile | open-world; group names fenced |
 | `lem_get_newsletter` | yes | yes | settings, draft, `/user/newsletter-subscribers` | the latest subscriber COUNT only (O5) |
 | `lem_list_newsletter_subscribers` | no | yes | `/user/newsletter-subscribers` | the paged count history (see below) |
@@ -136,15 +137,114 @@ distinct-id overrides for the internal and sandbox accounts. **Never run
 `scripts/posthog_flags.py --apply` while those overrides exist**: the script replaces a flag's
 `groups` wholesale and would delete them.
 
+## Operating it on the box
+
+Run the on-box commands from `/opt/lem`. Use `./scripts/compose.sh`, never a hand-typed `docker
+compose -f …` list (`docs/DEPLOYMENT.md` § "Compose file layering" explains why). From a login
+outside the `docker` group, prefix each on-box command with `sudo`.
+
+### Kill switch
+
+There are two switches, and either one stops the endpoint. Both are checked on every request,
+before any auth step. Since P2 there is also an admin route, `POST /api/admin/mcp-kill {"on": true}` (step-up, audited),
+and `scripts/mcp_kill.py on|off|status`; both write the same Redis key. The kill switch fails **closed**: a Redis the gate cannot read also answers
+503.
+
+#### 1. Redis key: instant, no restart
+
+The key is `mcp:kill` in Redis **db 0**, the database in `CELERY_BROKER_URL=redis://redis:6379/0`,
+which is where the gate reads it. The compose service and container are both named `redis`. Any
+stored value means ON.
+
+```bash
+cd /opt/lem
+./scripts/compose.sh exec -T redis redis-cli -n 0 SET mcp:kill 1     # stop: next request is 503
+./scripts/compose.sh exec -T redis redis-cli -n 0 GET mcp:kill       # "1" while stopped
+./scripts/compose.sh exec -T redis redis-cli -n 0 DEL mcp:kill       # re-enable: (integer) 1
+```
+
+It takes effect on the next request, on every API worker of both colours, with no deploy.
+
+#### 2. Env var: needs a deploy or restart
+
+`MCP_SERVER_KILL=1` in `/opt/lem/.env` (any value except `0`, `false`, `no`, `off`). Only the
+FastAPI containers read it, `web_api_blue` and `web_api_green` (`env_file: - .env`,
+`docker-compose.prod.yml:49-50`). In prod, `web_app` is the nginx edge and gets no env
+(`env_file: !reset []`, `docker-compose.prod.yml:30`).
+
+The variable is read per request, but a container only sees a changed `.env` when it is
+**recreated**. A plain `restart` is not enough. It therefore lands on the next deploy. To apply it
+sooner, redeploy the tag that is already running: `deploy.sh` brings the standby colour up with
+`up -d --no-deps web_api_<colour>`, which recreates it with the new environment, and then flips
+traffic to it, with zero downtime.
+
+```bash
+cd /opt/lem && cat .last_good_tag                    # the running tag
+sudo env DOCKER_CONFIG=/home/deploy/.docker bash ./scripts/deploy.sh "$(cat .last_good_tag)"
+sudo chown -R deploy:deploy /opt/lem/.git
+```
+
+Use the Redis key when you need it NOW, and the env var when it must survive a Redis flush. Remove
+the line, or set it to `0`, and deploy again to undo it.
+
+#### Verify
+
+```bash
+curl -sS -XPOST https://app.<domain>/api/mcp -H 'Content-Type: application/json' -d '{}'
+```
+
+While either switch is on, it returns HTTP **503** with this body:
+
+```json
+{"status_code":503,"detail":"The LEM MCP server is switched off by the operator.","reason":"mcp_disabled_by_operator"}
+```
+
+With both switches off, the same command returns **401** `missing_token`, the normal answer
+to a request with no token. A **503 `mcp_unavailable`** means either Redis is unreadable or the endpoint did not start
+(`PUBLIC_BASE_URL` empty or malformed, or the SDK manager failed). It is not the kill switch.
+Check `/opt/lem/logs/cqc_lem_YYYY_MM_DD.log` for `MCP endpoint unavailable`.
+
 ## Rollback (owner-run, Tier 2)
 
 In this order. Revoking before reverting means old code never meets an `mcp` scope it does not know.
 
-1. **Kill**: `POST /api/admin/mcp-kill {"on": true}` (step-up, audited), or
-   `sudo docker exec -i celery_worker python - on < scripts/mcp_kill.py`. Takes effect on the next
-   request. The env fallback `MCP_SERVER_KILL=1` ships only through `deploy.sh`.
+1. **Kill**: the Redis key or the admin route (§ Kill switch). Takes effect on the next request.
 2. **Narrow**: remove the flag overrides in PostHog (not instant: up to `POSTHOG_FLAG_POLL_SECONDS`
    per worker).
 3. **Revoke all**: `sudo docker exec -i celery_worker python - --reason <why> < scripts/mcp_revoke_all.py`
-   (one audit row per affected account).
-4. **Redeploy** `.last_good_tag` through `deploy-vps.yml`; revert P4/P3, then P2.
+   (one `mcp_sessions_revoked` audit row per affected account).
+4. **Redeploy** the release before the change (below); revert P4/P3, then P2.
+
+No MCP phase adds a migration, so the redeploy itself changes no data. Since P2 tokens exist, which
+is why step 3 comes first.
+
+1. **First, stop it with the Redis key** (above). This is instant, and often all you need.
+2. **Redeploy the previous release.** `scripts/deploy.sh` records the last healthy tag in
+   `/opt/lem/.last_good_tag`. If the P1 deploy itself failed its health check, `deploy.sh` has
+   already rolled back to that tag. If P1 deployed cleanly, that file now names the P1 release, so
+   roll back to the release BEFORE it. The invocation is from `docs/DEPLOYMENT.md`
+   § "Deploying from the box as the owner":
+
+   ```bash
+   cd /opt/lem && sudo ./scripts/backup.sh
+   cat .last_good_tag                                   # the tag deploy.sh last marked healthy
+   git tag --sort=-v:refname | head -5                  # pick the release before P1
+   sudo env DOCKER_CONFIG=/home/deploy/.docker bash ./scripts/deploy.sh vX.Y.Z
+   sudo chown -R deploy:deploy /opt/lem/.git
+   ```
+
+   Or use the **Redeploy / Rollback VPS** workflow with that tag and `rollback` ticked
+   (`docs/DEPLOYMENT.md` § "Manual redeploy / rollback").
+3. **Check health:** `curl -fsS https://app.<domain>/health`. `/health` stays 200 even when the MCP
+   session manager fails to start, because the MCP lifespan fails open. A non-200 `/health` is not
+   caused by MCP being down; it means something else is wrong.
+
+## Leaked tokens
+
+Any token found in the nginx **error** log or in the Cloudflare logs must be rotated. The access
+log drops query-string `/api/mcp` requests (`compose/prod/nginx/default.conf.tmpl`), but nginx's
+error log still records the full URL when the upstream is unreachable, and Cloudflare sees every
+URL. A query-string token that reaches the gate is revoked on the spot, audited as `mcp_token_exposed`
+and its owner emailed (P2); one that never reached it (an error-log line while the upstream was
+down) has to be revoked by hand: its owner revokes it in LEM -> Agents, or a LEM session is revoked
+with `POST /api/user/sessions/revoke`.

@@ -172,6 +172,22 @@ class TestTheGate:
         assert _row(mcp_token)["revoked_at"] is not None
         assert len(_events(user_id, "mcp_token_exposed")) == 1
 
+    def test_a_browser_session_presented_here_is_left_exactly_as_it_was(self, user_id,
+                                                                        api_client):
+        """The gate refuses it, and must not slide its idle window or touch `last_seen_at`."""
+        browser = db.create_session(user_id, label="Browser")
+        earlier = (datetime.now(timezone.utc) - timedelta(minutes=10)).replace(tzinfo=None,
+                                                                                 microsecond=0)
+        _exec("UPDATE sessions SET last_seen_at=%s WHERE session_token=%s",
+              (earlier, hash_session_token(browser)))
+        before = _row(browser)
+        resp = api_client.post("/api/mcp", json=_INIT,
+                               headers={**_ACCEPT, "Authorization": f"Bearer {browser}"})
+        assert resp.status_code == 401 and resp.json()["reason"] == "invalid_token"
+        after = _row(browser)
+        assert after["expires_at"] == before["expires_at"]
+        assert after["last_seen_at"] == before["last_seen_at"] == earlier
+
     def test_the_kill_key_is_503(self, mcp_token, api_client):
         from cqc_lem.api.mcp.limits import set_kill_key
 

@@ -24,7 +24,7 @@ from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from enum import IntEnum
 from typing import Any, Awaitable, Callable, Dict, Iterator, List, Mapping, NoReturn, Optional, Union
-from urllib.parse import urlencode, urlparse, urlsplit
+from urllib.parse import urlencode, urlparse
 
 import requests
 from celery import chain as celery_chain
@@ -211,6 +211,7 @@ from cqc_lem.utilities.linkedin.member_post_analytics import (
     member_post_analytics_enabled_for_user,
     member_post_analytics_separate_app_enabled,
 )
+from cqc_lem.utilities.linkedin.profile_url import normalise_profile_url
 from cqc_lem.utilities.linkedin.verification_pin import (
     extract_pin_from_text,
     extract_token_from_address,
@@ -740,8 +741,7 @@ _MCP_READ_PATHS = frozenset({
     "/user/weekly-report", "/leads/funnel",
     # engagement settings (the prefs GET never mints or returns `reply_inbound_address` for a
     # machine seat, MCP W1)
-    "/user/engagement-preferences", "/user/engagement-targets", "/user/dm-templates",
-    "/user/engagement-suggestions",
+    "/user/engagement-preferences", "/user/dm-templates",
     # voice kit: the user's own story bank, lead magnet, groups, skills and profile
     "/user/story-bank", "/user/lead-magnet", "/user/groups", "/user/linkedin-profile-skills",
     "/user/linkedin-profile",
@@ -753,9 +753,11 @@ _MCP_READ_PATHS = frozenset({
 })
 # `mcp` plus the lists that hold OTHER people's data: who LEM messages, invites, scores and replies
 # to. Opted into at mint (owner ruling O11). Row fields are cut to `_OBSERVER_ROW_FIELDS`.
+# `/user/engagement-targets` (named people to engage) and `/user/engagement-suggestions` (drafts
+# written from strangers' posts) are here too: both are other people's data, not the user's own.
 _MCP_OUTREACH_EXTRA_READ_PATHS = frozenset({
     "/dms", "/connection_requests", "/leads", "/lead_signals", "/catchup/touches",
-    "/outreach/targets",
+    "/outreach/targets", "/user/engagement-targets", "/user/engagement-suggestions",
 })
 _MCP_OUTREACH_READ_PATHS = _MCP_READ_PATHS | _MCP_OUTREACH_EXTRA_READ_PATHS
 _GET_ONLY = frozenset({"GET"})
@@ -2812,7 +2814,7 @@ def schedule_post(post: PostRequest) -> PostScheduledResponse:
     _reject_foreign_email(user_id, post.email)
     _refuse_agent_approved_status(post.status)
     if _edits_pending_only():
-        _refuse_machine_media(post)
+        _refuse_machine_media(post, user_id=user_id)
         post = post.model_copy(update={"post_type": PostType.TEXT, "status": PostStatus.PENDING})
     # The row is written against the SESSION's address, never the body's — a target that passed the
     # check is by definition the same string, and reading it back from the account is what keeps
@@ -3075,6 +3077,7 @@ def bulk_update_posts_endpoint(request: BulkUpdateRequest) -> ResponseModel[str]
     if _agent_scoped():
         # On no machine surface today; should it ever be, a batch restatus is a human's call
         # (issue #2684) — it can approve, reject or reschedule rows a human already acted on.
+        _log_queue_only_refusal("agent_may_not_bulk_update", user_id=user_id, action_type="post")
         raise HTTPException(status_code=403, detail={
             "code": "agent_may_not_bulk_update",
             "message": "This token cannot restatus or reschedule posts in bulk.",
@@ -3184,10 +3187,14 @@ def update_post(post_id: int, post: PostRequest) -> ResponseModel[str]:
         # as stored: asking to change type or media is a 422, never a silent overwrite that would
         # strip a carousel's slides or a video's render. Enforced in SQL, so a post approved a
         # moment ago is a 409.
-        _refuse_machine_media(post)
-        _pending_edit_or_raise("post", post_id, user_id, {
-            "content": post.content, "scheduled_time": post.scheduled_datetime,
-        }, "Post could not be updated")
+        _refuse_machine_media(post, user_id=user_id)
+        # None-valued keys are dropped: update_pending_row writes None as NULL, and a draft's
+        # body or slot must never be blanked by a field the caller did not send.
+        fields = {k: v for k, v in (("content", post.content),
+                                    ("scheduled_time", post.scheduled_datetime)) if v is not None}
+        if not fields:
+            raise HTTPException(status_code=422, detail="Nothing to update")
+        _pending_edit_or_raise("post", post_id, user_id, fields, "Post could not be updated")
         return ResponseModel(status_code=200, detail="Post updated successful")
 
     if update_db_post(post.content, post.video_url, post.scheduled_datetime, post.post_type, post_id,
@@ -3424,20 +3431,41 @@ def _pending_edit_or_raise(kind: str, row_id: int, user_id: int, fields: Dict[st
         HTTPException: 409 `edit_requires_pending` when the row has left its pending state, 500
             when the write failed.
     """
-    _raise_unless_updated(update_pending_row(kind, row_id, user_id, fields), failure_detail)
+    _raise_unless_updated(update_pending_row(kind, row_id, user_id, fields), failure_detail,
+                          user_id=user_id, action_type=kind)
 
 
-def _raise_unless_updated(outcome: PendingEdit, failure_detail: str) -> None:
+def _log_queue_only_refusal(code: str, *, user_id: Optional[int], action_type: str) -> None:
+    """The one INFO line every queue-only refusal leaves in the production log (issue #2684).
+
+    INFO, not WARNING: a seat asking for something it may not have is the guard working, and a
+    machine client retrying a refused edit would otherwise file a defect per retry. The code sits in
+    the MESSAGE because only documented keys render onto the file line, and it is one of four fixed
+    strings, so the template stays stable. Never a URL or an email: neither is passed here.
+
+    Args:
+        code: The refusal's response code.
+        user_id: The caller.
+        action_type: The queue or route the refusal was on.
+    """
+    log_info(f"Queue-only seat refused: {code}", user_id=user_id, action_type=action_type)
+
+
+def _raise_unless_updated(outcome: PendingEdit, failure_detail: str, *, user_id: Optional[int],
+                          action_type: str) -> None:
     """Map a pending-only write's outcome onto the response a queue-only seat gets.
 
     Args:
         outcome: What the repository write reported.
         failure_detail: The handler's own 500 message for a database error.
+        user_id: The caller, for the refusal's log line.
+        action_type: The queue, for the refusal's log line.
 
     Raises:
         HTTPException: 409 `edit_requires_pending` for NOT_PENDING, 500 for FAILED.
     """
     if outcome == PendingEdit.NOT_PENDING:
+        _log_queue_only_refusal("edit_requires_pending", user_id=user_id, action_type=action_type)
         raise HTTPException(status_code=409, detail={
             "code": "edit_requires_pending",
             "message": "This token can only edit items that are still pending review.",
@@ -3446,45 +3474,20 @@ def _raise_unless_updated(outcome: PendingEdit, failure_detail: str) -> None:
         raise HTTPException(status_code=500, detail=failure_detail)
 
 
-# A LinkedIn member profile: `/in/<slug>` and nothing beneath it. The slug may be unicode or
-# percent-encoded (`\w` is unicode-aware), never a separator.
-_LINKEDIN_PROFILE_PATH = re.compile(r"/in/([\w\-%]+)/?")
-_LINKEDIN_PROFILE_HOSTS = frozenset({"linkedin.com", "www.linkedin.com"})
-
-
-def _normalised_linkedin_profile_url(url: str) -> Optional[str]:
-    """The one stored spelling of a LinkedIn profile URL, or None when `url` is not one.
-
-    The forms the scrapers and suppliers produce all collapse here: surrounding whitespace, `http`,
-    a bare `linkedin.com`, an upper-case host, a `?originalSubdomain=uk` or `#fragment` and a
-    missing trailing slash. The canonical form is `https://www.linkedin.com/in/<slug>/`.
-    """
-    try:
-        parts = urlsplit(url.strip())
-        port = parts.port  # raises ValueError on a malformed port, like urlsplit on a bad netloc
-    except ValueError:
-        return None
-    if parts.scheme.lower() not in ("http", "https") or parts.username or parts.password:
-        return None
-    if (parts.hostname or "") not in _LINKEDIN_PROFILE_HOSTS or port is not None:
-        return None
-    match = _LINKEDIN_PROFILE_PATH.fullmatch(parts.path)
-    if not match:
-        return None
-    return f"https://www.linkedin.com/in/{match.group(1)}/"
-
-
-def _linkedin_profile_url_for_seat(url: Optional[str]) -> Optional[str]:
+def _linkedin_profile_url_for_seat(url: Optional[str], *, user_id: Optional[int],
+                                   action_type: str) -> Optional[str]:
     """The recipient URL to store: normalised for a queue-only seat, untouched for a human.
 
     A queue-only seat may only queue outreach to a LinkedIn member profile (MCP W1, issue #2684). A
     machine seat is the caller that can be fed a stranger's text, so anything it names as a
     recipient must be a profile URL and nothing else: not another site, not a company page, not a
-    path beneath a profile. A human typing a URL into the SPA is unchanged. None means the field was
-    not supplied and is left to the handler.
+    path beneath a profile. The spelling rules are `normalise_profile_url`'s. A human typing a URL
+    into the SPA is unchanged. None means the field was not supplied and is left to the handler.
 
     Args:
         url: The recipient or target URL the request named.
+        user_id: The caller, for the refusal's log line.
+        action_type: The queue, for the refusal's log line.
 
     Returns:
         The canonical profile URL for a queue-only seat, `url` itself for anyone else.
@@ -3494,8 +3497,10 @@ def _linkedin_profile_url_for_seat(url: Optional[str]) -> Optional[str]:
     """
     if url is None or not _agent_scoped():
         return url
-    normalised = _normalised_linkedin_profile_url(url)
+    normalised = normalise_profile_url(url)
     if normalised is None:
+        _log_queue_only_refusal("linkedin_profile_url_required", user_id=user_id,
+                                action_type=action_type)
         raise HTTPException(status_code=422, detail={
             "code": "linkedin_profile_url_required",
             "message": "Recipient must be a LinkedIn profile URL (linkedin.com/in/<profile>).",
@@ -3503,13 +3508,17 @@ def _linkedin_profile_url_for_seat(url: Optional[str]) -> Optional[str]:
     return normalised
 
 
-def _refuse_machine_media(post: "PostRequest") -> None:
+def _refuse_machine_media(post: "PostRequest", *, user_id: Optional[int]) -> None:
     """A queue-only seat writes TEXT drafts only, so any media in the body is a 422, never dropped.
 
     A silent downgrade would let the caller believe it had queued the video or carousel it asked
     for. "Supplied" is a value that would change what the post is or what a later step spends on:
     a non-text `post_type`, a `video_url`, slides, an `image_url`, an explicit `use_avatar`, or a
     `video_quality` other than the default.
+
+    Args:
+        post: The composer body.
+        user_id: The caller, for the refusal's log line.
 
     Raises:
         HTTPException: 422 `machine_seat_text_only`.
@@ -3523,6 +3532,7 @@ def _refuse_machine_media(post: "PostRequest") -> None:
         ("video_quality", post.video_quality not in (None, "standard")),
     ) if present]
     if supplied:
+        _log_queue_only_refusal("machine_seat_text_only", user_id=user_id, action_type="post")
         raise HTTPException(status_code=422, detail={
             "code": "machine_seat_text_only",
             "message": "This token can only draft text posts; remove: " + ", ".join(supplied),
@@ -3875,7 +3885,8 @@ def schedule_dm_endpoint(request: ScheduleDmRequest) -> ResponseModel[dict[str, 
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     _refuse_agent_approved_status(request.status)
-    request.recipient_profile_url = _linkedin_profile_url_for_seat(request.recipient_profile_url)
+    request.recipient_profile_url = _linkedin_profile_url_for_seat(
+        request.recipient_profile_url, user_id=user_id, action_type="scheduled_dm")
     status = ScheduledDmStatus.APPROVED if request.status == "approved" else ScheduledDmStatus.PENDING
     dm_id = insert_scheduled_dm(user_id, request.recipient_profile_url, request.message,
                                 request.scheduled_datetime, recipient_name=request.recipient_name,
@@ -3924,7 +3935,8 @@ def update_scheduled_dm_endpoint(request: UpdateDmRequest) -> ResponseModel[str]
         raise HTTPException(status_code=422,
                             detail=f"Unknown action '{request.action}' — expected 'approve' or 'cancel'")
     _refuse_agent_approval(request.action)
-    request.recipient_profile_url = _linkedin_profile_url_for_seat(request.recipient_profile_url)
+    request.recipient_profile_url = _linkedin_profile_url_for_seat(
+        request.recipient_profile_url, user_id=user_id, action_type="scheduled_dm")
     status = action_map.get(request.action)
     if status is None and all(v is None for v in (request.recipient_profile_url, request.recipient_name,
                                                   request.message, request.scheduled_datetime)):
@@ -3982,7 +3994,8 @@ def create_connection_request_endpoint(request: ConnectionRequestCreate) -> Resp
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     _refuse_agent_approved_status(request.status)
-    request.recipient_profile_url = _linkedin_profile_url_for_seat(request.recipient_profile_url)
+    request.recipient_profile_url = _linkedin_profile_url_for_seat(
+        request.recipient_profile_url, user_id=user_id, action_type="connection_request")
     if request.status is None:
         mode = get_engagement_preferences(user_id).get("connection_request_mode", "auto_approve")
         # The PASSIVE half of the same guarantee, and the one with no field to refuse on. This
@@ -4073,7 +4086,8 @@ def update_connection_request_endpoint(request: ConnectionRequestUpdate) -> Resp
         if not current or current["status"] != str(ConnectionRequestStatus.FAILED):
             raise HTTPException(status_code=422, detail="Only a 'failed' connection request can be retried")
     _refuse_agent_approval(request.action)
-    request.recipient_profile_url = _linkedin_profile_url_for_seat(request.recipient_profile_url)
+    request.recipient_profile_url = _linkedin_profile_url_for_seat(
+        request.recipient_profile_url, user_id=user_id, action_type="connection_request")
     status = action_map.get(request.action)
     if request.action is None and request.recipient_email is not None and not _agent_scoped():
         current = current or get_connection_request(request.request_id)
@@ -4090,7 +4104,8 @@ def update_connection_request_endpoint(request: ConnectionRequestUpdate) -> Resp
                                     request.message)):
             _raise_unless_updated(attach_email_to_connection_request(
                 request.request_id, user_id, request.recipient_email),
-                "Could not update connection request")
+                "Could not update connection request", user_id=user_id,
+                action_type="connection_request")
             return ResponseModel(status_code=200, detail="Connection request updated")
         fields: Dict[str, Any] = {
             k: v for k, v in (("recipient_profile_url", request.recipient_profile_url),

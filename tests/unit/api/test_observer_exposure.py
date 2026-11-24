@@ -115,12 +115,12 @@ def _session_rows() -> list[dict[str, Any]]:
 
 
 def _get_security(api_client: Any, scope: str, events: list[dict[str, Any]]) -> tuple[Any, Any]:
-    def bounded(user_id: int, limit: int = 20) -> list[dict[str, Any]]:
+    def bounded(user_id: int, limit: int = 20, **_filters: Any) -> list[dict[str, Any]]:
         return events[:limit]
 
     with _session(scope), \
          patch(f"{_USER}.list_user_sessions", return_value=_session_rows()), \
-         patch(f"{_USER}.get_auth_audit_events", side_effect=bounded) as audit, \
+         patch(f"{_USER}.list_auth_audit_events", side_effect=bounded) as audit, \
          patch(f"{_USER}.get_user_public_uid", return_value="pub-1"), \
          patch(f"{_USER}.get_user_email", return_value="owner@example.com"):
         resp = api_client.get("/api/user/security", params={"session_token": _TOKEN})
@@ -140,7 +140,7 @@ class TestSecurityEndpoint:
     def test_an_endpoint_that_ignores_the_limit_is_still_trimmed(self, api_client: Any) -> None:
         with _session("observer"), \
              patch(f"{_USER}.list_user_sessions", return_value=[]), \
-             patch(f"{_USER}.get_auth_audit_events", return_value=_audit_rows(100)), \
+             patch(f"{_USER}.list_auth_audit_events", return_value=_audit_rows(100)), \
              patch(f"{_USER}.get_user_public_uid", return_value="pub-1"), \
              patch(f"{_USER}.get_user_email", return_value="owner@example.com"):
             resp = api_client.get("/api/user/security", params={"session_token": _TOKEN})

@@ -158,3 +158,16 @@ def test_the_backfill_carve_out_attaches_only_to_an_email_challenged_failed_requ
         (challenged, declined), fetch=True)}
     assert rows[challenged] == ("failed", "jane@example.test"), "the row stays failed"
     assert rows[declined] == ("failed", None)
+
+
+def test_a_legacy_outreach_spelling_is_a_duplicate_of_its_canonical_form(users: tuple) -> None:
+    """Existing rows are never rewritten, so the machine-seat duplicate check matches the PROFILE."""
+    uid, other = users
+    legacy_id = db.insert_outreach_target(uid, "https://linkedin.com/in/jane_doe-2684")
+    assert legacy_id
+    found = db.get_outreach_target_by_profile(
+        uid, "https://www.linkedin.com/in/Jane_Doe-2684/?originalSubdomain=uk")
+    assert found and found["id"] == legacy_id
+    # `_` is escaped in the LIKE, so a near-miss slug is not a match, and the lookup is per user.
+    assert db.get_outreach_target_by_profile(uid, "https://linkedin.com/in/janexdoe-2684") is None
+    assert db.get_outreach_target_by_profile(other, "https://linkedin.com/in/jane_doe-2684") is None

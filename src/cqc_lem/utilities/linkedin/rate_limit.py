@@ -155,6 +155,15 @@ def shared_redis_client():
     return _redis_client()
 
 
+def redis_url() -> str:
+    """The Redis URL this process resolves, for a caller that needs its OWN client settings.
+
+    The MCP kill switch reads with sub-second timeouts and no retry, which this module's shared
+    2s client does not have. It still takes the URL from here, so there is one resolution rule.
+    """
+    return _resolve_redis_url()
+
+
 def mark_rate_limited(reason: str = "") -> None:
     """Trip the breaker — one task's 429 stops the Selenium lanes for everyone on this egress IP.
 

@@ -146,7 +146,6 @@ from cqc_lem.utilities.db import (
     delete_member_analytics_token,
     delete_pin_for_email,
     delete_story_bank_entry,
-    get_auth_audit_events,
     get_comment_outcomes,
     get_company_linked_in_url_for_user,
     get_content_mix_counts,
@@ -200,6 +199,7 @@ from cqc_lem.utilities.db import (
     has_linkedin_password,
     has_linkedin_session,
     insert_occasion_post,
+    list_auth_audit_events,
     list_user_sessions,
     max_catchup_touches_allowed,
     normalize_posting_days,
@@ -1391,6 +1391,8 @@ def get_linkedin_signin_status(session_token: str) -> ResponseModel[dict[str, An
 
 # The most recent auth events `GET /user/security` returns, whoever asks.
 _SECURITY_EVENTS_LIMIT = 50
+# Every MCP audit event shares this prefix (`AuthAuditEvent.MCP_*`); the Security card leaves them out.
+_MCP_EVENT_PREFIX = "mcp_"
 
 
 @router.get("/security")
@@ -1419,7 +1421,12 @@ def get_user_security(session_token: Optional[str] = None) -> ResponseModel[dict
     # owner's browsers and tools — it adds nothing a monitor needs, so it is left out for that scope.
     include_user_agent = _main._request_session_scope.get() != SESSION_SCOPE_OBSERVER
     events = []
-    for e in get_auth_audit_events(user_id, limit=_SECURITY_EVENTS_LIMIT)[:_SECURITY_EVENTS_LIMIT]:
+    # `mcp_*` rows are excluded in SQL: an agent's daily access and mint rows would otherwise push
+    # the account's human sign-ins out of the window the owner reads to spot a login they did not make.
+    # A failed read is an empty list here, as it always was for this card.
+    recent = list_auth_audit_events(user_id, exclude_prefix=_MCP_EVENT_PREFIX,
+                                    limit=_SECURITY_EVENTS_LIMIT) or []
+    for e in recent[:_SECURITY_EVENTS_LIMIT]:
         entry = {
             "event": e.get("event"),
             "success": bool(e.get("success")),
@@ -2148,7 +2155,11 @@ def get_user_settings(session_token: str) -> ResponseModel[dict[str, Any]]:
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
 
-    subscription = get_user_subscription_info(user_id)
+    # Billing (the Stripe customer id, tier, trial dates) is for the account owner's own session. A
+    # machine seat that reaches this route (an MCP token, through `lem_whoami`) gets `null`, and
+    # the row is not even read for it.
+    subscription = (get_user_subscription_info(user_id)
+                    if _main._request_session_scope.get() in _HUMAN_SESSION_SCOPES else None)
     preferences = get_user_preferences(user_id)
     blog_url = get_user_blog_url(user_id)
     sitemap_url = get_user_sitemap_url(user_id)
@@ -2287,10 +2298,12 @@ def get_engagement_preferences_endpoint(session_token: str) -> ResponseModel[dic
         prefs["has_saved_preferences"] = has_engagement_preferences(user_id)
     except Exception:
         prefs["has_saved_preferences"] = True
-    # Read-only: the address the user forwards LinkedIn comment-notification emails to (event mode).
-    # A human session only (issue #2684). The address carries `reply_inbound_token`, a bearer secret
-    # that routes mail into this account's reply automation, and reading it MINTS one when the
-    # account has none, so a machine seat neither creates nor sees it.
+    # Read-only: the address the user forwards LinkedIn comment-notification emails to (event mode),
+    # and the Gmail forwarding auto-confirmation status (so the UI can surface the code if
+    # auto-confirm failed). A human session only (issue #2684). The address carries
+    # `reply_inbound_token`, a bearer secret that routes mail into this account's reply automation,
+    # and reading it MINTS one when the account has none; the confirmation can carry the code that
+    # verifies a forwarding address. A machine seat neither creates nor sees either.
     if _main._request_session_scope.get() in _HUMAN_SESSION_SCOPES:
         try:
             from cqc_lem.integrations.linkedin.notification_email import reply_inbound_address
@@ -2298,10 +2311,10 @@ def get_engagement_preferences_endpoint(session_token: str) -> ResponseModel[dic
             prefs["reply_inbound_address"] = reply_inbound_address(token) if token else None
         except Exception:
             prefs["reply_inbound_address"] = None
+        prefs["gmail_forward_confirmation"] = _main.get_gmail_forward_confirmation(user_id)
     else:
         prefs.pop("reply_inbound_address", None)
-    # Gmail forwarding auto-confirmation status (so the UI can surface the code if auto-confirm failed).
-    prefs["gmail_forward_confirmation"] = _main.get_gmail_forward_confirmation(user_id)
+        prefs.pop("gmail_forward_confirmation", None)
     # Read-only: the highest catch-up cap this plan allows, so the UI can bound the input and show
     # what upgrading unlocks (10/day is premium-only).
     prefs["max_catchup_touches_allowed"] = max_catchup_touches_allowed(user_id)
