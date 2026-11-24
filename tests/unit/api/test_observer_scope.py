@@ -364,7 +364,7 @@ class TestObserverTokenTTL:
 
     def test_the_fixed_ttl_scopes_are_exactly_the_machine_held_ones(self) -> None:
         from cqc_lem.platform.db.repositories.auth import FIXED_TTL_SCOPES
-        assert FIXED_TTL_SCOPES == frozenset({"agent", "observer", "operator"})
+        assert FIXED_TTL_SCOPES == frozenset({"agent", "observer", "operator", "assist"})
 
 
 class TestObserverTokenMint:

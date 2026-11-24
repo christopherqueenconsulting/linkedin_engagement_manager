@@ -68,6 +68,7 @@ FORBIDDEN_ROLE_ROUTES: tuple[Forbidden, ...] = (
     Forbidden("/user/agent-token", _ANY, "mints an agent-scoped session"),
     Forbidden("/user/observer-token", _ANY, "mints an observer-scoped session"),
     Forbidden("/user/operator-token", _ANY, "mints an operator-scoped session"),
+    Forbidden("/user/assist-token", _ANY, "mints an assist-scoped session"),
     # -- caps and approval modes: the config that decides what runs without a human ---------------
     # The agent legitimately reaches this PATH (to read it), and refuses the write in the handler —
     # see HANDLER_GUARDED_ROUTES. So at the resolver it is forbidden only for the read-only role,

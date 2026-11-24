@@ -104,7 +104,7 @@ class TestOperatorRefusalsAreLoggedAtWarning:
     def test_the_operator_is_among_the_warned_scopes(self) -> None:
         main = _kernel()
         assert main._WARN_ON_REFUSAL_SCOPES == {main.SESSION_SCOPE_AGENT, main.SESSION_SCOPE_OBSERVER,
-                                                main.SESSION_SCOPE_OPERATOR}
+                                                main.SESSION_SCOPE_OPERATOR, main.SESSION_SCOPE_ASSIST}
 
 
 # ---------------------------------------------------------------------------

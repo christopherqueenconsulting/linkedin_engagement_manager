@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "LEM Assist",
+  "version": "1.0.0",
+  "description": "Types a comment you already approved in LinkedIn Engagement Manager into LinkedIn's comment box. You press Post. It never posts for you.",
+  "permissions": ["storage", "tabs"],
+  "host_permissions": [
+    "https://*.linkedin.com/*",
+    "https://lem.christopherqueenconsulting.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*.linkedin.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "LEM Assist"
+  }
+}

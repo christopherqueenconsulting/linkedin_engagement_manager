@@ -95,6 +95,7 @@ from cqc_lem.utilities.db import (
     EMAIL_VERIFICATION_REQUIRED_MESSAGE,
     INTERNAL_ACCOUNT_KINDS,
     SESSION_SCOPE_AGENT,
+    SESSION_SCOPE_ASSIST,
     SESSION_SCOPE_ENROLL,
     SESSION_SCOPE_EXTENSION,
     SESSION_SCOPE_FULL,
@@ -661,7 +662,16 @@ _SCOPE_PATTERNS: Dict[str, tuple] = {
     SESSION_SCOPE_OPERATOR: (re.compile(r"/admin/task-status/[^/]+"),),
 }
 
+# LEM Assist (#2647 P4): read the approved queue, report one comment posted. Each path takes ONE verb
+# (`_SCOPE_PATH_METHODS`), so the extension can neither write the queue nor read through the done path.
+_ASSIST_SESSION_SURFACE = frozenset({"/assist/queue", "/review/comment-posted"})
+_SCOPE_PATH_METHODS: Dict[str, Dict[str, frozenset[str]]] = {
+    SESSION_SCOPE_ASSIST: {"/assist/queue": frozenset({"GET"}),
+                           "/review/comment-posted": frozenset({"POST"})},
+}
+
 _SCOPE_SURFACES: Dict[str, frozenset[str]] = {
+    SESSION_SCOPE_ASSIST: _ASSIST_SESSION_SURFACE,
     SESSION_SCOPE_EXTENSION: _EXTENSION_SESSION_SURFACE,
     SESSION_SCOPE_ENROLL: _ENROLL_SESSION_SURFACE,
     SESSION_SCOPE_AGENT: _AGENT_SESSION_SURFACE,
@@ -689,6 +699,7 @@ _SCOPE_REFUSAL_CODE = {
     SESSION_SCOPE_AGENT: "session_scope_forbidden",
     SESSION_SCOPE_OBSERVER: "session_scope_forbidden",
     SESSION_SCOPE_OPERATOR: "session_scope_forbidden",
+    SESSION_SCOPE_ASSIST: "session_scope_forbidden",
     # The SPA reads this one and renders the enrolment gate instead of a dead page.
     SESSION_SCOPE_ENROLL: "enrollment_required",
 }
@@ -744,6 +755,12 @@ def _scope_allows(scope: Optional[str], path: Optional[str],
         if not isinstance(method, str) or method.upper() not in verbs:
             return False
     key = _scope_path(path)
+    path_verbs = _SCOPE_PATH_METHODS.get(effective)
+    if path_verbs is not None:
+        if method is None:
+            method = getattr(_request_object.get(None), "method", None)
+        allowed = path_verbs.get(key) if key is not None else None
+        return allowed is not None and isinstance(method, str) and method.upper() in allowed
     if key in surface:
         return True
     return key is not None and any(p.fullmatch(key) for p in _SCOPE_PATTERNS.get(effective, ()))
@@ -1055,7 +1072,7 @@ def _record_observer_access(user_id: int, token: Optional[str], path: Optional[s
 # Machine seats whose refusal is a WARNING: a held token of one of these only reaches a path it was
 # not given when its holder is misconfigured or the token is stolen, so each refusal is worth seeing.
 _WARN_ON_REFUSAL_SCOPES = frozenset({SESSION_SCOPE_AGENT, SESSION_SCOPE_OBSERVER,
-                                     SESSION_SCOPE_OPERATOR})
+                                     SESSION_SCOPE_OPERATOR, SESSION_SCOPE_ASSIST})
 
 
 def _scope_checked(resolved: Dict[str, Any], token: Optional[str]) -> int:
@@ -4216,6 +4233,7 @@ app.include_router(router)
 # auth kernel, so the include has to happen after `get_session_user_id` and friends are bound.
 from cqc_lem.api.routers import (  # noqa: E402
     admin as _admin_router,
+    assist as _assist_router,
     auth as _auth_router,
     avatar as _avatar_router,
     billing as _billing_router,
@@ -4225,6 +4243,7 @@ from cqc_lem.api.routers import (  # noqa: E402
 )
 
 app.include_router(_admin_router.router)
+app.include_router(_assist_router.router)
 app.include_router(_auth_router.router)
 app.include_router(_avatar_router.router)
 app.include_router(_billing_router.router)
