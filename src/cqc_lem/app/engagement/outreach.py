@@ -103,7 +103,12 @@ from cqc_lem.utilities.ai.outbound_qa import (
     SURFACE_DM as OUTBOUND_SURFACE_DM,
     refusal_reason as outbound_refusal_reason,
 )
-from cqc_lem.utilities.approval_modes import NURTURE_DM_MODE, may_auto_approve
+from cqc_lem.utilities.approval_modes import (
+    APPRECIATION_DM_MODE,
+    FOLLOWUP_STEP_MODE,
+    NURTURE_DM_MODE,
+    may_auto_approve,
+)
 from cqc_lem.utilities.brand_account import (
     ACQUISITION_HOLD_REASON,
     acquisition_outbound_held,
@@ -124,7 +129,9 @@ from cqc_lem.utilities.date import convert_viewed_on_to_date
 from cqc_lem.utilities.db import (
     CATCHUP_CONTACT_CAP_WINDOW_DAYS,
     CONNECTION_REQUEST_SOURCE_PROFILE_VIEWER,
+    SCHEDULED_DM_SOURCE_APPRECIATION,
     SCHEDULED_DM_SOURCE_ARTIFACT,
+    SCHEDULED_DM_SOURCE_FOLLOWUP,
     SCHEDULED_DM_SOURCE_NURTURE,
     SCHEDULED_DM_SOURCE_PROFILE_VIEWER,
     CatchupTouchStatus,
@@ -1671,6 +1678,8 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
     skipped = 0
     refused = 0
     deferred = 0
+    drafted = 0
+    followup_prefs = get_engagement_preferences(user_id)
     lead_ctx: dict = {}  # voice context for lead drafts — fetched lazily, only if someone replies
     # Resolved ONCE per run: the saved display name (Settings, required) with the scraped profile as
     # the fallback. Empty means every thread reads UNKNOWN and nothing is sent — which is the point.
@@ -1835,6 +1844,33 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
                 enqueue_next_followup(user_id, f["profile_url"], f["first_name"], f["event_type"],
                                       f["next_step"])
                 continue
+            if not may_auto_approve(user_id, FOLLOWUP_STEP_MODE, followup_prefs):
+                # `followup_step_mode=pre_review` (#2664): file the step as a PENDING draft the
+                # owner releases; the ladder keeps its place so the next step is still owed.
+                if has_open_scheduled_dm(user_id, f["profile_url"]):
+                    defer_followup(f["id"], datetime.now(timezone.utc)
+                                   + timedelta(hours=FOLLOWUP_MIN_SPACING_HOURS))
+                    deferred += 1
+                    continue
+                dm_id = insert_scheduled_dm(
+                    user_id, f["profile_url"], msg,
+                    datetime.now(timezone.utc).replace(tzinfo=None),
+                    recipient_name=f.get("first_name") or None,
+                    status=ScheduledDmStatus.PENDING, source=SCHEDULED_DM_SOURCE_FOLLOWUP)
+                if not dm_id:
+                    log_warning(f"Follow-up draft for {f['profile_url']} could not be filed — the "
+                                f"row stays pending for the next run", user_id=user_id,
+                                action_type=LogActionType.FOLLOWUP,
+                                task_name="process_user_followups")
+                    continue
+                log_info(f"Follow-up to {f.get('first_name') or f['profile_url']} filed for review",
+                         user_id=user_id, action_type=LogActionType.FOLLOWUP,
+                         task_name="process_user_followups")
+                mark_followup(f["id"], FollowupStatus.SENT)
+                drafted += 1
+                enqueue_next_followup(user_id, f["profile_url"], f["first_name"], f["event_type"],
+                                      f["next_step"])
+                continue
             send_private_dm.apply_async(kwargs={"user_id": user_id, "profile_url": f["profile_url"], "message": msg})
             insert_new_log(user_id=user_id, action_type=LogActionType.FOLLOWUP, result=LogResultType.SUCCESS,
                            post_url=f["profile_url"], message=msg)
@@ -1869,8 +1905,9 @@ def process_user_followups(self, user_id: int, max_per_run: int = 20):
                 f"reply(ies) before it")
     finally:
         quit_gracefully(driver)
-    return (f"Sent {sent} follow-up(s); drafted {nurtured} nurture reply(ies); "
-            f"skipped {skipped} unreadable thread(s); refused {refused}; deferred {deferred}")
+    return (f"Sent {sent} follow-up(s); filed {drafted} for review; drafted {nurtured} nurture "
+            f"reply(ies); skipped {skipped} unreadable thread(s); refused {refused}; "
+            f"deferred {deferred}")
 
 
 def _appreciation_dm_budget(user_id: int) -> int:
@@ -1927,6 +1964,21 @@ def _dispatch_appreciation_dms(user_id: int, my_profile: LinkedInProfile, event_
             # answer is not to send.
             log_debug(f"Appreciation claim for {first_name} not granted — skipping",
                       user_id=user_id, action_type="dm")
+            continue
+        if not may_auto_approve(user_id, APPRECIATION_DM_MODE):
+            # `appreciation_dm_mode=pre_review` (#2664): the thank-you waits as a PENDING draft. The
+            # follow-up ladder is NOT started — it begins only for a conversation that happened.
+            if not insert_scheduled_dm(user_id, profile_url, message,
+                                       datetime.now(timezone.utc).replace(tzinfo=None),
+                                       recipient_name=name or None,
+                                       status=ScheduledDmStatus.PENDING,
+                                       source=SCHEDULED_DM_SOURCE_APPRECIATION):
+                log_warning(f"Appreciation DM for {first_name} could not be filed for review",
+                            user_id=user_id, action_type="dm")
+                continue
+            log_info(f"Appreciation DM to {first_name} filed for review", user_id=user_id,
+                     action_type="dm")
+            sent += 1
             continue
         send_private_dm.apply_async(kwargs={"user_id": user_id, "profile_url": profile_url,
                                             "message": message})

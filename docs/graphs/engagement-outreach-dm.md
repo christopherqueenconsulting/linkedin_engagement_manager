@@ -92,6 +92,11 @@ flowchart TD
    (#2624; `pre_review` by default, and `DM_NURTURE_AUTO_APPROVE=0/false/no/off` force-reviews every user).
    The artifact DM (`artifact_dm_mode`) and weekly group post (`group_post_mode`, `pre_review` stores the
    draft SKIPPED until restored) follow the same rule via `utilities/approval_modes.py`.
+   Phase 2 (#2664) adds `followup_step_mode` (ladder steps in `process_user_followups`) and
+   `appreciation_dm_mode` (thank-you DMs): both send directly today, so the migration backfills existing
+   users to `auto_approve`, and `pre_review` files a `pending` `scheduled_dms` row (`source='followup'` /
+   `'appreciation'`) instead of dispatching. A reviewed appreciation DM starts no follow-up ladder.
+   `DM_FOLLOWUP_AUTO_APPROVE` / `DM_APPRECIATION_AUTO_APPROVE` force-off only.
 2. **Keyword-triggered artifact/lead-magnet delivery** (`resolve_artifact_delivery` in
    `content_alignment.py` + `_queue_artifact_delivery`) lands the same way: a `pending`
    `scheduled_dms` row, `source='artifact'`, blocked by an open draft from either mechanic in

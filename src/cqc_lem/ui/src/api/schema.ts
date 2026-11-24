@@ -4181,6 +4181,8 @@ export interface components {
          *     Everything above `has_saved_preferences` is a stored column and can be PUT back; everything from it down is derived per request and is ignored on a save.
          */
         EngagementPreferencesDetail: {
+            /** Appreciation Dm Mode */
+            appreciation_dm_mode: string | null;
             /** Artifact Dm Mode */
             artifact_dm_mode: string | null;
             /** Audience Mix */
@@ -4228,6 +4230,8 @@ export interface components {
             feed_reach: components["schemas"]["FeedReach"] | null;
             /** Focus Topics */
             focus_topics: string[];
+            /** Followup Step Mode */
+            followup_step_mode: string | null;
             /** Forbidden Claim Terms */
             forbidden_claim_terms: string[] | null;
             gate_defaults: components["schemas"]["GateDefaults"];
@@ -4325,6 +4329,8 @@ export interface components {
          *     stored", NOT the code default, so an older client cannot resurrect a lane the user switched off.
          */
         EngagementPreferencesRequest: {
+            /** Appreciation Dm Mode */
+            appreciation_dm_mode?: string | null;
             /** Artifact Dm Mode */
             artifact_dm_mode?: string | null;
             /** Audience Mix */
@@ -4411,6 +4417,8 @@ export interface components {
              * @default []
              */
             focus_topics: string[];
+            /** Followup Step Mode */
+            followup_step_mode?: string | null;
             /** Forbidden Claim Terms */
             forbidden_claim_terms?: string[] | null;
             /** Group Post Mode */

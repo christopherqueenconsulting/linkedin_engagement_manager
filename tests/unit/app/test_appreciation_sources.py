@@ -20,6 +20,13 @@ _RECENT_DATE_TEXT = (datetime.now(timezone.utc) - timedelta(days=10)).strftime("
 
 
 @pytest.fixture(autouse=True)
+def _appreciation_auto_approved():
+    """Direct-send tests predate `appreciation_dm_mode` (#2664); the review path is tested below."""
+    with patch(f"{_OUT}.may_auto_approve", return_value=True):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _no_sleeps():
     with patch("time.sleep"):
         yield
@@ -981,3 +988,42 @@ class TestTheResultReportsWhatWasSent:
             result = automate_appreciation_dms_for_user.run(user_id=1)
         assert result["status"] == "error"
         assert result["sent"] == 0
+
+
+class TestAppreciationDmModeReview:
+    """Issue #2664: `appreciation_dm_mode=pre_review` files a PENDING draft instead of sending."""
+
+    def _dispatch(self, allows: bool, dm_id=9):
+        from cqc_lem.app.engagement.outreach import _dispatch_appreciation_dms
+        with patch(f"{_OUT}.may_auto_approve", return_value=allows), \
+             patch(f"{_OUT}.has_appreciation_touch", return_value=False), \
+             patch(f"{_OUT}.claim_appreciation_touch", return_value=True), \
+             patch(f"{_OUT}.build_dm_from_template", return_value="Thanks Jane!"), \
+             patch(f"{_OUT}.insert_scheduled_dm", return_value=dm_id) as ins, \
+             patch(f"{_OUT}.send_private_dm") as send, \
+             patch(f"{_OUT}.enqueue_next_followup") as enq:
+            sent = _dispatch_appreciation_dms(
+                1, MagicMock(), "recommendation_received",
+                {"https://www.linkedin.com/in/jane": "Jane Doe"})
+        return sent, ins, send, enq
+
+    def test_pre_review_files_pending_and_starts_no_ladder(self):
+        from cqc_lem.utilities.db import SCHEDULED_DM_SOURCE_APPRECIATION, ScheduledDmStatus
+        sent, ins, send, enq = self._dispatch(False)
+        assert sent == 1
+        send.apply_async.assert_not_called()
+        enq.assert_not_called()
+        assert ins.call_args.kwargs["status"] is ScheduledDmStatus.PENDING
+        assert ins.call_args.kwargs["source"] == SCHEDULED_DM_SOURCE_APPRECIATION
+
+    def test_auto_approve_sends_directly(self):
+        sent, ins, send, enq = self._dispatch(True)
+        assert sent == 1
+        send.apply_async.assert_called_once()
+        enq.assert_called_once()
+        ins.assert_not_called()
+
+    def test_a_failed_insert_counts_nothing(self):
+        sent, _ins, send, _enq = self._dispatch(False, dm_id=None)
+        assert sent == 0
+        send.apply_async.assert_not_called()

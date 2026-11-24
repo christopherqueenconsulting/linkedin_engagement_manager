@@ -11,7 +11,10 @@ vi.mock('./engagementPrefsCtx', () => ({ useEngagementPrefs: () => state }))
 
 beforeEach(() => {
   setEng.mockClear()
-  state.eng = { nurture_dm_mode: 'pre_review', artifact_dm_mode: 'pre_review', group_post_mode: 'auto_approve' }
+  state.eng = {
+    nurture_dm_mode: 'pre_review', artifact_dm_mode: 'pre_review', group_post_mode: 'auto_approve',
+    followup_step_mode: 'pre_review', appreciation_dm_mode: 'pre_review',
+  }
 })
 afterEach(cleanup)
 
@@ -32,7 +35,10 @@ describe('AutomationCard', () => {
   })
 
   it.each(AUTOMATION_LANES)('round-trips $key through a named confirm step', (lane) => {
-    state.eng = { nurture_dm_mode: 'pre_review', artifact_dm_mode: 'pre_review', group_post_mode: 'pre_review' }
+    state.eng = {
+      nurture_dm_mode: 'pre_review', artifact_dm_mode: 'pre_review', group_post_mode: 'pre_review',
+      followup_step_mode: 'pre_review', appreciation_dm_mode: 'pre_review',
+    }
     render(<AutomationCard />)
     const row = screen.getByTestId(`automation-${lane.key}`)
     fireEvent.change(within(row).getByRole('combobox'), { target: { value: 'auto_approve' } })

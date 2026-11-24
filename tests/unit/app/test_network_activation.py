@@ -141,7 +141,8 @@ class TestReplyCheckUnblocksNurture:
     def test_an_appreciation_dm_now_leaves_a_reply_check_behind(self, monkeypatch):
         from cqc_lem.app.engagement import outreach as ra
         monkeypatch.delenv("DM_NURTURE_ENABLED", raising=False)
-        with patch(f"{_OUT}.has_appreciation_touch", return_value=False), \
+        with patch(f"{_OUT}.may_auto_approve", return_value=True), \
+             patch(f"{_OUT}.has_appreciation_touch", return_value=False), \
              patch(f"{_OUT}.claim_appreciation_touch", return_value=True), \
              patch(f"{_OUT}.build_dm_from_template", return_value="hi Jane"), \
              patch(f"{_OUT}.send_private_dm") as dm, \

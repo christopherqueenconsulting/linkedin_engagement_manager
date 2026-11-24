@@ -732,7 +732,9 @@ the ONE gate, run on every DM both writers produce (`_nurture_after_reply` and
 A blocked DM is **never sent**. `build_dm_from_template` gives it ONE steered rewrite
 (`dm_gate_directive`), then falls back to the rendered template if that passes, and otherwise returns
 `None` — the callers' existing "nothing to send" answer. A blocked nurture draft is still filed, but
-always `pending`, even under `nurture_dm_mode=auto_approve`, so it waits for the operator's edit. An
+always `pending`, even under `nurture_dm_mode=auto_approve`, so it waits for the operator's edit
+(the follow-up ladder and appreciation DMs have their own `followup_step_mode` /
+`appreciation_dm_mode`, #2664; see `docs/graphs/engagement-outreach-dm.md`). An
 unreadable story bank grades with no bank anchors (strict).
 
 ### An approved DM is sent near its slot, one at a time (`auto_check_scheduled_dms`, issue #2103)
