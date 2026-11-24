@@ -2227,6 +2227,18 @@ def mark_post_avatar_media(post_id: Optional[int]) -> bool:
     except mysql.connector.Error as err:
         log_error("Could not mark avatar media", exc=err, post_id=post_id)
         return False
+def set_post_c2pa_signed(post_id: Optional[int], signed: bool) -> bool:
+    """Persist whether this post's AI image was C2PA-signed (#2634). Never raises."""
+    if not post_id:
+        return False
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("UPDATE posts SET c2pa_signed = %s WHERE id = %s",
+                           (int(bool(signed)), post_id))
+            return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        log_error("Could not record c2pa_signed", exc=err, post_id=post_id)
+        return False
 def post_avatar_media_state(post_id: Optional[int]) -> Optional[bool]:
     """Three-valued `posts.avatar_media`: True / False / **None when it could not be read**.
 
