@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.223.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.222.0...v0.223.0) (2026-11-24)
+
+
+### Features
+
+* **voice:** call-ingest audio via Whisper + own-voice ID — Phase 2 (closes [#2729](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2729)) ([#2781](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2781)) ([879ea7f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/879ea7fa2198eda9fe694fd70629712cace30dcb))
+* **voice:** edited-draft labels for connection requests, lead signals, funnel targets (refs [#2765](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2765)) ([#2782](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2782)) ([19f0e1d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/19f0e1d9ed7b155fb0d888a76d3fa2688c568f79))
+
 ## [0.222.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.221.0...v0.222.0) (2026-11-24)
 
 
