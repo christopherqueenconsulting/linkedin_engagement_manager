@@ -39,6 +39,7 @@ BULK_CAP = 100
 BULK_ACTIONS = ("approve", "cancel")
 
 NOT_FOUND = "not_found"
+NOT_WAITING = "not_waiting_for_review"
 NOT_ACTIONABLE = "lane_not_actionable"
 EMPTY_MESSAGE = "empty_message"
 WRITE_FAILED = "write_failed"

@@ -90,8 +90,14 @@ def test_apply_isolates_faults_and_edit_only_lanes():
 
 # --- route ------------------------------------------------------------------------------------
 
-def _post(client, items, action="approve", user=7):
-    with patch("cqc_lem.api.main.get_session_user_id", return_value=user):
+def _queue(items):
+    return [{"lane": i["lane"], "id": i["id"], "allowed_actions": ["approve", "cancel"]} for i in items]
+
+
+def _post(client, items, action="approve", user=7, queue=True):
+    with patch("cqc_lem.api.main.get_session_user_id", return_value=user), \
+         patch("cqc_lem.api.routers.review.get_review_queue",
+               return_value=_queue(items) if queue else []):
         return client.post("/api/review/bulk", json={"session_token": "t", "items": items,
                                                      "action": action})
 
@@ -119,6 +125,14 @@ def test_bulk_accepts_exactly_the_cap(api_client):
                return_value={"ok": True}) as ap:
         assert _post(api_client, items).status_code == 200
     assert ap.call_count == 100
+
+
+def test_item_not_waiting_in_queue_is_refused_and_not_run(api_client):
+    with patch("cqc_lem.api.routers.review.apply_review_action") as ap:
+        r = _post(api_client, [{"lane": "scheduled_dms", "id": 1}], queue=False)
+    assert r.status_code == 200 and not ap.called
+    assert r.json()["detail"][0] == {"lane": "scheduled_dms", "id": 1, "ok": False,
+                                     "error": ra.NOT_WAITING}
 
 
 def test_bulk_needs_a_session(api_client):

@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from cqc_lem.api.models import ResponseModel
-from cqc_lem.utilities.review_actions import BULK_ACTIONS, BULK_CAP, apply_review_action
+from cqc_lem.utilities.review_actions import BULK_ACTIONS, BULK_CAP, NOT_WAITING, apply_review_action
 from cqc_lem.utilities.review_queue import LANE_IDS, get_review_queue, summarize
 
 router = APIRouter(prefix="/api/review")
@@ -73,7 +73,13 @@ def review_bulk_endpoint(request: BulkReviewRequest) -> ResponseModel[list[dict[
     if len(request.items) > BULK_CAP:
         raise HTTPException(status_code=422, detail=f"At most {BULK_CAP} items per request")
     _main._refuse_agent_approval(request.action)
-    results = [apply_review_action(user_id, i.lane, i.id, request.action) for i in request.items]
+    # The single-item endpoints trust the id; a bulk call from a stale page would re-approve a row
+    # already sent or canceled (a second live send). Only rows still waiting in the queue are acted on.
+    waiting = {(q["lane"], q["id"]) for q in get_review_queue(user_id)
+               if request.action in q["allowed_actions"]}
+    results = [apply_review_action(user_id, i.lane, i.id, request.action) if (i.lane, i.id) in waiting
+               else {"lane": i.lane, "id": i.id, "ok": False, "error": NOT_WAITING}
+               for i in request.items]
     return ResponseModel(status_code=200, detail=results)
 
 
