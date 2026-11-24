@@ -27,6 +27,7 @@ prefix rule and the reasoning.
 
 import json
 import os
+import shutil
 import tempfile
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Literal, Optional
@@ -4107,7 +4108,12 @@ async def _accept_call_audio(user_id: int, source_id: int, title: Optional[str],
             digest = hashlib.sha256(fh.read()).hexdigest()
         dest = os.path.join(_call_audio_dir(),
                             f"{user_id}_{digest[:24]}{os.path.splitext(filename)[1]}")
-        os.replace(spooled, dest)
+        if os.path.exists(dest):
+            # Same bytes already waiting on the worker: re-queueing would transcribe (and bill) twice.
+            return ResponseModel(status_code=200, detail={"duplicate": True})
+        # The spool is on the container's /tmp and the audio dir is a mounted volume, so a plain
+        # os.replace would fail with EXDEV; shutil.move falls back to copy + delete.
+        shutil.move(spooled, dest)
         spooled = None
     finally:
         _drop_temp_upload(spooled)

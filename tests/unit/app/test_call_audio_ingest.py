@@ -1,6 +1,7 @@
 """Call-ingest audio (issue #2729): transcribe, own-voice labelling, caps, audio deletion."""
 
 import asyncio
+import hashlib
 import io
 import os
 from unittest.mock import MagicMock, patch
@@ -328,6 +329,32 @@ class TestAudioUploadApi:
         assert out.detail["duplicate"] is True
         assert list(tmp_path.iterdir()) == []
         task.apply_async.assert_not_called()
+
+    def test_pending_duplicate_is_not_queued_twice(self, on, tmp_path):
+        d = user_router._call_db
+        first = hashlib.sha256(b"audio-bytes").hexdigest()[:24]
+        (tmp_path / f"7_{first}.m4a").write_bytes(b"audio-bytes")
+        with patch.object(d, "is_call_source_enabled", return_value=True), \
+             patch.object(d, "get_voice_enrollment", return_value=ENROLLED), \
+             patch.object(d, "insert_call_audio_ingest") as ins, \
+             patch("cqc_lem.app.run_call_ingest.transcribe_call_audio") as task:
+            out = _post_audio()
+        assert out.detail == {"duplicate": True}
+        ins.assert_not_called()
+        task.apply_async.assert_not_called()
+        assert len(list(tmp_path.iterdir())) == 1
+
+    def test_move_survives_a_cross_device_spool(self, on, tmp_path):
+        d = user_router._call_db
+        with patch.object(d, "is_call_source_enabled", return_value=True), \
+             patch.object(d, "get_voice_enrollment", return_value=ENROLLED), \
+             patch.object(d, "insert_call_audio_ingest", return_value=9) as ins, \
+             patch.object(d, "get_call_audio_path", side_effect=lambda u, i: ins.call_args.args[2]), \
+             patch("cqc_lem.app.run_call_ingest.transcribe_call_audio"), \
+             patch("os.rename", side_effect=OSError(18, "Invalid cross-device link")):
+            out = _post_audio()
+        assert out.detail == {"ingest_id": 9}
+        assert os.path.exists(ins.call_args.args[2])
 
     def test_no_enrollment_is_409(self, on):
         d = user_router._call_db
