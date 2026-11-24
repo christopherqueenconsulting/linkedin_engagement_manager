@@ -762,6 +762,57 @@ def send_impact_report_email(to_email: str, subject: str, text: str) -> bool:
     return _dispatch_email(to_email, subject, html, text)
 
 
+def weekly_report_lines(report: dict) -> Tuple[list, list]:
+    """(numbers, actions) for the email: at most 5 `label: value` lines and 3 (text, path) actions.
+
+    Reads only the payload `load_weekly_report` built, so the email cannot disagree with the API. A
+    number that was not measured is left out (it is named in `not_measured`, never shown as zero).
+    """
+    nums = report.get("numbers") or {}
+    icp = report.get("icp_share")
+    rate = nums.get("organic_engagement_rate")
+    followers = nums.get("follower_delta")
+    candidates = [
+        ("Posts published", nums.get("posts_published")),
+        ("Median impressions", None if nums.get("median_impressions") is None
+         else f"{nums['median_impressions']:,.0f}"),
+        ("Organic engagement rate", None if rate is None else f"{rate * 100:.1f}%"),
+        ("Follower change", None if followers is None else f"{followers:+d}"),
+        ("Engagers in your ICP", None if not icp else f"{icp['share'] * 100:.0f}% of {icp['n']}"),
+    ]
+    numbers = [f"{label}: {value}" for label, value in candidates if value is not None][:5]
+    actions = [(a["text"], a["link"]) for a in (report.get("actions") or [])][:3]
+    return numbers, actions
+
+
+def send_weekly_report_email(to_email: str, report: dict) -> bool:
+    """Email the weekly 5-minute report (issue #2666): up to 5 numbers and 3 actions.
+
+    The opt-out link goes to the authenticated Account page, never an unauthenticated route.
+    """
+    import os
+    base = (os.getenv("LEM_APP_URL") or "https://lem.christopherqueenconsulting.com").rstrip("/")
+    numbers, actions = weekly_report_lines(report)
+    account = _account_url()
+    num_html = "".join(f"<li>{html_escape(n)}</li>" for n in numbers) or "<li>Nothing measured yet</li>"
+    act_html = "".join(f'<li><a href="{html_escape(base + path)}">{html_escape(text)}</a></li>'
+                       for text, path in actions)
+    html = f"""
+    <html><body style="font-family:Arial,Helvetica,sans-serif;color:#222;">
+    <h2>Your week on LinkedIn</h2>
+    <ul>{num_html}</ul>
+    <h3>Do next</h3>
+    <ol>{act_html}</ol>
+    <p style="color:#888;font-size:12px;">Turn this weekly report off in
+    <a href="{html_escape(account)}">your account settings</a>.</p>
+    </body></html>
+    """
+    text_lines = ["Your week on LinkedIn", ""] + [f"- {n}" for n in numbers] + ["", "Do next:"]
+    text_lines += [f"{i}. {t} ({base}{p})" for i, (t, p) in enumerate(actions, 1)]
+    text_lines += ["", f"Turn this off in your account settings: {account}"]
+    return _dispatch_email(to_email, "Your weekly LinkedIn report", html, "\n".join(text_lines))
+
+
 def send_faq_answer_email(to_email: str, question: str, answer: str,
                           cta_path: str = "/#faq") -> bool:
     """Answer someone who asked a support question (issue #507). Both halves are generated/derived

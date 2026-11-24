@@ -1551,6 +1551,19 @@ def auto_notify_stale_approvals():
 
 
 @shared_task.task
+def auto_weekly_report():
+    """Friday: email each eligible user the weekly 5-minute report (issue #2666).
+
+    Gated per user by `WEEKLY_REPORT_ENABLED` (default OFF) and the `weekly_report_enabled` opt-out;
+    idempotent per user per ISO week via the `weekly_report_sends` claim.
+    """
+    from cqc_lem.utilities.weekly_report import send_weekly_reports
+    result = send_weekly_reports()
+    return (f"Weekly report: sent {result['sent']}, skipped {result['skipped']}, "
+            f"failed {result['failed']}")
+
+
+@shared_task.task
 def regenerate_newsletter_edition(edition_id: int, guidance: str = None):
     """Regenerate ONE queued newsletter edition in place. Generation is a slow lem-complex call, so
     it runs as a task (not inline in the API request). Honors free-text `guidance` when provided

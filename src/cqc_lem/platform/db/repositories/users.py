@@ -3149,3 +3149,46 @@ def get_review_digest_enabled(user_id: int) -> bool:
     except mysql.connector.Error as err:
         log_error("Could not read review_digest_enabled", exc=err, user_id=user_id)
         return True
+
+
+def get_weekly_report_enabled(user_id: int) -> bool:
+    """Whether the account may receive the weekly report email (#2666).
+
+    NULL (never chosen) is ON; only an explicit 0 opts out. An unreadable row reads as OFF: unlike a
+    reminder about work waiting, this is an unsolicited email, so a database blip must not send one
+    to an account that may have opted out.
+    """
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute("SELECT weekly_report_enabled FROM engagement_preferences "
+                           "WHERE user_id = %s", (user_id,))
+            row = cursor.fetchone()
+            return not (row and row["weekly_report_enabled"] is not None
+                        and not row["weekly_report_enabled"])
+    except mysql.connector.Error as err:
+        log_error("Could not read weekly_report_enabled", exc=err, user_id=user_id)
+        return False
+
+
+def claim_weekly_report_send(user_id: int, iso_year_week: str) -> bool:
+    """Take the one send slot for (user, ISO week). True only for the caller that inserted the row."""
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("INSERT IGNORE INTO weekly_report_sends (user_id, iso_year_week) "
+                           "VALUES (%s, %s)", (user_id, iso_year_week))
+            return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        log_error("Could not claim weekly report send", exc=err, user_id=user_id)
+        return False
+
+
+def release_weekly_report_send(user_id: int, iso_year_week: str) -> bool:
+    """Give the slot back after a failed send so the next beat can retry the week."""
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("DELETE FROM weekly_report_sends WHERE user_id = %s AND iso_year_week = %s",
+                           (user_id, iso_year_week))
+            return cursor.rowcount > 0
+    except mysql.connector.Error as err:
+        log_error("Could not release weekly report send", exc=err, user_id=user_id)
+        return False
