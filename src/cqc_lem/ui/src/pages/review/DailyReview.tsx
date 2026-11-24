@@ -36,6 +36,7 @@ const ERROR_TEXT: Record<string, string> = {
   not_found: 'not found',
   lane_not_actionable: 'edit this one by hand',
   write_failed: 'could not save',
+  server_unreachable: 'server unreachable',
 }
 
 interface BulkResult {
@@ -102,12 +103,19 @@ export default function DailyReview() {
     mutationFn: async ({ targets, action }: { targets: ReviewItem[]; action: Action }) => {
       const results: BulkResult[] = []
       for (let n = 0; n < targets.length; n += BULK_CAP) {
-        const r = await api.post('/review/bulk', {
-          session_token: sessionToken,
-          action,
-          items: targets.slice(n, n + BULK_CAP).map((i) => ({ lane: i.lane, id: i.id })),
-        })
-        results.push(...(r.data.detail as BulkResult[]))
+        const chunk = targets.slice(n, n + BULK_CAP)
+        try {
+          const r = await api.post('/review/bulk', {
+            session_token: sessionToken,
+            action,
+            items: chunk.map((i) => ({ lane: i.lane, id: i.id })),
+          })
+          results.push(...(r.data.detail as BulkResult[]))
+        } catch (err) {
+          // A later chunk failing must not erase the earlier chunks that already landed.
+          if (n === 0) throw err
+          results.push(...chunk.map((i) => ({ lane: i.lane, id: i.id, ok: false, error: 'server_unreachable' })))
+        }
       }
       return results
     },
