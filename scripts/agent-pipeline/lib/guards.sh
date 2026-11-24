@@ -191,7 +191,7 @@ comment_author_trusted() {
     out="$(gh api "repos/$SLUG/collaborators/$login/permission" \
               --jq '"\(.permission // "") \(.role_name // "")"' 2>&1)"; rc=$?
     if [ "$rc" -eq 0 ]; then perm="$out"
-    elif printf '%s' "$out" | grep -qF '(HTTP 404)'; then perm="none"
+    elif grep -qF '(HTTP 404)' <<< "$out"; then perm="none"
     else perm=""
     fi
     _COMMENT_PERM_CACHE[$lc]="$perm"
@@ -482,8 +482,8 @@ sweep_stale_worktrees() {
     # Grace period: a run that just finished may still be opening its PR.
     [ $(( now - $(stat -c %Y "$wt" 2>/dev/null || echo "$now") )) -lt "${WORKTREE_GRACE_SECONDS:-7200}" ] && continue
     br="$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-    [ -n "$br" ] && printf '%s\n' "$open" | grep -qxF "$br" && continue   # still has an open PR
-    if [ -n "$br" ] && printf '%s\n' "$merged" | grep -qxF "$br"; then
+    [ -n "$br" ] && grep -qxF "$br" <<< "$open" && continue   # still has an open PR
+    if [ -n "$br" ] && grep -qxF "$br" <<< "$merged"; then
       # GitHub says this landed, so the local divergence is the squash, not lost work.
       WORKTREE_MERGED=1 release_worktree "$wt"
     else
@@ -533,31 +533,51 @@ seed_graft() {  # $1=worktree path -> always 0
 # The rule: a branch is SPENT when nothing on it is outside main. That is proven one of two ways,
 # and anything short of proof keeps the old behaviour, which is to attach and lose nothing:
 #   - every commit has a patch-equivalent on main (`git cherry` prints no `+`), or
-#   - a MERGED PR's head is the branch tip (GitHub saw exactly these commits land).
+#   - a PR MERGED INTO MAIN, whose merge commit main (freshly fetched) contains, has the branch tip
+#     as its head (GitHub saw exactly these commits land).
 # A merged PR's head that is an ANCESTOR of the tip means commits were pushed after the merge. Those
 # are real new work: they are replayed onto main (`rebase --onto main <merged head>`), and a replay
 # that does not apply cleanly attaches as before, with a WARNING naming the range.
-# An OPEN PR on the branch always attaches — it is the live artefact a fix/review/rebase lane works.
+# Always attach (never fresh, never replay):
+#   - an OPEN PR into ANY base: it is the live artefact a fix/review/rebase lane works. This is why
+#     the PR list is not `--base main` — that would hide an open PR into another base;
+#   - a MERGE commit anywhere in <base>..<tip>: `git cherry` skips merges, so work that lives only
+#     in a merge (a conflict resolution, an evil merge) would read as already on main;
+#   - a PR merged into another base, or one whose merge commit <base> does not contain (a stale
+#     main, or GitHub ahead of the fetch): neither proves the work is on the base we reset to.
+# Every `grep -q` reads a here-string, never `printf | grep -q`: under `pipefail`, grep exiting on
+# its first match SIGPIPEs a writer still writing, and the pipeline's 141 reads as "no match".
 
-branch_pr_heads() {  # $1=branch -> "<STATE> <headRefOid>" per PR headed by $1; rc!=0 = unreadable
+BRANCH_PR_JSON="state,headRefOid,baseRefName,mergeCommit"
+BRANCH_PR_JQ='.[] | "\(.state) \(.headRefOid) \(.baseRefName) \(.mergeCommit.oid // "-")"'
+
+branch_pr_heads() {  # $1=branch -> "<STATE> <head> <baseRefName> <mergeOid|->" per PR; rc!=0 = unreadable
   gh pr list --repo "$SLUG" --head "$1" --state all --limit 100 \
-    --json state,headRefOid --jq '.[] | "\(.state) \(.headRefOid)"' 2>/dev/null
+    --json "$BRANCH_PR_JSON" --jq "$BRANCH_PR_JQ" 2>/dev/null
 }
 
 branch_reuse_plan() {  # $1=branch $2=base $3=branch_pr_heads output $4=1 if unreadable -> one line
   # Pure over git state + the PR list it is handed: prints `fresh <why>`, `replay <merged-head>` or
   # `attach <why>`. Every unreadable answer is `attach`, today's behaviour.
-  local branch="$1" base="$2" prs="$3" unreadable="${4:-0}" tip cherry state oid best="" best_n="" n
+  local branch="$1" base="$2" prs="$3" unreadable="${4:-0}" base_name="${2#origin/}"
+  local tip cherry merges state oid pr_base merge_oid best="" best_n="" n
   tip="$(git -C "$REPO" rev-parse --verify --quiet "refs/remotes/origin/$branch^{commit}")" \
     || { echo "attach no-origin-branch"; return 0; }
   [ "$unreadable" = "1" ] && { echo "attach pr-list-unreadable"; return 0; }
-  printf '%s\n' "$prs" | grep -q '^OPEN ' && { echo "attach open-pr"; return 0; }
+  grep -q '^OPEN ' <<< "$prs" && { echo "attach open-pr"; return 0; }
+  merges="$(git -C "$REPO" rev-list --merges "$base..$tip" 2>/dev/null)" \
+    || { echo "attach rev-list-unreadable"; return 0; }
+  [ -z "$merges" ] || { echo "attach merge-commits"; return 0; }
   cherry="$(git -C "$REPO" cherry "$base" "$tip" 2>/dev/null)" || { echo "attach cherry-unreadable"; return 0; }
-  printf '%s\n' "$cherry" | grep -q '^+' || { echo "fresh every-commit-on-$base"; return 0; }
-  # The merged head closest to the tip: the fewest commits after it.
-  while read -r state oid; do
+  grep -q '^+' <<< "$cherry" || { echo "fresh every-commit-on-$base"; return 0; }
+  # The merged head closest to the tip: the fewest commits after it. Only a PR merged into $base
+  # whose merge commit $base contains is evidence.
+  while read -r state oid pr_base merge_oid; do
     [ "$state" = "MERGED" ] || continue
+    [ "$pr_base" = "$base_name" ] || continue
     [[ "$oid" =~ ^[0-9a-f]{40,64}$ ]] || continue
+    [[ "$merge_oid" =~ ^[0-9a-f]{40,64}$ ]] || continue
+    git -C "$REPO" merge-base --is-ancestor "$merge_oid" "$base" 2>/dev/null || continue
     git -C "$REPO" merge-base --is-ancestor "$oid" "$tip" 2>/dev/null || continue
     n="$(git -C "$REPO" rev-list --count "$oid..$tip" 2>/dev/null)" || continue
     if [ -z "$best_n" ] || [ "$n" -lt "$best_n" ]; then best="$oid"; best_n="$n"; fi
@@ -566,7 +586,7 @@ branch_reuse_plan() {  # $1=branch $2=base $3=branch_pr_heads output $4=1 if unr
   [ "$best_n" -eq 0 ] && { echo "fresh merged-pr-head-is-tip"; return 0; }
   # Commits after the merge: replay only if main does not already carry them all.
   cherry="$(git -C "$REPO" cherry "$base" "$tip" "$best" 2>/dev/null)" || { echo "attach cherry-unreadable"; return 0; }
-  printf '%s\n' "$cherry" | grep -q '^+' || { echo "fresh post-merge-commits-on-$base"; return 0; }
+  grep -q '^+' <<< "$cherry" || { echo "fresh post-merge-commits-on-$base"; return 0; }
   echo "replay $best"
 }
 
@@ -575,6 +595,20 @@ restart_spent_branch() {  # $1=worktree (on origin/$2) $2=branch $3=base -> alwa
   # tip it replaces, so the agent's git_push.sh then fast-forwards as usual and keeps its rule that
   # only MODE=rebase may lease. A refused push puts the worktree back on the old tip — attach.
   local wt="$1" branch="$2" base="$3" prs unreadable=0 plan verdict detail old new
+  case "$base" in
+    origin/?*) ;;
+    *) log "add_worktree: attaching origin/$branch (base $base is not an origin ref)." >&2; return 0 ;;
+  esac
+  # Decide on what origin holds NOW. Nothing fetches before add_worktree, so origin/main can predate
+  # the squash, and a stale main would reset the branch to a main without the merged phase on it.
+  if ! git -C "$REPO" fetch -q origin \
+       "+refs/heads/${base#origin/}:refs/remotes/$base" \
+       "+refs/heads/$branch:refs/remotes/origin/$branch" >/dev/null 2>&1; then
+    log "add_worktree: attaching origin/$branch (fetch-failed)." >&2
+    return 0
+  fi
+  # The fetch may have moved origin/$branch: attach to what origin holds, as add_worktree intends.
+  git -C "$wt" checkout -q -B "$branch" "origin/$branch" >/dev/null 2>&1 || return 0
   old="$(git -C "$wt" rev-parse --verify --quiet HEAD 2>/dev/null)" || return 0
   prs="$(branch_pr_heads "$branch")" || unreadable=1
   plan="$(branch_reuse_plan "$branch" "$base" "$prs" "$unreadable")"
@@ -674,8 +708,8 @@ model_for_issue() {  # $1=issue -> echoes model name or nothing (= CLI default)
     *" agent:model:sonnet "*) echo sonnet; return ;;
     *" agent:model:opus "*)   echo opus;   return ;;
   esac
-  if echo " $labels " | grep -q " priority:low " \
-     && echo " $labels " | grep -qE " (documentation|cleanup) "; then
+  if grep -q " priority:low " <<< " $labels " \
+     && grep -qE " (documentation|cleanup) " <<< " $labels "; then
     echo sonnet
   fi
 }

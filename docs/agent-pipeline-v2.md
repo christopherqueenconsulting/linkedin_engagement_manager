@@ -106,16 +106,22 @@ reuses `feature/claude-issue-<N>`. After Phase K's PR squash-merged, origin stil
 original commits, so `add_worktree` attached to them and the Phase K+1 PR re-added every Phase K
 file (migration-version collisions, conflicts, merge-queue ejections; hand-repaired in #2693, #2694
 and #2706). `restart_spent_branch` (`lib/guards.sh`) runs whenever `add_worktree` attaches an
-existing `origin/<branch>`, and acts on `branch_reuse_plan`:
+existing `origin/<branch>`. It first runs `git fetch origin main <branch>` (nothing upstream
+fetches, so `origin/main` could predate the squash), and then acts on `branch_reuse_plan`. A
+"merged PR" below means one whose `baseRefName` is `main` AND whose `mergeCommit.oid` the fetched
+`origin/main` contains. A PR merged into another base, or one main does not yet contain, is no
+evidence.
 
 | `origin/<branch>` | Worktree |
 |---|---|
-| an OPEN PR heads it | attach, as before (a fix/review/rebase lane works that head) |
+| fetch failed | attach |
+| an OPEN PR into ANY base heads it | attach, as before (a fix/review/rebase lane works that head). The PR list is therefore not `--base main` |
 | PR list unreadable | attach |
+| a merge commit in `origin/main..<tip>` | attach: `git cherry` skips merges, so work that lives only in a merge would read as already on main |
 | every commit patch-equivalent on main (`git cherry` has no `+`) | **fresh** from `origin/main` |
-| a MERGED PR's head IS the tip (the multi-commit squash, which `git cherry` cannot see) | **fresh** |
-| a MERGED PR's head is an ancestor of the tip | **replay** only the commits after it (`rebase --onto origin/main <merged head>`). If one does not apply cleanly: attach, plus a WARNING naming the `<merged head>..<tip>` range |
-| any other unique commit | attach, no data loss |
+| a merged PR's head IS the tip (the multi-commit squash, which `git cherry` cannot see) | **fresh** |
+| a merged PR's head is an ancestor of the tip | **replay** only the commits after it (`rebase --onto origin/main <merged head>`). If one does not apply cleanly: attach, plus a WARNING naming the `<merged head>..<tip>` range |
+| any other unique commit (incl. a CLOSED-unmerged PR) | attach, no data loss |
 
 A fresh or replayed branch is pushed by the RUNNER, not the agent, with
 `--force-with-lease=refs/heads/<branch>:<old tip>`. So `git_push.sh` keeps its rule that only
