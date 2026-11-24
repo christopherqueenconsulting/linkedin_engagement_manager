@@ -102,6 +102,16 @@ def test_gate_ships_the_last_draft_rather_than_skipping(monkeypatch):
     assert out == _ASK and len(seen) == 2
 
 
+def test_lint_regeneration_that_fails_a_gate_falls_back_to_the_shipped_draft(monkeypatch):
+    out, seen = _gate([_ASK, "Great post!", "Great post!"], _questions(), monkeypatch)
+    assert out == _ASK and len(seen) == 3
+
+
+def test_lint_regeneration_with_no_draft_falls_back_to_the_shipped_draft(monkeypatch):
+    out, seen = _gate([_ASK, None], _questions(), monkeypatch)
+    assert out == _ASK and len(seen) == 2
+
+
 def test_other_surfaces_are_not_linted(monkeypatch):
     out, seen = _gate([_ASK], _questions(), monkeypatch, surface="own_post_comment")
     assert out == _ASK and len(seen) == 1
