@@ -600,7 +600,7 @@ def send_stale_approvals_email(to_email: str, total: int, stale: int, oldest_age
     <html><body style="font-family:Arial,Helvetica,sans-serif;color:#222;">
     <h2>{stale} approval{'s' if stale != 1 else ''} waiting more than {stale_hours} hours</h2>
     <p>{total} item{'s are' if total != 1 else ' is'} waiting for your review; the oldest has
-    waited {days} days. Nothing goes out until you approve it.</p>
+    waited {days} days. Review them before their slots arrive.</p>
     <ul>{rows}</ul>
     <p><a href="{url}" style="background:#0a66c2;color:#fff;padding:10px 16px;border-radius:6px;
     text-decoration:none;">Review now</a></p>
