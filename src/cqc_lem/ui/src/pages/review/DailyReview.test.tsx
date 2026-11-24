@@ -171,6 +171,18 @@ describe('DailyReview', () => {
     expect((await screen.findByRole('status')).textContent).toMatch(/1 not done \(already handled\)/)
   })
 
+  it('names authenticity floor refusal in bulk results', async () => {
+    mount([CLEAN_A, item({ id: 2, summary: 'DM to Bo' })])
+    post.mockResolvedValueOnce({
+      data: { detail: [
+        { lane: 'scheduled_dms', id: 1, ok: true, error: null },
+        { lane: 'scheduled_dms', id: 2, ok: false, error: 'authenticity_below_floor' },
+      ] },
+    })
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve all 2 with no flags' }))
+    expect((await screen.findByRole('status')).textContent).toMatch(/1 not done \(below your authenticity floor/)
+  })
+
   it('shows the empty state', async () => {
     mount([])
     expect(await screen.findByText('Nothing is waiting on you.')).toBeDefined()

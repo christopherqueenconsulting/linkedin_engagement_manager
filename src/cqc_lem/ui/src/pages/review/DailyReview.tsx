@@ -32,6 +32,7 @@ const AGE_CLASS = {
 
 const ERROR_TEXT: Record<string, string> = {
   not_waiting_for_review: 'already handled',
+  authenticity_below_floor: 'below your authenticity floor — approve it on Scheduled DMs with a reason',
   empty_message: 'draft is empty',
   not_found: 'not found',
   lane_not_actionable: 'edit this one by hand',
