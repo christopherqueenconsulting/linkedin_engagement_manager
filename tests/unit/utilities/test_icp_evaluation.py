@@ -112,6 +112,22 @@ def test_apply_rubric_marks_exploration_and_keeps_floor():
     assert all(ev.EXPLORATION_MARK in scores[c.person_key].reason for c in marked)
 
 
+def test_exploration_mark_survives_a_full_length_reason():
+    names = [f"p{i}" for i in range(20)]
+    signals = [CandidateSignal(person_name=n, person_profile_url=f"https://www.linkedin.com/in/{n}",
+                               occurred_at=NOW) for n in names]
+    ranked = rank_candidates(signals, NOW, min_icp=0)
+    facts = {f"https://www.linkedin.com/in/{n}": {"job_title": "COO" if i < 10 else "Chief of Staff",
+                                                  "company_name": "C" * 600, "industry": "Software"}
+             for i, n in enumerate(names)}
+    with patch("cqc_lem.utilities.icp_evaluation.exploration_count", return_value=3):
+        kept, scores, _ = apply_icp_rubric(ranked, DEFINITION, facts, limit=10, user_id=1, today=DAY)
+    marked = [c for c in kept if ev.EXPLORATION_MARK in c.reasons]
+    for c in marked:
+        assert len(scores[c.person_key].reason) <= 512
+        assert scores[c.person_key].reason.endswith(ev.EXPLORATION_MARK)
+
+
 def test_apply_rubric_without_user_id_never_explores():
     signals = [CandidateSignal(person_name="a", person_profile_url="https://www.linkedin.com/in/a",
                                occurred_at=NOW)]

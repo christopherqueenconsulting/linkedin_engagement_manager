@@ -322,7 +322,9 @@ def apply_icp_rubric(candidates: Iterable[ScoredCandidate], definition: IcpDefin
         return kept[:max(0, int(limit))], scores, held
     picked, explored = split_exploration(kept, limit, user_id, today or date.today())
     for key in explored:
-        scores[key].reason = f"{scores[key].reason} {EXPLORATION_MARK}"[:512]
+        # The column is VARCHAR(512) and `_reason` can fill it: trim the reason, never the mark.
+        room = 512 - len(EXPLORATION_MARK) - 1
+        scores[key].reason = f"{scores[key].reason[:room]} {EXPLORATION_MARK}"
     picked = [dataclasses.replace(c, reasons=scores[c.person_key].reason) if c.person_key in explored
               else c for c in picked]
     return picked, scores, held
