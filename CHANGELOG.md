@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.220.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.219.0...v0.220.0) (2026-11-24)
+
+
+### Features
+
+* **profile:** headline and banner locator chains, targeted probe capture (refs [#2755](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2755)) ([#2772](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2772)) ([27cfd10](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/27cfd1075db9b25b9a3e330708df4221e310174e))
+* **reports:** monthly ICP-audience report run (closes [#2758](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2758)) ([#2774](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2774)) ([7da5ced](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7da5ced8952aa65a2e872fb76afa5933d5ae0f53))
+
 ## [0.219.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.218.0...v0.219.0) (2026-11-24)
 
 
