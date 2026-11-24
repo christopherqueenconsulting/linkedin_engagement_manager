@@ -1,56 +1,67 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../api/client'
+import type { components } from '../api/schema'
+import type { ApiEnvelope } from '../api/types'
 import { useAuth } from '../contexts/useAuth'
 
-// The MCP token surface (issue #2687; the routes are P2, #2685 — docs/agent-mcp-plan.md §3.5).
+// The MCP token surface (issue #2687; the routes are P2, #2685, in api/routers/mcp_tokens.py).
 //
-// TODO(#2685): switch these to the generated `components['schemas'][…]` types in api/schema.ts once
-// P2's routes are in openapi.json. They are narrow LOCAL types only because this PR was built in
-// parallel with the backend, and schema.ts is regenerated, never hand-edited.
+// Request bodies come from the GENERATED schema. The response `detail` payloads are spelled here
+// because the routes declare `ResponseModel[dict[str, Any]]`, so the schema has nothing narrower
+// than an open object for them. TODO(#2685): drop these three shapes for `GetDetail` / `ApiDetail`
+// once the routes declare typed response models.
+
+type Schemas = components['schemas']
+
+export type McpMintRequest = Omit<Schemas['McpTokenRequest'], 'session_token'>
+export type McpRotateRequest = Omit<Schemas['McpTokenRotateRequest'], 'session_token'>
 
 export type McpScope = 'mcp' | 'mcp_outreach'
 
 export interface McpTokenRow {
   session_id: number
-  label: string
+  label: string | null
   scope: McpScope | string
   created_at: string | null
   last_seen_at: string | null
   expires_at: string | null
-  /** null = not counted, which is not the same thing as 0 calls. */
+  revoked: boolean
+  expired: boolean
+  /** null = Redis could not be read: unknown, which is not the same thing as 0 calls. */
   calls_7d: number | null
   last_client_name: string | null
 }
 
 export interface McpInfo {
   enabled: boolean
-  mcp_url: string
+  /** null when the server has no public base URL configured: there is nothing to connect to. */
+  mcp_url: string | null
   tokens: McpTokenRow[]
-}
-
-export interface McpMintRequest {
-  label: string
-  ttl_days: 7 | 30 | 90
-  outreach: boolean
 }
 
 /** The ONLY response that carries a token. It is returned to the caller and never cached. */
 export interface McpMintResponse {
   session_token: string
   session_id: number
-  mcp_url: string
+  mcp_url: string | null
   expires_at: string | null
   label: string
   scope: McpScope | string
+  ttl_days: number
 }
 
 export const MCP_INFO_KEY = 'mcp-info'
 
+/** The label is nullable server-side; a row is never shown nameless. */
+export function rowLabel(row: Pick<McpTokenRow, 'label'>): string {
+  return row.label?.trim() || 'Agent connection'
+}
+
 /**
- * The token-free half lives in react-query (`GET /user/mcp-info`); the token-bearing half does
- * NOT. `mint` and `rotate` are plain async functions, not `useMutation`s, on purpose: a mutation's
- * `data` sits in the MutationCache, so a token returned through one would outlive the component
- * that was meant to be its only holder. The caller keeps the response in component state.
+ * The token-free half lives in react-query (`GET /user/mcp-token/info`); the token-bearing half
+ * does NOT. `mint` and `rotate` are plain async functions, not `useMutation`s, on purpose: a
+ * mutation's `data` sits in the MutationCache, so a token returned through one would outlive the
+ * component that was meant to be its only holder. The caller keeps the response in component state.
  */
 export function useMcpCredentials() {
   const { sessionToken } = useAuth()
@@ -60,8 +71,8 @@ export function useMcpCredentials() {
     queryKey: [MCP_INFO_KEY, sessionToken],
     queryFn: () =>
       api
-        .get(`/user/mcp-info?session_token=${encodeURIComponent(sessionToken!)}`)
-        .then((r) => r.data.detail as McpInfo),
+        .get<ApiEnvelope<McpInfo>>(`/user/mcp-token/info?session_token=${encodeURIComponent(sessionToken!)}`)
+        .then((r) => r.data.detail),
     enabled: !!sessionToken,
     staleTime: 30 * 1000,
     retry: 1,
@@ -70,13 +81,15 @@ export function useMcpCredentials() {
   const refresh = () => queryClient.invalidateQueries({ queryKey: [MCP_INFO_KEY] })
 
   async function mint(body: McpMintRequest): Promise<McpMintResponse> {
-    const r = await api.post('/user/mcp-token', { session_token: sessionToken, ...body })
-    return r.data.detail as McpMintResponse
+    const payload: Schemas['McpTokenRequest'] = { session_token: sessionToken, ...body }
+    const r = await api.post<ApiEnvelope<McpMintResponse>>('/user/mcp-token', payload)
+    return r.data.detail
   }
 
   async function rotate(sessionId: number): Promise<McpMintResponse> {
-    const r = await api.post('/user/mcp-token/rotate', { session_token: sessionToken, session_id: sessionId })
-    return r.data.detail as McpMintResponse
+    const payload: Schemas['McpTokenRotateRequest'] = { session_token: sessionToken, session_id: sessionId }
+    const r = await api.post<ApiEnvelope<McpMintResponse>>('/user/mcp-token/rotate', payload)
+    return r.data.detail
   }
 
   // The same route and body SecurityCard signs a device out with.

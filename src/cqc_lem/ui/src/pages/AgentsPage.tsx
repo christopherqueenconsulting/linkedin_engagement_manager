@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import api from '../api/client'
 import { useAuth } from '../contexts/useAuth'
 import { FLAGS, useFeatureFlags } from '../hooks/useFeatureFlags'
-import { errorCode, errorStatus, useMcpCredentials } from '../hooks/useMcpCredentials'
+import { errorCode, errorStatus, rowLabel, useMcpCredentials } from '../hooks/useMcpCredentials'
 import type { McpMintRequest, McpMintResponse, McpTokenRow } from '../hooks/useMcpCredentials'
 import { useStepUp } from '../hooks/useStepUp'
 import {
@@ -25,7 +25,7 @@ const STEP_UP_REASON =
 const BANNER_CLASS = 'rounded-panel border border-warning/50 bg-warning/5 px-4 py-3 text-sm text-warning'
 
 /** The token, for the show-once window only. Component state is its ONLY home (plan §6). */
-type Shown = { token: string; mcpUrl: string }
+type Shown = { token: string; mcpUrl: string | null }
 
 function mintErrorMessage(
   error: unknown,
@@ -124,10 +124,16 @@ function AgentsContent() {
       if (result === null) return
       show(result)
       recordMcpTokenRotated(result.scope)
-      setRowMsg({ ok: true, text: `Rotated ${row.label}. The old token no longer works.` })
+      setRowMsg({ ok: true, text: `Rotated ${rowLabel(row)}. The old token no longer works.` })
       refresh()
     } catch (e) {
-      setRowMsg({ ok: false, text: mintErrorMessage(e, 'Could not rotate that connection. Please try again.').message })
+      // The server revokes the old token BEFORE minting, so a failure part-way can leave none:
+      // re-read the list rather than show a row that may already be dead.
+      const text = errorStatus(e) === 404 && errorCode(e) !== 'mcp_needs_strong_factor'
+        ? 'That connection is no longer live. Create a new one above.'
+        : mintErrorMessage(e, 'Could not rotate that connection. Please try again.').message
+      setRowMsg({ ok: false, text })
+      refresh()
     } finally {
       setRowBusy(null)
     }
@@ -143,7 +149,7 @@ function AgentsContent() {
       })
       if (result === null) return
       recordMcpTokenRevoked(row.scope)
-      setRowMsg({ ok: true, text: `Revoked ${row.label}. That agent is disconnected.` })
+      setRowMsg({ ok: true, text: `Revoked ${rowLabel(row)}. That agent is disconnected.` })
       refresh()
     } catch {
       setRowMsg({ ok: false, text: 'Could not revoke that connection. Please try again.' })
@@ -193,6 +199,15 @@ function AgentsContent() {
           onCopied={(c, variant) => recordMcpCommandCopied(c, variant)}
           onHideToken={() => setShown(null)}
         />
+      ) : info.data ? (
+        // Answered, but with no URL: the server has no public address configured, so there is
+        // nothing a command could point at. Say so rather than spin.
+        <div role="status" className="bg-raised rounded-panel border border-hairline p-6">
+          <p className="text-sm text-fg">
+            Connect commands are unavailable right now: LEM has no public address to give your agent.
+            Please try again later.
+          </p>
+        </div>
       ) : info.isError ? (
         <div role="alert" className="bg-raised rounded-panel border border-hairline p-6 space-y-2">
           <p className="text-sm text-fg">

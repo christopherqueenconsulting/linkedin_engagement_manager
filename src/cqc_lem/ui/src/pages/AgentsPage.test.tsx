@@ -54,18 +54,20 @@ function row(overrides: Row = {}): Row {
     last_seen_at: '2026-11-20T00:00:00Z',
     expires_at: '2099-01-01T00:00:00Z',
     calls_7d: 12,
+    revoked: false,
+    expired: false,
     last_client_name: 'claude-code',
     ...overrides,
   }
 }
 
-let info: { enabled: boolean; mcp_url: string; tokens: Row[] } | Error
+let info: { enabled: boolean; mcp_url: string | null; tokens: Row[] } | Error
 let strong = true
 
 function mintResponse(token = TOKEN) {
   return {
     data: { detail: { session_token: token, session_id: 9, mcp_url: URL, expires_at: '2026-12-24T00:00:00Z',
-      label: 'Claude Code - Linux', scope: 'mcp' } },
+      label: 'Claude Code - Linux', scope: 'mcp', ttl_days: 30 } },
   }
 }
 
@@ -117,7 +119,7 @@ beforeEach(() => {
   strong = true
   info = { enabled: true, mcp_url: URL, tokens: [] }
   get.mockImplementation((path: string) => {
-    if (path.startsWith('/user/mcp-info')) {
+    if (path.startsWith('/user/mcp-token/info')) {
       return info instanceof Error ? Promise.reject(info) : Promise.resolve({ data: { detail: info } })
     }
     if (path.startsWith('/user/auth-factors')) {
@@ -243,14 +245,28 @@ describe('AgentsPage minting (issue #2687)', () => {
     await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/Revoke one first/))
   })
 
-  it('403 mcp_needs_strong_factor swaps Create for the enrol hint', async () => {
-    post.mockRejectedValue({ response: { status: 403, data: { detail: { code: 'mcp_needs_strong_factor' } } } })
+  it('403 mcp_needs_strong_factor swaps Create for the enrol hint, with no step-up ceremony', async () => {
+    // The server checks the factor BEFORE step-up (P2), so this refusal must never open the modal.
+    post.mockRejectedValue({ response: { status: 403, data: { detail: {
+      code: 'mcp_needs_strong_factor',
+      message: 'Add a passkey or an authenticator app before connecting an agent.',
+    } } } })
     harness()
     await ready()
     fireEvent.click(screen.getByRole('button', { name: 'Create connection' }))
     await waitFor(() => expect(screen.getByRole('link', { name: 'Enrol a passkey or authenticator first' }))
       .toBeTruthy())
     expect(screen.queryByRole('button', { name: 'Create connection' })).toBeNull()
+    expect(screen.queryByText("Confirm it's you")).toBeNull()
+    expect(post).toHaveBeenCalledTimes(1)
+  })
+
+  it('429 mcp_mint_rate_limited asks the user to wait', async () => {
+    post.mockRejectedValue({ response: { status: 429, data: { detail: { code: 'mcp_mint_rate_limited' } } } })
+    harness()
+    await ready()
+    fireEvent.click(screen.getByRole('button', { name: 'Create connection' }))
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/Try again later/))
   })
 
   it('an account with no strong factor sees the enrol hint instead of Create', async () => {
@@ -425,12 +441,52 @@ describe('AgentsPage connected agents', () => {
     expect(captured).toContainEqual(['mcpTokenRevoked', 'mcp'])
   })
 
-  it('greys an expired row, and asks for a rotate when every row has expired', async () => {
-    info = { enabled: true, mcp_url: URL, tokens: [row({ expires_at: '2020-01-01T00:00:00Z' })] }
+  it('greys an expired row with no actions — rotate only replaces a live token', async () => {
+    info = { enabled: true, mcp_url: URL, tokens: [row({ expires_at: '2020-01-01T00:00:00Z', expired: true })] }
     harness()
     const r = await screen.findByTestId('mcp-row-7')
     expect(r.className).toContain('opacity-60')
-    expect(screen.getByText(/Every connection has expired. Rotate one/)).toBeTruthy()
+    expect(within(r).getByText('Expired')).toBeTruthy()
+    expect(within(r).queryByRole('button')).toBeNull()
+    expect(screen.getByText(/None of these connections works any more. Create a new one above/)).toBeTruthy()
+  })
+
+  it("trusts the server's expired flag even when the clock disagrees", async () => {
+    info = { enabled: true, mcp_url: URL, tokens: [row({ expired: true })] }
+    harness()
+    const r = await screen.findByTestId('mcp-row-7')
+    expect(r.className).toContain('opacity-60')
+  })
+
+  it('greys a revoked row, badges it, and offers nothing', async () => {
+    info = { enabled: true, mcp_url: URL, tokens: [row({ revoked: true }), row({ session_id: 8, label: 'Live one' })] }
+    harness()
+    const dead = await screen.findByTestId('mcp-row-7')
+    expect(dead.className).toContain('opacity-60')
+    expect(within(dead).getByText('Revoked')).toBeTruthy()
+    expect(within(dead).queryByRole('button')).toBeNull()
+    expect(within(screen.getByTestId('mcp-row-8')).getByRole('button', { name: 'Rotate Live one' })).toBeTruthy()
+    // One live row left, so no "none of these works" prompt.
+    expect(screen.queryByText(/None of these connections works/)).toBeNull()
+  })
+
+  it('names a row whose label is null', async () => {
+    info = { enabled: true, mcp_url: URL, tokens: [row({ label: null })] }
+    harness()
+    const r = await screen.findByTestId('mcp-row-7')
+    expect(r.textContent).toContain('Agent connection')
+    expect(within(r).getByRole('button', { name: 'Revoke Agent connection' })).toBeTruthy()
+  })
+
+  it('a rotate the server answers 404 says the connection is gone and re-reads the list', async () => {
+    info = { enabled: true, mcp_url: URL, tokens: [row()] }
+    post.mockRejectedValue({ response: { status: 404, data: { detail: 'Agent token not found' } } })
+    harness()
+    fireEvent.click(await screen.findByRole('button', { name: 'Rotate Claude Code - macOS' }))
+    await waitFor(() => expect(screen.getByText(/no longer live. Create a new one above/)).toBeTruthy())
+    expect(screen.queryByLabelText('Your token')).toBeNull()
+    const infoReads = get.mock.calls.filter((c) => String(c[0]).startsWith('/user/mcp-token/info')).length
+    expect(infoReads).toBeGreaterThanOrEqual(2)
   })
 })
 
@@ -444,6 +500,13 @@ describe('AgentsPage error and off states', () => {
     info = { enabled: true, mcp_url: URL, tokens: [] }
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
     await waitFor(() => expect(screen.getByText('Connect your agent')).toBeTruthy())
+  })
+
+  it('says why there are no commands when the server has no public URL', async () => {
+    info = { enabled: true, mcp_url: null, tokens: [] }
+    harness()
+    await waitFor(() => expect(screen.getByText(/Connect commands are unavailable right now/)).toBeTruthy())
+    expect(screen.queryByText('Connect your agent')).toBeNull()
   })
 
   it('shows a banner when the server says connections are switched off', async () => {
