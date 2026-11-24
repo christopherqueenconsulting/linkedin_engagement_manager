@@ -26,6 +26,7 @@ from cqc_lem.utilities.db import (
     get_weekly_engager_icp_scores,
     get_weekly_post_rows,
 )
+from cqc_lem.utilities.logger import log_debug
 from cqc_lem.utilities.post_stats import third_party_engagement_rate
 
 MAX_ACTIONS = 3
@@ -327,7 +328,8 @@ def _profile_audit_line(user_id: int) -> Optional[dict]:
         if not flag_enabled(PROFILE_AUDIT, user_id):
             return None
         return report_line(load_audit_view(user_id))
-    except Exception:
+    except Exception as exc:
+        log_debug("Profile audit report line unavailable", exc=exc, user_id=user_id)
         return None
 
 

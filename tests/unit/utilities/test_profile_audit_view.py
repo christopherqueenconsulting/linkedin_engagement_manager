@@ -118,6 +118,7 @@ def test_report_line_none_cases():
 
 def test_known_check_ids():
     assert "custom_url" in view.known_check_ids()
+    assert "icp_language_gap" in view.known_check_ids()
 
 
 # --- load_audit_view ----------------------------------------------------------------------------

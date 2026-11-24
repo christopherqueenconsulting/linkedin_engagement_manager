@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from cqc_lem.utilities.profile_audit import CHECK_WEIGHTS, FAIL, WARN, diff_audits
+from cqc_lem.utilities.profile_audit_llm import LLM_FINDING_ID
 
 OPEN_STATUSES = (WARN, FAIL)
 CORRELATION_NOTE = ("Shown side by side so you can compare. A change in followers or views is not "
@@ -162,8 +163,8 @@ def load_audit_view(user_id: int) -> Optional[Dict[str, Any]]:
 
 
 def known_check_ids() -> List[str]:
-    """The rubric's check ids, the only ones an action may name."""
-    return list(CHECK_WEIGHTS)
+    """The check ids an action may name: the rubric's, plus the monthly LLM finding (weight 0)."""
+    return [*CHECK_WEIGHTS, LLM_FINDING_ID]
 
 
 def report_line(view: Optional[Mapping[str, Any]]) -> Optional[Dict[str, Any]]:
