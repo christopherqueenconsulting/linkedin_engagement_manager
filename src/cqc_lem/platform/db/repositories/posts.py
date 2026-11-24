@@ -2648,3 +2648,71 @@ def get_weekly_engager_icp_scores(user_id: int, start: datetime, end: datetime) 
     except mysql.connector.Error as err:
         log_error("Could not read weekly engager ICP scores", exc=err, user_id=user_id)
         return None
+
+
+def get_impact_post_rows(user_id: int, start: datetime, end: datetime) -> Optional[list]:
+    """Posts published in [start, end) with their LATEST `post_stats` row and `scheduled_time` (#2643).
+
+    The impact report needs each post's day to exclude the deploy and outage days, which
+    `get_weekly_post_rows` does not carry. None on a database fault.
+    """
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT p.id, p.scheduled_time, s.impressions, s.reactions, s.comments, "
+                "  s.own_comments, s.reposts "
+                "FROM posts p LEFT JOIN post_stats s "
+                "  ON s.post_id=p.id AND s.user_id=p.user_id "
+                "  AND s.id IN (SELECT MAX(id) FROM post_stats WHERE user_id=%s GROUP BY post_id) "
+                "WHERE p.user_id=%s AND p.status=%s AND p.scheduled_time >= %s "
+                "  AND p.scheduled_time < %s ORDER BY p.scheduled_time",
+                (user_id, user_id, PostStatus.POSTED.value, to_naive_utc(start), to_naive_utc(end)))
+            return cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        log_error("Could not read impact post rows", exc=err, user_id=user_id)
+        return None
+
+
+def get_impact_hourly_counts(user_id: int, start: datetime, end: datetime) -> Optional[dict]:
+    """Hour-bucketed event counts in [start, end) for the impact report (#2643).
+
+    Hourly, not daily, so the caller folds them into ITS day boundary (America/New_York) without
+    the database needing timezone tables. Returns `{"logs": [...], "leads": [...]}`: `logs` rows
+    are (hour, action_type, result, n); `leads` rows are (hour, stage, n) by creation. None on a
+    database fault: an unread window must never read as zero events.
+    """
+    lo, hi = to_naive_utc(start), to_naive_utc(end)
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT DATE_FORMAT(created_at, '%%Y-%%m-%%d %%H') AS hour, action_type, result, "
+                "COUNT(*) AS n FROM logs WHERE user_id=%s AND created_at >= %s AND created_at < %s "
+                "GROUP BY hour, action_type, result", (user_id, lo, hi))
+            logs = cursor.fetchall() or []
+            cursor.execute(
+                "SELECT DATE_FORMAT(created_at, '%%Y-%%m-%%d %%H') AS hour, "
+                "COALESCE(manual_stage, stage) AS stage, COUNT(*) AS n FROM leads "
+                "WHERE user_id=%s AND created_at >= %s AND created_at < %s GROUP BY hour, stage",
+                (user_id, lo, hi))
+            leads = cursor.fetchall() or []
+        return {"logs": logs, "leads": leads}
+    except mysql.connector.Error as err:
+        log_error("Could not read impact event counts", exc=err, user_id=user_id)
+        return None
+
+
+def get_impact_llm_cost_by_day(user_id: int, start_day, end_day) -> Optional[list]:
+    """`cost_ledger` LLM spend per `incurred_on` day in [start_day, end_day) as (day, usd) (#2643).
+
+    None on a database fault, so an unread window is never a $0 one.
+    """
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT incurred_on AS day, SUM(usd) AS usd FROM cost_ledger "
+                "WHERE user_id=%s AND category='llm' AND incurred_on >= %s AND incurred_on < %s "
+                "GROUP BY incurred_on", (user_id, start_day, end_day))
+            return cursor.fetchall() or []
+    except mysql.connector.Error as err:
+        log_error("Could not read impact LLM cost", exc=err, user_id=user_id)
+        return None

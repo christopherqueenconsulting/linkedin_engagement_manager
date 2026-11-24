@@ -24,6 +24,7 @@ reached as `_main.<name>`, an attribute resolved at REQUEST time. So
 """
 
 import math
+from datetime import date, datetime, timezone
 from enum import StrEnum
 from typing import Any, List, Optional
 
@@ -301,6 +302,33 @@ def admin_automation_status(x_admin_secret: Optional[str] = Header(default=None)
         "pause_remaining_s": pause_s,
         "breaker_remaining_s": rate_limit_cooldown_remaining(),
     })
+
+
+@router.get("/impact-report", responses={200: {"description": "Before/after impact report"},
+                                         403: {"description": "Forbidden"},
+                                         503: {"description": "A read failed"}})
+def admin_impact_report(user_id: int, change_at: datetime, days: int = Query(14, ge=1, le=60),
+                        exclude_days: Optional[str] = None,
+                        x_admin_secret: Optional[str] = Header(default=None)
+                        ) -> ResponseModel[dict[str, Any]]:
+    """The before/after impact report for one user around a change (issue #2643).
+
+    Admin-only and read-only. `exclude_days` is a comma-separated list of ET dates (outages) to
+    drop from both windows. A failed read is 503, never an empty report.
+    """
+    _require_admin(x_admin_secret)
+    from cqc_lem.utilities.impact_report import ImpactReadError, load_impact_report
+    try:
+        skip = [date.fromisoformat(d.strip()) for d in (exclude_days or "").split(",") if d.strip()]
+    except ValueError:
+        raise HTTPException(status_code=422, detail="exclude_days must be YYYY-MM-DD dates")
+    if change_at.tzinfo is None:
+        change_at = change_at.replace(tzinfo=timezone.utc)
+    try:
+        return ResponseModel(status_code=200,
+                             detail=load_impact_report(user_id, change_at, days, skip))
+    except ImpactReadError:
+        raise HTTPException(status_code=503, detail="Impact report inputs could not be read")
 
 
 @router.post("/fix-video-urls", responses={

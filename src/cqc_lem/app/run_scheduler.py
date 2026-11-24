@@ -2916,5 +2916,19 @@ def auto_weekly_youtube_token_check(self):
                                 f"({state.get('reason')}, emailed={state.get('emailed')})")
 
 
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})
+def auto_impact_report(self):
+    """Daily impact-report beat (issue #2643).
+
+    Emails the owner the 14-days-after report for each
+    release that has aged in, plus the monthly baseline. Default OFF behind `impact-report-enabled`;
+    GitHub only ever receives a one-line note with no metrics. Rollback: remove the beat entry.
+    """
+    from cqc_lem.utilities.impact_report_job import run_impact_report_sweep
+
+    result = run_impact_report_sweep()
+    return lane_result(TaskOutcome.NO_OP, f"Impact report beat: {result.get('action')}")
+
+
 if __name__ == "__main__":
     print("Process finished")

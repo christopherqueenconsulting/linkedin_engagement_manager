@@ -613,6 +613,12 @@ YOUTUBE_PRIVACY_STATUS = get_constant_from_env('YOUTUBE_PRIVACY_STATUS', default
 # Where the weekly refresh-token health probe (issue #742) alerts when the grant is provably gone.
 # Empty falls back to MARGIN_REPORT_EMAIL.
 YOUTUBE_ALERT_EMAIL = get_constant_from_env('YOUTUBE_ALERT_EMAIL', default_value='')
+# Where the impact report (issue #2643) is emailed. Empty falls back to MARGIN_REPORT_EMAIL.
+IMPACT_REPORT_EMAIL = get_constant_from_env('IMPACT_REPORT_EMAIL', default_value='')
+# The user the report measures (the owner's own account) and the tracker issue the one-line
+# "ready" note goes on.
+IMPACT_REPORT_USER_ID = get_constant_from_env('IMPACT_REPORT_USER_ID', default_value='1')
+IMPACT_REPORT_ISSUE = get_constant_from_env('IMPACT_REPORT_ISSUE', default_value='2643')
 
 # Set other constants here
 USE_DOCKER_BROWSER = isTrue(get_constant_from_env('USE_DOCKER_BROWSER', default_value='True'))
