@@ -527,7 +527,28 @@ def recent_activity_page_posts(source) -> int:
     return sum(len(source.select(selector)) for _rung, selector in _RECENT_ACTIVITY_TEXT_CHAIN)
 
 
-def get_profile_recent_activity(driver, employee_link):
+def recent_activity_shape(source) -> dict:
+    """What a zero-walk page holds, for the drift warning's context — diagnostic only, never graded.
+
+    Counts text boxes, `/feed/update/` anchors, elements carrying an activity/ugcPost/share URN
+    attribute and elements carrying a comment URN attribute, so the next occurrence names its shape.
+    """
+    comment_urn = re.compile(r"urn:li:comment:", re.I)
+    urn_attrs = comment_urn_attrs = 0
+    for el in source.find_all(True):
+        if _own_attr_urn(el):
+            urn_attrs += 1
+        if any(comment_urn.search(str(v)) for v in (el.attrs or {}).values()):
+            comment_urn_attrs += 1
+    return {
+        "text_boxes": recent_activity_page_posts(source),
+        "feed_update_anchors": len(source.select("a[href*='/feed/update/']")),
+        "urn_attrs": urn_attrs,
+        "comment_urn_attrs": comment_urn_attrs,
+    }
+
+
+def get_profile_recent_activity(driver, employee_link, lane: Optional[str] = None):
     """Recent posts/comments as `{'text', 'link', 'posted'}` dicts, newest first as LinkedIn orders.
 
     `posted` is derived from the card's relative caption ("2d") and floored to the start of that day,
@@ -536,7 +557,7 @@ def get_profile_recent_activity(driver, employee_link):
 
     Read per card through `parse_recent_activity` (#2551). An empty result is graded against the
     page: text boxes on the page but no resolved card is selector drift and WARNS; a page with no
-    post text at all is a quiet author and logs DEBUG.
+    post text at all is a quiet author and logs DEBUG. `lane` names the caller for that warning's context.
     """
     go_to_base_employee_link(driver, employee_link)
     url = driver.current_url.rstrip('/') + '/recent-activity/all/'
@@ -550,7 +571,8 @@ def get_profile_recent_activity(driver, employee_link):
                   task_name="get_profile_recent_activity")
         return posts
     grade_zero_walk(recent_activity_page_posts(source), "Recent-activity post-card chain",
-                    task_name="get_profile_recent_activity")
+                    task_name="get_profile_recent_activity", profile_url=employee_link,
+                    activity_url=url, lane=lane or "unspecified", **recent_activity_shape(source))
     return []
 
 

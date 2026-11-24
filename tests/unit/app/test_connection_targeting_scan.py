@@ -325,7 +325,7 @@ class TestAdjacentAuthorHarvest:
         activity = {"https://x/in/a": [{"link": "https://x/feed/update/1"}, {"link": None}],
                     "https://x/in/b": []}
         with patch("cqc_lem.utilities.linkedin.scrapper.get_profile_recent_activity",
-                   side_effect=lambda _d, url: activity[url]), \
+                   side_effect=lambda _d, url, **_kw: activity[url]), \
              patch(f"{_OUT}._harvest_post_commenters", return_value=[fan]), \
              patch(f"{_OUT}.log_info") as info:
             ra._adjacent_author_signals(MagicMock(), 1, ["https://x/in/a", "https://x/in/b"],

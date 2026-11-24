@@ -3353,7 +3353,8 @@ def _adjacent_author_signals(driver, user_id: int, authors: list, my_name: str,
     for author_url in authors[:_MAX_ADJACENT_AUTHORS_PER_SCAN]:
         author_name = _author_display_name(author_url)
         try:
-            activity = get_profile_recent_activity(driver, author_url) or []
+            activity = get_profile_recent_activity(
+                driver, author_url, lane="adjacent_authors") or []
         except Exception as e:
             log_warning("Could not read adjacent author's recent activity", exc=e, user_id=user_id,
                         action_type="connection_targeting")
@@ -3858,7 +3859,8 @@ def _funnel_prospects_from_roster(driver, user_id: int, roster: list, my_name: s
             continue
         authors_walked += 1
         try:
-            activity = get_profile_recent_activity(driver, author_url) or []
+            activity = get_profile_recent_activity(
+                driver, author_url, lane="outreach_roster") or []
         except Exception as e:
             if is_tab_crashed(e):
                 driver = _recover(e)
