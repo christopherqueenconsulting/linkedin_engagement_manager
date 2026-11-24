@@ -226,8 +226,93 @@ def _featured_count_from_source(source) -> Optional[int]:
     return 0 if _section_by_heading(source, "About") is not None else None
 
 
-def _banner_state_from_source(source) -> str:
-    """"custom" / "default" / "unknown" for the cover image."""
+def _name_anchor(source, full_name: str):
+    """The element that renders the profile name, or None.
+
+    The <h1>, else the deepest <main> node whose whole text is the name (the SDUI page has no <h1>).
+    """
+    h1 = source.find('h1')
+    if h1 is not None:
+        return h1
+    root = source.find('main')
+    if root is None or not full_name:
+        return None
+    node = next((el for el in root.find_all(True)
+                 if el.get_text(" ", strip=True) == full_name), None)
+    while node is not None:
+        child = next((c for c in node.find_all(True, recursive=False)
+                      if c.get_text(" ", strip=True) == full_name), None)
+        if child is None:
+            return node
+        node = child
+    return None
+
+
+_HEADLINE_NOISE_RE = re.compile(r"^[\W_]*$|^(?:he/him|she/her|they/them)$", re.IGNORECASE)
+
+
+def _headline_from_structure(source, full_name: str) -> Optional[str]:
+    """Headline by position, not class: the first real text after the name inside <main>.
+
+    Skips the degree badge, bare punctuation and pronoun chips. None when there is no name anchor
+    or no following text — never a guess.
+    """
+    anchor = _name_anchor(source, full_name)
+    root = source.find('main')
+    if anchor is None or root is None:
+        return None
+    for text in anchor.find_all_next(string=True):
+        if root not in text.parents:
+            return None
+        if anchor in text.parents:
+            continue
+        value = text.strip()
+        if not value or _HEADLINE_NOISE_RE.match(value) or _DEGREE_LEAF_RE.match(value):
+            continue
+        if text.parent.name in ('script', 'style', 'noscript'):
+            continue
+        return value
+    return None
+
+
+_BANNER_DEFAULT_MARKER_RE = re.compile(r"default|ghost|placeholder", re.IGNORECASE)
+_AVATAR_RE = re.compile(r"profile (?:photo|picture)|avatar|photo of|headshot", re.IGNORECASE)
+_BACKGROUND_URL_RE = re.compile(r"background(?:-image)?\s*:[^;]*url\(", re.IGNORECASE)
+
+
+def _banner_from_structure(source, full_name: str) -> str:
+    """Banner state from the top card, ABOVE the name, without hashed class names.
+
+    A background image or an <img> that is not the profile photo means a banner is present:
+    `default` when its src/style/class/alt carries a placeholder marker, else `custom`. No name
+    anchor or no image above it answers `unknown`.
+    """
+    anchor = _name_anchor(source, full_name)
+    root = source.find('main')
+    if anchor is None or root is None:
+        return "unknown"
+    for element in root.descendants:
+        if element is anchor:
+            break
+        if element.name is None:
+            continue
+        style = element.get('style') or ""
+        classes = " ".join(element.get('class') or [])
+        if element.name == 'img':
+            src = (element.get('src') or element.get('data-delayed-url') or "").strip()
+            blob = " ".join([src, classes, element.get('alt') or ""])
+            if not src or _AVATAR_RE.search(blob):
+                continue
+        elif _BACKGROUND_URL_RE.search(style):
+            blob = f"{style} {classes}"
+        else:
+            continue
+        return "default" if _BANNER_DEFAULT_MARKER_RE.search(blob) else "custom"
+    return "unknown"
+
+
+def _banner_state_from_source(source, full_name: str = "") -> str:
+    """"custom" / "default" / "unknown" for the cover image (class selectors, then structure)."""
     for element in source.select('[class*="background-image"], [class*="cover-photo"]'):
         classes = " ".join(element.get('class') or [])
         if "default" in classes:
@@ -235,7 +320,7 @@ def _banner_state_from_source(source) -> str:
         img = element if element.name == 'img' else element.find('img')
         if img is not None and (img.get('src') or "").strip():
             return "custom"
-    return "unknown"
+    return _banner_from_structure(source, full_name)
 
 
 def _custom_url_from_source(profile_url) -> Optional[str]:
@@ -290,10 +375,11 @@ def parse_profile_header(source, profile_url, company_name=None, is_main_user=Fa
         profile['connection'] = connection
     profile['profile_url'] = profile_url
     if is_main_user:
-        profile['headline'] = (title_el.get_text(" ", strip=True) or None) if title_el else None
+        profile['headline'] = ((title_el.get_text(" ", strip=True) or None) if title_el else None
+                               ) or _headline_from_structure(source, full_name)
         profile['about'] = _about_from_source(source)
         profile['featured_count'] = _featured_count_from_source(source)
-        profile['banner_state'] = _banner_state_from_source(source)
+        profile['banner_state'] = _banner_state_from_source(source, full_name)
         profile['custom_url'] = _custom_url_from_source(profile_url)
     return profile
 

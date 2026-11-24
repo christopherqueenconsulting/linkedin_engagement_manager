@@ -7464,20 +7464,115 @@ def _audit_sanitised_snippet(node, limit: int = _AUDIT_SNIPPET_LIMIT) -> str:
     return str(clone)[:limit]
 
 
+_AUDIT_TARGETED_LIMIT = 6000
+_AUDIT_TARGETED_ATTR_LIMIT = 120
+
+
+def _audit_targeted_html(node, limit: int = _AUDIT_TARGETED_LIMIT) -> str:
+    """Outer HTML of `node` for a locator-chain fix.
+
+    Every attribute is kept (value truncated, URL query strings dropped); script/style are removed,
+    SVG `<path>` data is stripped and text is truncated.
+    """
+    import copy
+
+    clone = copy.copy(node)
+    for tag in clone.find_all(["script", "style", "noscript"]):
+        tag.decompose()
+    for path in clone.find_all("path"):
+        path.attrs.pop("d", None)
+    for el in [clone] + clone.find_all(True):
+        cleaned = {}
+        for name, value in (el.attrs or {}).items():
+            text = " ".join(value) if isinstance(value, list) else str(value)
+            if name in ("src", "href", "data-delayed-url"):
+                text = text.split("?")[0]
+            cleaned[name] = text[:_AUDIT_TARGETED_ATTR_LIMIT]
+        el.attrs = cleaned
+    for text in clone.find_all(string=True):
+        if len(text) > 160:
+            text.replace_with(text[:160] + "…")
+    return str(clone)[:limit]
+
+
+def _audit_chain_entry(el) -> dict:
+    """Tag, attributes and class tokens only — no text — for one ancestor."""
+    attrs = {k: (" ".join(v) if isinstance(v, list) else str(v))[:_AUDIT_TARGETED_ATTR_LIMIT]
+             for k, v in (el.attrs or {}).items() if k != "class"}
+    return {"tag": el.name, "attrs": attrs, "classes": list(el.get("class") or [])}
+
+
+def _audit_headline_reading(source) -> dict:
+    """The headline line (the first text after the full name in the top card) and 4 ancestors."""
+    from cqc_lem.utilities.linkedin.scrapper import (
+        _name_anchor,
+        _name_from_title,
+    )
+
+    h1 = source.find("h1")
+    name = h1.get_text(" ", strip=True) if h1 is not None else (_name_from_title(source) or "")
+    anchor = _name_anchor(source, name)
+    root = source.find("main")
+    if anchor is None or root is None:
+        return {"found": False, "name_anchor": False}
+    for text in anchor.find_all_next(string=True):
+        if root not in text.parents:
+            break
+        if anchor in text.parents or not text.strip():
+            continue
+        if text.parent.name in ("script", "style", "noscript"):
+            continue
+        el = text.parent
+        chain, parent = [], el.parent
+        while parent is not None and parent is not root and len(chain) < 4:
+            chain.append(_audit_chain_entry(parent))
+            parent = parent.parent
+        return {"found": True, "name_anchor": True, "text": text.strip()[:200],
+                "html": _audit_targeted_html(el), "ancestors": chain}
+    return {"found": False, "name_anchor": True}
+
+
+def _audit_banner_reading(source) -> dict:
+    """Every <img> and inline background-image above the name in the top card, plus whether a
+    default/placeholder marker is present."""
+    from cqc_lem.utilities.linkedin.scrapper import _BANNER_DEFAULT_MARKER_RE, _name_anchor, _name_from_title
+
+    h1 = source.find("h1")
+    name = h1.get_text(" ", strip=True) if h1 is not None else (_name_from_title(source) or "")
+    anchor = _name_anchor(source, name)
+    root = source.find("main")
+    if anchor is None or root is None:
+        return {"found": False, "name_anchor": False, "elements": [], "default_marker": False}
+    elements = []
+    for el in root.descendants:
+        if el is anchor:
+            break
+        if el.name is None:
+            continue
+        style = el.get("style") or ""
+        if el.name == "img" or re.search(r"background(?:-image)?\s*:[^;]*url\(", style, re.I):
+            elements.append(_audit_targeted_html(el, 1500))
+    blob = " ".join(elements)
+    return {"found": bool(elements), "name_anchor": True, "elements": elements[:12],
+            "default_marker": bool(_BANNER_DEFAULT_MARKER_RE.search(blob))}
+
+
 def _audit_dom_reading(source, field: str) -> dict:
     """What the page renders around an unresolved field: the nearest section, its heading text and
     a short sanitised HTML snippet — the input a locator-chain fix is written from.
+
+    `headline` and `banner_state` get a targeted capture instead (#2755): the shallow `<main>` head
+    never reached the nodes that carry them on the SDUI page.
     """
+    if field == "headline":
+        return {"section": None, "heading": None, **_audit_headline_reading(source)}
+    if field == "banner_state":
+        return {"section": None, "heading": None, **_audit_banner_reading(source)}
     anchor = None
     heading = None
     if field in ("about", "featured_count"):
         heading = "About" if field == "about" else "Featured"
         anchor = _audit_deepest_text_match(source, heading.lower())
-    elif field == "headline":
-        anchor = source.find("h1")
-        heading = anchor.get_text(" ", strip=True) if anchor is not None else None
-    elif field == "banner_state":
-        anchor = next(iter(source.select(_AUDIT_BANNER_CSS)), None)
     if anchor is None:
         main = source.find("main") or source
         return {"section": None, "heading": heading,
