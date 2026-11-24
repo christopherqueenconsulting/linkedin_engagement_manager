@@ -166,6 +166,14 @@ export default function PrivacyPolicy() {
                 OpenRouter). Redacted text is sent to a model only to propose facts, and is not
                 used by us to train models.
               </li>
+              <li>
+                <strong>Recordings (draft):</strong> an audio recording is sent whole to OpenAI,
+                our transcription subprocessor, because it has to be transcribed before anyone's
+                words can be told apart or redacted. We then keep only your own turns, matched to
+                a voice sample you enrol, and delete the recording as soon as the transcript is
+                written, or within 24 hours if transcription fails. Your voice sample is stored
+                as a numeric voiceprint, encrypted, and removed by “Purge all call data”.
+              </li>
             </ul>
           </section>
         </div>

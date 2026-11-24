@@ -488,6 +488,25 @@
         "title": "AvatarPreferencesRequest",
         "type": "object"
       },
+      "Body_enroll_call_voice_endpoint_api_user_call_ingest_enroll_post": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          },
+          "session_token": {
+            "title": "Session Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_token",
+          "file"
+        ],
+        "title": "Body_enroll_call_voice_endpoint_api_user_call_ingest_enroll_post",
+        "type": "object"
+      },
       "Body_start_avatar_training_endpoint_api_avatar_training_post": {
         "properties": {
           "photos": {
@@ -13235,6 +13254,45 @@
           }
         },
         "summary": "List Call Candidates Endpoint"
+      }
+    },
+    "/api/user/call-ingest/enroll": {
+      "post": {
+        "description": "Enrol the user's own voice from a short sample (5 s to 2 min of just them speaking).\n\nStores one sealed embedding and nothing else \u2014 the sample itself is deleted before returning.\nReplaces any earlier enrollment. Speaker ID not being installed is a 503, never a silent pass.",
+        "operationId": "enroll_call_voice_endpoint_api_user_call_ingest_enroll_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_enroll_call_voice_endpoint_api_user_call_ingest_enroll_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Enroll Call Voice Endpoint"
       }
     },
     "/api/user/call-ingest/review": {

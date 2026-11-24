@@ -328,6 +328,14 @@ model_list:
       model: openai/text-embedding-3-small
       api_key: os.environ/OPENAI_API_KEY
 
+  # Call-ingest audio transcription (issue #2729): Whisper via the existing OpenAI key, about
+  # $0.006 per audio minute. Never in a fallback group or the router: a transcript must come from
+  # this model or fail, not from a chat model.
+  - model_name: lem-transcribe
+    litellm_params:
+      model: openai/whisper-1
+      api_key: os.environ/OPENAI_API_KEY
+
   # ── ROUTER: auto-routes by prompt complexity via LEMComplexityRouter hook ─────
   - model_name: lem-router
     litellm_params:

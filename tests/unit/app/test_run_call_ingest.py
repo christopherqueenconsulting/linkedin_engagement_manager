@@ -85,8 +85,9 @@ class TestIngestTask:
 
     def test_purge_beat_ignores_the_flag(self, monkeypatch):
         monkeypatch.delenv("CALL_INGEST_ENABLED", raising=False)
-        with patch(f"{_M}.purge_call_transcripts", return_value=3):
-            assert rci.purge_expired_call_transcripts.run() == "purged 3"
+        with patch(f"{_M}.purge_call_transcripts", return_value=3), \
+             patch(f"{_M}.list_expired_call_audio", return_value=[]):
+            assert rci.purge_expired_call_transcripts.run() == "purged 3, audio 0"
 
     def test_purge_beat_is_scheduled(self):
         from cqc_lem.app.my_celery import app
@@ -196,6 +197,7 @@ class TestReviewApi:
              patch.object(d, "list_call_ingests", return_value=[]), \
              patch.object(d, "get_candidates_for_call", return_value=[1]), \
              patch.object(d, "get_pending_candidates", return_value=[2]), \
+             patch.object(d, "list_call_audio_paths", return_value=[]), \
              patch.object(d, "purge_all_call_data", return_value=True) as purge:
             bulk = user_router.accept_call_candidates_bulk_endpoint(
                 user_router.CallBulkAcceptRequest(session_token="t"))

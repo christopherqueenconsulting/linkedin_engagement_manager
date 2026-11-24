@@ -2216,6 +2216,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/user/call-ingest/enroll": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Enroll Call Voice Endpoint
+         * @description Enrol the user's own voice from a short sample (5 s to 2 min of just them speaking).
+         *
+         *     Stores one sealed embedding and nothing else — the sample itself is deleted before returning.
+         *     Replaces any earlier enrollment. Speaker ID not being installed is a 503, never a silent pass.
+         */
+        post: operations["enroll_call_voice_endpoint_api_user_call_ingest_enroll_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/user/call-ingest/review": {
         parameters: {
             query?: never;
@@ -4352,6 +4375,13 @@ export interface components {
             avatar_use_post_image?: boolean | null;
             /** Avatar Use Video */
             avatar_use_video?: boolean | null;
+            /** Session Token */
+            session_token: string;
+        };
+        /** Body_enroll_call_voice_endpoint_api_user_call_ingest_enroll_post */
+        Body_enroll_call_voice_endpoint_api_user_call_ingest_enroll_post: {
+            /** File */
+            file: string;
             /** Session Token */
             session_token: string;
         };
@@ -11290,6 +11320,39 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    enroll_call_voice_endpoint_api_user_call_ingest_enroll_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_enroll_call_voice_endpoint_api_user_call_ingest_enroll_post"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
