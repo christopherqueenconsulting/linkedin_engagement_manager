@@ -159,7 +159,7 @@ def comment_volume(logged: Optional[Sequence[datetime]],
         "assist_total": sum(r["assist"] for r in per_day) if per_day is not None else None,
         "review_seconds_median": review_seconds_median(
             assist["approved_at"] if assist is not None else None),
-        "outcomes": None if summary is None else {
+        "outcomes": None if summary is None or not summary["checked"] else {
             "checked": summary["checked"],
             "reply_rate": summary["reply_rate"],
             "author_reply_rate": summary["author_reply_rate"],

@@ -183,6 +183,10 @@ class TestCommentVolume:
         o = wr.comment_volume([], None, rows)["outcomes"]
         assert o["checked"] == 2 and o["reply_rate"] == 0.5 and o["demotion_rate"] == 0.0
 
+    def test_all_skipped_outcomes_are_unknown(self):
+        rows = [{"status": "skipped"}]
+        assert wr.comment_volume([], None, rows)["outcomes"] is None
+
     def test_not_measured_names_each_unknown(self):
         keys = _keys(_build())
         assert {"comment_volume", "review_seconds", "comment_outcomes"} <= keys

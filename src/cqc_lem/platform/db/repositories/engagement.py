@@ -258,6 +258,8 @@ def count_comments_today(user_id: int) -> int:
     spend the same budget twice. A read error counts 0, which fails OPEN: the cap stops nothing.
     """
     return _count_actions_today(user_id, *COMMENT_LOG_ACTION_TYPES)
+
+
 def get_comment_log_times(user_id: int, start, end) -> Optional[list]:
     """`created_at` of every SUCCESS comment log in [start, end), ascending. None on a read error.
 
@@ -276,6 +278,8 @@ def get_comment_log_times(user_id: int, start, end) -> Optional[list]:
     except mysql.connector.Error as err:
         log_error("Could not read comment log times", exc=err, user_id=user_id)
         return None
+
+
 def count_invites_sent_today(user_id: int) -> int:
     """Invitations actually sent today, counted as a COMBINED daily budget (issue #398 owner review):
     both the reactive profile-viewer flow and the proactive connect flow send via invite_to_connect_now,
