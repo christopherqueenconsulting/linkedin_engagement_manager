@@ -158,7 +158,35 @@ describe('SecurityCard (issue #745, phase 2b)', () => {
     expect(screen.queryAllByText('Agent').length).toBe(1)
   })
 
+  it('badges an MCP connection (issue #2687) for both mcp scopes', async () => {
+    get.mockResolvedValue(payload({
+      sessions: [
+        { id: 1, label: 'Chrome on macOS', created_at: null, last_seen_at: null,
+          expires_at: null, is_current: true, scope: 'full' },
+        { id: 4, label: 'Claude Code - macOS', created_at: null, last_seen_at: null,
+          expires_at: null, is_current: false, scope: 'mcp' },
+        { id: 5, label: 'Codex - Linux', created_at: null, last_seen_at: null,
+          expires_at: null, is_current: false, scope: 'mcp_outreach' },
+      ],
+    }))
+    harness(<SecurityCard />)
+    await waitFor(() => expect(screen.getByText('Codex - Linux')).toBeTruthy())
+    expect(screen.getAllByText('MCP').length).toBe(2)
+    expect(screen.queryByText('Agent')).toBeNull()
+  })
+
   describe('minting an agent token (issue #1731)', () => {
+    it('masks the shown-once token for replay and autocapture', async () => {
+      get.mockResolvedValue(payload())
+      post.mockResolvedValue({ data: { detail: { session_token: 'agent-tok-mask', expires_in_days: 90 } } })
+      harness(<SecurityCard />)
+      await waitFor(() => expect(screen.getByRole('button', { name: /Create agent token/i })).toBeTruthy())
+      fireEvent.click(screen.getByRole('button', { name: /Create agent token/i }))
+      const code = await screen.findByText('agent-tok-mask')
+      expect(code.getAttribute('data-ph-mask')).toBe('true')
+      expect(code.className).toContain('ph-no-capture')
+    })
+
     it('submits the default label and TTL, and shows the token exactly once with its expiry', async () => {
       get.mockResolvedValue(payload())
       post.mockResolvedValue({ data: { detail: { session_token: 'agent-tok-123', expires_in_days: 90 } } })

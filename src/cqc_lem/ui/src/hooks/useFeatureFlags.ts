@@ -25,6 +25,9 @@ export const FLAGS = {
   costRouting: 'cost-routing-enabled',
   posthogSurveys: 'posthog-surveys-enabled',
   brandShowcase: 'brand-showcase-enabled',
+  // The Agents tab + MCP token mint (issue #2687). Read with fallback FALSE: an unreachable API
+  // must never show a nav entry whose every call would 404.
+  mcpServer: 'mcp-server-enabled',
 } as const
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS]
