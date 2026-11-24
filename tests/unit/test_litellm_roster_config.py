@@ -230,6 +230,34 @@ class TestWeeklyModelCheck:
                 == {d["bare"] for d in _ollama_deployments()})
 
 
+class TestVoiceTier:
+    """#2750: `lem-voice` is an ORDERED writer tier, not a latency race."""
+
+    @staticmethod
+    def _voice_entries() -> list:
+        blocks = re.split(r"(?m)^  - model_name:\s*", CONFIG_TEXT)[1:]
+        rows = []
+        for block in blocks:
+            if block.splitlines()[0].strip() != "lem-voice":
+                continue
+            model = re.search(r"(?m)^\s+model:\s*(\S+)", block).group(1)
+            order = re.search(r"(?m)^\s+order:\s*(\d+)", block)
+            rows.append((int(order.group(1)) if order else None, model))
+        return rows
+
+    def test_resolves_in_the_configured_order(self):
+        assert sorted(self._voice_entries()) == [
+            (1, "openai/gpt-5.4-mini"), (2, "openai/gpt-oss:120b")]
+
+    def test_never_resolves_to_a_removed_deployment(self):
+        removed = {"gemma4:31b", "deepseek-v4-flash", "ministral-3:8b"}
+        served = {m.split("/", 1)[1] for _, m in self._voice_entries()}
+        assert not served & removed
+
+    def test_degrades_to_the_medium_group_only(self):
+        assert re.search(r"(?m)^    - lem-voice:\s*\n\s+- lem-medium\s*$", CONFIG_TEXT)
+
+
 class TestBenchmarkChampions:
     def test_the_champions_are_still_the_incumbents(self):
         """scripts/benchmark_models.py reads the FIRST Ollama deployment of a tier as the champion
