@@ -576,25 +576,65 @@ spent_merged_pr() {  # $1=tip $2=base(origin/<name>) $3=branch_pr_heads output -
   return 1
 }
 
-branch_checked_out_elsewhere() {  # $1=branch $2=worktree -> other path on stdout; rc 0=yes 1=no 2=unreadable
-  # Any worktree but $2 (the main checkout included) whose porcelain entry names refs/heads/$1.
-  local branch="$1" here list line path="" p
-  here="$(cd "$2" 2>/dev/null && pwd -P)" || here="$2"
-  list="$(git -C "$REPO" worktree list --porcelain 2>/dev/null)" || return 2
-  while IFS= read -r line; do
-    case "$line" in
-      "worktree "*) path="${line#worktree }" ;;
-      "branch refs/heads/$branch")
-        p="$(cd "$path" 2>/dev/null && pwd -P)" || p="$path"
-        [ "$p" = "$here" ] && continue
-        echo "$path"
-        return 0 ;;
-    esac
-  done <<< "$list"
+worktree_holds_branch() {  # $1=worktree path $2=branch $3=its porcelain `branch` ref ("" if detached) -> rc 0=holds
+  # A worktree holds the branch when it has it checked out, OR is mid-rebase/mid-bisect of it: then
+  # porcelain says `detached`, but git (2.43 included) still counts the branch as in use and the
+  # rebase writes it back on --continue. A state we cannot read counts as holding: fail closed.
+  local path="$1" branch="$2" ref="$3" gd f content
+  [ "$ref" = "refs/heads/$branch" ] && return 0
+  gd="$(git -C "$path" rev-parse --absolute-git-dir 2>/dev/null)" || return 0
+  for f in "$gd/rebase-merge/head-name" "$gd/rebase-apply/head-name" "$gd/BISECT_START"; do
+    [ -e "$f" ] || continue
+    content="$(cat "$f" 2>/dev/null)" || return 0
+    [ "$content" = "refs/heads/$branch" ] && return 0
+    # BISECT_START records the short name (or a SHA when the bisect started detached).
+    [ "$f" = "$gd/BISECT_START" ] && [ "$content" = "$branch" ] && return 0
+  done
   return 1
 }
 
-restart_spent_branch() {  # $1=worktree (on $4) $2=branch $3=base $4=tip -> no stdout; rc 1 = refused (held elsewhere)
+branch_checked_out_elsewhere() {  # $1=branch $2=worktree -> other path on stdout; rc 0=yes 1=no 2=unreadable
+  # Any worktree but $2 (the main checkout included) that holds refs/heads/$1 (worktree_holds_branch).
+  # A `prunable` entry is NOT skipped: git itself still refuses a branch such an entry holds until
+  # `git worktree prune` runs, so callers prune first (add_worktree, agent_run.sh).
+  local branch="$1" here list line path="" ref="" p
+  here="$(cd "$2" 2>/dev/null && pwd -P)" || here="$2"
+  list="$(git -C "$REPO" worktree list --porcelain 2>/dev/null)" || return 2
+  # Entries are blank-line separated; the appended newline guarantees the last one is evaluated.
+  while IFS= read -r line; do
+    case "$line" in
+      "worktree "*) path="${line#worktree }"; ref="" ;;
+      "branch "*) ref="${line#branch }" ;;
+      "")
+        [ -n "$path" ] || continue
+        p="$(cd "$path" 2>/dev/null && pwd -P)" || p="$path"
+        if [ "$p" != "$here" ] && worktree_holds_branch "$path" "$branch" "$ref"; then
+          echo "$path"
+          return 0
+        fi
+        path="" ref="" ;;
+    esac
+  done <<< "$list"$'\n'
+  return 1
+}
+
+worktree_add_or_refuse() {  # $1=branch $2=worktree, then `git worktree add` args -> rc 0 built; 1 refused
+  # Every branch-moving or branch-attaching step goes through `git worktree add` (-B, -b, or an
+  # existing branch), which git 2.43 itself refuses for a branch any other worktree holds,
+  # mid-rebase and mid-bisect included, leaving the ref untouched. The pre-check above gives the
+  # clean message; THIS is what holds when the pre-check misses a state. Fail closed: one WARNING,
+  # the half-built tree dropped, rc 1, and the caller returns before any push.
+  local branch="$1" wt="$2" out reason
+  shift 2
+  out="$(git -C "$REPO" worktree add "$@" 2>&1)" && [ -d "$wt" ] && return 0
+  reason="$(grep -m1 -E '^(fatal|error):' <<< "$out")" || reason="${out##*$'\n'}"
+  log "add_worktree: WARNING refusing $branch: git refused \`worktree add $*\` (${reason:-no output});" \
+      "nothing moved, attached or pushed (git-refused)." >&2
+  drop_refused_worktree "$wt"
+  return 1
+}
+
+restart_spent_branch() {  # $1=worktree (on $4) $2=branch $3=base $4=tip -> no stdout; rc 1 = refused (held elsewhere, or git refused)
   # $4 is the branch's tip as add_worktree found it: the local ref, else the remote-tracking ref.
   # Restarts the worktree's branch from $base when spent; otherwise leaves the attach untouched.
   local wt="$1" branch="$2" base="$3" tip="$4" head tracking remote="" rc prs hit pr_no upstream new
@@ -643,13 +683,14 @@ restart_spent_branch() {  # $1=worktree (on $4) $2=branch $3=base $4=tip -> no s
   branch_held_elsewhere_refusal "$branch" "$wt" || return 1
   upstream="$(git -C "$wt" rev-parse --abbrev-ref --symbolic-full-name "$branch@{upstream}" 2>/dev/null)" \
     || upstream=""
+  # The reset is a `git worktree add -B`, never a `checkout -B` inside $wt: git 2.43's checkout -B
+  # moves a branch another worktree holds (mid-rebase included), while worktree add -B refuses it
+  # and leaves the ref at $tip. $wt itself holds the branch, so it is removed first (a fresh tree,
+  # nothing in it to lose). A refusal fails closed (rc 1) BEFORE the push below, so origin is only
+  # ever moved once the local reset has succeeded.
   # --no-track: a branch restarted from origin/main must never take origin/main as its upstream.
-  if ! git -C "$wt" checkout -q --no-track -B "$branch" "$base" >/dev/null 2>&1; then
-    git -C "$wt" checkout -q -B "$branch" "$tip" >/dev/null 2>&1
-    log "add_worktree: WARNING $branch is spent (merged PR #$pr_no) but could not be reset to" \
-        "$base; attached at $tip." >&2
-    return 0
-  fi
+  git -C "$REPO" worktree remove --force "$wt" >/dev/null 2>&1 || true
+  worktree_add_or_refuse "$branch" "$wt" -q --no-track -B "$branch" "$wt" "$base" || return 1
   new="$(git -C "$wt" rev-parse --verify --quiet HEAD 2>/dev/null)"
   if [ -z "$remote" ]; then
     # Origin has no such branch: push nothing, the lane's first push creates it. Drop the stale
@@ -671,7 +712,10 @@ restart_spent_branch() {  # $1=worktree (on $4) $2=branch $3=base $4=tip -> no s
     log "add_worktree: $branch was spent (merged PR #$pr_no head $tip, in $base); restarted from" \
         "$base: origin/$branch $tip -> $new (lease on $tip; merged work: refs/pull/$pr_no/head)." >&2
   else
-    git -C "$wt" checkout -q -B "$branch" "$tip" >/dev/null 2>&1
+    # Put the branch back at $tip through the same refusing form; a refusal fails closed (the
+    # tracking ref and origin still name $tip, so nothing is lost).
+    git -C "$REPO" worktree remove --force "$wt" >/dev/null 2>&1 || true
+    worktree_add_or_refuse "$branch" "$wt" -q -B "$branch" "$wt" "$tip" || return 1
     if [ -n "$upstream" ]; then
       git -C "$wt" branch -q --set-upstream-to="$upstream" "$branch" >/dev/null 2>&1
     fi
@@ -717,20 +761,22 @@ add_worktree() {  # $1=branch  $2=base(ref)  -> path on stdout; rc 1 = not built
   git -C "$REPO" worktree remove --force "$wt" >/dev/null 2>&1 || true
   rm -rf "$wt"
   git -C "$REPO" worktree prune >/dev/null 2>&1
-  # Every path below can move refs/heads/$branch (origin path `checkout -B`, the spent reset) or
-  # attach it, so a branch another worktree holds is refused HERE, before any of them runs.
+  # Every path below can move refs/heads/$branch or attach it. Each does so ONLY through
+  # worktree_add_or_refuse, a form git itself refuses for a branch held elsewhere; this pre-check
+  # refuses first so the common case gets a clean message naming the other worktree.
   branch_held_elsewhere_refusal "$branch" "$wt" || return 1
   if git -C "$REPO" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
     if git -C "$REPO" show-ref --verify --quiet "refs/heads/$branch" \
        && ! git -C "$REPO" merge-base --is-ancestor "refs/heads/$branch" "refs/remotes/origin/$branch" 2>/dev/null; then
       # The local branch is ahead of (or diverged from) the tracking ref: it carries commits that
-      # ref does not. `checkout -B <branch> origin/<branch>` would move it BACK and orphan them, so
+      # ref does not. `-B <branch> origin/<branch>` would move it BACK and orphan them, so
       # attach the local branch as it is. refs/heads/<branch> only ever fast-forwards here.
       log "add_worktree: attaching local $branch (has commits not on origin/$branch; never moved back)." >&2
-      git -C "$REPO" worktree add "$wt" "$branch" >/dev/null 2>&1
+      worktree_add_or_refuse "$branch" "$wt" "$wt" "$branch" || return 1
     else
-      git -C "$REPO" worktree add "$wt" "origin/$branch" >/dev/null 2>&1
-      git -C "$wt" checkout -B "$branch" "origin/$branch" >/dev/null 2>&1
+      # ONE `worktree add -B`, never `worktree add <detached>` + `checkout -B`: git 2.43's checkout -B
+      # moves a branch another worktree holds; worktree add -B refuses it and leaves the ref alone.
+      worktree_add_or_refuse "$branch" "$wt" -B "$branch" "$wt" "origin/$branch" || return 1
     fi
     # A phased issue's merged branch is SPENT: restart it from $base rather than build the next
     # phase on commits main already carries. Never discards work; see restart_spent_branch.
@@ -751,7 +797,7 @@ add_worktree() {  # $1=branch  $2=base(ref)  -> path on stdout; rc 1 = not built
         # be worked (feature/claude-issue-744 sat with 3 unique commits and a missing directory,
         # failing on every tick until the reaper parked it). Attach the existing branch instead.
         log "add_worktree: reattaching existing $branch (has commits not on $base) to a fresh worktree." >&2
-        git -C "$REPO" worktree add "$wt" "$branch" >/dev/null 2>&1
+        worktree_add_or_refuse "$branch" "$wt" "$wt" "$branch" || return 1
         # ...unless those commits ARE a merged phase whose origin branch was deleted on merge: the
         # usual shape of the incident. The same single rule decides; anything else stays attached.
         if [ -d "$wt" ] && ! restart_spent_branch "$wt" "$branch" "$base" "$tip"; then
@@ -761,7 +807,10 @@ add_worktree() {  # $1=branch  $2=base(ref)  -> path on stdout; rc 1 = not built
       fi
     fi
     # Only create the branch if the reattach above didn't already produce the worktree.
-    [ -d "$wt" ] || git -C "$REPO" worktree add -b "$branch" "$wt" "$base" >/dev/null 2>&1
+    # (`branch -D` above and `-b` here are both refused by git for a branch held elsewhere.)
+    if [ ! -d "$wt" ]; then
+      worktree_add_or_refuse "$branch" "$wt" -b "$branch" "$wt" "$base" || return 1
+    fi
   fi
   if [ ! -d "$wt" ]; then
     log "add_worktree: FAILED to create $wt (branch=$branch base=$base). Check git worktree list." >&2

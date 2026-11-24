@@ -80,10 +80,13 @@ if command -v permission_profile_ready >/dev/null 2>&1 && ! permission_profile_r
   exit "$EX_SETUP"
 fi
 
-# A branch checked out in ANOTHER worktree, before the budget for the same reason. add_worktree
-# refuses it (git 2.43's `checkout -B` would move that worktree's HEAD), and that refusal sits
+# A branch held by ANOTHER worktree (checked out, mid-rebase or mid-bisect), before the budget for
+# the same reason. add_worktree refuses it (and git refuses its `worktree add`), and that refusal sits
 # AFTER the charge below, so without this pre-check a held branch would spend a run per observation
 # and then park as exhausted. EX_SETUP = retried on the next observation, nothing charged or parked.
+# Prune first: a worktree whose directory was deleted stays listed (`prunable`) and git counts it as
+# holding its branch, so without the prune a deleted directory would refuse that branch forever.
+git -C "$REPO" worktree prune >/dev/null 2>&1 || true
 if command -v branch_held_elsewhere_refusal >/dev/null 2>&1 \
    && ! branch_held_elsewhere_refusal "$BRANCH" "$WORKROOT/$BRANCH"; then
   log "refusing $MODE for $KIND #$NUMBER before charging budget (EX_SETUP): $BRANCH not free."

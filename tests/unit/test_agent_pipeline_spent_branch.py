@@ -19,7 +19,9 @@ the jq expression are exercised rather than bypassed.
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -164,10 +166,12 @@ class Box:
         prefetch: bool = True,
         hook: str | None = None,
         refused: bool = False,
+        pre: str = "",
     ) -> tuple[str, Path]:
         """Source guards.sh and run add_worktree. Returns (stderr, worktree).
 
         `refused` expects add_worktree to fail closed: rc 1, nothing on stdout, no worktree built.
+        `pre` is bash run after sourcing (e.g. disabling the pre-check to reach git's own refusal).
         """
         self.prs.write_text(json.dumps(prs or []), encoding="utf-8")
         fail = self.tmp / "gh-fail"
@@ -182,6 +186,7 @@ class Box:
             f'BASE="{self.tmp}"; REPO="{self.repo}"; WORKROOT="{self.work}"; SLUG=o/r\n'
             'log() { echo "LOG: $*" >&2; }\n'
             f'. "{GUARDS}"\n'
+            f"{pre}\n"
             f'add_worktree "{BRANCH}" origin/main\n'
         )
         env = {
@@ -598,6 +603,147 @@ def test_an_unreadable_worktree_list_is_refused(box: Box) -> None:
     assert err.count("WARNING") == 1 and "(worktree-list-unreadable)" in err
 
 
+# --- A worktree mid-rebase / mid-bisect HOLDS the branch, though porcelain says `detached` --------
+# git counts it as in use and writes the branch back on --continue, so moving the ref under it
+# loses the rebase. Each shape runs twice: with the pre-check (clean message), and with the
+# pre-check disabled, so git's own refusal of every `worktree add` form is what fails closed.
+
+NO_PRECHECK = "branch_checked_out_elsewhere() { return 1; }"
+PRECHECK = pytest.mark.parametrize("pre", ["", NO_PRECHECK], ids=["pre-check", "git-refusal-only"])
+
+
+def _rebase_env(box: Box) -> dict[str, str]:
+    return {**box.env, "GIT_SEQUENCE_EDITOR": "sed -i 1s/^pick/edit/", "GIT_EDITOR": "true"}
+
+
+def _start_rebase(box: Box, wt: Path) -> None:
+    """Stop `wt` mid `rebase -i` of BRANCH (edit on the first of its two commits)."""
+    r = subprocess.run(["git", "rebase", "-i", "HEAD~2"], cwd=wt, env=_rebase_env(box), capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert (Path(box.git("rev-parse", "--absolute-git-dir", cwd=wt)) / "rebase-merge" / "head-name").exists()
+    assert box.holders() == [], "the porcelain entry says `detached`: what the old check missed"
+
+
+def _rebase_continues(box: Box, wt: Path) -> None:
+    r = subprocess.run(["git", "rebase", "--continue"], cwd=wt, env=_rebase_env(box), capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert box.branch_at(wt) == BRANCH, "the rebase wrote the branch back"
+
+
+def _assert_refusal(err: str, pre: str, other: Path) -> None:
+    assert err.count("WARNING") == 1, err
+    if pre:
+        assert "(git-refused)" in err and "already used by worktree" in err
+    else:
+        assert "(checked-out-elsewhere)" in err and str(other) in err
+    assert "restarted from" not in err
+
+
+@PRECHECK
+def test_s1_other_worktree_mid_interactive_rebase_is_refused(box: Box, tmp_path: Path, pre: str) -> None:
+    """S1 shape (local behind tracking) with the holder mid `rebase -i`: nothing moves, it can continue."""
+    behind = box.phase_k()
+    box.git("checkout", "-q", BRANCH)
+    tip = box.commit("later.py", "L = 1\n", msg="later")
+    box.git("push", "-q", "origin", BRANCH)
+    box.git("fetch", "-q", "origin", cwd=box.repo)
+    other = _hold_elsewhere(box, tmp_path, at=behind)
+    _start_rebase(box, other)
+    err, _ = box.run(prs=[pr("OPEN", tip)], prefetch=False, refused=True, pre=pre)
+    _assert_refusal(err, pre, other)
+    assert box.git("rev-parse", f"refs/heads/{BRANCH}", cwd=box.repo) == behind, "branch ref moved"
+    assert box.origin(f"refs/heads/{BRANCH}") == tip, "nothing pushed"
+    _rebase_continues(box, other)
+    assert box.git("rev-parse", f"refs/heads/{BRANCH}", cwd=box.repo) == behind
+
+
+@PRECHECK
+def test_spent_with_origin_present_and_another_worktree_mid_rebase_is_refused_with_no_push(
+    box: Box, tmp_path: Path, pre: str
+) -> None:
+    """Spent, origin still at the tip, the holder mid-rebase: refused before any reset or push."""
+    tip = box.phase_k()
+    main = box.squash_merge()
+    box.git("fetch", "-q", "origin", cwd=box.repo)
+    other = _hold_elsewhere(box, tmp_path, at=f"origin/{BRANCH}")
+    _start_rebase(box, other)
+    err, _ = box.run(prs=[pr("MERGED", tip, merge=main)], prefetch=False, refused=True, pre=pre)
+    _assert_refusal(err, pre, other)
+    assert box.git("rev-parse", f"refs/heads/{BRANCH}", cwd=box.repo) == tip
+    assert box.origin(f"refs/heads/{BRANCH}") == tip, "NO push: origin unchanged"
+    _rebase_continues(box, other)
+
+
+def test_the_spent_reset_itself_is_refused_by_git_and_never_pushes(box: Box, tmp_path: Path) -> None:
+    """A worktree starts a rebase of the branch DURING the gh call, with the pre-check disabled.
+
+    Only the reset's own `worktree add -B` stands between it and the leased push, so this pins that
+    the reset is a git-refused form and that the push happens only after it succeeded.
+    """
+    tip = box.phase_k()
+    main = box.squash_merge()
+    late = tmp_path / "late-wt"
+    hook = (
+        f'git -C "{box.repo}" worktree add -q -f "{late}" {BRANCH} >/dev/null 2>&1\n'
+        f'GIT_SEQUENCE_EDITOR="sed -i 1s/^pick/edit/" git -C "{late}" rebase -q -i HEAD~2 >/dev/null 2>&1\n'
+        'rm -f "$GH_HOOK"\n'
+    )
+    err, _ = box.run(prs=[pr("MERGED", tip, merge=main)], hook=hook, refused=True, pre=NO_PRECHECK)
+    assert err.count("WARNING") == 1 and "(git-refused)" in err and "--no-track -B" in err
+    assert box.git("rev-parse", f"refs/heads/{BRANCH}", cwd=box.repo) == tip
+    assert box.origin(f"refs/heads/{BRANCH}") == tip, "NO push: origin unchanged"
+    assert "restarted from" not in err
+    _rebase_continues(box, late)
+
+
+@PRECHECK
+def test_another_worktree_mid_bisect_of_the_branch_is_refused(box: Box, tmp_path: Path, pre: str) -> None:
+    """BISECT_START records the SHORT branch name; the spent local-only path refuses it."""
+    tip = box.phase_k()
+    main = box.squash_merge()
+    box.delete_on_merge(keep_tracking=False)
+    other = _hold_elsewhere(box, tmp_path)
+    box.git("bisect", "start", cwd=other)
+    box.git("bisect", "bad", cwd=other)
+    box.git("bisect", "good", main + "~1", cwd=other)
+    assert box.holders() == []
+    err, _ = box.run(prs=[pr("MERGED", tip, merge=main)], prefetch=False, refused=True, pre=pre)
+    _assert_refusal(err, pre, other)
+    assert box.git("rev-parse", f"refs/heads/{BRANCH}", cwd=box.repo) == tip
+    box.git("bisect", "reset", cwd=other)
+    assert box.branch_at(other) == BRANCH
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode-000 file")
+def test_an_unreadable_worktree_state_counts_as_a_holder(box: Box, tmp_path: Path) -> None:
+    """A rebase state we cannot read cannot prove the branch free: the pre-check refuses."""
+    tip = box.phase_k()
+    box.git("fetch", "-q", "origin", cwd=box.repo)
+    other = tmp_path / "other-wt"
+    box.git("worktree", "add", "-q", "--detach", str(other), "main", cwd=box.repo)
+    state = Path(box.git("rev-parse", "--absolute-git-dir", cwd=other)) / "rebase-merge"
+    state.mkdir()
+    (state / "head-name").write_text("refs/heads/something-else\n", encoding="utf-8")
+    (state / "head-name").chmod(0)
+    try:
+        err, _ = box.run(prs=[pr("OPEN", tip)], prefetch=False, refused=True)
+    finally:
+        (state / "head-name").chmod(0o644)
+    assert err.count("WARNING") == 1 and "(checked-out-elsewhere)" in err and str(other) in err
+
+
+def test_a_stale_prunable_worktree_entry_is_not_a_refusal(box: Box, tmp_path: Path) -> None:
+    """The holder's directory was deleted without a prune: listed `prunable`, never a holder for good."""
+    tip = box.phase_k()
+    box.git("fetch", "-q", "origin", cwd=box.repo)
+    gone = _hold_elsewhere(box, tmp_path, at=f"origin/{BRANCH}")
+    shutil.rmtree(gone)
+    assert "prunable" in box.git("worktree", "list", "--porcelain", cwd=box.repo)
+    err, wt = box.run(prs=[pr("OPEN", tip)], prefetch=False)
+    assert box.head(wt) == tip and box.branch_at(wt) == BRANCH
+    assert "WARNING" not in err
+
+
 def test_a_lease_refusal_attaches_and_never_overwrites_origin(box: Box, tmp_path: Path) -> None:
     """Origin moves AFTER the guard read it (the gh call is the window); the lease refuses."""
     tip = box.phase_k()
@@ -629,6 +775,17 @@ def test_the_heuristic_paths_are_gone() -> None:
     )
     assert not re.search(r"\bgit\b[^\n]*\bcherry\b", body)
     assert "rebase -q --onto" not in body and "branch_reuse_plan" not in body
+
+
+def test_guards_move_a_branch_only_through_forms_git_refuses_when_held() -> None:
+    """`checkout -B`/`switch`/`reset` move a branch another worktree holds on git 2.43; keep them out.
+
+    `update-ref` never checks either, so it may touch only a remote-tracking ref.
+    """
+    code = [line for line in GUARDS.read_text(encoding="utf-8").splitlines() if not line.lstrip().startswith("#")]
+    movers = [line for line in code if re.search(r"\bgit\b.*\s(checkout|switch|reset)\s", line)]
+    assert movers == []
+    assert all("refs/remotes/" in line for line in code if re.search(r"\bgit\b.*\supdate-ref\s", line))
 
 
 def test_no_grep_q_reads_a_pipe_in_guards() -> None:
@@ -705,3 +862,30 @@ def test_agent_run_charges_when_the_branch_is_free(box: Box, tmp_path: Path) -> 
     r, ledger = _agent_run(box, tmp_path)
     assert r.returncode == 0, r.stdout + r.stderr
     assert ledger.read_text(encoding="utf-8").split("\t")[:2] == ["fix", "1"]
+
+
+def test_agent_run_prunes_a_deleted_worktree_before_the_pre_check(box: Box, tmp_path: Path) -> None:
+    """A deleted worktree directory is pruned, so it can never hold the branch (and EX_SETUP) forever."""
+    box.phase_k()
+    box.git("fetch", "-q", "origin", cwd=box.repo)
+    gone = _hold_elsewhere(box, tmp_path, at=f"origin/{BRANCH}")
+    shutil.rmtree(gone)
+    assert "prunable" in box.git("worktree", "list", "--porcelain", cwd=box.repo)
+    r, ledger = _agent_run(box, tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert ledger.read_text(encoding="utf-8").split("\t")[:2] == ["fix", "1"]
+    assert "prunable" not in box.git("worktree", "list", "--porcelain", cwd=box.repo)
+
+
+def test_agent_run_refuses_a_branch_another_worktree_is_rebasing(box: Box, tmp_path: Path) -> None:
+    """Mid-rebase reads `detached` in porcelain, yet it is EX_SETUP before the charge."""
+    tip = box.phase_k()
+    box.git("fetch", "-q", "origin", cwd=box.repo)
+    other = _hold_elsewhere(box, tmp_path, at=f"origin/{BRANCH}")
+    _start_rebase(box, other)
+    r, ledger = _agent_run(box, tmp_path)
+    assert r.returncode == 73, r.stdout + r.stderr
+    assert str(other) in r.stdout + r.stderr
+    assert not ledger.exists()
+    _rebase_continues(box, other)
+    assert box.head(other) == tip
