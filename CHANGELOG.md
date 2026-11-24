@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.211.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.210.0...v0.211.0) (2026-11-24)
+
+
+### Features
+
+* **analytics:** source-tag post stats, stop PostHog transfer of API data, cap 20 (refs [#2702](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2702)) ([#2704](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2704)) ([caf1d88](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/caf1d8882fb7d6fd8b9579dd8f4056bb00279b94))
+* **engagement:** comment-volume ramp state machine and 100/day clamp, Phase 5 (refs [#2647](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2647)) ([#2705](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2705)) ([fd50a1c](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/fd50a1c8425ae722b18e5f4e0ee6d58639ad0c1d))
+
 ## [0.210.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.209.0...v0.210.0) (2026-11-24)
 
 
