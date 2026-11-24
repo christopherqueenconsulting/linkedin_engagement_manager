@@ -488,6 +488,13 @@
     "source_hash": "sha256:6adb68a4aa52865fc0c8fcf5b74a82fd0e1a02f6faa4d0b87e300780226233bb",
     "version": 1
   },
+  "profile.audit_icp_language": {
+    "changed_in": null,
+    "content_hash": null,
+    "history": [],
+    "source_hash": "sha256:a318606bcda1aaff9c482cf9f73765ac03092e2dc4c3b9026baecc7604a2bbf7",
+    "version": 1
+  },
   "profile.description": {
     "changed_in": null,
     "content_hash": null,
