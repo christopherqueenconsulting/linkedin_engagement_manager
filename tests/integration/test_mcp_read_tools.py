@@ -8,6 +8,7 @@ limits, access record), the SDK server, the tool registry, the loopback with its
 patched. Two users prove isolation; a revoke mid-run proves the next call is refused.
 """
 
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterator
 
@@ -96,6 +97,13 @@ def users(monkeypatch: pytest.MonkeyPatch) -> Any:
     assert db.insert_planned_post(a, datetime.now(timezone.utc) + timedelta(days=2), PostType.TEXT,
                                   "awareness")
     post_a = _exec("SELECT id FROM posts WHERE user_id=%s", (a,), fetch=True)[0]["id"]
+    # The tools read through the app's pooled connections, in the threadpool. Earlier tests in this
+    # worker leave pooled connections behind, and one of them was observed (CI, and locally under
+    # `-n 4 --dist loadfile`) to read a snapshot from BEFORE the rows above existed. Start the reads
+    # on a fresh pool, so this test proves the MCP chain and not another file's connection state.
+    from cqc_lem.platform.db.connection import reset_connection_pool
+
+    reset_connection_pool()
     yield {"a": a, "b": b, "post_a": post_a}
     _cleanup()
 
@@ -107,6 +115,7 @@ def _token(user_id: int, scope: str = "mcp") -> str:
     return token
 
 
+@asynccontextmanager
 async def _session(token: str) -> AsyncIterator[ClientSession]:
     from cqc_lem.api.main import app
 
@@ -122,7 +131,7 @@ async def _session(token: str) -> AsyncIterator[ClientSession]:
 
 async def test_initialize_list_and_call_with_the_real_client(users: Any) -> None:
     token = _token(users["a"])
-    async for session in _session(token):
+    async with _session(token) as session:
         listed = await session.list_tools()
         names = {tool.name for tool in listed.tools}
         assert {"lem_whoami", "lem_list_posts", "lem_get_post"} <= names
@@ -145,7 +154,7 @@ async def test_initialize_list_and_call_with_the_real_client(users: Any) -> None
 
 async def test_two_users_are_isolated(users: Any) -> None:
     token_b = _token(users["b"], scope="mcp_outreach")
-    async for session in _session(token_b):
+    async with _session(token_b) as session:
         posts = await session.call_tool("lem_list_posts", {"status_filter": "planning"})
         assert posts.structured_content["posts"] == []
         stolen = await session.call_tool("lem_get_post", {"post_id": users["post_a"]})
@@ -159,7 +168,7 @@ async def test_a_revoke_mid_run_refuses_the_next_call(users: Any) -> None:
     token = _token(users["a"])
     session_id = _exec("SELECT id FROM sessions WHERE session_token=%s",
                        (hash_session_token(token),), fetch=True)[0]["id"]
-    async for session in _session(token):
+    async with _session(token) as session:
         assert (await session.call_tool("lem_get_generation_status", {})).is_error is False
         assert db.revoke_session(users["a"], session_id)
         with pytest.raises(Exception):  # the gate answers 401 before the SDK sees the call

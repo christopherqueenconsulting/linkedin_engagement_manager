@@ -135,6 +135,40 @@ class TestRevokeAllScript:
             assert script.main(["--reason", "x"], out=io.StringIO(),
                                confirm=lambda _prompt: "revoke") == 0
 
+    def test_a_redirected_stdin_with_yes_revokes(self) -> None:
+        """The documented `python - … --yes < scripts/mcp_revoke_all.py`: STDIN is not a terminal."""
+        script = _load("mcp_revoke_all")
+        out = io.StringIO()
+        with patch.object(script, "revoke_sessions_by_scope", return_value=2) as revoke, \
+             patch.object(script.sys, "stdin", io.StringIO("")):
+            assert not script.sys.stdin.isatty()
+            assert script.main(["--reason", "incident-2026-11", "--yes"], out=out) == 0
+        revoke.assert_called_once_with(frozenset({"mcp", "mcp_outreach"}),
+                                       reason="incident-2026-11")
+        assert "Revoked 2" in out.getvalue()
+
+    @pytest.mark.parametrize("doc", ["scripts/mcp_revoke_all.py", "docs/agent-roles.md",
+                                     "docs/identity-and-sessions.md", "docs/agent-mcp-plan.md"])
+    def test_every_documented_invocation_runs_as_written(self, doc: str) -> None:
+        """Each doc's command, run with STDIN redirected exactly as the doc says, revokes."""
+        import re
+        import shlex
+
+        text = (_SCRIPTS.parent / doc).read_text(encoding="utf-8")
+        # The arguments run to a closing backtick, a line end, or a ` < ` STDIN redirect.
+        args_pattern = r"(--reason(?:(?! < )[^`\n])*)"
+        forms = re.findall(r"mcp_revoke_all\.py `?\s*" + args_pattern, text)
+        forms += re.findall(r"python - " + args_pattern + r" < scripts/mcp_revoke_all\.py", text)
+        assert forms, f"{doc} documents no revoke-all invocation"
+        script = _load("mcp_revoke_all")
+        for form in forms:
+            args = [a.replace("<why>", "x") for a in shlex.split(form.replace("…", "x"))]
+            assert "--yes" in args, f"{doc}: {form!r} would refuse with STDIN redirected"
+            with patch.object(script, "revoke_sessions_by_scope", return_value=0) as revoke, \
+                 patch.object(script.sys, "stdin", io.StringIO("")):
+                assert script.main(args, out=io.StringIO()) == 0, (doc, form)
+            revoke.assert_called_once()
+
     def test_no_terminal_and_no_yes_refuses(self) -> None:
         script = _load("mcp_revoke_all")
         with patch.object(script, "revoke_sessions_by_scope") as revoke, \

@@ -21,7 +21,6 @@ any of this ran. This decides how what they returned is shaped for an agent.
 """
 
 import json
-import re
 from typing import Any, Iterable, Optional
 
 TEXT_CAP = 280
@@ -37,9 +36,18 @@ NEVER_RETURNED_KEYS = frozenset({
 })
 
 # C0 and C1 control characters except tab and newline, plus the zero-width and bidirectional
-# override/isolate characters that can make text render differently from what it says.
-_CONTROL_CHARS = re.compile(
-    "[\x00-\x08\x0b-\x1f\x7f-\x9f​-‏‪-‮⁠-⁤⁦-⁩﻿]")
+# override/isolate characters that can make text render differently from what it says. Listed as
+# code points rather than a regex class, so every one of them is named on purpose.
+_STRIPPED_CODE_POINTS = (
+    [c for c in range(0x00, 0x20) if c not in (0x09, 0x0A)]  # C0, keeping tab and newline
+    + list(range(0x7F, 0xA0))                                 # DEL and C1
+    + list(range(0x200B, 0x2010))                             # zero-width and LRM/RLM marks
+    + list(range(0x202A, 0x202F))                             # bidi embeddings and overrides
+    + list(range(0x2060, 0x2065))                             # word joiner and invisible operators
+    + list(range(0x2066, 0x206A))                             # bidi isolates
+    + [0xFEFF]                                                # zero-width no-break space / BOM
+)
+_STRIP_TABLE = dict.fromkeys(_STRIPPED_CODE_POINTS)
 
 
 def strip_controls(value: str) -> str:
@@ -51,7 +59,7 @@ def strip_controls(value: str) -> str:
     Returns:
         The string without them.
     """
-    return _CONTROL_CHARS.sub("", value)
+    return value.translate(_STRIP_TABLE)
 
 
 def _cap(value: Any) -> Any:
