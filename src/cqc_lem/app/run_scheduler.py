@@ -2008,6 +2008,7 @@ def _rebuild_leads_for_user(user_id: int, days: int = LEAD_ACTIVITY_WINDOW_DAYS)
     """Re-score one user's whole pipeline from existing engagement data. The reset runs first (and
     even when there's no activity at all) so people who went quiet decay out of 'hot'.
     """
+    from cqc_lem.utilities.connection_targeting import rubric_icp_scorer
     from cqc_lem.utilities.db import (
         get_lead_activity,
         get_lead_stage_map,
@@ -2016,6 +2017,7 @@ def _rebuild_leads_for_user(user_id: int, days: int = LEAD_ACTIVITY_WINDOW_DAYS)
         reset_lead_scores,
         upsert_lead,
     )
+    from cqc_lem.utilities.icp_rubric import parse_icp_definition
     from cqc_lem.utilities.lead_scoring import score_leads
 
     # Snapshot BEFORE the reset: it sets every stage to cold, so a diff taken afterwards would
@@ -2030,8 +2032,12 @@ def _rebuild_leads_for_user(user_id: int, days: int = LEAD_ACTIVITY_WINDOW_DAYS)
     prefs = get_engagement_preferences(user_id) or {}
     urls = sorted({r.get("person_profile_url") for r in rows if r.get("person_profile_url")})
     now = datetime.now(timezone.utc).replace(tzinfo=None)
+    # ICP rubric (#2630): flag off, or no usable definition, keeps `icp_fit` exactly as before.
+    definition = (parse_icp_definition(prefs.get("icp_definition"))
+                  if prefs.get("icp_builder_enabled") else None)
     leads = score_leads(rows, now, facts_by_url=get_profile_facts(urls),
-                        target_terms=_lead_target_terms(prefs))
+                        target_terms=_lead_target_terms(prefs),
+                        icp_scorer=rubric_icp_scorer(definition) if definition else None)
     saved = 0
     for lead in leads:
         if upsert_lead(user_id, lead.person_key, person_name=lead.person_name,

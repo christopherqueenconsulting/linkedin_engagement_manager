@@ -67,6 +67,26 @@ class TestRebuildLeadsForUser:
         ada = next(c for c in upsert.call_args_list if c.args[1] == "in:ada")
         assert ada.kwargs["icp_score"] == 100
 
+    def test_flag_on_scores_icp_with_the_rubric(self):
+        """#2655 Phase 4: a known mismatch scores 0 on the rubric; flag off keeps icp_fit."""
+        facts = {"https://linkedin.com/in/ada": {"job_title": "Founder", "industry": "ai"}}
+        definition = {"segments": [{"id": "s", "role_titles": ["cto"]}]}
+
+        def run(prefs):
+            with patch(f"{_DB}.get_lead_activity", return_value=_rows()), \
+                 patch(f"{_DB}.get_profile_facts", return_value=facts), \
+                 patch(f"{_DB}.reset_lead_scores"), \
+                 patch(f"{_DB}.upsert_lead", return_value=True) as upsert, \
+                 patch(f"{_S}.get_engagement_preferences", return_value=prefs), \
+                 patch(f"{_S}.log_info"):
+                from cqc_lem.app.run_scheduler import _rebuild_leads_for_user
+                _rebuild_leads_for_user(7)
+            return next(c for c in upsert.call_args_list if c.args[1] == "in:ada").kwargs["icp_score"]
+
+        base = {"focus_topics": ["ai"], "icp_definition": definition}
+        assert run({**base, "icp_builder_enabled": True}) == 0
+        assert run({**base, "icp_builder_enabled": False}) == 100
+
     def test_counts_only_leads_that_actually_saved(self):
         with patch(f"{_DB}.get_lead_activity", return_value=_rows()), \
              patch(f"{_DB}.get_profile_facts", return_value={}), \

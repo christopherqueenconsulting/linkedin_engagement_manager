@@ -17,6 +17,7 @@ class TestGetEngagementTargets:
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
              patch("cqc_lem.api.routers.user.get_engagement_targets",
                    return_value=[{"profile_url": _URL, "category": "peer"}]), \
+             patch("cqc_lem.api.routers.user.get_engagement_preferences", return_value={}), \
              patch("cqc_lem.api.routers.user.suggest_engagement_targets",
                    return_value=[{"profile_url": "https://x/in/bob", "category": "icp"}]):
             resp = api_client.get(f"/api/user/engagement-targets?session_token={_SESSION}")
@@ -24,6 +25,23 @@ class TestGetEngagementTargets:
         detail = resp.json()["detail"]
         assert detail["targets"][0]["profile_url"] == _URL
         assert detail["suggestions"][0]["category"] == "icp"
+
+    def test_flag_on_ranks_suggestions_by_the_rubric(self, api_client):
+        prefs = {"icp_builder_enabled": True,
+                 "icp_definition": {"segments": [{"id": "s", "role_titles": ["cto"]}]}}
+        pool = [{"profile_url": "https://www.linkedin.com/in/ops", "name": "Ops"},
+                {"profile_url": "https://www.linkedin.com/in/cto", "name": "Cto"}]
+        facts = {"https://www.linkedin.com/in/ops": {"job_title": "Cook", "company_name": "X"},
+                 "https://www.linkedin.com/in/cto": {"job_title": "CTO", "company_name": "Y"}}
+        with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \
+             patch("cqc_lem.api.routers.user.get_engagement_targets", return_value=[]), \
+             patch("cqc_lem.api.routers.user.get_engagement_preferences", return_value=prefs), \
+             patch("cqc_lem.api.routers.user.suggest_engagement_targets", return_value=pool), \
+             patch("cqc_lem.api.routers.user.get_profile_facts", return_value=facts), \
+             patch("cqc_lem.utilities.db.get_lead_activity", return_value=[]):
+            resp = api_client.get(f"/api/user/engagement-targets?session_token={_SESSION}")
+        urls = [s["profile_url"] for s in resp.json()["detail"]["suggestions"]]
+        assert urls == ["https://www.linkedin.com/in/cto"]
 
     def test_401(self, api_client):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=None):

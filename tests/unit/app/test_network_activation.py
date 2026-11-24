@@ -246,6 +246,22 @@ class TestOutreachFunnelSourcing:
         assert kwargs["status"] == OutreachStatus.APPROVED  # auto_approve mode
         assert "Filed 1" in out
 
+    def test_flag_on_files_only_rubric_fits_and_holds_the_unscraped(self):
+        """#2655 Phase 4: fits file, a known mismatch is dropped, an unscraped engager is held."""
+        prefs = _prefs(icp_builder_enabled=True,
+                       icp_definition={"segments": [{"id": "s", "role_titles": ["cto"]}]})
+        engagers = [_engager("Fit", "fit"), _engager("Cook", "cook"), _engager("New", "new")]
+        facts = {"https://www.linkedin.com/in/fit": {"job_title": "CTO", "company_name": "A"},
+                 "https://www.linkedin.com/in/cook": {"job_title": "Cook", "company_name": "B"}}
+        with patch(f"{_OUT}.get_lead_activity", return_value=[]), \
+             patch(f"{_OUT}.get_profile_facts", return_value=facts), \
+             patch(f"{_OUT}.enqueue_held") as held:
+            out, insert = _scan_funnel(prefs=prefs, engagers=engagers)
+        assert insert.call_count == 1
+        assert insert.call_args.args[1] == "https://www.linkedin.com/in/fit"
+        held.assert_called_once_with(1, ["https://www.linkedin.com/in/new"])
+        assert "Filed 1" in out
+
     def test_pre_review_mode_files_a_draft_for_approval(self):
         from cqc_lem.utilities.db import OutreachStatus
         _out, insert = _scan_funnel(roster=[_roster()],

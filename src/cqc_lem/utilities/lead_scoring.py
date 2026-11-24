@@ -296,14 +296,18 @@ def _describe(activities: list, icp: int, now: datetime) -> str:
 
 def score_lead(activities: list, now: datetime, person_name: str = None,
                person_profile_url: str = None, facts: dict = None,
-               target_terms: Iterable[str] = None) -> ScoredLead:
+               target_terms: Iterable[str] = None, icp_scorer=None) -> ScoredLead:
     """Score ONE person. The blend keeps engagement dominant (it is observed behaviour) while ICP
     fit scales it up or down by up to ±40% — an unknown-fit person lands right where engagement
     alone puts them.
+
+    `icp_scorer(facts, profile_url, engagement) -> int` replaces `icp_fit` when given (the #2630
+    rubric, flag-on path); None keeps today's scoring.
     """
     acts = list(activities or [])
-    icp = icp_fit(facts or {}, target_terms or [])
     engagement = engagement_strength(acts, now)
+    icp = (icp_scorer(facts or {}, person_profile_url or "", engagement) if icp_scorer
+           else icp_fit(facts or {}, target_terms or []))
     multiplier = 0.6 + 0.8 * (icp / 100.0)
     score = max(0, min(100, round(engagement * multiplier)))
     stage = derive_stage(acts, score)
@@ -354,7 +358,7 @@ def group_activity(rows: Iterable[dict]) -> dict:
 
 
 def score_leads(rows: Iterable[dict], now: datetime, facts_by_url: dict = None,
-                target_terms: Iterable[str] = None) -> list:
+                target_terms: Iterable[str] = None, icp_scorer=None) -> list:
     """Score every person in a user's activity rows, hottest first."""
     facts_by_url = {profile_slug(k): v for k, v in (facts_by_url or {}).items() if profile_slug(k)}
     leads = []
@@ -363,7 +367,8 @@ def score_leads(rows: Iterable[dict], now: datetime, facts_by_url: dict = None,
         leads.append(score_lead(person["activities"], now,
                                 person_name=person["person_name"],
                                 person_profile_url=person["person_profile_url"],
-                                facts=facts, target_terms=target_terms))
+                                facts=facts, target_terms=target_terms,
+                                icp_scorer=icp_scorer))
     leads.sort(key=lambda l: (l.score, l.signal_count), reverse=True)
     return leads
 

@@ -122,6 +122,7 @@ from cqc_lem.utilities.connection_targeting import (
     SOURCE_OWN_POST,
     CandidateSignal,
     apply_icp_rubric,
+    apply_icp_to_prospects,
     held_candidate_urls,
     rank_candidates,
     recently_touched_slugs,
@@ -4028,6 +4029,22 @@ def scan_outreach_funnel_targets(self, user_id: int, max_new: int = None):
                   task_name="scan_outreach_funnel_targets", action_type="outreach_funnel")
     engager_prospects, counts["engager_candidates"] = _funnel_prospects_from_engagers(user_id)
     prospects.extend(engager_prospects)
+    # ICP rubric (#2630), per-user flag, default OFF: ranks and filters the prospects. A definition
+    # that does not parse leaves the list as it was.
+    icp_definition = (parse_icp_definition(prefs.get("icp_definition"))
+                      if prefs.get("icp_builder_enabled") else None)
+    if icp_definition is not None and prospects:
+        touched = recently_touched_slugs(get_lead_activity(user_id, days=COOLDOWN_DAYS))
+        prospects, held_urls = apply_icp_to_prospects(
+            prospects, icp_definition,
+            facts_by_url=get_profile_facts(sorted({str(p.get("profile_url")) for p in prospects
+                                                   if p.get("profile_url")})),
+            touched_slugs=touched)
+        if held_urls:
+            enqueue_held(user_id, held_urls)
+            log_info(f"ICP rubric held {len(held_urls)} funnel prospect(s) with no scraped profile "
+                     f"facts", user_id=user_id, task_name="scan_outreach_funnel_targets",
+                     action_type="outreach_funnel")
     counts["prospects"] = len(prospects)
 
     if not prospects:

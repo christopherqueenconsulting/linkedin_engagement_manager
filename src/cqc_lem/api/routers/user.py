@@ -3706,9 +3706,27 @@ def get_engagement_targets_endpoint(session_token: str) -> ResponseModel[dict[st
     user_id = _main.get_session_user_id(session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
+    from cqc_lem.utilities.icp_rubric import parse_icp_definition
+    prefs = get_engagement_preferences(user_id) or {}
+    definition = parse_icp_definition(prefs.get("icp_definition")) if prefs.get("icp_builder_enabled") else None
+    if definition is None:
+        suggestions = suggest_engagement_targets(user_id)
+    else:
+        # ICP rubric (#2630), flag-on only: rank a wider pool, then keep the usual page size.
+        from cqc_lem.utilities.connection_targeting import (
+            COOLDOWN_DAYS,
+            rank_roster_suggestions,
+            recently_touched_slugs,
+        )
+        from cqc_lem.utilities.db import get_lead_activity
+        pool = suggest_engagement_targets(user_id, limit=60)
+        suggestions = rank_roster_suggestions(
+            pool, definition,
+            facts_by_url=get_profile_facts([s["profile_url"] for s in pool]),
+            touched_slugs=recently_touched_slugs(get_lead_activity(user_id, days=COOLDOWN_DAYS)))
     return ResponseModel(status_code=200, detail={
         "targets": get_engagement_targets(user_id),
-        "suggestions": suggest_engagement_targets(user_id),
+        "suggestions": suggestions,
     })
 
 
