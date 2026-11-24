@@ -3727,7 +3727,9 @@ def _fire_funnel_stage(user_id: int, target: dict, invites_queued: int = 0) -> s
     # Issue #2664: under `funnel_stage_mode=auto_approve` the LATER stage is approved by the mode,
     # recorded as a `system:` approver (never `user:<id>`, so the brand hold of #2376 still applies).
     # An empty draft is never auto-approved — `_fire_funnel_stage` would only skip it next run.
-    if next_draft and may_auto_approve(user_id, FUNNEL_STAGE_MODE, prefs):
+    # The DM stage is never auto-approved: it follows a connect invite nothing has seen accepted yet,
+    # so approving it here would DM a non-connection on the very next beat.
+    if next_draft and next_stage != OutreachStage.DM and may_auto_approve(user_id, FUNNEL_STAGE_MODE, prefs):
         update_outreach_target(target_id, stage=next_stage, status=OutreachStatus.APPROVED,
                                draft_text=next_draft, notes="",
                                approved_by=FUNNEL_STAGE_APPROVER)

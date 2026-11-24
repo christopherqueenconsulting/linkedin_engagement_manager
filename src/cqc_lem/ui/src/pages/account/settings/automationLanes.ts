@@ -43,6 +43,6 @@ export const AUTOMATION_LANES: { key: ModeKey; label: string; review: string; au
     key: 'funnel_stage_mode',
     label: 'Outreach funnel stages',
     review: 'After a comment or connect step fires, the next step waits for your approval.',
-    auto: 'After a comment or connect step fires, the next connect note or DM goes out without you seeing it.',
+    auto: 'After a comment posts, the connect request goes out unseen. The DM still waits for you.',
   },
 ]

@@ -101,7 +101,8 @@ flowchart TD
    drops the target to the next stage `pending` (today's behaviour, so the migration backfills
    `pre_review`); under `auto_approve` it is `approved` with `approved_by='system:funnel_stage_mode'`,
    a `system:` approver, so the brand acquisition hold (#2376) is not released. The first stage still
-   follows `connection_request_mode`. An empty next draft stays pending. `FUNNEL_STAGE_AUTO_APPROVE`
+   follows `connection_request_mode`. Only the comment→connect step auto-approves: the DM stage stays
+   `pending` because nothing has seen the invite accepted. An empty next draft stays pending. `FUNNEL_STAGE_AUTO_APPROVE`
    force-off only.
 2. **Keyword-triggered artifact/lead-magnet delivery** (`resolve_artifact_delivery` in
    `content_alignment.py` + `_queue_artifact_delivery`) lands the same way: a `pending`

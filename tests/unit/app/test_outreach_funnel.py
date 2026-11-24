@@ -113,7 +113,7 @@ class TestFireFunnelStage:
         assert upd.call_args.kwargs["status"] == OutreachStatus.ACTED
         assert "completed" in out
 
-    def test_connect_stage_auto_approves_the_dm_under_funnel_stage_mode(self):
+    def test_comment_stage_auto_approves_the_connect_under_funnel_stage_mode(self):
         from cqc_lem.app.engagement.outreach import _fire_funnel_stage
         from cqc_lem.utilities.approval_modes import FUNNEL_STAGE_APPROVER
         from cqc_lem.utilities.db import OutreachStage, OutreachStatus
@@ -121,13 +121,26 @@ class TestFireFunnelStage:
         prefs = {**_prefs(), "funnel_stage_mode": "auto_approve"}
         with patch(f"{_OUT}.get_engagement_preferences", return_value=prefs), c["cc"], c["cd"], \
              c["refine"], c["dm"], c["enq"], c["upd"] as upd, c["ust"], \
-             patch(f"{_OUT}.invite_to_connect"):
-            out = _fire_funnel_stage(2, _target(stage="connect", draft_text="my note"))
-        assert upd.call_args.kwargs["stage"] == OutreachStage.DM
+             patch(f"{_OUT}.comment_on_post"):
+            out = _fire_funnel_stage(2, _target(stage="comment"))
+        assert upd.call_args.kwargs["stage"] == OutreachStage.CONNECT
         assert upd.call_args.kwargs["status"] == OutreachStatus.APPROVED
         assert upd.call_args.kwargs["approved_by"] == FUNNEL_STAGE_APPROVER
         assert FUNNEL_STAGE_APPROVER.startswith("system:")
         assert "auto-approved" in out
+
+    def test_dm_stage_is_never_auto_approved_after_a_connect(self):
+        from cqc_lem.app.engagement.outreach import _fire_funnel_stage
+        from cqc_lem.utilities.db import OutreachStage, OutreachStatus
+        c = self._common()
+        prefs = {**_prefs(), "funnel_stage_mode": "auto_approve"}
+        with patch(f"{_OUT}.get_engagement_preferences", return_value=prefs), c["cc"], c["cd"], \
+             c["refine"], c["dm"], c["enq"], c["upd"] as upd, c["ust"], \
+             patch(f"{_OUT}.invite_to_connect"):
+            _fire_funnel_stage(2, _target(stage="connect", draft_text="my note"))
+        assert upd.call_args.kwargs["stage"] == OutreachStage.DM
+        assert upd.call_args.kwargs["status"] == OutreachStatus.PENDING
+        assert "approved_by" not in upd.call_args.kwargs
 
     def test_env_force_off_keeps_the_next_stage_pending(self, monkeypatch):
         from cqc_lem.app.engagement.outreach import _fire_funnel_stage
@@ -137,8 +150,8 @@ class TestFireFunnelStage:
         prefs = {**_prefs(), "funnel_stage_mode": "auto_approve"}
         with patch(f"{_OUT}.get_engagement_preferences", return_value=prefs), c["cc"], c["cd"], \
              c["refine"], c["dm"], c["enq"], c["upd"] as upd, c["ust"], \
-             patch(f"{_OUT}.invite_to_connect"):
-            _fire_funnel_stage(2, _target(stage="connect", draft_text="my note"))
+             patch(f"{_OUT}.comment_on_post"):
+            _fire_funnel_stage(2, _target(stage="comment"))
         assert upd.call_args.kwargs["status"] == OutreachStatus.PENDING
         assert "approved_by" not in upd.call_args.kwargs
 
