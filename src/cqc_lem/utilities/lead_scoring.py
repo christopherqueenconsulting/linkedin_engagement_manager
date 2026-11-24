@@ -411,7 +411,8 @@ def _flag_lead_signal(user_id: int, text: str, source: "LeadSignalSource", threa
         try:
             with llm_attribution(user_id=user_id, feature=FEATURE_DM):
                 draft = generate_lead_response(text, my_profile, channel=str(channel), context=context_text,
-                                               prefs=prefs, profile_synthesis=profile_synthesis)
+                                               prefs=prefs, profile_synthesis=profile_synthesis,
+                                               user_id=user_id)
         except Exception as e:
             log_warning("Lead response draft failed; queueing the signal without one", exc=e,
                         user_id=user_id, action_type="engaged")

@@ -154,3 +154,23 @@ def too_close_to_exemplar(draft: str, exemplars: list) -> Optional[dict]:
     if scores[best] > threshold:
         return {"score": round(scores[best], 4), "threshold": threshold}
     return None
+
+
+COPY_FIX = ("\nYour last draft nearly copied one of the user's example texts. "
+            "Write it fresh, in their style but in new words.")
+
+
+def voice_context(user_id: Optional[int], query: str, max_query: int = 500) -> tuple:
+    """`(exemplars, block)` for a writer prompt; `([], "")` when the flag is off or too few exist."""
+    exemplars = nearest_voice_exemplars(user_id, str(query or "")[:max_query]) if user_id else []
+    return exemplars, exemplar_block(exemplars)
+
+
+def redraft_if_copied(text: Optional[str], exemplars: list, redraft, fix: str = "") -> Optional[str]:
+    """One fresh redraft (`redraft(COPY_FIX)`) when `text` near-copies a shown exemplar.
+
+    A redraft call (`fix` set) never nests another, so the cost is one extra LLM call at most.
+    """
+    if not fix and text and exemplars and too_close_to_exemplar(text, exemplars):
+        return redraft(COPY_FIX)
+    return text
