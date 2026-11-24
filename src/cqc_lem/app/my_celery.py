@@ -127,6 +127,11 @@ app.conf.update(
             'task': 'cqc_lem.app.run_curated_sources.collect_curated_sources',
             'schedule': crontab(hour='0', minute='45')
         },
+        # Call-ingest hard cap (#2629): nulls transcripts past purge_after. Ignores the ingest flag.
+        'purge-call-transcripts': {
+            'task': 'cqc_lem.app.run_call_ingest.purge_expired_call_transcripts',
+            'schedule': crontab(hour='3', minute='20')
+        },
         'create-content-from-plan': {
             'task': 'cqc_lem.app.run_content_plan.auto_create_weekly_content',
             'schedule': crontab(hour='1', minute='30')  # Run every day at 1:30 AM

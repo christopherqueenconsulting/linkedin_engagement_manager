@@ -214,16 +214,20 @@ from cqc_lem.platform.db.repositories.booking import (
     upsert_calendly_token,
 )
 from cqc_lem.platform.db.repositories.call_ingest import (
+    accept_candidates_above,
     create_call_source,
     get_call_transcript,
+    get_candidates_for_call,
     get_pending_candidates,
     insert_call_ingest,
     insert_extract_candidates,
     is_call_source_enabled,
+    list_call_ingests,
     purge_all_call_data,
     purge_call_transcripts,
     purge_reviewed_call_transcripts,
     review_candidate,
+    set_call_ingest_status,
 )
 from cqc_lem.platform.db.repositories.comment_candidates import (
     claim_approved_candidate_posted,
@@ -1177,7 +1181,11 @@ __all__ = [
     "get_curated_neighbors",
     "get_curated_source",
     "count_comment_candidates",
+    "accept_candidates_above",
     "create_call_source",
+    "get_candidates_for_call",
+    "list_call_ingests",
+    "set_call_ingest_status",
     "get_call_transcript",
     "get_pending_candidates",
     "insert_call_ingest",
