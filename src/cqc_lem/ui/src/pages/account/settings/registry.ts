@@ -101,7 +101,7 @@ export const SETTINGS: SettingDescriptor[] = [
     what: 'A draft that failed a quality check and was fixed by the editor pass waits for you, even when it now passes everything.',
     why: 'The checks passing on the second attempt is exactly the post nobody has read — the first draft was similar, generic or invented something.',
     recommended: 'On. Turn it off only once repaired drafts routinely read the way you would have written them.' }),
-  D({ key: 'review_digest_enabled', section: 'content', label: 'Daily review reminder email',
+  D({ key: 'review_digest_enabled', section: 'content', label: 'Daily review reminder email', advanced: true,
     what: 'A once-a-day email when approvals have waited more than 48 hours in your Daily review.',
     why: 'An approval that sits past its slot is a post, DM or invite that never goes out.',
     recommended: 'On. It only sends while something has waited that long, and never at zero.' }),

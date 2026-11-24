@@ -15,6 +15,12 @@ vi.mock('./engagementPrefsCtx', () => ({
 
 afterEach(() => { cleanup(); state.setEng.mockClear() })
 
+// The toggle sits behind the section's collapsed Advanced disclosure.
+function renderOpen() {
+  render(<ContentSection />)
+  fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
+}
+
 function digestToggle() {
   return within(screen.getByTestId('field-review_digest_enabled')).getByRole('switch')
 }
@@ -22,20 +28,20 @@ function digestToggle() {
 describe('review digest opt-out (#2669)', () => {
   it('reads as on when the pref was never saved', () => {
     state.eng = {}
-    render(<ContentSection />)
+    renderOpen()
     expect(digestToggle().getAttribute('aria-checked')).toBe('true')
   })
 
   it('turning it off writes review_digest_enabled=false', () => {
     state.eng = { review_digest_enabled: true }
-    render(<ContentSection />)
+    renderOpen()
     fireEvent.click(digestToggle())
     expect(state.setEng).toHaveBeenCalledWith({ review_digest_enabled: false })
   })
 
   it('turning it back on writes true', () => {
     state.eng = { review_digest_enabled: false }
-    render(<ContentSection />)
+    renderOpen()
     expect(digestToggle().getAttribute('aria-checked')).toBe('false')
     fireEvent.click(digestToggle())
     expect(state.setEng).toHaveBeenCalledWith({ review_digest_enabled: true })
