@@ -15,7 +15,7 @@ import mysql.connector
 from cqc_lem.platform.db.connection import db_cursor
 from cqc_lem.utilities.logger import log_error
 
-VOICE_EXEMPLAR_SOURCES = ("comments", "shares")
+VOICE_EXEMPLAR_SOURCES = ("comments", "shares", "edited")
 # Hard cap on stored rows per user: the table is read whole to rank by cosine, so it stays small.
 MAX_EXEMPLARS_PER_USER = 500
 
@@ -83,3 +83,47 @@ def get_embedded_voice_exemplars(user_id: int) -> Optional[list]:
     except (mysql.connector.Error, ValueError) as err:
         log_error("Could not read voice exemplars", exc=err, user_id=user_id)
         return None
+
+
+def remember_draft_original(user_id: int, lane: str, item_id: int, original: str) -> bool:
+    """Keep a pending draft's text as drafted, on its FIRST edit. True only when newly stored."""
+    if not (original or "").strip():
+        return False
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT IGNORE INTO voice_edit_labels (user_id, lane, item_id, original_text) "
+                "VALUES (%s,%s,%s,%s)", (user_id, lane, int(item_id), original))
+            return cursor.rowcount >= 1
+    except mysql.connector.Error as err:
+        log_error("Could not remember a draft's original text", exc=err, user_id=user_id)
+        return False
+
+
+def get_draft_original(user_id: int, lane: str, item_id: int) -> Optional[str]:
+    """The text as drafted, or None for a draft never edited (or a read fault)."""
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT original_text FROM voice_edit_labels "
+                "WHERE user_id = %s AND lane = %s AND item_id = %s",
+                (user_id, lane, int(item_id)))
+            row = cursor.fetchone()
+            return row[0] if row else None
+    except mysql.connector.Error as err:
+        log_error("Could not read a draft's original text", exc=err, user_id=user_id)
+        return None
+
+
+def finalize_edit_label(user_id: int, lane: str, item_id: int, final: str) -> bool:
+    """Store the approved final text on the label. True only the first time (one label per draft)."""
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE voice_edit_labels SET final_text = %s, approved_at = CURRENT_TIMESTAMP "
+                "WHERE user_id = %s AND lane = %s AND item_id = %s AND final_text IS NULL",
+                (final, user_id, lane, int(item_id)))
+            return cursor.rowcount >= 1
+    except mysql.connector.Error as err:
+        log_error("Could not store an edit label", exc=err, user_id=user_id)
+        return False

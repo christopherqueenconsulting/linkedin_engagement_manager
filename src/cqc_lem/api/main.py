@@ -147,6 +147,7 @@ from cqc_lem.utilities.db import (
     get_member_analytics_token_info,
     get_passkey_by_credential_id,
     get_planned_tasks,
+    get_post_content,
     get_post_for_user,
     get_post_type,
     get_post_url_from_log_for_user,
@@ -3182,6 +3183,10 @@ def update_post(post_id: int, post: PostRequest) -> ResponseModel[str]:
     _warn_if_naive_schedule(post.scheduled_datetime, "/update_post/", post_id=post_id,
                             user_id=user_id)
 
+    stored_content = get_post_content(post_id)
+    if post.status in (PostStatus.PENDING, PostStatus.APPROVED):
+        _voice_note_edit(user_id, "post", post_id, stored_content, post.content)
+
     if _edits_pending_only():
         # A queue-only seat revises a PENDING draft's text and slot only (issue #2684). The type,
         # the stored media, the status, the avatar choice and the rejection reason are left exactly
@@ -3207,6 +3212,8 @@ def update_post(post_id: int, post: PostRequest) -> ResponseModel[str]:
         # "clear it" (issue #744 — use_avatar is three-valued).
         if post.use_avatar is not None:
             update_post_use_avatar(post_id, post.use_avatar)
+        if post.status == PostStatus.APPROVED:
+            _voice_record_approval(user_id, "post", post_id, post.content)
         return ResponseModel(status_code=200, detail="Post updated successful")
     else:
         raise HTTPException(status_code=405, detail="Post could not be updated")
@@ -3405,6 +3412,21 @@ def _refuse_agent_approved_status(status: Optional[str]) -> None:
         _audit_operator_approval("status")
         return
     raise _agent_approval_refusal()
+
+
+def _voice_note_edit(user_id: int, lane: str, item_id: int, stored: Optional[str],
+                     submitted: Optional[str]) -> None:
+    """Edited-draft capture (#2627 1b): keep a pending draft's text as drafted before an edit lands."""
+    from cqc_lem.utilities.ai import voice_exemplars
+
+    voice_exemplars.note_draft_edit(user_id, lane, item_id, stored, submitted)
+
+
+def _voice_record_approval(user_id: int, lane: str, item_id: int, final: Optional[str]) -> None:
+    """Edited-draft capture (#2627 1b): an approval of an edited draft stores original + final."""
+    from cqc_lem.utilities.ai import voice_exemplars
+
+    voice_exemplars.record_approved_edit(user_id, lane, item_id, final)
 
 
 def _edits_pending_only() -> bool:
@@ -3942,6 +3964,10 @@ def update_scheduled_dm_endpoint(request: UpdateDmRequest) -> ResponseModel[str]
     if status is None and all(v is None for v in (request.recipient_profile_url, request.recipient_name,
                                                   request.message, request.scheduled_datetime)):
         raise HTTPException(status_code=422, detail="Nothing to update — provide at least one field or an action")
+    stored_dm = (get_scheduled_dm(request.dm_id) or {}
+                 if request.message is not None or status == ScheduledDmStatus.APPROVED else {})
+    stored_message = stored_dm.get("message")
+    _voice_note_edit(user_id, "scheduled_dm", request.dm_id, stored_message, request.message)
     if _edits_pending_only():
         fields = {k: v for k, v in (("recipient_profile_url", request.recipient_profile_url),
                                     ("recipient_name", request.recipient_name),
@@ -3950,18 +3976,23 @@ def update_scheduled_dm_endpoint(request: UpdateDmRequest) -> ResponseModel[str]
                                     ("status", status)) if v is not None}
         _pending_edit_or_raise("scheduled_dm", request.dm_id, user_id, fields,
                                "Could not update scheduled DM")
+        if status == ScheduledDmStatus.APPROVED:
+            _voice_record_approval(user_id, "scheduled_dm", request.dm_id,
+                                   request.message or stored_message)
         return ResponseModel(status_code=200, detail="Scheduled DM updated")
     scheduled_time = request.scheduled_datetime
     if status == ScheduledDmStatus.APPROVED and scheduled_time is None:
         # The scanner returns a DM this far past its slot to 'pending' (#2103), so re-approving one
         # without moving its slot would bounce it straight back. Approving it now means send it now.
-        dm = get_scheduled_dm(request.dm_id)
-        if dm and scheduled_dm_is_stale(dm.get("scheduled_time")):
+        if stored_dm and scheduled_dm_is_stale(stored_dm.get("scheduled_time")):
             scheduled_time = datetime.now(timezone.utc)
     if not update_scheduled_dm(request.dm_id, recipient_profile_url=request.recipient_profile_url,
                                recipient_name=request.recipient_name, message=request.message,
                                scheduled_time=scheduled_time, status=status):
         raise HTTPException(status_code=500, detail="Could not update scheduled DM")
+    if status == ScheduledDmStatus.APPROVED:
+        _voice_record_approval(user_id, "scheduled_dm", request.dm_id,
+                               request.message or stored_message)
     return ResponseModel(status_code=200, detail="Scheduled DM updated")
 
 
@@ -4377,16 +4408,22 @@ def update_catchup_touch_endpoint(request: UpdateCatchupTouchRequest) -> Respons
     # SKIPPED — so an approval must always land on a real message, saved now or already stored.
     if status == CatchupTouchStatus.APPROVED and not (request.message or touch.get("message") or "").strip():
         raise HTTPException(status_code=422, detail="Add a message before approving this catch-up touch")
+    _voice_note_edit(user_id, "catchup_touch", request.touch_id, touch.get("message"), request.message)
+    final_message = request.message or touch.get("message")
     if _edits_pending_only():
         fields = {k: v for k, v in (("message", request.message),
                                     ("person_name", request.person_name),
                                     ("status", status)) if v is not None}
         _pending_edit_or_raise("catchup_touch", request.touch_id, user_id, fields,
                                "Could not update catch-up touch")
+        if status == CatchupTouchStatus.APPROVED:
+            _voice_record_approval(user_id, "catchup_touch", request.touch_id, final_message)
         return ResponseModel(status_code=200, detail="Catch-up touch updated")
     if not update_catchup_touch(request.touch_id, message=request.message,
                                 person_name=request.person_name, status=status):
         raise HTTPException(status_code=500, detail="Could not update catch-up touch")
+    if status == CatchupTouchStatus.APPROVED:
+        _voice_record_approval(user_id, "catchup_touch", request.touch_id, final_message)
     return ResponseModel(status_code=200, detail="Catch-up touch updated")
 
 

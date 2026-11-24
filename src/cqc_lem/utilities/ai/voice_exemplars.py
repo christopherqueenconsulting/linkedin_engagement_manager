@@ -16,7 +16,7 @@ from cqc_lem.utilities.ai.content_framework import (
     embed_comments,
 )
 from cqc_lem.utilities.flags import VOICE_EXEMPLARS, flag_enabled
-from cqc_lem.utilities.logger import log_debug, log_info
+from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 
 # Below this many embedded exemplars the adjective brief stays the voice source.
 MIN_EXEMPLARS = 4
@@ -154,6 +154,52 @@ def too_close_to_exemplar(draft: str, exemplars: list) -> Optional[dict]:
     if scores[best] > threshold:
         return {"score": round(scores[best], 4), "threshold": threshold}
     return None
+
+
+def _norm(text: Optional[str]) -> str:
+    return " ".join(str(text or "").split())
+
+
+def note_draft_edit(user_id: int, lane: str, item_id: int, stored: Optional[str],
+                    submitted: Optional[str]) -> None:
+    """Remember a pending draft's text as drafted when an edit is about to change it.
+
+    No-op unless `VOICE_EXEMPLARS` is on, the edit actually changes the text, and `stored` is the
+    text on file. The first edit wins (INSERT IGNORE), so repeated edits keep the true original.
+    """
+    if submitted is None or not _norm(stored) or _norm(submitted) == _norm(stored):
+        return
+    if not voice_exemplars_enabled(user_id):
+        return
+    from cqc_lem.utilities import db
+
+    db.remember_draft_original(user_id, lane, item_id, stored)
+
+
+def record_approved_edit(user_id: int, lane: str, item_id: int, final: Optional[str]) -> bool:
+    """Label an approved draft the user edited: store original + final, feed the final to the corpus.
+
+    A draft never edited has no original on file and stores nothing; one edited back to its
+    original is not a label either. The final then enters `voice_exemplars` through
+    `ingest_exemplars`, so it shares the upload's length filter, hash dedupe, row cap and embedding.
+    Never raises: approval must not fail because a label could not be written.
+    """
+    if not _norm(final) or not voice_exemplars_enabled(user_id):
+        return False
+    try:
+        from cqc_lem.utilities import db
+
+        original = db.get_draft_original(user_id, lane, item_id)
+        if original is None or _norm(original) == _norm(final):
+            return False
+        if not db.finalize_edit_label(user_id, lane, item_id, final):
+            return False
+        ingest_exemplars(user_id, "edited", [final])
+        return True
+    except Exception as err:  # approval is the user's action; the label is best-effort
+        log_warning("Could not record an edited-draft label", exc=err, user_id=user_id,
+                    action_type="voice_exemplars")
+        return False
 
 
 COPY_FIX = ("\nYour last draft nearly copied one of the user's example texts. "
