@@ -93,9 +93,22 @@ MCP_SERVER_WRITES = "mcp-server-writes"
 COMMENT_CANDIDATE_DRAFTS = "comment-candidate-drafts-enabled"
 VOICE_EXEMPLARS = "voice-exemplars-enabled"
 COMMENT_MULTI_CANDIDATE = "comment-multi-candidate-enabled"
+AUTHENTICITY_LOOP = "authenticity-loop-enabled"
 
 FLAGS: Dict[str, FlagSpec] = {
     spec.key: spec for spec in (
+        FlagSpec(
+            key=AUTHENTICITY_LOOP,
+            env_var="AUTHENTICITY_LOOP",
+            default=False,
+            owner="content-quality",
+            description=("Authenticity loop for comment and DM drafts (issue #2627, Phase 3b): "
+                         "pre-text in the writer prompt, a post-check score, up to 3 regenerations "
+                         "with the specific issues, then hold at PENDING and notify. Below 50 "
+                         "approve and auto-approve are refused; the owner posts only through a "
+                         "confirm-with-reason override that writes an audit row. OFF by default: "
+                         "prompts and behaviour unchanged."),
+        ),
         FlagSpec(
             key=COMMENT_MULTI_CANDIDATE,
             env_var="COMMENT_MULTI_CANDIDATE",

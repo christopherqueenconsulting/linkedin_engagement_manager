@@ -256,6 +256,7 @@ def set_target_connect_status(user_id: int, profile_url: str, status: ConnectSta
         connection.close()
 # --- Scheduled 1:1 DMs (issue #306) — mirrors the post scheduler ---
 _SCHED_DM_COLS = ("id", "user_id", "recipient_profile_url", "recipient_name", "message",
+                  "authenticity_score", "authenticity_issues",
                   "source", "scheduled_time", "status", "created_at", "updated_at")
 # Statuses where a drafted nurture DM is still "live" for its thread — a second draft to the same
 # person while one of these is open would be two messages queued for one reply.
@@ -322,6 +323,33 @@ def count_scheduled_dms_created_today(user_id: int, source: str = None) -> int:
     except mysql.connector.Error as err:
         log_error("Could not count today's scheduled DMs", exc=err, user_id=user_id)
         return 0
+def set_scheduled_dm_authenticity(dm_id: int, score: Optional[int], issues: list) -> bool:
+    """Store the authenticity loop's last score and issues on a DM draft (#2751)."""
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("UPDATE scheduled_dms SET authenticity_score = %s, "
+                           "authenticity_issues = %s WHERE id = %s",
+                           (score, "\n".join(issues)[:2000] if issues else None, dm_id))
+            return True
+    except mysql.connector.Error as err:
+        log_error(f"Could not store authenticity score for DM {dm_id}", exc=err)
+        return False
+
+
+def insert_authenticity_override(user_id: int, lane: str, item_id: int, score: int, reason: str,
+                                 overridden_by: str) -> bool:
+    """Audit row for a confirm-with-reason override of a below-floor draft (#2751)."""
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute("INSERT INTO authenticity_overrides (user_id, lane, item_id, score, "
+                           "reason, overridden_by) VALUES (%s,%s,%s,%s,%s,%s)",
+                           (user_id, lane, item_id, score, reason[:500], str(overridden_by)[:64]))
+            return True
+    except mysql.connector.Error as err:
+        log_error("Could not write authenticity override", exc=err, user_id=user_id)
+        return False
+
+
 def get_scheduled_dm(dm_id: int) -> Optional[dict]:
     """One scheduled-DM row, or None when it does not exist or the read failed."""
     try:

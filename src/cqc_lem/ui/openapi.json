@@ -7763,6 +7763,18 @@
             ],
             "title": "Action"
           },
+          "authenticity_override_reason": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Authenticity Override Reason"
+          },
           "dm_id": {
             "title": "Dm Id",
             "type": "integer"

@@ -166,6 +166,7 @@ from cqc_lem.utilities.db import (
     get_user_email,
     get_user_subscription_info,
     get_video_credit_balance,
+    insert_authenticity_override,
     insert_connection_request,
     insert_feedback,
     insert_post_returning_id,
@@ -1102,6 +1103,7 @@ def _release_hold(token: str) -> bool:
 # deliberate edit to THIS table, which `test_observer_route_bodies.py` pins key for key.
 _OBSERVER_ROW_FIELDS: Dict[str, frozenset] = {
     "dms": frozenset({"id", "user_id", "recipient_profile_url", "recipient_name", "message", "source",
+                      "authenticity_score", "authenticity_issues",
                       "scheduled_time", "status", "created_at", "updated_at"}),
     "connection_requests": frozenset({
         "id", "user_id", "recipient_profile_url", "recipient_name", "message", "source", "icp_score",
@@ -1644,6 +1646,8 @@ class UpdateDmRequest(BaseModel):
     message: Optional[str] = Field(default=None, max_length=_LEN_DM_TEMPLATE)
     scheduled_datetime: Optional[datetime] = None
     action: Optional[str] = None  # 'approve' | 'cancel' | None (save fields only)
+    # Confirm-with-reason override (#2751): the only way to approve a draft scored below the floor.
+    authenticity_override_reason: Optional[str] = Field(default=None, max_length=500)
 
 
 class DmDeleteRequest(BaseModel):
@@ -3538,6 +3542,32 @@ def _refuse_agent_approved_status(status: Optional[str]) -> None:
     raise _agent_approval_refusal()
 
 
+def _enforce_authenticity_floor(user_id: int, dm_id: int, stored: dict,
+                                override_reason: Optional[str]) -> None:
+    """Refuse approving a DM the authenticity loop scored below the floor (#2751).
+
+    403, never silent. Only a human (never an agent-scoped seat) may override, with a reason, and the
+    override writes an audit row. An edited message is not re-scored here, so the stored score keeps
+    gating until the owner overrides it.
+    """
+    from cqc_lem.utilities.ai import authenticity_loop
+
+    score = stored.get("authenticity_score")
+    if not authenticity_loop.enabled(user_id) or not authenticity_loop.below_floor(score):
+        return
+    reason = (override_reason or "").strip()
+    if not reason or _agent_scoped():
+        raise HTTPException(status_code=403, detail={
+            "code": "authenticity_below_floor",
+            "message": (f"This draft scored {score} for authenticity, below "
+                        f"{authenticity_loop.AUTHENTICITY_FLOOR}. Edit it, or confirm with a reason "
+                        "to post it anyway."),
+            "score": int(score), "issues": (stored.get("authenticity_issues") or "").split("\n")})
+    if not insert_authenticity_override(user_id, "scheduled_dm", dm_id, int(score), reason,
+                                        user_approver(user_id)):
+        raise HTTPException(status_code=503, detail="Could not record the override")
+
+
 def _voice_note_edit(user_id: int, lane: str, item_id: int, stored: Optional[str],
                      submitted: Optional[str]) -> None:
     """Edited-draft capture (#2627 1b): keep a pending draft's text as drafted before an edit lands."""
@@ -4091,6 +4121,9 @@ def update_scheduled_dm_endpoint(request: UpdateDmRequest) -> ResponseModel[str]
     stored_dm = (get_scheduled_dm(request.dm_id) or {}
                  if request.message is not None or status == ScheduledDmStatus.APPROVED else {})
     stored_message = stored_dm.get("message")
+    if status == ScheduledDmStatus.APPROVED:
+        _enforce_authenticity_floor(user_id, request.dm_id, stored_dm,
+                                    request.authenticity_override_reason)
     _voice_note_edit(user_id, "scheduled_dm", request.dm_id, stored_message, request.message)
     if _edits_pending_only():
         fields = {k: v for k, v in (("recipient_profile_url", request.recipient_profile_url),
