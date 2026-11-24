@@ -1142,10 +1142,12 @@ _OBSERVER_ROW_FIELDS: Dict[str, frozenset] = {
         "has_recipient_email"}),
     "outreach_targets": frozenset({"id", "user_id", "target_profile_url", "target_name", "stage", "status",
                                    "context_url", "draft_text", "notes", "approved_by",
-                                   "created_at", "updated_at"}),
+                                   # 'mcp' when the user's coding agent added it (MCP W2)
+                                   "created_via", "created_at", "updated_at"}),
     "catchup_touches": frozenset({"id", "user_id", "profile_url", "person_name", "event_type",
                                   "event_detail", "event_period", "score", "message", "status",
-                                  "created_at", "updated_at"}),
+                                  # 'mcp' when the user's coding agent rewrote the draft (MCP W2)
+                                  "edited_via", "created_at", "updated_at"}),
     "lead_signals": frozenset({
         "id", "user_id", "source", "channel", "person_name", "person_profile_url", "thread_key",
         "snippet", "score", "matched_signals", "post_id", "context_url", "draft_response", "status",
@@ -1554,6 +1556,19 @@ class PostRequest(BaseModel):
     # A compose-time image the author uploaded or generated BEFORE the row existed (issue #1030).
     # Only a preview URL we issued to this caller is accepted — see `owns_post_image_url`.
     image_url: Optional[str] = Field(default=None, max_length=1000)
+
+
+class PostUpdateRequest(PostRequest):
+    """Body of `POST /update_post/`: `PostRequest`, with `content` and the slot optional.
+
+    A human session still sends both and is refused 422 without either, exactly as before. A
+    queue-only seat (MCP W2) sends ONLY the field it is revising, and the pending-only write touches
+    only the fields sent, so a content-only revise can never write back a slot someone moved
+    meanwhile.
+    """
+
+    content: Optional[str] = None  # type: ignore[assignment]
+    scheduled_datetime: Optional[datetime] = None  # type: ignore[assignment]
 
 
 class VideoCreditCheckoutRequest(BaseModel):
@@ -3212,7 +3227,7 @@ def get_post_endpoint(post_id: int, session_token: Optional[str] = None) -> Resp
     200: {"description": "Post updated successfully"},
     **{k: v for k, v in error_responses.items() if k in [401, 403, 405]}
 })
-def update_post(post_id: int, post: PostRequest) -> ResponseModel[str]:
+def update_post(post_id: int, post: PostUpdateRequest) -> ResponseModel[str]:
     """Edit one of the caller's posts in place.
 
     `use_avatar` is three-valued (issue #744) and is written ONLY when the body states it: omitting
@@ -3242,6 +3257,9 @@ def update_post(post_id: int, post: PostRequest) -> ResponseModel[str]:
         _pending_edit_or_raise("post", post_id, user_id, fields, "Post could not be updated")
         return ResponseModel(status_code=200, detail="Post updated successful")
 
+    if post.content is None or post.scheduled_datetime is None:
+        # The human path writes the whole row, so it still needs both (the SPA always sends them).
+        raise HTTPException(status_code=422, detail="content and scheduled_datetime are required")
     if update_db_post(post.content, post.video_url, post.scheduled_datetime, post.post_type, post_id,
                       post.status, user_id=user_id, approved_by=user_approver(user_id)):
         reason = (post.rejection_reason or "").strip() or None
@@ -3439,11 +3457,29 @@ def _audit_mcp_approval(vector: str) -> None:
 def _mcp_approval_granted() -> bool:
     """Did `_refuse_agent_approval` allow an MCP approval on THIS request?
 
-    Only that request leaves the pending-only edit path (so the approval runs the human path's side
-    effects: the send dispatch, the stale-slot reset, `approved_by`). Every other MCP edit stays
-    pending-only on every account kind.
+    The approval still goes through the pending-only write (`_edits_pending_only()` stays True for
+    every MCP seat), so it can only move a row that is PENDING right now: approving a row already
+    approved, sent, canceled or failed is 409 `edit_requires_pending`. Each handler adds the
+    approval's own columns (`_mcp_approval_fields`) and runs its side effects only after that write
+    succeeded.
     """
     return bool((_request_mcp.get() or {}).get("approval_granted"))
+
+
+def _mcp_approver() -> str:
+    """`approved_by` for an MCP approval: `mcp:<session row id>`, never the human `user:<id>`.
+
+    The session is read off the request's cookie (the loopback presents the MCP token there), only
+    when an approval is being written. `mcp` alone when the row id cannot be read.
+    """
+    token = _request_session_cookie.get()
+    session_id = get_session_id(token) if token else None
+    return f"{MCP_ROW_SOURCE}:{session_id}" if session_id else MCP_ROW_SOURCE
+
+
+def _mcp_approval_fields() -> Dict[str, Any]:
+    """The columns an MCP approval stamps on its row, alongside `status`."""
+    return {"approved_by": _mcp_approver(), "approved_at": datetime.now(timezone.utc)}
 
 
 def _agent_approval_refusal() -> HTTPException:
@@ -3476,9 +3512,10 @@ def _refuse_agent_approval(action: Optional[str]) -> None:
         return
     if _mcp_may_approve():
         # Owner ruling O1: the operator exemption's mirror, for `lem_approve_item` on an internal or
-        # sandbox account. Audited as `mcp_approval`; a standard account falls through to the 403.
+        # sandbox account; a standard account falls through to the 403. The approval is still a
+        # pending-only write, and its `mcp_approval` row is written by `_pending_edit_or_raise`
+        # once that write moved the row, so a refused approval is never recorded as one.
         (_request_mcp.get() or {})["approval_granted"] = True
-        _audit_mcp_approval("action")
         return
     raise _agent_approval_refusal()
 
@@ -3510,7 +3547,7 @@ def _edits_pending_only() -> bool:
     `_operator_may_approve()` is True keeps the human's edit path, exactly as it keeps the approval
     verbs. Never true for a full session, so the human path is untouched.
     """
-    return _agent_scoped() and not _operator_may_approve() and not _mcp_approval_granted()
+    return _agent_scoped() and not _operator_may_approve()
 
 
 def _mcp_source() -> Optional[str]:
@@ -3535,6 +3572,9 @@ def _pending_edit_or_raise(kind: str, row_id: int, user_id: int, fields: Dict[st
     """
     _raise_unless_updated(update_pending_row(kind, row_id, user_id, fields), failure_detail,
                           user_id=user_id, action_type=kind)
+    if _mcp_approval_granted():
+        # The row really moved out of pending: only now is it an approval (owner ruling O1).
+        _audit_mcp_approval("action")
 
 
 def _log_queue_only_refusal(code: str, *, user_id: Optional[int], action_type: str) -> None:
@@ -4049,6 +4089,14 @@ def update_scheduled_dm_endpoint(request: UpdateDmRequest) -> ResponseModel[str]
                                     ("message", request.message),
                                     ("scheduled_time", request.scheduled_datetime),
                                     ("status", status)) if v is not None}
+        if status == ScheduledDmStatus.APPROVED and _mcp_approval_granted():
+            # An MCP approval (owner ruling O1), still pending-only. The human path's stale-slot
+            # rule rides along: approving a DM past its slot means send it now (#2103).
+            fields.update(_mcp_approval_fields())
+            if request.scheduled_datetime is None:
+                dm = get_scheduled_dm(request.dm_id)
+                if dm and scheduled_dm_is_stale(dm.get("scheduled_time")):
+                    fields["scheduled_time"] = datetime.now(timezone.utc)
         _pending_edit_or_raise("scheduled_dm", request.dm_id, user_id, fields,
                                "Could not update scheduled DM")
         return ResponseModel(status_code=200, detail="Scheduled DM updated")
@@ -4221,6 +4269,9 @@ def update_connection_request_endpoint(request: ConnectionRequestUpdate) -> Resp
             fields.update(status=status, failure_reason=None)
             if request.recipient_email is None and status == ConnectionRequestStatus.CANCELED:
                 fields["recipient_email"] = None
+            if status == ConnectionRequestStatus.APPROVED and _mcp_approval_granted():
+                # An MCP approval (O1): pending-only, so a `retry` of a failed row is a 409.
+                fields.update(_mcp_approval_fields())
         _pending_edit_or_raise("connection_request", request.request_id, user_id, fields,
                                "Could not update connection request")
         return ResponseModel(status_code=200, detail="Connection request updated")
@@ -4315,6 +4366,10 @@ def update_lead_signal_endpoint(request: LeadSignalUpdate) -> ResponseModel[str]
                                     ("status", status)) if v is not None}
         _pending_edit_or_raise("lead_signal", request.signal_id, user_id, fields,
                                "Could not update lead signal")
+        if status == LeadSignalStatus.APPROVED and _mcp_approval_granted():
+            # Reached only when the pending-only write above moved the row (it raises otherwise),
+            # so a signal already approved, sent or dismissed never dispatches a second reply.
+            send_lead_response.apply_async(kwargs={"signal_id": request.signal_id})
         return ResponseModel(status_code=200, detail="Lead signal updated")
     if not update_lead_signal(request.signal_id, draft_response=request.draft_response, status=status):
         raise HTTPException(status_code=500, detail="Could not update lead signal")
@@ -4483,6 +4538,12 @@ def update_catchup_touch_endpoint(request: UpdateCatchupTouchRequest) -> Respons
         fields = {k: v for k, v in (("message", request.message),
                                     ("person_name", request.person_name),
                                     ("status", status)) if v is not None}
+        if request.message is not None and _mcp_source():
+            # The text a human is about to approve was written by their agent (MCP W2): the review
+            # badges it and never sweeps it into a bulk approve.
+            fields["edited_via"] = _mcp_source()
+        if status == CatchupTouchStatus.APPROVED and _mcp_approval_granted():
+            fields.update(_mcp_approval_fields())
         _pending_edit_or_raise("catchup_touch", request.touch_id, user_id, fields,
                                "Could not update catch-up touch")
         return ResponseModel(status_code=200, detail="Catch-up touch updated")

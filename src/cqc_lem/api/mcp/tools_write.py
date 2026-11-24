@@ -27,7 +27,6 @@ from pydantic import Field, model_validator
 from cqc_lem.api.mcp.loopback import Loopback
 from cqc_lem.api.mcp.tools import (
     BOTH_SCOPES,
-    GET,
     OUTREACH_ONLY,
     ToolArgs,
     ToolSpec,
@@ -235,15 +234,11 @@ async def _draft_post(lb: Loopback, args: DraftPostArgs) -> dict[str, Any]:
 
 
 async def _revise_post(lb: Loopback, args: RevisePostArgs) -> dict[str, Any]:
-    # `/update_post/` takes a whole `PostRequest` (content and slot are both required), so the field
-    # not being revised is read back from the post first. Its `status` is never sent: the route
-    # writes only content and slot for a queue-only seat, and only while the post is PENDING (SQL).
-    content, slot = args.content, _iso(args.scheduled_datetime)
-    if content is None or slot is None:
-        current = await lb.get(f"/posts/{args.post_id}") or {}
-        content = content if content is not None else current.get("content")
-        slot = slot if slot is not None else current.get("scheduled_time")
-    await lb.write(POST, "/update_post", {"content": content, "scheduled_datetime": slot},
+    # Only the fields being revised are sent (`PostUpdateRequest`), so the pending-only write never
+    # writes back a field this call did not change: a slot moved meanwhile survives a content-only
+    # revise. `status` is never sent; the route writes only while the post is PENDING (SQL).
+    await lb.write(POST, "/update_post", {"content": args.content,
+                                          "scheduled_datetime": _iso(args.scheduled_datetime)},
                    params={"post_id": args.post_id})
     return _queued("post", args.post_id, "/content?tab=review")
 
@@ -258,12 +253,26 @@ _APPROVE_ROUTES: dict[str, tuple[str, str, str]] = {
 }
 
 
+# What happens next, per kind, as the route and the beat really behave. Only a still-PENDING item
+# can be approved here (the route's pending-only write: anything else is 409).
+APPROVAL_NOTES: dict[str, str] = {
+    "dm": ("Approved. LEM sends it at its scheduled time, within the daily DM cap; a DM whose slot "
+           "has already passed is rescheduled to now."),
+    "connection_request": ("Approved. LEM sends the invite on its next connection-request run, "
+                           "within the daily invite cap."),
+    "lead_signal": "Approved. LEM is sending this reply now.",
+    "catchup_touch": ("Approved. LEM sends it on its next catch-up run, within the daily "
+                      "catch-up cap."),
+    "outreach_target": ("Approved for its CURRENT funnel stage only. LEM runs that stage on its "
+                        "next funnel run; the next stage comes back to the queue for approval."),
+}
+
+
 async def _approve_item(lb: Loopback, args: ApproveArgs) -> dict[str, Any]:
     path, id_field, review = _APPROVE_ROUTES[args.kind]
     await lb.write(PUT, path, {id_field: args.id, "action": "approve"})
     return {"kind": args.kind, "id": args.id, "status": "approved", "review_url": _spa_url(review),
-            "note": ("Approved on this internal/sandbox account. LEM sends it on its normal "
-                     "schedule and caps; it has not been sent yet.")}
+            "note": APPROVAL_NOTES[args.kind]}
 
 
 # --- the write registry ---------------------------------------------------------------------------
@@ -275,8 +284,7 @@ WRITE_TOOLS: tuple[ToolSpec, ...] = (
     ToolSpec("lem_revise_post_draft", "Revise a post draft",
              "Change the text and/or slot of one of your PENDING post drafts. A post that is "
              "already approved or posted cannot be changed here." + WRITE_RULE,
-             RevisePostArgs, BOTH_SCOPES, ((GET, "/posts/{post_id}"), (POST, "/update_post")),
-             _revise_post, write=True),
+             RevisePostArgs, BOTH_SCOPES, ((POST, "/update_post"),), _revise_post, write=True),
     ToolSpec("lem_queue_dm", "Queue a DM",
              "Queue a 1:1 LinkedIn message to a profile URL for a time." + WRITE_RULE,
              QueueDmArgs, OUTREACH_ONLY, ((POST, "/schedule_dm"),), _queue_dm, write=True),

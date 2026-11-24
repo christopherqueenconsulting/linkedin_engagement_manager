@@ -116,7 +116,8 @@ def create_outreach_target_endpoint(request: OutreachTargetRequest) -> ResponseM
     status = OutreachStatus.APPROVED if request.status == "approved" else OutreachStatus.PENDING
     target_id = insert_outreach_target(user_id, target_profile_url,
                                        target_name=target_name, context_url=context_url,
-                                       draft_text=request.draft_text, status=status)
+                                       draft_text=request.draft_text, status=status,
+                                       created_via=_main._mcp_source())
     if not target_id:
         raise HTTPException(status_code=500, detail="Could not create outreach target")
     return ResponseModel(status_code=200, detail={"target_id": target_id})
@@ -165,6 +166,10 @@ def update_outreach_target_endpoint(request: UpdateOutreachTargetRequest) -> Res
                                     ("context_url", request.context_url),
                                     ("draft_text", request.draft_text),
                                     ("status", status)) if v is not None}
+        if status == OutreachStatus.APPROVED and _main._mcp_approval_granted():
+            # An MCP approval (owner ruling O1), still pending-only: it gates the current stage
+            # only while that stage is waiting for review.
+            fields.update(_main._mcp_approval_fields())
         _main._pending_edit_or_raise("outreach_target", request.target_id, user_id, fields,
                                      "Could not update outreach target")
         return ResponseModel(status_code=200, detail="Outreach target updated")

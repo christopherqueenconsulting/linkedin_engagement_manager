@@ -598,6 +598,15 @@ async def _newsletter_subscribers(lb: Loopback, args: SubscriberArgs) -> dict[st
                      "this is the paged count history.")}
 
 
+# The queue-only write tools' sentence in `agent_capabilities` (W2, `tools_write.py`). Spelled
+# here, not imported: `tools_write` imports this module.
+_WRITE_EXPLANATION = (
+    "When writes are enabled it can also draft text posts and revise pending ones, and (with an "
+    "outreach token) queue DMs, connection requests and outreach targets, edit pending lead-signal "
+    "and catch-up drafts and update a lead. Every one of those lands PENDING for the user's approval "
+    "in LEM; on LEM's own internal and sandbox accounts only, `lem_approve_item` can approve a "
+    "pending outreach item.")
+
 EXPLANATIONS: dict[str, str] = {
     "overview": (
         "LEM runs a user's LinkedIn presence: it plans and drafts posts for a 30-day content plan, "
@@ -618,14 +627,17 @@ EXPLANATIONS: dict[str, str] = {
         "as PENDING for the user to review, and nothing is sent until they approve it. The one "
         "exception is `lem_approve_item`, which exists only on LEM's own internal and sandbox "
         "accounts; it never approves a post. An agent can never publish, delete or change settings."),
-    "agent_capabilities": (
-        "This MCP server reads the user's posts, plan, performance, settings, voice kit, newsletter "
-        "and (with an outreach token) the outreach queues. When writes are enabled it can also "
-        "draft text posts and revise pending ones, and (with an outreach token) queue DMs, "
-        "connection requests and outreach targets, edit pending lead-signal and catch-up drafts and "
-        "update a lead. Every one of those lands PENDING for the user's approval in LEM. It cannot "
-        "send, publish, delete, spend credits, run the browser automation or change settings: for "
-        "those, use `lem_open_in_lem` and ask the user to act in LEM."),
+    # Read rules, then each write family's own sentence, then what no tool can do. A write family
+    # adds ITS sentence to this tuple (queue-only writes: `_WRITE_EXPLANATION`; AI and media
+    # generation, W2b: its own), never a second explanation.
+    "agent_capabilities": " ".join((
+        "This MCP server can read the user's posts, plan, performance, settings, voice kit, "
+        "newsletter and (with an outreach token) the outreach queues.",
+        _WRITE_EXPLANATION,
+        "Separate generation tools (AI post text, images, video), where listed, spend the "
+        "account's AI allowance and also land their output as PENDING.",
+        "It cannot send, publish, delete, run the browser automation or change settings: for "
+        "those, use `lem_open_in_lem` and ask the user to act in LEM.")),
 }
 
 DESTINATIONS: dict[str, str] = {

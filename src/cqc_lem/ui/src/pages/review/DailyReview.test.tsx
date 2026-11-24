@@ -183,6 +183,11 @@ describe('agent-created rows', () => {
 
   it('never sweeps or multi-approves an agent-created row', () => {
     expect(isSweepable(AGENT)).toBe(false)
+    // Outreach targets the agent added and catch-up drafts it rewrote are agent-created too.
+    for (const lane of ['outreach_funnel_targets', 'catchup_touches']) {
+      expect(isSweepable(item({ lane, agent_created: true }))).toBe(false)
+      expect(isSweepable(item({ lane, agent_created: false }))).toBe(true)
+    }
     expect(bulkTargets([AGENT, CLEAN_A], 'approve')).toEqual([CLEAN_A])
     expect(bulkTargets([AGENT], 'approve')).toEqual([AGENT])
     expect(bulkTargets([AGENT, CLEAN_A], 'cancel')).toEqual([AGENT, CLEAN_A])

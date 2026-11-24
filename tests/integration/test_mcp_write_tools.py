@@ -29,7 +29,8 @@ _URL = "https://www.linkedin.com/in/w2-integration-recipient/"
 def _cleanup() -> None:
     for email in (_EMAIL_STANDARD, _EMAIL_SANDBOX):
         for row in _exec("SELECT id FROM users WHERE email=%s", (email,), fetch=True):
-            for table in ("auth_audit_log", "sessions", "scheduled_dms", "connection_requests"):
+            for table in ("auth_audit_log", "sessions", "scheduled_dms", "connection_requests",
+                          "outreach_funnel_targets"):
                 _exec(f"DELETE FROM {table} WHERE user_id=%s", (row["id"],))
         _exec("DELETE FROM users WHERE email=%s", (email,))
 
@@ -138,9 +139,28 @@ async def test_a_sandbox_account_approves_through_lem_approve_item(users: Any) -
         assert approved.is_error is False, approved
         assert approved.structured_content["status"] == "approved"
 
-    row = _exec("SELECT status, source FROM connection_requests WHERE id=%s", (request_id,),
-                fetch=True)[0]
+        # The approval is a pending-only write: approving the same row again changes nothing.
+        again = await session.call_tool("lem_approve_item",
+                                        {"kind": "connection_request", "id": request_id})
+        assert again.is_error is True
+        assert again.structured_content["error"]["code"] == "edit_requires_pending"
+
+        target = await session.call_tool("lem_add_outreach_target",
+                                         {"target_profile_url": _URL, "draft_text": "Hi"})
+        assert target.is_error is False, target
+        target_id = target.structured_content["id"]
+
+    session_id = _exec("SELECT id FROM sessions WHERE user_id=%s AND scope='mcp_outreach'",
+                       (user_id,), fetch=True)[0]["id"]
+    row = _exec("SELECT status, source, approved_by, approved_at FROM connection_requests "
+                "WHERE id=%s", (request_id,), fetch=True)[0]
     assert (row["status"], row["source"]) == ("approved", "mcp")
+    assert row["approved_by"] == f"mcp:{session_id}" and row["approved_at"] is not None
+    created_via = _exec("SELECT created_via FROM outreach_funnel_targets WHERE id=%s",
+                        (target_id,), fetch=True)[0]["created_via"]
+    assert created_via == "mcp"
     approvals = _audit(user_id, "mcp_approval")
+    # The refused second approval wrote nothing (the row was no longer pending), so it left no
+    # approval row either.
     assert len(approvals) == 1 and "sandbox" in str(approvals[0]["details"])
-    assert len(_audit(user_id, "mcp_write")) == 2
+    assert len(_audit(user_id, "mcp_write")) == 3

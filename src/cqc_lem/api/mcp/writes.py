@@ -6,18 +6,20 @@ In order, before and around the tool's own inner call:
    never the safety one (that is the gate's kill switch, checked first on every request).
 2. **Approval account** (owner ruling O1): a tool marked `approval` runs only on an internal or
    sandbox account -> else `agent_may_not_approve`. The route decides it again on its own.
-3. **Dedupe**: the key `mcp:dedupe:{user}:{session}:{tool}:{client_request_id}` is claimed in Redis
-   with `SET NX EX 600` BEFORE anything is dispatched, with `sha256(canonical args)` stored in it.
-   With no `client_request_id` the id is derived from that hash, so an identical retry is still
-   caught. A hit with a different hash is `client_request_id_reused`; a hit on a finished write
-   replays its answer (`replayed: true`) and writes nothing; a hit on one still running, or whose
-   outcome is unknown, is `outcome=unknown`. Redis unreadable -> `mcp_unavailable` (fails CLOSED,
-   like every gate limit).
+3. **Dedupe, only when the client sends `client_request_id`**: the key
+   `mcp:dedupe:{user}:{session}:{tool}:{client_request_id}` is claimed in Redis with `SET NX EX 600`
+   BEFORE anything is dispatched, with `sha256(canonical args)` stored in it. A hit with a different
+   hash is `client_request_id_reused`; a hit on a finished write replays its answer
+   (`replayed: true`) and writes nothing; a hit on one still running, or whose outcome is unknown,
+   is `outcome=unknown`. Redis unreadable -> `mcp_unavailable` (fails CLOSED, like every gate
+   limit). With NO id nothing is deduped: the same arguments twice is two writes, because "dismiss,
+   restore, dismiss" is three real intents, not one retried.
 4. **Write budgets**: 30 an hour and 150 a day per user (owner ruling O10), spent once per write.
-5. **Run** under the tool time limit. A timeout is `outcome=unknown`, NOT retryable: the inner
-   handler's thread keeps running, so the write may land after the answer. The claim is kept, so a
-   blind retry is refused rather than doubled. A refused write (4xx) changed nothing and releases
-   the claim; a 5xx is treated like a timeout.
+5. **Run** under the tool time limit. Once the tool has SENT a write (`attempted()`), a timeout, a
+   5xx or a crash is `outcome=unknown`, NOT retryable: the inner handler's thread keeps running, so
+   the write may land after the answer, and the claim is kept so a blind retry is refused rather
+   than doubled. A failure before the first write was sent changed nothing and releases the claim,
+   and so does a refused write (4xx).
 6. **Audit**: one `mcp_write {tool, target_id, scope}` row per write that landed, never a body.
 
 Logging follows §7: a refusal here is the guard working, so it is DEBUG (flag off, budget, dedupe
@@ -102,8 +104,12 @@ def claim_write(key: str, digest: str) -> Optional[dict[str, Any]]:
         if client.set(key, fresh, ex=DEDUPE_TTL_SECONDS, nx=True):
             return None
         raw = client.get(key)
-        if raw is None and client.set(key, fresh, ex=DEDUPE_TTL_SECONDS, nx=True):
-            return None  # it expired between the two commands
+        if raw is None:
+            if client.set(key, fresh, ex=DEDUPE_TTL_SECONDS, nx=True):
+                return None  # it expired between the two commands
+            # Another call claimed it between our read and our re-claim: a concurrent duplicate of
+            # this very write, whose outcome is not known yet. Never "reused with other arguments".
+            return {"h": digest, "state": _PENDING}
     except Exception as exc:  # noqa: BLE001 — every Redis fault fails closed here.
         raise LimitsUnavailable() from exc
     return _decode(raw)
@@ -183,22 +189,34 @@ async def _claim(key: str, digest: str, spec: Any, principal: Any) -> Optional[d
                       "This write is already in progress or its outcome is unknown. " + UNKNOWN_MESSAGE)
 
 
-async def _spend_budget(key: str, principal: Any) -> None:
+async def _release(key: Optional[str]) -> None:
+    if key is not None:
+        await run_in_threadpool(release_write, key)
+
+
+async def _settle(key: Optional[str], digest: str, state: str,
+                  result: Optional[dict[str, Any]] = None) -> None:
+    if key is not None:
+        await run_in_threadpool(settle_write, key, digest, state, result)
+
+
+async def _spend_budget(key: Optional[str], principal: Any) -> None:
     try:
         retry_after = await run_in_threadpool(consume_budgets, principal.user_id, WRITE_BUDGETS)
     except LimitsUnavailable as exc:
-        await run_in_threadpool(release_write, key)
+        await _release(key)
         raise ToolFailure(UPSTREAM_ERROR, "mcp_unavailable",
                           "The LEM MCP server is unavailable right now. Try again shortly.") from exc
     if retry_after is not None:
-        await run_in_threadpool(release_write, key)
+        await _release(key)
         log_debug("MCP write refused: write budget spent", user_id=principal.user_id)
         raise ToolFailure(RATE_LIMITED, "write_budget_exhausted",
                           f"This account's MCP write budget is spent. Retry in {retry_after}s.")
 
 
 async def run_write(spec: Any, args: BaseModel, principal: Any,
-                    run: Callable[[], Awaitable[dict[str, Any]]], timeout: float) -> dict[str, Any]:
+                    run: Callable[[], Awaitable[dict[str, Any]]], timeout: float,
+                    attempted: Optional[Callable[[], bool]] = None) -> dict[str, Any]:
     """Run one write tool call through the flag, dedupe, budgets, time limit and audit.
 
     Args:
@@ -207,6 +225,8 @@ async def run_write(spec: Any, args: BaseModel, principal: Any,
         principal: The admitted `McpPrincipal`.
         run: Starts the tool's runner (the inner write).
         timeout: The tool time limit, in seconds.
+        attempted: Whether the runner has SENT a write yet (`Loopback.writes_attempted`). A failure
+            before that changed nothing, so it is never `unknown`. None means "assume it did".
 
     Returns:
         The tool's answer, or the first answer replayed for a duplicate.
@@ -216,27 +236,42 @@ async def run_write(spec: Any, args: BaseModel, principal: Any,
     """
     await _check_preconditions(spec, principal)
     digest = args_hash(args)
-    request_id = getattr(args, "client_request_id", None) or digest[:32]
-    key = dedupe_key(principal.user_id, principal.session_id, spec.name, request_id)
-    replay = await _claim(key, digest, spec, principal)
-    if replay is not None:
-        return replay
+    request_id = getattr(args, "client_request_id", None)
+    key = (dedupe_key(principal.user_id, principal.session_id, spec.name, request_id)
+           if request_id else None)
+    if key is not None:
+        replay = await _claim(key, digest, spec, principal)
+        if replay is not None:
+            return replay
     await _spend_budget(key, principal)
+
+    def _sent() -> bool:
+        return True if attempted is None else bool(attempted())
+
     try:
         payload = await asyncio.wait_for(run(), timeout)
     except asyncio.TimeoutError:
-        await run_in_threadpool(settle_write, key, digest, _UNKNOWN)
+        if not _sent():
+            await _release(key)
+            raise ToolFailure(UPSTREAM_ERROR, "timeout_before_write",
+                              "LEM took too long before anything was written. Nothing changed; "
+                              "try again.") from None
+        await _settle(key, digest, _UNKNOWN)
         raise ToolFailure(UNKNOWN, "outcome_unknown", UNKNOWN_MESSAGE) from None
     except ToolFailure as failure:
-        if failure.outcome == UPSTREAM_ERROR:
-            await run_in_threadpool(settle_write, key, digest, _UNKNOWN)
-        else:
-            await run_in_threadpool(release_write, key)
+        if failure.outcome == UPSTREAM_ERROR and _sent():
+            await _settle(key, digest, _UNKNOWN)
+            raise ToolFailure(UNKNOWN, failure.code, UNKNOWN_MESSAGE,
+                              failure.inner_status) from None
+        await _release(key)
         raise
     except Exception:
-        await run_in_threadpool(settle_write, key, digest, _UNKNOWN)
+        if _sent():
+            await _settle(key, digest, _UNKNOWN)
+        else:
+            await _release(key)
         raise
-    await run_in_threadpool(settle_write, key, digest, _DONE, payload)
+    await _settle(key, digest, _DONE, payload)
     await run_in_threadpool(_audit_write, principal, spec.name, payload.get("id"))
     return payload
 

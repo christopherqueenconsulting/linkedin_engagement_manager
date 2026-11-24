@@ -41,23 +41,30 @@ class _EditableTable(NamedTuple):
 
 # The whitelist is what keeps the interpolated table and column names injection-safe: a kind or a
 # column that is not listed here is refused before any SQL is built.
+# `approved_by` / `approved_at` are here for ONE caller: an MCP seat's internal/sandbox approval
+# (owner ruling O1, MCP W2), which moves a row out of pending through this same pending-only write,
+# so approving something already approved, sent, canceled or failed is NOT_PENDING (409).
+_APPROVAL_COLUMNS = frozenset({"approved_by", "approved_at"})
 _TABLES: dict[str, _EditableTable] = {
     "scheduled_dm": _EditableTable(
         "scheduled_dms", ("pending",),
         frozenset({"recipient_profile_url", "recipient_name", "message", "scheduled_time",
-                   "status"})),
+                   "status"}) | _APPROVAL_COLUMNS),
     "connection_request": _EditableTable(
         "connection_requests", ("pending",),
         frozenset({"recipient_profile_url", "recipient_name", "message", "recipient_email",
-                   "status", "failure_reason"})),
+                   "status", "failure_reason"}) | _APPROVAL_COLUMNS),
     # A lead signal's draft state is 'new' (LeadSignalStatus), not 'pending'.
     "lead_signal": _EditableTable(
         "lead_signals", ("new",), frozenset({"draft_response", "status"})),
+    # `edited_via`: 'mcp' when an MCP seat rewrote the draft (MCP W2), so the review never
+    # bulk-approves text an agent wrote.
     "catchup_touch": _EditableTable(
-        "catchup_touches", ("pending",), frozenset({"message", "person_name", "status"})),
+        "catchup_touches", ("pending",),
+        frozenset({"message", "person_name", "status", "edited_via"}) | _APPROVAL_COLUMNS),
     "outreach_target": _EditableTable(
         "outreach_funnel_targets", ("pending",),
-        frozenset({"target_name", "context_url", "draft_text", "status"})),
+        frozenset({"target_name", "context_url", "draft_text", "status"}) | _APPROVAL_COLUMNS),
     "post": _EditableTable(
         "posts", ("pending",),
         frozenset({"content", "video_url", "scheduled_time", "post_type", "status",

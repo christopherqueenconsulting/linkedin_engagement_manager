@@ -9,9 +9,11 @@ path is a later phase and must delegate to the per-lane helpers.
 Item shape: `lane, id, age_hours, summary, draft_text, hold_reason, risk_flags, confidence,
 allowed_actions, edit_href, agent_created`. `risk_flags` and `confidence` are filled by `review_flags.annotate`
 (Phase 2); `age_hours` is None when the lane's row carries no readable timestamp — an
-unmeasured wait is never zero, and is never counted stale. `agent_created` is True for a DM or
-connection request an MCP seat queued (`source='mcp'`, MCP W2): the SPA badges it and never
-bulk-approves it, and `POST /review/bulk` refuses it in a multi-item approve.
+unmeasured wait is never zero, and is never counted stale. `agent_created` is True for a row whose text the
+user's coding agent wrote (MCP W2): a DM or connection request it queued (`source='mcp'`), an
+outreach target it added (`created_via='mcp'`) or a catch-up touch whose draft it rewrote
+(`edited_via='mcp'`). The SPA badges it and never bulk-approves it, and `POST /review/bulk` refuses
+it in a multi-item approve.
 """
 
 from collections.abc import Callable
@@ -86,7 +88,8 @@ def _read_funnel_targets(user_id: int, now: datetime) -> list[dict]:
                                 sort_order="asc").get("targets", [])
     return [_item("outreach_funnel_targets", r["id"], _age_hours(r.get("created_at"), now),
                   f"Funnel {r.get('stage')}: {r.get('target_name') or r.get('target_profile_url')}",
-                  r.get("draft_text"), _APPROVE_CANCEL, "/content?tab=outreach") for r in rows]
+                  r.get("draft_text"), _APPROVE_CANCEL, "/content?tab=outreach",
+                  agent_created=r.get("created_via") == MCP_SOURCE) for r in rows]
 
 
 def _read_catchup_touches(user_id: int, now: datetime) -> list[dict]:
@@ -95,7 +98,8 @@ def _read_catchup_touches(user_id: int, now: datetime) -> list[dict]:
                                sort_by="created_at", sort_order="asc").get("touches", [])
     return [_item("catchup_touches", r["id"], _age_hours(r.get("created_at"), now),
                   f"{r.get('event_type')}: {r.get('person_name') or r.get('profile_url')}",
-                  r.get("message"), _APPROVE_CANCEL, "/content?tab=catchup") for r in rows]
+                  r.get("message"), _APPROVE_CANCEL, "/content?tab=catchup",
+                  agent_created=r.get("edited_via") == MCP_SOURCE) for r in rows]
 
 
 def _read_held_posts(user_id: int, now: datetime) -> list[dict]:

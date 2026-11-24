@@ -680,13 +680,12 @@ write route below is now **pending-only, in SQL**, for a queue-only seat:
   `/connection_request`, `/outreach/target` and `/curated/source`) make new rows under the approval
   guards above, not edits. `PUT /user/engagement-preferences` is refused outright
   (`agent_may_not_configure`). The operator adds `/leads/refresh` and the pause.
-- **Who is held:** `_edits_pending_only()` is `_agent_scoped() and not _operator_may_approve() and
-  not _mcp_approval_granted()`. The operator exemption (an `operator` on an internal or sandbox
-  account) keeps the human write path, exactly as it keeps the approval verbs and the
-  `operator_approval` audit row. An MCP seat leaves the pending-only path ONLY on the one request
-  whose approval `_refuse_agent_approval` just allowed (`lem_approve_item` on an internal or sandbox
-  account, MCP W2), so that approval runs the human path's side effects; every other MCP edit stays
-  pending-only on every account kind. A full session is untouched.
+- **Who is held:** `_edits_pending_only()` is `_agent_scoped() and not _operator_may_approve()`. The
+  operator exemption (an `operator` on an internal or sandbox account) keeps the human write path,
+  exactly as it keeps the approval verbs and the `operator_approval` audit row. An MCP seat never
+  leaves the pending-only path, not even for its internal/sandbox approval (MCP W2): that approval
+  is a pending-only write of `status` (plus `approved_by = mcp:<session>`), so it can only move a
+  row still waiting for review. A full session is untouched.
 
 Three more rules ride the same seats:
 
@@ -1041,14 +1040,18 @@ request, lead signal, catch-up touch or outreach target (never a post). It is de
 - **The route** decides again. `_refuse_agent_approval` grows an MCP branch, `_mcp_may_approve()`, that
   mirrors the operator exemption: for an `mcp`/`mcp_outreach` request it reads the acting account's
   kind once (`get_user_account_kind`, failing closed to `standard`; stamped per request in
-  `_request_mcp`), allows `action="approve"`/`"retry"` only on internal/sandbox, and writes an
-  **`mcp_approval`** audit row (role, via, path, account kind), the `operator_approval` twin. On a
+  `_request_mcp`), allows `action="approve"`/`"retry"` only on internal/sandbox, and, once the pending-only
+  write has moved the row (`_pending_edit_or_raise`), writes an **`mcp_approval`** audit row (role,
+  via, path, account kind), the `operator_approval` twin. A refused approval leaves no such row. On a
   standard account it is the same **403 `agent_may_not_approve`** an agent gets.
 
-Two deliberate differences from the operator: `_refuse_agent_approved_status` has NO MCP branch, so a
-create asking for `approved` is refused on every account kind; and only the approval request itself
-leaves the pending-only edit path (`_mcp_approval_granted()`), so an MCP edit on an internal account
-is still pending-only. `_agent_scoped()` stays True, so the passive `auto_approve` default never
+Two deliberate differences from the operator: `_refuse_agent_approved_status` has NO MCP branch,
+so a create asking for `approved` is refused on every account kind; and the approval itself is a
+**pending-only write** (`update_pending_row`): approving a row already approved, sent, canceled or
+failed is 409 `edit_requires_pending` and dispatches nothing. Each handler adds the approval's
+columns (`_mcp_approval_fields`: `approved_by = mcp:<session id>`, never `user:<id>`, and
+`approved_at`) and runs its side effects (the stale-DM slot reset, the lead-reply dispatch) only
+around that write. `_agent_scoped()` stays True, so the passive `auto_approve` default never
 opens. Pinned by `TestMcpApprovesOnlyOnInternalOrSandboxAccounts` and
 `tests/unit/api/mcp/test_mcp_write_tools.py`.
 

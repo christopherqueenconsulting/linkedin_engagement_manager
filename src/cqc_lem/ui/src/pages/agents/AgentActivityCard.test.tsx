@@ -23,12 +23,23 @@ beforeEach(() => get.mockReset())
 afterEach(cleanup)
 
 suite('describe', () => {
-  it('names the event, the tool and the target id', () => {
+  it('reads a write per tool: what it did, and to what', () => {
     expect(describe(ev({ details: { tool: 'lem_queue_dm', target_id: 5 } })))
       .toBe('Queued for your review: DM #5')
-    expect(describe(ev({ event: 'mcp_approval', details: { via: 'action' } })))
+    expect(describe(ev({ details: { tool: 'lem_approve_item', target_id: 9 } })))
+      .toBe('Approved: outreach item #9')
+    expect(describe(ev({ details: { tool: 'lem_update_lead', target_id: 2 } }))).toBe('Updated: lead #2')
+    expect(describe(ev({ details: { tool: 'lem_edit_catchup_draft', target_id: 3 } })))
+      .toBe('Edited, pending your review: catch-up draft #3')
+    expect(describe(ev({ details: { tool: 'lem_new_tool' } }))).toBe('Agent change: lem_new_tool')
+    expect(describe(ev({ details: null }))).toBe('Agent change')
+  })
+
+  it('never renders a non-write event\'s tool as its object', () => {
+    expect(describe(ev({ event: 'mcp_access', details: { tool: 'lem_queue_dm', scope: 'mcp' } })))
+      .toBe('Connected')
+    expect(describe(ev({ event: 'mcp_approval', details: { via: 'action', tool: 'lem_approve_item' } })))
       .toBe('Approved (internal/sandbox account)')
-    expect(describe(ev({ details: { tool: 'lem_new_tool' } }))).toBe('Queued for your review: lem_new_tool')
     expect(describe(ev({ event: 'mcp_unknown_event' }))).toBe('mcp_unknown_event')
   })
 })

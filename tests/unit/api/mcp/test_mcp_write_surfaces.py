@@ -64,7 +64,9 @@ def _queue_item(lane: str, item_id: int, agent: bool) -> dict:
 
 class TestDailyReviewNeverBulkApprovesAgentRows:
     QUEUE = [_queue_item("scheduled_dms", 1, True), _queue_item("scheduled_dms", 2, False),
-             _queue_item("connection_requests", 3, True)]
+             _queue_item("connection_requests", 3, True),
+             _queue_item("outreach_funnel_targets", 4, True),
+             _queue_item("catchup_touches", 5, True)]
 
     def _bulk(self, api_client: Any, items: list, action: str = "approve") -> tuple[Any, Any]:
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_UID), \
@@ -85,6 +87,15 @@ class TestDailyReviewNeverBulkApprovesAgentRows:
         assert results[("scheduled_dms", 1)]["error"] == APPROVE_ONE_AT_A_TIME
         assert results[("connection_requests", 3)]["error"] == APPROVE_ONE_AT_A_TIME
         assert results[("scheduled_dms", 2)]["ok"] is True
+        assert [c.args[1:3] for c in act.call_args_list] == [("scheduled_dms", 2)]
+
+    def test_agent_written_targets_and_touches_are_never_swept_either(self,
+                                                                       api_client: Any) -> None:
+        resp, act = self._bulk(api_client, [("outreach_funnel_targets", 4), ("catchup_touches", 5),
+                                            ("scheduled_dms", 2)])
+        errors = {(r["lane"], r["id"]): r["error"] for r in resp.json()["detail"]}
+        assert errors[("outreach_funnel_targets", 4)] == APPROVE_ONE_AT_A_TIME
+        assert errors[("catchup_touches", 5)] == APPROVE_ONE_AT_A_TIME
         assert [c.args[1:3] for c in act.call_args_list] == [("scheduled_dms", 2)]
 
     def test_an_agent_row_approved_alone_goes_through(self, api_client: Any) -> None:
@@ -112,6 +123,19 @@ class TestTheQueueMarksAgentRows:
             cr_items = review_queue._read_connection_requests(_UID, now)
         assert [i["agent_created"] for i in dm_items] == [True, False, False]
         assert [i["agent_created"] for i in cr_items] == [True, False]
+
+    def test_targets_and_touches_carry_agent_created_from_their_provenance(self) -> None:
+        now = datetime(2026, 11, 24, tzinfo=timezone.utc)
+        targets = {"targets": [{"id": 1, "created_via": "mcp", "stage": "comment"},
+                               {"id": 2, "created_via": None, "stage": "comment"}]}
+        touches = {"touches": [{"id": 3, "edited_via": "mcp", "event_type": "birthday"},
+                               {"id": 4, "edited_via": None, "event_type": "birthday"}]}
+        with patch("cqc_lem.utilities.db.get_outreach_targets", return_value=targets), \
+                patch("cqc_lem.utilities.db.get_catchup_touches", return_value=touches):
+            target_items = review_queue._read_funnel_targets(_UID, now)
+            touch_items = review_queue._read_catchup_touches(_UID, now)
+        assert [i["agent_created"] for i in target_items] == [True, False]
+        assert [i["agent_created"] for i in touch_items] == [True, False]
 
     def test_every_other_lane_defaults_to_not_agent_created(self) -> None:
         item = review_queue._item("catchup_touches", 1, None, "s", "d", ("approve",), "/x")

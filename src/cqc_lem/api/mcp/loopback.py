@@ -151,6 +151,8 @@ class Loopback:
     token: str = field(repr=False)
     client_ip: Optional[str] = None
     inner_calls: int = 0
+    # Writes SENT to a route (W2): a write tool's failure before the first one changed nothing.
+    writes_attempted: int = 0
     last_status: Optional[int] = None
     _limiter: anyio.Semaphore = field(default_factory=lambda: anyio.Semaphore(FAN_OUT_CONCURRENCY),
                                       repr=False)
@@ -257,6 +259,7 @@ class Loopback:
         query["session_token"] = COOKIE_SESSION_SENTINEL
         async with self._limiter:
             self.inner_calls += 1
+            self.writes_attempted += 1
             client = self._http()
             task = asyncio.create_task(client.request(method.upper(), route_path(path, method),
                                                       params=query, json=payload))

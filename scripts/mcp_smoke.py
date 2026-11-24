@@ -12,12 +12,14 @@ does, and exits non-zero on the first mismatch it reports (it keeps going to rep
 4. A token in the query string gets 400 `token_in_url_refused`. With a throwaway token (minted by
    `--mint-local-for`), the token must ALSO be revoked by that request.
 5. A bad bearer gets 401 `invalid_token`.
-6. With `--write --recipient URL` on an `mcp_outreach` token (W2): `lem_queue_dm` lands pending
-   with `source='mcp'`, the same `client_request_id` replays instead of writing twice, reusing it
-   with other arguments is refused, an `action` on an edit tool is refused, and `lem_approve_item`
-   approves the DM where it is listed (sandbox/internal) and is refused `agent_may_not_approve`
-   where it is not. Run it on a SANDBOX account with a fixed test recipient (sends suppressed), and
-   reject or cancel the queued DM in LEM afterwards.
+6. With `--write --recipient URL --account-kind KIND` on an `mcp_outreach` token (W2):
+   `lem_queue_dm` lands pending with `source='mcp'`, the same `client_request_id` replays instead of
+   writing twice, reusing it with other arguments is refused, and an `action` on an edit tool is
+   refused. Then the approval rule: ONLY with `--account-kind sandbox` (where sends are a dry run)
+   does it approve the DM through `lem_approve_item`. On any other kind it never approves: a
+   standard account must refuse with `agent_may_not_approve`, an internal one is skipped (approving
+   there is a REAL send), and the queued DM is then canceled (straight through the DB with
+   `--mint-local-for`; otherwise the script prints the DM id to cancel in LEM).
 7. With `--mint-local-for`, the minted token is revoked at the end and the next call must be 401.
 
 Usage, against a deployed stack (token from the Agents tab, kept in the environment):
@@ -25,7 +27,7 @@ Usage, against a deployed stack (token from the Agents tab, kept in the environm
     PYTHONPATH=src python scripts/mcp_smoke.py --read-only --base https://<host> \
         --token "$LEM_MCP_TOKEN"
     PYTHONPATH=src python scripts/mcp_smoke.py --write --recipient https://www.linkedin.com/in/<test>/ \
-        --base https://<host> --token "$LEM_MCP_TOKEN"
+        --account-kind sandbox --base https://<host> --token "$LEM_MCP_TOKEN"
 
 Against a LOCAL stack only, `--mint-local-for EMAIL` mints the tokens itself straight through the
 database facade (no step-up ceremony), and is refused for any `--base` that is not localhost: it is
@@ -187,8 +189,13 @@ def run_read_checks(smoke: Smoke, token: str) -> Optional[str]:
     return scope
 
 
-def run_write_checks(smoke: Smoke, token: str, recipient: str) -> None:
-    """Step 6 (W2): one pending DM, its replay, the reuse refusal, and the approval rule."""
+def run_write_checks(smoke: Smoke, token: str, recipient: str, account_kind: str,
+                     cancel_dm: Optional[Callable[[int], bool]] = None) -> None:
+    """Step 6 (W2): one pending DM, its replay, the reuse refusal, and the approval rule.
+
+    Approves only on a declared SANDBOX account; on every other kind the DM is canceled afterwards
+    (through `cancel_dm` when the script has the local DB, else by the operator in LEM).
+    """
     listed = smoke.result(token, "tools/list") or {}
     names = {t.get("name") for t in listed.get("tools") or []}
     if "lem_queue_dm" not in names:
@@ -210,14 +217,27 @@ def run_write_checks(smoke: Smoke, token: str, recipient: str) -> None:
     smoke.check(edit == "invalid_arguments", "an approve through an edit tool is refused", str(edit))
     if queued.get("id") is None:
         return
-    approve = {"kind": "dm", "id": queued["id"]}
-    if "lem_approve_item" in names:
-        approved = smoke.tool(token, "lem_approve_item", approve) or {}
-        smoke.check(approved.get("status") == "approved", "lem_approve_item approves (sandbox)")
-    else:
+    dm_id = queued["id"]
+    approve = {"kind": "dm", "id": dm_id}
+    listed = "lem_approve_item" in names
+    if account_kind == "sandbox":
+        smoke.check(listed, "lem_approve_item is listed on the sandbox account")
+        if listed:
+            approved = smoke.tool(token, "lem_approve_item", approve) or {}
+            smoke.check(approved.get("status") == "approved", "lem_approve_item approves (sandbox)")
+        return
+    if account_kind == "standard":
+        smoke.check(not listed, "lem_approve_item is not listed on a standard account")
         code = smoke.refusal(token, "lem_approve_item", approve)
         smoke.check(code == "agent_may_not_approve", "approve is refused on a standard account",
                     str(code))
+    else:
+        smoke.out.write("[SKIP] lem_approve_item - not on an internal account: approving there is "
+                        "a REAL send\n")
+    if cancel_dm is not None:
+        smoke.check(cancel_dm(int(dm_id)), "the smoke DM was canceled")
+    else:
+        smoke.out.write(f"[ACTION] cancel the smoke DM #{dm_id} in LEM -> Content -> DMs\n")
 
 
 def run_refusal_checks(smoke: Smoke, throwaway: Optional[str],
@@ -269,6 +289,11 @@ class _LocalMint:
         session_id = self.db.get_session_id(token)
         return bool(session_id) and bool(self.db.revoke_session(self.user_id, session_id))
 
+    def cancel_dm(self, dm_id: int) -> bool:
+        if self.db.get_scheduled_dm_user_id(dm_id) != self.user_id:
+            return False
+        return bool(self.db.update_scheduled_dm_status(dm_id, self.db.ScheduledDmStatus.CANCELED))
+
 
 def main(argv: Optional[Sequence[str]] = None, out: TextIO = sys.stdout,
          client: Optional[httpx2.Client] = None) -> int:
@@ -292,6 +317,9 @@ def main(argv: Optional[Sequence[str]] = None, out: TextIO = sys.stdout,
                         help="Also run the W2 write checks (needs --recipient; queues ONE DM).")
     parser.add_argument("--recipient", metavar="URL",
                         help="The fixed test recipient's LinkedIn profile URL for --write.")
+    parser.add_argument("--account-kind", choices=("standard", "internal", "sandbox"),
+                        help="The account's kind, stated by the operator, for --write. Only "
+                             "'sandbox' approves; every other kind cancels the smoke DM.")
     parser.add_argument("--mint-local-for", metavar="EMAIL",
                         help="LOCAL stack only: mint the tokens for this user through the DB.")
     parser.add_argument("--scope", choices=("mcp", "mcp_outreach"), default="mcp",
@@ -313,14 +341,16 @@ def main(argv: Optional[Sequence[str]] = None, out: TextIO = sys.stdout,
     if not token:
         out.write("No token: pass --token, set LEM_MCP_TOKEN, or use --mint-local-for locally.\n")
         return 2
-    if args.write and (args.read_only or not args.recipient):
-        out.write("--write needs --recipient and cannot be combined with --read-only.\n")
+    if args.write and (args.read_only or not args.recipient or not args.account_kind):
+        out.write("--write needs --recipient and --account-kind, and cannot be combined with "
+                  "--read-only.\n")
         return 2
 
     smoke = Smoke(args.base, out, client)
     run_read_checks(smoke, token)
     if args.write:
-        run_write_checks(smoke, token, args.recipient)
+        run_write_checks(smoke, token, args.recipient, args.account_kind,
+                         minter.cancel_dm if minter else None)
     throwaway = minter.mint("mcp-smoke-exposed") if minter else None
     run_refusal_checks(smoke, throwaway, minter.live if minter else None)
     if minter:

@@ -539,12 +539,40 @@ class TestMcpApprovesOnlyOnInternalOrSandboxAccounts:
             with patch.object(main_mod, "_safe_auth_event") as audit:
                 main_mod._refuse_agent_approval(action)  # must not raise
                 assert main_mod._mcp_approval_granted() is True
-                assert main_mod._edits_pending_only() is False
+                # Unlike the operator, the approval itself stays a pending-only write: only a row
+                # still PENDING can be approved (409 otherwise), and nothing else opens.
+                assert main_mod._edits_pending_only() is True
+                # Nothing is recorded until that write has moved the row...
+                audit.assert_not_called()
+                with patch.object(main_mod, "update_pending_row",
+                                  return_value=main_mod.PendingEdit.UPDATED):
+                    main_mod._pending_edit_or_raise("scheduled_dm", 5, 1, {"status": "approved"},
+                                                    "x")
+                # ...and then exactly one `mcp_approval` row.
+                audit.assert_called_once()
         finally:
             self._restore(main_mod, resets)
-        audit.assert_called_once()
         assert audit.call_args.args[0] == main_mod.AuthAuditEvent.MCP_APPROVAL
         assert audit.call_args.kwargs["details"]["account_kind"] == kind
+
+    def test_a_refused_approval_write_is_never_audited(self, main_mod: ModuleType) -> None:
+        from unittest.mock import patch
+
+        from fastapi import HTTPException
+
+        resets = self._as_mcp(main_mod, "mcp_outreach", "sandbox")
+        try:
+            with patch.object(main_mod, "_safe_auth_event") as audit, \
+                    patch.object(main_mod, "update_pending_row",
+                                 return_value=main_mod.PendingEdit.NOT_PENDING):
+                main_mod._refuse_agent_approval("approve")
+                with pytest.raises(HTTPException) as exc:
+                    main_mod._pending_edit_or_raise("scheduled_dm", 5, 1, {"status": "approved"},
+                                                    "x")
+        finally:
+            self._restore(main_mod, resets)
+        assert exc.value.status_code == 409
+        audit.assert_not_called()
 
     @pytest.mark.parametrize("scope", MCP_ROLES)
     @pytest.mark.parametrize("kind", ["standard", "", None, "INTERNAL", "internal ", "admin", 0])
@@ -577,6 +605,23 @@ class TestMcpApprovesOnlyOnInternalOrSandboxAccounts:
         finally:
             self._restore(main_mod, resets)
         kind.assert_called_once_with(1)
+
+    def test_an_mcp_approval_is_stamped_with_the_agent_session_never_the_user(
+            self, main_mod: ModuleType) -> None:
+        from unittest.mock import patch
+
+        cookie = main_mod._request_session_cookie.set("lem_mcp_token")
+        try:
+            with patch.object(main_mod, "get_session_id", return_value=901) as sid:
+                fields = main_mod._mcp_approval_fields()
+            with patch.object(main_mod, "get_session_id", return_value=None):
+                assert main_mod._mcp_approver() == "mcp"
+        finally:
+            main_mod._request_session_cookie.reset(cookie)
+        sid.assert_called_once_with("lem_mcp_token")
+        assert fields["approved_by"] == "mcp:901"
+        assert not fields["approved_by"].startswith("user:")
+        assert fields["approved_at"] is not None
 
     def test_no_resolver_stamp_is_refused(self, main_mod: ModuleType) -> None:
         from fastapi import HTTPException

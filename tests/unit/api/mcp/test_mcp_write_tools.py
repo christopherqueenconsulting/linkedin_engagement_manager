@@ -9,7 +9,7 @@ handlers' own database calls are patched.
 import json
 import logging
 import time
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from typing import Any, Iterator
 from unittest.mock import MagicMock, patch
 
@@ -162,6 +162,7 @@ class TestEveryWriteLandsPending:
                            "context_url": "https://www.linkedin.com/feed/update/urn:li:activity:1/"})
         assert structured(result)["id"] == 9
         assert insert.call_args.kwargs["status"] == OutreachStatus.PENDING
+        assert insert.call_args.kwargs["created_via"] == "mcp"
 
     def test_a_lead_signal_draft_is_a_pending_only_edit(self, api_client: Any,
                                                         outreach: MagicMock) -> None:
@@ -180,7 +181,8 @@ class TestEveryWriteLandsPending:
                 patch(f"{_M}.update_pending_row", return_value=PendingEdit.UPDATED) as edit:
             result = call(api_client, "lem_edit_catchup_draft", {"touch_id": 3, "message": "Congrats"})
         assert result["isError"] is False
-        edit.assert_called_once_with("catchup_touch", 3, UID, {"message": "Congrats"})
+        edit.assert_called_once_with("catchup_touch", 3, UID,
+                                     {"message": "Congrats", "edited_via": "mcp"})
 
     def test_an_edit_on_a_row_that_left_pending_is_409(self, api_client: Any,
                                                        outreach: MagicMock) -> None:
@@ -210,22 +212,25 @@ class TestEveryWriteLandsPending:
         assert kwargs["status"] == PostStatus.PENDING
         assert kwargs["image_url"] is None and kwargs["use_avatar"] is None
 
-    def test_lem_revise_post_draft_reads_the_slot_back_and_edits_pending_only(
-            self, api_client: Any, mcp: MagicMock) -> None:
-        row = {"id": 33, "content": "old", "scheduled_time": "2099-03-01 15:00:00",
-               "status": "pending", "post_type": "text", "curated_source_id": None}
+    def test_a_content_only_revise_never_writes_the_slot(self, api_client: Any,
+                                                        mcp: MagicMock) -> None:
+        """A slot moved meanwhile survives: the revise neither reads nor writes it back."""
         with patch(f"{_M}._require_own_posts"), \
-                patch(f"{_M}._post_row", return_value={"post_id": 33, "content": "old",
-                                                       "scheduled_time": _WHEN}), \
-                patch(f"{_M}.get_post_for_user", return_value=row), \
+                patch(f"{_M}.get_post_for_user") as read, \
                 patch(f"{_M}.update_pending_row", return_value=PendingEdit.UPDATED) as edit, \
                 patch(f"{_M}.update_db_post") as human_path:
             result = call(api_client, "lem_revise_post_draft", {"post_id": 33, "content": "new"})
         assert structured(result)["status"] == "pending"
-        kind, post_id, user_id, fields = edit.call_args.args
-        assert (kind, post_id, user_id, fields["content"]) == ("post", 33, UID, "new")
-        assert set(fields) == {"content", "scheduled_time"}
+        assert edit.call_args.args == ("post", 33, UID, {"content": "new"})
+        read.assert_not_called()
         human_path.assert_not_called()
+
+    def test_a_slot_only_revise_never_writes_the_content(self, api_client: Any,
+                                                        mcp: MagicMock) -> None:
+        with patch(f"{_M}._require_own_posts"), \
+                patch(f"{_M}.update_pending_row", return_value=PendingEdit.UPDATED) as edit:
+            call(api_client, "lem_revise_post_draft", {"post_id": 33, "scheduled_datetime": _WHEN})
+        assert set(edit.call_args.args[3]) == {"scheduled_time"}
 
     @pytest.mark.parametrize("tool,args", [
         ("lem_queue_dm", _dm_args(status="approved")),
@@ -248,35 +253,69 @@ class TestEveryWriteLandsPending:
         insert.assert_not_called()
 
 
-def _approve_patches(stack: ExitStack, kind: str) -> MagicMock:
-    """The route-side reads and the write each approval kind reaches; returns the write mock."""
+# kind -> (pending-edit kind, the human path's write a pending-only approval must NOT call)
+_HUMAN_WRITES = {
+    "dm": ("scheduled_dm", f"{_M}.update_scheduled_dm"),
+    "connection_request": ("connection_request", f"{_M}.update_connection_request"),
+    "lead_signal": ("lead_signal", f"{_M}.update_lead_signal"),
+    "catchup_touch": ("catchup_touch", f"{_M}.update_catchup_touch"),
+    "outreach_target": ("outreach_target", f"{_O}.update_outreach_target"),
+}
+
+
+def _approve_patches(stack: ExitStack, kind: str) -> tuple[MagicMock, MagicMock]:
+    """The route-side ownership reads, the human path's write, and the lead-reply dispatch.
+
+    Returns `(human_write, dispatch)`: an MCP approval must never take the human write, and the
+    dispatch runs only after the pending-only write moved the row.
+    """
     if kind == "dm":
         stack.enter_context(patch(f"{_M}.get_scheduled_dm_user_id", return_value=UID))
         stack.enter_context(patch(f"{_M}.get_scheduled_dm", return_value={"scheduled_time": None}))
-        return stack.enter_context(patch(f"{_M}.update_scheduled_dm", return_value=True))
-    if kind == "connection_request":
+    elif kind == "connection_request":
         stack.enter_context(patch(f"{_M}.get_connection_request_user_id", return_value=UID))
-        return stack.enter_context(patch(f"{_M}.update_connection_request", return_value=True))
-    if kind == "lead_signal":
+    elif kind == "lead_signal":
         stack.enter_context(patch(f"{_M}.get_lead_signal",
                                   return_value={"user_id": UID, "draft_response": "Thanks"}))
-        stack.enter_context(patch(f"{_M}.send_lead_response"))
-        return stack.enter_context(patch(f"{_M}.update_lead_signal", return_value=True))
-    if kind == "catchup_touch":
+    elif kind == "catchup_touch":
         stack.enter_context(patch(f"{_M}.get_catchup_touch",
                                   return_value={"user_id": UID, "message": "Congrats"}))
-        return stack.enter_context(patch(f"{_M}.update_catchup_touch", return_value=True))
-    stack.enter_context(patch(f"{_O}.get_outreach_target_user_id", return_value=UID))
-    return stack.enter_context(patch(f"{_O}.update_outreach_target", return_value=True))
+    else:
+        stack.enter_context(patch(f"{_O}.get_outreach_target_user_id", return_value=UID))
+    human = stack.enter_context(patch(_HUMAN_WRITES[kind][1], return_value=True))
+    dispatch = stack.enter_context(patch(f"{_M}.send_lead_response"))
+    return human, dispatch
+
+
+@contextmanager
+def _row_in_status(status: str) -> Iterator[MagicMock]:
+    """The REAL `update_pending_row` over a row whose locked read answers `status`."""
+    cursor = MagicMock()
+    cursor.fetchone.return_value = (status,)
+
+    @contextmanager
+    def fake_cursor(**_kwargs: Any) -> Iterator[MagicMock]:
+        yield cursor
+
+    with patch("cqc_lem.platform.db.repositories.pending_edits.db_cursor", new=fake_cursor):
+        yield cursor
 
 
 _KINDS = ["dm", "connection_request", "lead_signal", "catchup_touch", "outreach_target"]
 _APPROVED = {"dm": ScheduledDmStatus.APPROVED, "connection_request": ConnectionRequestStatus.APPROVED,
-             "outreach_target": OutreachStatus.APPROVED}
+             "outreach_target": OutreachStatus.APPROVED, "catchup_touch": "approved",
+             "lead_signal": "approved"}
+# A lead signal waits for review as 'new'; every other queue as 'pending'.
+_PENDING_STATE = {"lead_signal": "new"}
+_STAMPS_APPROVER = {"dm", "connection_request", "catchup_touch", "outreach_target"}
 
 
 class TestApproveItem:
-    """Owner ruling O1: listed and allowed only on internal/sandbox accounts; audited."""
+    """Owner ruling O1: listed and allowed only on internal/sandbox accounts; audited.
+
+    The approval is itself a pending-only write: it moves a row only while it is still waiting for
+    review, stamps `approved_by = mcp:<session>`, and dispatches the lead reply only after the write.
+    """
 
     @staticmethod
     @pytest.fixture
@@ -318,10 +357,13 @@ class TestApproveItem:
             self, api_client: Any, as_kind: Any, audit: MagicMock, item: str) -> None:
         with ExitStack() as stack:
             route_audit = as_kind(stack, "standard")
-            write = _approve_patches(stack, item)
+            human, dispatch = _approve_patches(stack, item)
+            edit = stack.enter_context(patch(f"{_M}.update_pending_row"))
             result = call(api_client, "lem_approve_item", {"kind": item, "id": 12})
         assert _error(result)["code"] == "agent_may_not_approve"
-        write.assert_not_called()
+        human.assert_not_called()
+        edit.assert_not_called()
+        dispatch.apply_async.assert_not_called()
         audit.assert_not_called()
         assert not [c for c in route_audit.call_args_list
                     if c.args and c.args[0] == AuthAuditEvent.MCP_APPROVAL]
@@ -333,25 +375,34 @@ class TestApproveItem:
         with ExitStack() as stack:
             as_kind(stack, "standard")
             stack.enter_context(patch(f"{_W}.account_may_approve", return_value=True))
-            write = _approve_patches(stack, item)
+            human, _dispatch = _approve_patches(stack, item)
+            edit = stack.enter_context(patch(f"{_M}.update_pending_row"))
             result = call(api_client, "lem_approve_item", {"kind": item, "id": 12})
         assert _error(result)["code"] == "agent_may_not_approve"
-        write.assert_not_called()
+        human.assert_not_called()
+        edit.assert_not_called()
 
     @pytest.mark.parametrize("account", ["internal", "sandbox"])
     @pytest.mark.parametrize("item", _KINDS)
-    def test_internal_and_sandbox_approve_and_are_audited(
+    def test_internal_and_sandbox_approve_pending_only_and_are_audited(
             self, api_client: Any, as_kind: Any, audit: MagicMock, account: str, item: str) -> None:
         with ExitStack() as stack:
             route_audit = as_kind(stack, account)
-            write = _approve_patches(stack, item)
+            human, dispatch = _approve_patches(stack, item)
+            edit = stack.enter_context(patch(f"{_M}.update_pending_row",
+                                             return_value=PendingEdit.UPDATED))
             result = call(api_client, "lem_approve_item", {"kind": item, "id": 12})
         body = structured(result)
         assert result["isError"] is False, result
         assert body["status"] == "approved" and body["kind"] == item and body["id"] == 12
-        write.assert_called_once()
-        if item in _APPROVED:
-            assert write.call_args.kwargs["status"] == _APPROVED[item]
+        human.assert_not_called()
+        kind, row_id, user_id, fields = edit.call_args.args
+        assert (kind, row_id, user_id) == (_HUMAN_WRITES[item][0], 12, UID)
+        assert fields["status"] == _APPROVED[item]
+        if item in _STAMPS_APPROVER:
+            # The agent's session, never the human `user:<id>` (admitted() resolves session 901).
+            assert fields["approved_by"] == "mcp:901" and fields["approved_at"] is not None
+        assert (dispatch.apply_async.call_count == 1) is (item == "lead_signal")
         approvals = [c for c in route_audit.call_args_list
                      if c.args and c.args[0] == AuthAuditEvent.MCP_APPROVAL]
         assert len(approvals) == 1
@@ -359,20 +410,60 @@ class TestApproveItem:
         assert approvals[0].kwargs["details"]["role"] == "mcp_outreach"
         assert audit.call_args.kwargs["details"]["tool"] == "lem_approve_item"
 
-    def test_an_internal_lead_signal_approval_dispatches_the_send(
-            self, api_client: Any, as_kind: Any) -> None:
-        """The approval takes the human path, so the send task the approval exists for is queued."""
+    @pytest.mark.parametrize("status", ["approved", "sent", "canceled", "failed"])
+    @pytest.mark.parametrize("item", _KINDS)
+    def test_an_item_no_longer_pending_is_409_and_nothing_dispatches(
+            self, api_client: Any, as_kind: Any, audit: MagicMock, item: str, status: str) -> None:
+        """Approving twice, or approving what was sent, canceled or failed, changes nothing."""
         with ExitStack() as stack:
-            as_kind(stack, "internal")
-            _approve_patches(stack, "lead_signal")
-            from cqc_lem.api import main
-            result = call(api_client, "lem_approve_item", {"kind": "lead_signal", "id": 12})
-            main.send_lead_response.apply_async.assert_called_once_with(kwargs={"signal_id": 12})
-        assert result["isError"] is False
+            route_audit = as_kind(stack, "sandbox")
+            human, dispatch = _approve_patches(stack, item)
+            cursor = stack.enter_context(_row_in_status(status))
+            result = call(api_client, "lem_approve_item", {"kind": item, "id": 12})
+        assert _error(result)["code"] == "edit_requires_pending"
+        assert cursor.execute.call_count == 1, "only the locked read ran; no UPDATE"
+        human.assert_not_called()
+        dispatch.apply_async.assert_not_called()
+        audit.assert_not_called()
+        assert not [c for c in route_audit.call_args_list
+                    if c.args and c.args[0] == AuthAuditEvent.MCP_APPROVAL]
+
+    @pytest.mark.parametrize("item", _KINDS)
+    def test_a_pending_item_is_moved_by_the_guarded_update(
+            self, api_client: Any, as_kind: Any, item: str) -> None:
+        """The real pending-only write: the UPDATE repeats the pending predicate in SQL."""
+        with ExitStack() as stack:
+            as_kind(stack, "sandbox")
+            _human, dispatch = _approve_patches(stack, item)
+            cursor = stack.enter_context(_row_in_status(_PENDING_STATE.get(item, "pending")))
+            result = call(api_client, "lem_approve_item", {"kind": item, "id": 12})
+        assert result["isError"] is False, result
+        update_sql = cursor.execute.call_args_list[-1].args[0]
+        assert update_sql.startswith("UPDATE") and "AND status IN" in update_sql
+        assert (dispatch.apply_async.call_count == 1) is (item == "lead_signal")
+
+    def test_a_stale_dm_is_rescheduled_to_now_on_approval(self, api_client: Any,
+                                                         as_kind: Any) -> None:
+        with ExitStack() as stack:
+            as_kind(stack, "sandbox")
+            _approve_patches(stack, "dm")
+            stack.enter_context(patch(f"{_M}.scheduled_dm_is_stale", return_value=True))
+            edit = stack.enter_context(patch(f"{_M}.update_pending_row",
+                                             return_value=PendingEdit.UPDATED))
+            call(api_client, "lem_approve_item", {"kind": "dm", "id": 12})
+        assert edit.call_args.args[3]["scheduled_time"] is not None
+
+    def test_the_answer_says_what_happens_next_per_kind(self) -> None:
+        from cqc_lem.api.mcp.tools_write import APPROVAL_NOTES
+
+        assert set(APPROVAL_NOTES) == set(_KINDS)
+        assert "now" in APPROVAL_NOTES["lead_signal"]
+        assert "rescheduled to now" in APPROVAL_NOTES["dm"]
+        assert not any("not been sent yet" in note for note in APPROVAL_NOTES.values())
 
     def test_an_internal_account_still_edits_pending_only(self, api_client: Any,
                                                           as_kind: Any) -> None:
-        """Only the approval leaves the pending-only path; an edit on an internal account does not."""
+        """An edit on an internal account is pending-only too, never the human write."""
         with ExitStack() as stack:
             as_kind(stack, "internal")
             stack.enter_context(patch(f"{_M}.get_catchup_touch",
@@ -422,13 +513,17 @@ class TestDedupe:
         assert structured(second)["id"] == structured(first)["id"] == 501
         assert structured(second)["replayed"] is True
 
-    def test_a_server_derived_key_catches_an_identical_retry(self, api_client: Any,
-                                                             outreach: MagicMock) -> None:
-        with patch(f"{_M}.insert_scheduled_dm", return_value=501) as insert:
-            call(api_client, "lem_queue_dm", _dm_args())
-            again = call(api_client, "lem_queue_dm", _dm_args())
-        assert insert.call_count == 1
-        assert structured(again)["replayed"] is True
+    def test_without_a_request_id_nothing_is_deduped(self, api_client: Any,
+                                                     outreach: MagicMock,
+                                                     fake_redis: Any) -> None:
+        """Dismiss, restore, dismiss: three real intents with repeating arguments, all applied."""
+        with patch(f"{_M}.get_lead", return_value={"user_id": UID}), \
+                patch(f"{_M}.update_lead", return_value=True) as update:
+            for dismissed in (True, False, True):
+                result = call(api_client, "lem_update_lead", {"lead_id": 2, "dismissed": dismissed})
+                assert "replayed" not in structured(result)
+        assert [c.kwargs["dismissed"] for c in update.call_args_list] == [True, False, True]
+        assert not [k for k in fake_redis.store if k.startswith("mcp:dedupe:")]
 
     def test_the_same_id_with_different_args_is_refused(self, api_client: Any,
                                                         outreach: MagicMock) -> None:
@@ -501,8 +596,9 @@ class TestFlagBudgetAndAvailability:
             fake_redis: Any) -> None:
         monkeypatch.setenv("MCP_RATE_WRITES_PER_HOUR", "1")
         with patch(f"{_M}.insert_scheduled_dm", side_effect=[1, 2]) as insert:
-            call(api_client, "lem_queue_dm", _dm_args())
-            second = call(api_client, "lem_queue_dm", _dm_args(message="second"))
+            call(api_client, "lem_queue_dm", _dm_args(client_request_id="b-1"))
+            second = call(api_client, "lem_queue_dm",
+                          _dm_args(message="second", client_request_id="b-2"))
         error = _error(second)
         assert error["code"] == "write_budget_exhausted" and error["outcome"] == "rate_limited"
         assert insert.call_count == 1
@@ -533,6 +629,19 @@ class TestFlagBudgetAndAvailability:
         with patch(f"{_W}._redis", return_value=None):
             with pytest.raises(writes.LimitsUnavailable):
                 writes.claim_write("k", "h")
+
+    def test_a_lost_reclaim_race_is_a_pending_duplicate_never_a_reuse(self) -> None:
+        from .conftest import FakeRedis
+
+        class Racing(FakeRedis):
+            def set(self, key: str, value: Any, ex: Any = None, nx: bool = False) -> bool:
+                return False  # someone else always holds the claim...
+
+            def get(self, key: str) -> Any:
+                return None  # ...and it is not readable yet
+
+        with patch(f"{_W}._redis", return_value=Racing()):
+            assert writes.claim_write("k", "digest") == {"h": "digest", "state": "pending"}
 
     def test_a_malformed_record_reads_as_unknown(self) -> None:
         from .conftest import FakeRedis
@@ -588,3 +697,77 @@ class TestPrompts:
         got = rpc(api_client, "prompts/get", {"name": "prepare_outreach_batch"}).json()
         text = got["result"]["messages"][0]["content"]["text"]
         assert "third_party" in text and "PENDING" in text
+
+
+class TestUnknownOnlyAfterAWriteWasSent:
+    """`outcome=unknown` means a write may have landed; before the first write nothing did."""
+
+    @staticmethod
+    def _principal() -> Any:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(user_id=UID, session_id=901, scope="mcp_outreach")
+
+    @staticmethod
+    def _spec() -> Any:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(name="lem_queue_dm", approval=False)
+
+    @staticmethod
+    def _args() -> Any:
+        model = registry.TOOLS_BY_NAME["lem_queue_dm"].args_model
+        return model.model_validate(_dm_args(client_request_id="u-1"))
+
+    async def _run(self, fake_redis: Any, failure: BaseException, sent: bool) -> Any:
+        async def boom() -> dict:
+            raise failure
+
+        with patch(f"{_W}.flag_enabled", return_value=True):
+            try:
+                await writes.run_write(self._spec(), self._args(), self._principal(), boom, 5,
+                                       attempted=lambda: sent)
+            except writes.ToolFailure as raised:
+                return raised
+        raise AssertionError("run_write did not raise")
+
+    @pytest.mark.parametrize("failure", [
+        writes.ToolFailure("upstream_error", "upstream_error", "x", 500),
+        RuntimeError("boom"),
+    ], ids=["5xx", "crash"])
+    async def test_before_the_first_write_the_claim_is_released(self, fake_redis: Any,
+                                                               failure: BaseException) -> None:
+        if isinstance(failure, RuntimeError):
+            with patch(f"{_W}.flag_enabled", return_value=True), pytest.raises(RuntimeError):
+                async def boom() -> dict:
+                    raise failure
+                await writes.run_write(self._spec(), self._args(), self._principal(), boom, 5,
+                                       attempted=lambda: False)
+        else:
+            raised = await self._run(fake_redis, failure, sent=False)
+            assert raised.outcome == "upstream_error"
+        assert not [k for k in fake_redis.store if k.startswith("mcp:dedupe:")]
+
+    async def test_after_a_write_a_5xx_is_unknown_and_keeps_the_claim(self,
+                                                                     fake_redis: Any) -> None:
+        raised = await self._run(fake_redis,
+                                 writes.ToolFailure("upstream_error", "upstream_error", "x", 500),
+                                 sent=True)
+        assert raised.outcome == "unknown"
+        claims = [k for k in fake_redis.store if k.startswith("mcp:dedupe:")]
+        assert len(claims) == 1 and '"unknown"' in str(fake_redis.store[claims[0]])
+
+    async def test_a_timeout_before_the_first_write_is_not_unknown(self, fake_redis: Any) -> None:
+        import asyncio
+
+        async def slow() -> dict:
+            await asyncio.sleep(1)
+            return {}
+
+        with patch(f"{_W}.flag_enabled", return_value=True):
+            with pytest.raises(writes.ToolFailure) as raised:
+                await writes.run_write(self._spec(), self._args(), self._principal(), slow, 0.01,
+                                       attempted=lambda: False)
+        assert raised.value.outcome == "upstream_error"
+        assert raised.value.code == "timeout_before_write"
+        assert not [k for k in fake_redis.store if k.startswith("mcp:dedupe:")]

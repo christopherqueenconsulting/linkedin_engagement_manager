@@ -97,12 +97,12 @@ checked by the argument model and again by the route. Each answer carries `revie
 | Tool | `mcp` | `mcp_outreach` | Call | Lands as |
 |---|---|---|---|---|
 | `lem_draft_post` | yes | yes | `POST /schedule_post/` | PENDING text post |
-| `lem_revise_post_draft` | yes | yes | `GET /posts/{id}`, `POST /update_post/` | a pending post's text/slot only |
+| `lem_revise_post_draft` | yes | yes | `POST /update_post/` (only the fields it revises) | a pending post's text and/or slot; the other is never written back |
 | `lem_queue_dm` | no | yes | `POST /schedule_dm` | PENDING DM, `source='mcp'` |
 | `lem_queue_connection_request` | no | yes | `POST /connection_request` | PENDING request, `source='mcp'` |
-| `lem_add_outreach_target` | no | yes | `POST /outreach/target` | PENDING target (create only) |
+| `lem_add_outreach_target` | no | yes | `POST /outreach/target` | PENDING target (create only), `created_via='mcp'` |
 | `lem_edit_lead_signal_draft` | no | yes | `PUT /lead_signal` | a pending signal's draft |
-| `lem_edit_catchup_draft` | no | yes | `PUT /catchup/touch` | a pending touch's message/name |
+| `lem_edit_catchup_draft` | no | yes | `PUT /catchup/touch` | a pending touch's message/name; a rewritten message sets `edited_via='mcp'` |
 | `lem_update_lead` | no | yes | `PUT /lead` | note, stage, deal value, dismiss/restore (sends nothing) |
 | `lem_approve_item` | no | internal/sandbox only | `PUT /dm`, `/connection_request`, `/lead_signal`, `/catchup/touch`, `/outreach/target` with `action=approve` | APPROVED (owner ruling O1) |
 
@@ -115,27 +115,34 @@ carry two verbs, `/connection_request` and `/outreach/target`, because the creat
 **`lem_approve_item` (owner ruling O1).** It is listed in `tools/list` ONLY when the account's
 `account_kind` is `internal` or `sandbox`, the same set `_operator_may_approve()` reads, and the tool
 refuses it on every other account. The route decides again: `_refuse_agent_approval` has an MCP
-branch, `_mcp_may_approve()`, that mirrors the operator exemption for the approval verb and writes an
-`mcp_approval` audit row (the `operator_approval` twin). A standard account is refused 403
-`agent_may_not_approve` by both, and never approves anything. Unlike the operator, a CREATE asking
-for `approved` is refused on every account kind, and only the approval request itself leaves the
-pending-only edit path, so an edit tool stays pending-only on an internal account too. It never
-approves a post.
+branch, `_mcp_may_approve()`, that mirrors the operator exemption for the approval verb; once the approval's write has moved
+the row it records an `mcp_approval` audit row (the `operator_approval` twin). A standard account is refused 403
+`agent_may_not_approve` by both, and never approves anything. Unlike the operator, the approval
+is itself a **pending-only write** (`update_pending_row`, the W1 SQL guard): it moves a row only
+while it is still waiting for review, so approving one already approved, sent, canceled or failed
+is 409 `edit_requires_pending` and dispatches nothing. It stamps `approved_by = mcp:<session id>`
+(never the human `user:<id>`) and `approved_at`; a DM past its slot is rescheduled to now, and a
+lead-signal reply is dispatched only AFTER the write succeeded. A create asking for `approved` is
+refused on every account kind. It never approves a post.
 
 **The write path** (`api/mcp/writes.py`, in order): the `mcp-server-writes` flag (off is `isError`
-`writes_disabled`); the approval account check; **dedupe**, a Redis claim
-`mcp:dedupe:{user}:{session}:{tool}:{client_request_id}` taken with `SET NX EX 600` BEFORE dispatch,
-holding `sha256(canonical args)` (no `client_request_id` means one derived from that hash): a replay
+`writes_disabled`); the approval account check; **dedupe, only when the client sends
+`client_request_id`**: a Redis claim `mcp:dedupe:{user}:{session}:{tool}:{client_request_id}`
+taken with `SET NX EX 600` BEFORE dispatch, holding `sha256(canonical args)`. With no id nothing
+is deduped (dismiss, restore, dismiss is three real writes). A replay
 of a finished write returns its first answer with `replayed: true`, the same id with other arguments
 is `client_request_id_reused`, and a write still running or whose outcome is unknown is
 `outcome=unknown`; the write budgets (30 an hour, 150 a day per user); the call under the 20 s limit.
-A timeout or a 5xx is `outcome=unknown`, **not retryable** (the handler's thread may still finish),
-and keeps the claim so a blind retry cannot double it; a refused write (4xx) changed nothing and
-releases it. A write that landed writes ONE `mcp_write {tool, target_id, scope}` audit row, never a
+Once a write has been SENT (`Loopback.writes_attempted`), a timeout, a 5xx or a crash is
+`outcome=unknown`, **not retryable** (the handler's thread may still finish), and keeps the claim
+so a blind retry cannot double it. A failure before the first write was sent, and a refused write
+(4xx), changed nothing and release it. A write that landed writes ONE `mcp_write {tool, target_id, scope}` audit row, never a
 body. Redis unreadable is `mcp_unavailable` (fails closed).
 
-**What the user sees.** DMs and connection requests an agent queued carry `source='mcp'`: the review
-pages badge them "Agent-created", and the Daily review never bulk-approves one ("Approve all with no
+**What the user sees.** Rows whose text the agent wrote are marked: DMs and connection requests
+it queued carry `source='mcp'`, outreach targets it added `created_via='mcp'`, catch-up touches
+whose draft it rewrote `edited_via='mcp'` (migration `V20261124083939`). The review pages badge
+them "Agent-created", and the Daily review never bulk-approves one ("Approve all with no
 flags" and "Approve selected" leave it out, and `POST /review/bulk` refuses it with
 `agent_created_approve_individually` in any multi-item approve). `GET /user/mcp-token/activity`
 lists the account's latest 50 `mcp_*` audit rows (mints, access, every `mcp_write` and
@@ -181,11 +188,15 @@ approval refused on a standard account), never arguments or results.
 It calls `initialize`, compares `tools/list` with the registry for the token's scope
 (`lem_approve_item` may be absent on a standard account), calls every READ tool, checks a
 query-string token is refused (and, with a throwaway token, revoked) and a bad bearer is 401, and
-exits non-zero on any mismatch. `--write --recipient <profile URL>` (W2, `mcp_outreach` token, on a
-SANDBOX account with a fixed test recipient) also queues ONE DM and checks it lands pending with
-`source='mcp'`, that a retry replays, that a reused request id and an `action` on an edit tool are
-refused, and that `lem_approve_item` approves it where listed and is refused where not. Reject or
-cancel that DM in LEM afterwards.
+exits non-zero on any mismatch. `--write --recipient <profile URL> --account-kind KIND` (W2,
+`mcp_outreach` token, a fixed test recipient) also queues ONE DM and checks it lands pending with
+`source='mcp'`, that a retry with the same `client_request_id` replays, and that a reused request
+id and an `action` on an edit tool are refused. `KIND` is the operator's statement of the
+account's kind, and decides the approval step: **only `sandbox` approves** (sends there are a dry
+run). `standard` checks that `lem_approve_item` is unlisted and refused; `internal` never
+approves (a REAL send). On every kind but sandbox the DM is then canceled: through the DB with
+`--mint-local-for`, otherwise the script prints `[ACTION] cancel the smoke DM #<id>` for the
+operator to do in LEM -> Content -> DMs.
 
 ```
 # deployed stack: token from LEM -> Agents, kept in the environment, never on the command line

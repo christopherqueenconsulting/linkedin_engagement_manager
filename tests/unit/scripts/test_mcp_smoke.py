@@ -165,21 +165,44 @@ def test_a_standard_account_may_omit_the_approval_tool() -> None:
 _RECIPIENT = "https://www.linkedin.com/in/smoke-test/"
 
 
-@pytest.mark.parametrize("approval_listed", [True, False])
-def test_the_write_checks_pass_on_a_healthy_server(approval_listed: bool) -> None:
-    names = [s.name for s in tools_for_scope("mcp_outreach") if approval_listed or not s.approval]
+def _approvals(seen: list) -> list:
+    return [b for b in seen if b.get("params", {}).get("name") == "lem_approve_item"]
+
+
+@pytest.mark.parametrize("kind,listed", [("sandbox", True), ("standard", False)])
+def test_the_write_checks_pass_on_a_healthy_server(kind: str, listed: bool) -> None:
+    names = [s.name for s in tools_for_scope("mcp_outreach") if listed or not s.approval]
     client, seen = _server("mcp_outreach", tools=names)
-    code, text = _run(client, "--recipient", _RECIPIENT, mode="--write")
+    code, text = _run(client, "--recipient", _RECIPIENT, "--account-kind", kind, mode="--write")
     assert code == 0, text
     assert "[PASS] lem_queue_dm lands pending with source=mcp" in text
     assert "[PASS] a retried write replays instead of writing twice" in text
     assert "[PASS] a reused request id is refused" in text
-    label = ("lem_approve_item approves (sandbox)" if approval_listed
+    label = ("lem_approve_item approves (sandbox)" if kind == "sandbox"
              else "approve is refused on a standard account")
     assert f"[PASS] {label}" in text
     queued = [b for b in seen if b.get("params", {}).get("name") == "lem_queue_dm"]
     assert queued[0]["params"]["arguments"]["recipient_profile_url"] == _RECIPIENT
     assert TOOLS_BY_NAME["lem_queue_dm"].write
+    # Without a local DB to cancel through, any kind but sandbox tells the operator to cancel it.
+    assert ("[ACTION] cancel the smoke DM #5" in text) is (kind != "sandbox")
+
+
+def test_an_internal_account_never_approves_even_when_the_tool_is_listed() -> None:
+    client, seen = _server("mcp_outreach")  # lem_approve_item listed
+    code, text = _run(client, "--recipient", _RECIPIENT, "--account-kind", "internal",
+                      mode="--write")
+    assert code == 0, text
+    assert _approvals(seen) == []
+    assert "[SKIP] lem_approve_item" in text and "REAL send" in text
+    assert "[ACTION] cancel the smoke DM #5" in text
+
+
+def test_a_listed_approval_tool_on_a_declared_standard_account_fails() -> None:
+    client, seen = _server("mcp_outreach")  # listed, but the operator says standard
+    code, text = _run(client, "--recipient", _RECIPIENT, "--account-kind", "standard",
+                      mode="--write")
+    assert code == 1 and "[FAIL] lem_approve_item is not listed on a standard account" in text
 
 
 def test_an_approval_that_lands_on_a_standard_account_fails() -> None:
@@ -189,19 +212,40 @@ def test_an_approval_that_lands_on_a_standard_account_fails() -> None:
         lambda a, n, s: {"structuredContent": {"status": "approved"}}), _WRITE_ANSWERS[
         "lem_approve_item"]
     try:
-        code, text = _run(client, "--recipient", _RECIPIENT, mode="--write")
+        code, text = _run(client, "--recipient", _RECIPIENT, "--account-kind", "standard",
+                          mode="--write")
     finally:
         _WRITE_ANSWERS["lem_approve_item"] = saved
     assert code == 1 and "[FAIL] approve is refused on a standard account" in text
 
 
+@pytest.mark.parametrize("canceled", [True, False])
+def test_the_smoke_dm_is_canceled_through_the_local_db(canceled: bool) -> None:
+    names = [s.name for s in tools_for_scope("mcp_outreach") if not s.approval]
+    client, _ = _server("mcp_outreach", tools=names)
+    out = io.StringIO()
+    run = smoke.Smoke("https://lem.example", out, client)
+    calls: list[int] = []
+
+    def cancel(dm_id: int) -> bool:
+        calls.append(dm_id)
+        return canceled
+
+    smoke.run_write_checks(run, _TOKEN, _RECIPIENT, "standard", cancel)
+    assert calls == [5]
+    assert ("[PASS] the smoke DM was canceled" in out.getvalue()) is canceled
+    assert "[ACTION]" not in out.getvalue()
+
+
 def test_the_write_checks_skip_without_an_outreach_token() -> None:
     client, _ = _server("mcp")
-    code, text = _run(client, "--recipient", _RECIPIENT, mode="--write")
+    code, text = _run(client, "--recipient", _RECIPIENT, "--account-kind", "sandbox",
+                      mode="--write")
     assert code == 0 and "[SKIP] write checks" in text
 
 
-def test_write_needs_a_recipient() -> None:
+@pytest.mark.parametrize("extra", [(), ("--recipient", _RECIPIENT), ("--account-kind", "sandbox")])
+def test_write_needs_a_recipient_and_an_account_kind(extra: tuple) -> None:
     client, _ = _server("mcp_outreach")
-    code, text = _run(client, mode="--write")
-    assert code == 2 and "--write needs --recipient" in text
+    code, text = _run(client, *extra, mode="--write")
+    assert code == 2 and "--write needs --recipient and --account-kind" in text
