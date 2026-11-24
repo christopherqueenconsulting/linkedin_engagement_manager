@@ -102,32 +102,40 @@ branch and anything outside `work/`. Log lines: `worktree sweep: …` in `logs/v
 `tests/unit/test_agent_pipeline_v2_worktree_sweep.py` pins the wiring end to end.
 
 **A phased issue's next phase starts from main, not its merged branch.** Every phase of an issue
-reuses `feature/claude-issue-<N>`. After Phase K's PR squash-merged, origin still held Phase K's
+reuses `feature/claude-issue-<N>`. After Phase K's PR squash-merged, the branch still held Phase K's
 original commits, so `add_worktree` attached to them and the Phase K+1 PR re-added every Phase K
 file (migration-version collisions, conflicts, merge-queue ejections; hand-repaired in #2693, #2694
-and #2706). `restart_spent_branch` (`lib/guards.sh`) runs whenever `add_worktree` attaches an
-existing `origin/<branch>`. It first runs `git fetch origin main <branch>` (nothing upstream
-fetches, so `origin/main` could predate the squash), and then acts on `branch_reuse_plan`. A
-"merged PR" below means one whose `baseRefName` is `main` AND whose `mergeCommit.oid` the fetched
-`origin/main` contains. A PR merged into another base, or one main does not yet contain, is no
-evidence.
+and #2706). The repo has `delete_branch_on_merge`, so after the merge origin no longer has the
+branch: it survives as the LOCAL `refs/heads/<branch>` (often checked out in `work/<branch>`) and/or
+a stale `refs/remotes/origin/<branch>`, which v2 never prunes. `restart_spent_branch`
+(`lib/guards.sh`) runs on BOTH of `add_worktree`'s attach paths: the origin path (a tracking ref
+exists, possibly stale) and the local-only path (`reattaching existing <branch> (has commits not on
+base)`).
 
-| `origin/<branch>` | Worktree |
+ONE exact rule, no heuristics. The tip is the local ref, or the tracking ref when there is no local
+one. After `git fetch origin main` the branch is **SPENT iff its tip SHA EQUALS the `headRefOid` of a
+PR whose state is `MERGED`, whose `baseRefName` is `main`, and whose `mergeCommit.oid` is an
+ancestor of `origin/main`.** GitHub merged exactly those commits and main carries the merge, so
+nothing on the branch is outside main. There is no `git cherry` path (patch ids are whitespace-blind,
+and once read unmerged work as already on main) and no post-merge replay: a commit pushed after the
+merge moves the tip off the merged head, so it attaches. No data loss by construction.
+
+| Branch | Worktree |
 |---|---|
-| fetch failed | attach |
-| an OPEN PR into ANY base heads it | attach, as before (a fix/review/rebase lane works that head). The PR list is therefore not `--base main` |
+| `git fetch origin main` failed, or `ls-remote` of origin unreadable | attach |
+| the tip, the tracking ref and origin's ref (where each exists) disagree | attach (`refs-disagree`): a reset never abandons a commit some ref of the branch names |
 | PR list unreadable | attach |
-| a merge commit in `origin/main..<tip>` | attach: `git cherry` skips merges, so work that lives only in a merge would read as already on main |
-| every commit patch-equivalent on main (`git cherry` has no `+`) | **fresh** from `origin/main` |
-| a merged PR's head IS the tip (the multi-commit squash, which `git cherry` cannot see) | **fresh** |
-| a merged PR's head is an ancestor of the tip | **replay** only the commits after it (`rebase --onto origin/main <merged head>`). If one does not apply cleanly: attach, plus a WARNING naming the `<merged head>..<tip>` range |
-| any other unique commit (incl. a CLOSED-unmerged PR) | attach, no data loss |
+| an OPEN PR into ANY base | attach (a fix/review/rebase lane works that head). The PR list is therefore not `--base main` |
+| SPENT, origin has no `<branch>` (deleted on merge) | **fresh** from `origin/main`, push NOTHING (the lane's first push creates it); the stale tracking ref is dropped, as a prune would |
+| SPENT, origin still has `<branch>` (at the tip) | **fresh**, pushed by the RUNNER with `--force-with-lease=refs/heads/<branch>:<tip>`; a refused lease attaches at the tip with a WARNING |
+| anything else (post-merge commits, CLOSED PR, merged into another base, merge commit not on `origin/main`) | attach, as before |
 
-A fresh or replayed branch is pushed by the RUNNER, not the agent, with
-`--force-with-lease=refs/heads/<branch>:<old tip>`. So `git_push.sh` keeps its rule that only
-MODE=rebase may lease, and the agent's later push is a plain fast-forward. If origin moved after
-the fetch, the lease refuses the push and the worktree goes back to the old tip, logged as a
-WARNING. No `decide()` row changes: this is worktree preparation, after dispatch.
+The runner, not the agent, makes the one leased push, so `git_push.sh` keeps its rule that only
+MODE=rebase may lease, and the agent's later push is a plain fast-forward. A **reverted** squash is
+still spent: main reverted the phase, but the tip equals the merged PR's head, so the branch
+restarts from main without it. That is accepted: the phase's commits live on in
+`refs/pull/<N>/head`, which the restart's log line names, and bringing a reverted phase back is a
+deliberate act. No `decide()` row changes: this is worktree preparation, after dispatch.
 `tests/unit/test_agent_pipeline_spent_branch.py` runs every row against a real bare remote.
 
 **Orphaned lane processes are swept too** (`v2/lemd/orphans.py`). `killpg` reaches a lane's process
