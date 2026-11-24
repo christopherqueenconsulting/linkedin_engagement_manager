@@ -77,7 +77,8 @@ class TestAnalyticsOAuth:
         auth_client.assert_called_once()
         client.generate_member_auth_url.assert_called_once_with(
             state="state-salt:member_analytics:session-token",
-            scopes=["r_basicprofile", "r_member_postAnalytics"],
+            scopes=["r_basicprofile", "r_member_postAnalytics", "r_member_profileAnalytics",
+                    "r_1st_connections_size"],
         )
 
     def test_cma_callback_stores_app_scoped_identity_without_replacing_publish_token(self, api_client):
@@ -111,7 +112,9 @@ class TestAnalyticsOAuth:
         assert parse_qs(urlparse(location).query) == {"li_analytics_connected": ["1"]}
         restli.get.assert_called_once_with(
             resource_path="/me", access_token="cma-token", version_string="202606")
-        save_token.assert_called_once_with(1, "cma-member-id", "cma-token", 3600)
+        save_token.assert_called_once_with(
+            1, "cma-member-id", "cma-token", 3600,
+            granted_scope="r_basicprofile r_member_postAnalytics")
         publish_token.assert_not_called()
 
     @staticmethod
@@ -164,7 +167,9 @@ class TestAnalyticsOAuth:
             api_client, {"id": "cma-id", "vanityName": "LEM-Member"},
             "https://www.linkedin.com/in/lem-member/")
         assert query == {"li_analytics_connected": ["1"]}
-        save_token.assert_called_once_with(1, "cma-id", "cma-token", 3600)
+        save_token.assert_called_once_with(
+            1, "cma-id", "cma-token", 3600,
+            granted_scope="r_basicprofile r_member_postAnalytics")
 
     def test_cma_callback_pins_first_connected_member_id(self, api_client):
         query, save_token = self._run_identity_callback(
@@ -178,7 +183,9 @@ class TestAnalyticsOAuth:
             api_client, {"id": "first-cma-id", "vanityName": "lem-member"},
             "https://www.linkedin.com/in/lem-member/", existing={"linked_sub_id": "first-cma-id"})
         assert query == {"li_analytics_connected": ["1"]}
-        save_token.assert_called_once_with(1, "first-cma-id", "cma-token", 3600)
+        save_token.assert_called_once_with(
+            1, "first-cma-id", "cma-token", 3600,
+            granted_scope="r_basicprofile r_member_postAnalytics")
 
     def test_cma_callback_rejects_token_without_analytics_scope(self, api_client):
         client = Mock()

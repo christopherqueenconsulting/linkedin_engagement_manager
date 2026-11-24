@@ -116,6 +116,64 @@ def notify_linkedin_token_expiring(user_id: int, days_remaining: Optional[int] =
     return sent
 
 
+MEMBER_ANALYTICS_EMAIL_TIER_KEY = "lem:member_analytics_token_email:{user_id}:{tier}:{expires_on}"
+MEMBER_ANALYTICS_EMAIL_DAILY_KEY = "lem:member_analytics_token_email_daily:{user_id}"
+
+
+def notify_member_analytics_token_expiring(user_id: int, days_remaining: Optional[int],
+                                           expires_on: Optional[str], tier: int) -> bool:
+    """Email the owner that the CMA analytics token is lapsing.
+
+    Once per warning tier (30 and 7 days) per expiry date, and at most once a day. A reconnect
+    changes the expiry date, which restarts both tiers. Redis trouble fails open (the email goes
+    out); a failed send releases the claims so tomorrow's pass retries.
+
+    Returns:
+        True only if an email was actually sent.
+    """
+    keys: list[tuple[str, int]] = [
+        (MEMBER_ANALYTICS_EMAIL_TIER_KEY.format(
+            user_id=user_id, tier=tier, expires_on=(expires_on or "unknown")[:10]), 31 * 86400),
+        (MEMBER_ANALYTICS_EMAIL_DAILY_KEY.format(user_id=user_id), 86400),
+    ]
+    client = None
+    claimed: list[str] = []
+    try:
+        from cqc_lem.utilities.linkedin.rate_limit import shared_redis_client
+        client = shared_redis_client()
+        if client is not None:
+            for key, ttl in keys:
+                if not client.set(key, "1", nx=True, ex=ttl):
+                    for done in claimed:
+                        client.delete(done)
+                    return False
+                claimed.append(key)
+    except Exception as e:
+        log_warning("Could not read analytics token email throttle — sending anyway", exc=e,
+                    user_id=user_id, action_type="token_expiry")
+
+    sent = False
+    try:
+        email = get_user_email(user_id)
+        if email:
+            from cqc_lem.utilities.email import send_member_analytics_token_expiring_email
+            sent = send_member_analytics_token_expiring_email(email, days_remaining, expires_on)
+        if sent:
+            log_info("Sent analytics token-expiring notice", user_id=user_id, tier=tier,
+                     action_type="token_expiry")
+    except Exception as e:
+        log_warning("Could not send analytics token-expiring notice", exc=e, user_id=user_id,
+                    action_type="token_expiry")
+    if not sent and client is not None:
+        try:
+            for done in claimed:
+                client.delete(done)
+        except Exception as e:
+            log_warning("Could not release analytics token email throttle", exc=e,
+                        user_id=user_id, action_type="token_expiry")
+    return sent
+
+
 def notify_onboarding_nudge(user_id: int, nudge: dict) -> bool:
     """Email a stalled user their next-best activation nudge (issue #500). Throttling is the caller's
     job — each nudge is one-shot per user via the onboarding_nudges ledger. Returns True only if an

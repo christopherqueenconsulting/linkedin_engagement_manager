@@ -245,6 +245,43 @@ def resolve_token_status(user_id: int, auto_refresh: bool = True) -> dict:
     }
 
 
+MEMBER_ANALYTICS_FINAL_WARNING_DAYS = 7
+
+
+def resolve_member_analytics_token_status(user_id: int) -> dict:
+    """Expiry state of the separate CMA analytics token (`linkedin_member_analytics_tokens`).
+
+    That token has no refresh token, so a reconnect by hand is the only renewal and an email is the
+    only notice. Unlike `resolve_token_status`, an UNREADABLE expiry is reported as unknown
+    (`days_remaining` None, `warning_tier` None) and never as expired: the owner is emailed on a
+    known deadline, not on a guess.
+
+    Returns:
+        Dict with `connected`, `token_expiry_date` (ISO or None), `days_remaining` (None when
+        unknown), `is_expired`, and `warning_tier`: 7 when expired or inside 7 days, 30 when inside
+        30 days, None otherwise (healthy or unknown).
+    """
+    from cqc_lem.utilities.db import get_member_analytics_token_info
+
+    info = get_member_analytics_token_info(user_id)
+    if not info or not info.get("access_token"):
+        return {"connected": False, "token_expiry_date": None, "days_remaining": None,
+                "is_expired": False, "warning_tier": None}
+    expiry = get_token_expiry(info)
+    if expiry is None:
+        return {"connected": True, "token_expiry_date": None, "days_remaining": None,
+                "is_expired": False, "warning_tier": None}
+    days = days_until_expiry(info)
+    expired = expiry <= datetime.now(timezone.utc)
+    tier = None
+    if expired or days <= MEMBER_ANALYTICS_FINAL_WARNING_DAYS:
+        tier = MEMBER_ANALYTICS_FINAL_WARNING_DAYS
+    elif days <= EXPIRY_WARNING_DAYS:
+        tier = EXPIRY_WARNING_DAYS
+    return {"connected": True, "token_expiry_date": expiry.isoformat(), "days_remaining": days,
+            "is_expired": expired, "warning_tier": tier}
+
+
 def has_oauth_token(user_id: int) -> Optional[bool]:
     """Whether this user has a LinkedIn OAuth token stored, expired or not (issue #2375).
 
