@@ -31,6 +31,9 @@ def test_headline_pass_fail_unknown():
     assert pa.check_headline("Marketing Manager", "Marketing Manager").status == "fail"
     assert pa.check_headline(None).status == "unknown"
     assert pa.check_headline("Senior regional manager of digital operations excellence").status == "warn"
+    # headline and job_title share one page element: equality must not turn a long headline into FAIL
+    long_title = "Senior regional manager of digital operations excellence"
+    assert pa.check_headline(long_title, long_title).status == "warn"
 
 
 def test_about_pass_warn_fail_unknown():

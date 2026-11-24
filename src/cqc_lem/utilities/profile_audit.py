@@ -73,8 +73,9 @@ def check_headline(headline: Optional[str], job_title: Optional[str] = None) -> 
         return _result("headline_outcome", UNKNOWN, "Headline not read.", hint)
     if _OUTCOME_RE.search(text):
         return _result("headline_outcome", PASS, "Headline names an outcome.", hint)
-    only_title = job_title and text.lower() == job_title.strip().lower()
-    if only_title or len(text.split()) <= 5:
+    # `job_title` is read from the same page element as the headline, so equality with it carries no
+    # signal (it would fail every long headline); the word count is the only title-only test.
+    if len(text.split()) <= 5:
         return _result("headline_outcome", FAIL, "Headline reads as a job title only.", hint)
     return _result("headline_outcome", WARN, "Headline is long but names no clear outcome.", hint)
 
