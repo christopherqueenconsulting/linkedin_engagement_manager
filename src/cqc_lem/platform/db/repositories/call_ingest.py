@@ -206,12 +206,17 @@ def purge_call_transcripts(now: Optional[datetime] = None) -> int:
 
 
 def purge_reviewed_call_transcripts(user_id: int) -> int:
-    """Null the transcript of every ingest whose candidates have all been reviewed."""
+    """Null the transcript of every EXTRACTED ingest whose candidates have all been reviewed.
+
+    An ingest still `received` has no candidates yet, so "none pending" is vacuous: purging it
+    would delete the transcript before extraction runs.
+    """
     try:
         with db_cursor(commit=True) as cursor:
             cursor.execute(
                 "UPDATE call_ingest ci SET ci.transcript_enc=NULL, ci.status='purged', "
                 "ci.purged_at=NOW() WHERE ci.user_id=%s AND ci.transcript_enc IS NOT NULL "
+                "AND ci.status IN ('extracted','reviewed') "
                 "AND NOT EXISTS (SELECT 1 FROM extract_candidate ec "
                 "WHERE ec.ingest_id=ci.id AND ec.status='pending')", (user_id,))
             return int(cursor.rowcount or 0)

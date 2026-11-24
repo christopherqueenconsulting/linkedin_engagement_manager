@@ -175,6 +175,7 @@ def test_purge_reviewed_only_when_no_pending_candidate():
     with patch(_CUR, return_value=ctx):
         assert repo.purge_reviewed_call_transcripts(1) == 2
     assert "NOT EXISTS" in _sql(cur) and "'pending'" in _sql(cur)
+    assert "'extracted'" in _sql(cur)  # never purge a transcript still awaiting extraction
     with patch(_CUR, side_effect=_ERR):
         assert repo.purge_reviewed_call_transcripts(1) == 0
 
