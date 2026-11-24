@@ -106,6 +106,8 @@ from cqc_lem.utilities.ai.outbound_qa import (
 from cqc_lem.utilities.approval_modes import (
     APPRECIATION_DM_MODE,
     FOLLOWUP_STEP_MODE,
+    FUNNEL_STAGE_APPROVER,
+    FUNNEL_STAGE_MODE,
     NURTURE_DM_MODE,
     may_auto_approve,
 )
@@ -3722,6 +3724,16 @@ def _fire_funnel_stage(user_id: int, target: dict, invites_queued: int = 0) -> s
         return f"target {target_id}: nothing to do (stage={stage})"
 
     next_draft = _draft_funnel_stage(user_id, next_stage, target)
+    # Issue #2664: under `funnel_stage_mode=auto_approve` the LATER stage is approved by the mode,
+    # recorded as a `system:` approver (never `user:<id>`, so the brand hold of #2376 still applies).
+    # An empty draft is never auto-approved — `_fire_funnel_stage` would only skip it next run.
+    # The DM stage is never auto-approved: it follows a connect invite nothing has seen accepted yet,
+    # so approving it here would DM a non-connection on the very next beat.
+    if next_draft and next_stage != OutreachStage.DM and may_auto_approve(user_id, FUNNEL_STAGE_MODE, prefs):
+        update_outreach_target(target_id, stage=next_stage, status=OutreachStatus.APPROVED,
+                               draft_text=next_draft, notes="",
+                               approved_by=FUNNEL_STAGE_APPROVER)
+        return f"target {target_id}: {stage} fired -> {next_stage} auto-approved"
     update_outreach_target(target_id, stage=next_stage, status=OutreachStatus.PENDING,
                            draft_text=next_draft, notes="")
     return f"target {target_id}: {stage} fired -> {next_stage} pending approval"
@@ -3734,7 +3746,9 @@ def process_outreach_funnel(self, user_id: int, max_per_run: int = 25):
     """Advance a user's APPROVED comment->connect->DM funnel targets one stage each (issue #399).
     Every stage is approval-gated: only status='approved' rows are acted on, and each fired stage
     drops the target to the NEXT stage as 'pending' — requiring a fresh human approval — so no step
-    ever auto-fires at volume. Reuses comment_on_post / invite_to_connect / send_private_dm and the
+    ever auto-fires at volume. The one exception is `funnel_stage_mode=auto_approve` (issue #2664),
+    which approves the comment->connect step under a `system:` approver; the DM stage never is.
+    Reuses comment_on_post / invite_to_connect / send_private_dm and the
     DM follow-up machinery; daily comment/DM caps defer a stage rather than fire it.
     """
     if skip_browser_lane(user_id, "process_outreach_funnel"):

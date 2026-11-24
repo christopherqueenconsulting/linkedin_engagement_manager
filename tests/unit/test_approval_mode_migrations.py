@@ -22,6 +22,8 @@ _TODAY = {
                            "auto_approve"),
     "appreciation_dm_mode": ("V20261124004719__add_followup_appreciation_approval_modes.sql",
                              "auto_approve"),
+    # Later funnel stages are always pending today, so the literal backfill is review.
+    "funnel_stage_mode": ("V20261124023404__add_funnel_stage_approval_mode.sql", "pre_review"),
 }
 
 

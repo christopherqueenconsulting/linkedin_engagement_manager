@@ -24,7 +24,7 @@ const base = (over: Partial<EngPrefs> = {}): EngPrefs => ({
   roster_auto_connect: false, hold_repaired_posts_for_review: true, icp_builder_enabled: null, icp_definition: null,
   profile_viewer_dm_auto_send: false,
   nurture_dm_mode: 'pre_review', artifact_dm_mode: 'pre_review', group_post_mode: 'pre_review',
-  followup_step_mode: 'pre_review', appreciation_dm_mode: 'pre_review',
+  followup_step_mode: 'pre_review', appreciation_dm_mode: 'pre_review', funnel_stage_mode: 'pre_review',
   // Read-only context the endpoint always returns alongside the row (issue #1446).
   has_saved_preferences: true, max_catchup_touches_allowed: 5,
   catchup_contact_interval_bounds: { min_days: 0, max_days: 90 },

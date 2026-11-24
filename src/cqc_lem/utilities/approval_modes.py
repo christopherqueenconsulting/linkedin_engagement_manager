@@ -16,14 +16,19 @@ ARTIFACT_DM_MODE = "artifact_dm_mode"
 GROUP_POST_MODE = "group_post_mode"
 FOLLOWUP_STEP_MODE = "followup_step_mode"
 APPRECIATION_DM_MODE = "appreciation_dm_mode"
+FUNNEL_STAGE_MODE = "funnel_stage_mode"
+# `outreach_funnel_targets.approved_by` for a stage the mode approved (#2664). A `system:` value, so
+# it never releases the brand acquisition hold the way a human `user:<id>` Approve does (#2623).
+FUNNEL_STAGE_APPROVER = "system:funnel_stage_mode"
 APPROVAL_MODE_FIELDS = (NURTURE_DM_MODE, ARTIFACT_DM_MODE, GROUP_POST_MODE, FOLLOWUP_STEP_MODE,
-                        APPRECIATION_DM_MODE)
+                        APPRECIATION_DM_MODE, FUNNEL_STAGE_MODE)
 APPROVAL_MODE_ENV = {
     NURTURE_DM_MODE: "DM_NURTURE_AUTO_APPROVE",
     ARTIFACT_DM_MODE: "DM_ARTIFACT_AUTO_APPROVE",
     GROUP_POST_MODE: "GROUP_POST_AUTO_APPROVE",
     FOLLOWUP_STEP_MODE: "DM_FOLLOWUP_AUTO_APPROVE",
     APPRECIATION_DM_MODE: "DM_APPRECIATION_AUTO_APPROVE",
+    FUNNEL_STAGE_MODE: "FUNNEL_STAGE_AUTO_APPROVE",
 }
 _OFF_VALUES = ("0", "false", "no", "off")
 

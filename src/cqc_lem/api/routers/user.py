@@ -742,6 +742,7 @@ class EngagementPreferencesRequest(BaseModel):
     group_post_mode: Optional[str] = None
     followup_step_mode: Optional[str] = None
     appreciation_dm_mode: Optional[str] = None
+    funnel_stage_mode: Optional[str] = None
     # Opt-in auto-connect for roster targets following did not unlock (issue #979), OFF by default
     # and independent of roster_auto_follow. No cap of its own — roster invites take at most a
     # minority share of whatever max_invites_per_day has left.
@@ -812,7 +813,7 @@ class EngagementPreferencesRequest(BaseModel):
         return v if v in ("auto_approve", "pre_review") else "auto_approve"
 
     @field_validator("nurture_dm_mode", "artifact_dm_mode", "group_post_mode",
-                     "followup_step_mode", "appreciation_dm_mode")
+                     "followup_step_mode", "appreciation_dm_mode", "funnel_stage_mode")
     @classmethod
     def _check_approval_mode(cls, v: Optional[str]) -> Optional[str]:
         if v is not None and v not in ("pre_review", "auto_approve"):
@@ -2352,7 +2353,7 @@ def update_engagement_preferences_endpoint(request: EngagementPreferencesRequest
         prefs.pop("max_follows_per_day", None)
     # Same rule for the per-lane approval modes (issue #2624): omitted keeps the stored mode.
     for mode_key in ("nurture_dm_mode", "artifact_dm_mode", "group_post_mode",
-                     "followup_step_mode", "appreciation_dm_mode"):
+                     "followup_step_mode", "appreciation_dm_mode", "funnel_stage_mode"):
         if prefs.get(mode_key) is None:
             prefs.pop(mode_key, None)
     # Same rule for the forbidden-claim list (issue #2047): omitted or null is "leave what is
