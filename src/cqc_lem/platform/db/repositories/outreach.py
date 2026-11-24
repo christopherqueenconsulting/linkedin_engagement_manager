@@ -2154,6 +2154,10 @@ SCHEDULED_DM_SOURCE_ARTIFACT = 'artifact'
 # lets the send path re-start the 'profile_viewer' follow-up ladder at the moment the DM actually
 # LANDS, rather than when it was drafted for a decision that may never come.
 SCHEDULED_DM_SOURCE_PROFILE_VIEWER = 'profile_viewer'
+# scheduled_dms.source for a ladder follow-up step / an appreciation thank-you held for review under
+# `followup_step_mode` / `appreciation_dm_mode` = 'pre_review' (issue #2664).
+SCHEDULED_DM_SOURCE_FOLLOWUP = 'followup'
+SCHEDULED_DM_SOURCE_APPRECIATION = 'appreciation'
 # connection_requests.source for the same lane's other branch. `connection_requests` already carries
 # `source` as targeting provenance (issue #486), so the person approving sees which walk found them.
 CONNECTION_REQUEST_SOURCE_PROFILE_VIEWER = 'profile_viewer'

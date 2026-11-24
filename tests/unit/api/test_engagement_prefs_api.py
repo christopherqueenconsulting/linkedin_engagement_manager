@@ -134,7 +134,8 @@ class TestUpdateEngagementPreferences:
 class TestApprovalModes:
     """Issue #2624: per-lane approval modes round-trip, and an omitted one never overwrites."""
 
-    _FIELDS = ("nurture_dm_mode", "artifact_dm_mode", "group_post_mode")
+    _FIELDS = ("nurture_dm_mode", "artifact_dm_mode", "group_post_mode", "followup_step_mode",
+               "appreciation_dm_mode")
 
     def _put(self, api_client, body):
         with patch("cqc_lem.api.main.get_session_user_id", return_value=_USER), \

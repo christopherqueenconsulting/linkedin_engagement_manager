@@ -11,6 +11,13 @@ pytestmark = pytest.mark.unit
 _OUT = "cqc_lem.app.engagement.outreach"  # lgtm[py/unused-global-variable]
 
 
+@pytest.fixture(autouse=True)
+def _followups_auto_approved():
+    """The direct-send tests here predate `followup_step_mode` (#2664); the review path has its own class."""
+    with patch(f"{_OUT}.may_auto_approve", return_value=True):
+        yield
+
+
 class TestEnqueueNextFollowup:
     def test_enqueues_when_next_template_exists(self):
         from cqc_lem.app.engagement.outreach import enqueue_next_followup
@@ -882,3 +889,58 @@ class TestBrandFunnelFollowupHold:
         dm.apply_async.assert_called_once()
         mark.assert_called_once_with(1, "sent")
         assert "Sent 1" in result
+
+
+class TestFollowupStepModeReview:
+    """Issue #2664: `followup_step_mode=pre_review` files a PENDING draft instead of sending."""
+
+    def _run(self, mode_allows: bool, open_draft: bool = False, dm_id=7):
+        from cqc_lem.app.engagement.outreach import process_user_followups
+        with patch(f"{_OUT}.may_auto_approve", return_value=mode_allows), \
+             patch(f"{_OUT}.get_due_followups", return_value=[_due()]), \
+             patch(f"{_OUT}.get_current_profile",
+                   return_value=(MagicMock(), MagicMock(), "e", MagicMock())), \
+             patch(f"{_OUT}.quit_gracefully"), patch(f"{_OUT}.time.sleep"), \
+             patch(f"{_OUT}.insert_new_log"), \
+             patch(f"{_OUT}.resolve_self_name", return_value="Christopher Queen"), \
+             patch(f"{_OUT}.check_dm_replied", return_value=ThreadState.NOT_REPLIED), \
+             patch(f"{_OUT}.seconds_since_last_dm_touch", return_value=None), \
+             patch(f"{_OUT}.outbound_refusal_reason", return_value=None), \
+             patch(f"{_OUT}.build_dm_from_template", return_value="Good to be connected, Jane."), \
+             patch(f"{_OUT}.has_open_scheduled_dm", return_value=open_draft), \
+             patch(f"{_OUT}.insert_scheduled_dm", return_value=dm_id) as ins, \
+             patch(f"{_OUT}.defer_followup") as defer, \
+             patch(f"{_OUT}.send_private_dm") as dm, \
+             patch(f"{_OUT}.mark_followup") as mark, \
+             patch(f"{_OUT}.enqueue_next_followup") as enq:
+            result = process_user_followups.run(user_id=1)
+        return result, ins, defer, dm, mark, enq
+
+    def test_pre_review_files_a_pending_draft_and_sends_nothing(self):
+        from cqc_lem.utilities.db import SCHEDULED_DM_SOURCE_FOLLOWUP, ScheduledDmStatus
+        result, ins, _defer, dm, mark, enq = self._run(False)
+        dm.apply_async.assert_not_called()
+        assert ins.call_args.kwargs["status"] is ScheduledDmStatus.PENDING
+        assert ins.call_args.kwargs["source"] == SCHEDULED_DM_SOURCE_FOLLOWUP
+        mark.assert_called_once_with(1, "sent")
+        enq.assert_called_once()  # the ladder keeps its place
+        assert "Sent 0" in result and "filed 1 for review" in result
+
+    def test_auto_approve_still_sends_directly(self):
+        _result, ins, _defer, dm, _mark, _enq = self._run(True)
+        dm.apply_async.assert_called_once()
+        ins.assert_not_called()
+
+    def test_an_open_draft_defers_the_step_instead_of_stacking(self):
+        result, ins, defer, dm, mark, _enq = self._run(False, open_draft=True)
+        ins.assert_not_called()
+        dm.apply_async.assert_not_called()
+        defer.assert_called_once()
+        mark.assert_not_called()
+        assert "deferred 1" in result
+
+    def test_a_failed_insert_leaves_the_row_pending(self):
+        _result, _ins, _defer, dm, mark, enq = self._run(False, dm_id=None)
+        dm.apply_async.assert_not_called()
+        mark.assert_not_called()
+        enq.assert_not_called()
