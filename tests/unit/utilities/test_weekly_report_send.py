@@ -130,8 +130,9 @@ def test_send_exception_releases_the_claim():
 
 
 def _cursor(row=None, rowcount=1, err=False):
-    import mysql.connector
     from unittest.mock import MagicMock
+
+    import mysql.connector
     cur = MagicMock()
     if err:
         cur.execute.side_effect = mysql.connector.Error("x")
