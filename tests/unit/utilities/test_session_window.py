@@ -301,7 +301,9 @@ class TestTaskBaseRequeue:
 
         app = Celery("session-window-test", task_cls=DailyCapAwareTask)
         task = app.task(body, name="session_window_test.t")
-        task.apply_async = MagicMock()
+        # The requeue must bypass the task's own apply_async: a QueueOnce task still holds its
+        # dedup lock while running, so its own apply_async would reject (and drop) the re-run.
+        task.apply_async = MagicMock(side_effect=AssertionError("must bypass the task's apply_async"))
         return task
 
     def test_deferral_requeues_with_eta_and_returns_no_op(self):
@@ -311,8 +313,9 @@ class TestTaskBaseRequeue:
             raise ew.SessionDeferred(user_id, "Post Comment", "night", eta)
 
         task = self._task(body)
-        result = task(7)
-        task.apply_async.assert_called_once_with(args=(7,), kwargs={}, eta=eta)
+        with patch("celery.Task.apply_async") as base_apply:
+            result = task(7)
+        base_apply.assert_called_once_with(task, args=(7,), kwargs={}, eta=eta)
         assert result.startswith("Deferred to the next session window")
 
     def test_failed_requeue_raises_the_deferral(self):
@@ -320,8 +323,8 @@ class TestTaskBaseRequeue:
             raise ew.SessionDeferred(1, "x", "night", _utc(2026, 11, 24, 13, 0))
 
         task = self._task(body)
-        task.apply_async.side_effect = RuntimeError("broker down")
-        with pytest.raises(ew.SessionDeferred):
+        with patch("celery.Task.apply_async", side_effect=RuntimeError("broker down")), \
+                pytest.raises(ew.SessionDeferred):
             task()
 
 

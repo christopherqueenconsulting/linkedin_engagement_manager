@@ -117,7 +117,9 @@ class DailyCapAwareTask(Task):
         a success.
         """
         try:
-            self.apply_async(args=args, kwargs=kwargs, eta=exc.eta)
+            # Celery's own apply_async, NOT self.apply_async: a QueueOnce task still holds its dedup
+            # lock while running, and a graceful rejection returns quietly, which would drop the run.
+            Task.apply_async(self, args=args, kwargs=kwargs, eta=exc.eta)
         except Exception as requeue_error:
             raise exc from requeue_error
         log_debug("Task deferred to the next session window", user_id=exc.user_id,
