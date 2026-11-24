@@ -7,8 +7,8 @@ a new endpoint. This module is READ-ONLY: it approves and cancels nothing, so no
 path is a later phase and must delegate to the per-lane helpers.
 
 Item shape: `lane, id, age_hours, summary, draft_text, hold_reason, risk_flags, confidence,
-allowed_actions, edit_href`. `risk_flags` and `confidence` are reserved (empty / None) until the
-flag engine lands; `age_hours` is None when the lane's row carries no readable timestamp — an
+allowed_actions, edit_href`. `risk_flags` and `confidence` are filled by `review_flags.annotate`
+(Phase 2); `age_hours` is None when the lane's row carries no readable timestamp — an
 unmeasured wait is never zero, and is never counted stale.
 """
 
@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from cqc_lem.utilities.logger import log_warning
+from cqc_lem.utilities.review_flags import annotate
 
 REVIEW_STALE_HOURS = 48
 _PAGE = 500
@@ -176,7 +177,7 @@ def get_review_queue(user_id: int, lane: Optional[str] = None,
             log_warning("Could not read a review lane", exc=e, user_id=user_id,
                         action_type="review_queue")
     items.sort(key=_oldest_first)
-    return items
+    return annotate(items)
 
 
 def summarize(items: list[dict], stale_hours: int = REVIEW_STALE_HOURS) -> dict:
