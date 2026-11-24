@@ -7,6 +7,9 @@ started by a lifespan that fails OPEN (`lifespan.mcp_lifespan`), so a broken MCP
 
 Phase P2 adds the `mcp` / `mcp_outreach` session scopes, their mint routes
 (`api/routers/mcp_tokens.py`) and the gate's auth steps, so an MCP token is admitted to the SDK.
-No tool is registered until P3, and on raw `/api` an MCP token is refused without this worker's
-dispatch secret (`dispatch.py`).
+On raw `/api` an MCP token is refused without this worker's dispatch secret (`dispatch.py`).
+
+Phase P3 adds the read-only tools (`tools.py`, served by `calls.py`), which reach LEM's real routes
+through the in-process loopback (`loopback.py`) and shape every result through `redact.py`.
+Runbook: `docs/mcp-server.md`.
 """

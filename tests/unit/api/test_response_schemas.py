@@ -465,9 +465,23 @@ class TestTheDashboardAndStudioPayloadsDescribeTheirHandlers:
         assert set(GateFinding.model_fields) == built[0]
 
     def test_a_post_row_is_the_dict_the_handler_selects_out_of_the_stored_one(self):
+        # The row literal lives in `_post_row` (MCP P3), shared by the list route and the one-post
+        # route, so the schema is compared with THAT literal, and both handlers are pinned to it.
         from cqc_lem.api.response_schemas import PostSummary
 
-        assert set(PostSummary.model_fields) == _row_literal("get_posts_for_email", _MAIN)
+        builder = _handler("_post_row", _MAIN)
+        returned = next(n.value for n in ast.walk(builder) if isinstance(n, ast.Return))
+        assert isinstance(returned, ast.Dict), "_post_row does not return a literal row"
+        assert set(PostSummary.model_fields) == {
+            k.value for k in returned.keys if isinstance(k, ast.Constant)}
+
+        comp = next(n for n in ast.walk(_handler("get_posts_for_email", _MAIN))
+                    if isinstance(n, ast.ListComp))
+        assert isinstance(comp.elt, ast.Call) and getattr(comp.elt.func, "id", None) == "_post_row"
+        one = [n for n in ast.walk(_handler("get_post_endpoint", _MAIN))
+               if isinstance(n, ast.Return) and isinstance(n.value, ast.Call)][-1]
+        detail = next(kw.value for kw in one.value.keywords if kw.arg == "detail")
+        assert isinstance(detail, ast.Call) and getattr(detail.func, "id", None) == "_post_row"
 
     def test_the_posts_page_is_what_the_handler_returns(self):
         from cqc_lem.api.response_schemas import PostsPage

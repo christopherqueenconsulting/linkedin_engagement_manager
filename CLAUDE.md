@@ -238,11 +238,10 @@ session/context discipline (the dominant lever on token spend):
 
 ## Observability
 
-Track events via `utilities/observability.py`. There is ONE `posthog.capture`, in `_emit()`, and an
-event's property shape is declared in the `EVENTS` registry (#1218) — a new event is an `EventSpec`,
-never a new capture. `label()` forces a filtered property to a **string**, because PostHog matches on
-the ingested type and one boolean row silently stops an ALERT firing.
-The paragraph behind each row is `docs/observability-map.md`.
+Track events via `utilities/observability.py`: ONE `posthog.capture`, in `_emit()`; a new event is an
+`EventSpec` in `EVENTS` (#1218). ONE named exception: `capture_mcp_analytics` (`posthog.mcp`, O8),
+never tool args or results. `label()` forces a filtered property to a **string**: PostHog matches the
+ingested type, so one boolean row silently stops an ALERT. Row detail: `docs/observability-map.md`.
 
 | Surface | The ONE place | The invariant that bites | Doc |
 |---|---|---|---|

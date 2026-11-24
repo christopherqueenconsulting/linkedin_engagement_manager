@@ -569,6 +569,15 @@ EVENTS = {spec.event: spec for spec in (
     EventSpec("api_call", (
         label("route"), label("method"), prop("status_code"), prop("latency_ms"),
     ), DISTINCT_ANONYMOUS),
+    # The end-user MCP server (epic #2682, docs/mcp-server.md). One `mcp_tool_call` per tool call,
+    # on the caller's person; `outcome` is what an alert filters on, so it is a label. One
+    # `mcp_auth_refused` per request the gate turned away, anonymous because most have no person.
+    # These are LEM's own; the `$mcp_*` events come from `capture_mcp_analytics` below.
+    EventSpec("mcp_tool_call", (
+        label("tool"), label("outcome"), label("client_name"), label("scope"),
+        prop("latency_ms"), prop("inner_status"), prop("inner_calls"),
+    ), DISTINCT_REQUIRED),
+    EventSpec("mcp_auth_refused", (label("reason"),), DISTINCT_ANONYMOUS),
     EventSpec("inbound_parse_email", (
         label("verdict"), label("classification"), prop("user_id"),
     ), DISTINCT_ANONYMOUS),
@@ -2494,6 +2503,97 @@ def track_api_call(
         from cqc_lem.utilities.logger import log_warning
         log_warning("Could not track api call", exc=e, user_id=user_id,
                     http_status=status_code, route=route)
+
+
+def track_mcp_tool_call(user_id: int, tool: str, outcome: str, client_name: Optional[str],
+                        scope: str, latency_ms: int, inner_status: Optional[int],
+                        inner_calls: int) -> None:
+    """Emit `mcp_tool_call`: one row per MCP tool call, on the caller's own person.
+
+    Carries the tool's NAME and how it ended, never its arguments or its result. The inner route
+    calls each emit their own `api_call`, so this is the MCP-level count beside them. Never raises:
+    a tool's answer must not depend on telemetry.
+    """
+    try:
+        _emit(EVENTS["mcp_tool_call"], {
+            "user_id": user_id, "tool": tool, "outcome": outcome, "client_name": client_name,
+            "scope": scope, "latency_ms": latency_ms, "inner_status": inner_status,
+            "inner_calls": inner_calls})
+    except Exception as e:  # noqa: BLE001 — telemetry never fails the call it reports.
+        log_debug("Could not track MCP tool call", error_type=type(e).__name__)
+
+
+def track_mcp_auth_refused(reason: str) -> None:
+    """Emit `mcp_auth_refused`: one row per request the MCP gate turned away, and why.
+
+    Anonymous: a refused request usually has no person, and one that did is not attributed to it
+    on the strength of a credential the gate just refused. Never raises.
+    """
+    try:
+        _emit(EVENTS["mcp_auth_refused"], {"reason": reason})
+    except Exception as e:  # noqa: BLE001 — telemetry never fails the refusal it reports.
+        log_debug("Could not track MCP auth refusal", error_type=type(e).__name__)
+
+
+# --- The ONE named exception to the one-`_emit` rule: PostHog MCP analytics (owner ruling O8) -------
+# `posthog.mcp` ships inside the `posthog` package and owns PostHog's `$mcp_*` event vocabulary
+# (`$mcp_tool_call` and the MCP analytics dashboards built on it), which `_emit` cannot produce. So
+# this function hands one tool call to `posthog.mcp.PostHogMCP.capture_tool_call`, its own client,
+# instead of `posthog.capture`. It is the only capture in LEM that does not go through `_emit`, and
+# it is held to a stricter contract than `_emit` is:
+#   - NO tool arguments and NO tool result ever reach it. `parameters` and `response` are passed as
+#     None, the SDK's `instrument()` wrapper (which would capture both, and inject a `context`
+#     argument into every tool schema) is NOT used, and the error is passed as no exception at all,
+#     only the stable outcome code. `test_mcp_analytics.py` asserts no argument or result content
+#     reaches any capture.
+#   - `distinct_id = str(user_id)`, the same person as browser, Celery and `mcp_tool_call`.
+#   - `mcp_exception_autocapture=False`: a refused or failed tool call is a RESULT, and filing it as
+#     an `$exception` would turn every business 404 into a grouped issue.
+#   - It is off whenever `_emit` is (no key, pytest, a muted CLI), checked on every call.
+# LEM's own `mcp_tool_call` / `mcp_auth_refused` events stay in `EVENTS` and go through `_emit`.
+
+_mcp_analytics_client = None
+
+
+def _mcp_analytics() -> "Optional[object]":
+    """The process's one `PostHogMCP` client, built on first use, or None when capture is off."""
+    global _mcp_analytics_client
+    if posthog.disabled or telemetry_muted() or not posthog.api_key:
+        return None
+    if _mcp_analytics_client is None:
+        from posthog.mcp import PostHogMCP
+
+        _mcp_analytics_client = PostHogMCP(posthog.api_key, host=posthog.host,
+                                           mcp_exception_autocapture=False,
+                                           capture_model=False, enable_conversation_id=False,
+                                           on_error=_posthog_on_error)
+    return _mcp_analytics_client
+
+
+def capture_mcp_analytics(tool: str, user_id: int, session_key: Optional[str],
+                          duration_ms: float, outcome: str,
+                          client_name: Optional[str]) -> None:
+    """Send one tool call to PostHog MCP analytics as `$mcp_tool_call`, with no content. Never raises.
+
+    Args:
+        tool: The tool's registered name.
+        user_id: The caller; the event lands on `str(user_id)`.
+        session_key: A stable, non-secret id for the MCP token's session, or None.
+        duration_ms: How long the call took.
+        outcome: `ok`, or the failure outcome (`refused`, `timeout`, ...), sent as the error type.
+        client_name: The sanitised client name, or None.
+    """
+    try:
+        client = _mcp_analytics()
+        if client is None:
+            return
+        failed = outcome != "ok"
+        client.capture_tool_call(
+            tool, parameters=None, response=None, duration_ms=duration_ms, is_error=failed,
+            error=None, error_type=outcome if failed else None, distinct_id=str(user_id),
+            session_id=session_key, properties={"client_name": client_name})
+    except Exception as e:  # noqa: BLE001 — telemetry never fails the call it reports.
+        log_debug("Could not capture MCP analytics", error_type=type(e).__name__)
 
 
 def llm_tracked(model_alias: str):

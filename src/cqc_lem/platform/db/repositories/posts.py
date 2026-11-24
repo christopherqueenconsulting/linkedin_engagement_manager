@@ -444,6 +444,46 @@ def user_owns_posts(user_id: int, post_ids: list[int]) -> bool:
         from cqc_lem.utilities.logger import log_error
         log_error("Could not verify post ownership", exc=err, user_id=user_id)
         raise OwnershipUnprovable(str(err)) from err
+
+
+# The columns one post is read with: exactly `get_posts`'s page columns, so the one-post route and
+# the list route build their rows from the same shape.
+_POST_ROW_COLUMNS = ("id, content, video_url, image_url, scheduled_time, post_type, status, "
+                     "carousel_slides, authenticity_score, gate_reason, rejection_reason, archetype, "
+                     "manual_publish, curated_source_id, source_treatment")
+
+
+def get_post_for_user(user_id: int, post_id: int) -> Optional[dict]:
+    """One of `user_id`'s posts by id, or None when no such post belongs to them (MCP P3).
+
+    Scoped in the WHERE clause, so a stranger's id and a missing id read the same: None. A database
+    error raises `OwnershipUnprovable` instead, because "not yours" and "could not look" are
+    different facts and the route answers them 404 and 503.
+
+    Args:
+        user_id: The caller.
+        post_id: The post asked for.
+
+    Returns:
+        The row with `get_posts`'s columns, or None.
+
+    Raises:
+        OwnershipUnprovable: The read failed.
+    """
+    if not user_id or not post_id:
+        return None
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                f"SELECT {_POST_ROW_COLUMNS} FROM posts WHERE id = %s AND user_id = %s",
+                (int(post_id), int(user_id)),
+            )
+            return cursor.fetchone()
+    except mysql.connector.Error as err:
+        log_error("Could not read post for user", exc=err, user_id=user_id, post_id=post_id)
+        raise OwnershipUnprovable(str(err)) from err
+
+
 def update_db_post_image_url(post_id: int, image_url: Optional[str]) -> bool:
     """Set (or clear, with None) a post's image.
 
