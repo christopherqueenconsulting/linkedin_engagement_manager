@@ -5,6 +5,14 @@
 
 ### Features
 
+* **engagement:** session window enforce mode with eta deferral (refs [#2628](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2628)) ([#2762](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2762)) ([9931b6e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9931b6edec106b5c295231e8b07f7d3308b55488))
+* **voice:** call review tab, consent opt-in and DRAFT privacy text, Phase 1c (refs [#2629](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2629)) ([#2759](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2759)) ([ca97c31](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ca97c31c7b4a9a8bbb435ad02e8505092e045c1b))
+
+## [0.217.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.216.0...v0.217.0) (2026-11-24)
+
+
+### Features
+
 * **voice:** call review tab, consent opt-in and DRAFT privacy text, Phase 1c (refs [#2629](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2629)) ([#2759](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2759)) ([ca97c31](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ca97c31c7b4a9a8bbb435ad02e8505092e045c1b))
 
 ## [0.216.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.215.0...v0.216.0) (2026-11-24)
