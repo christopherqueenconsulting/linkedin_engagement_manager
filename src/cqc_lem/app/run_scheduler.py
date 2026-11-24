@@ -48,6 +48,7 @@ from cqc_lem.app.engagement.outreach import (
 )
 from cqc_lem.app.engagement.posting import (
     auto_publish_occasion_post,
+    check_outcome_reader_disagreement,
     post_to_linkedin,
     sweep_comment_followups,
     sweep_comment_outcomes,
@@ -74,7 +75,6 @@ from cqc_lem.utilities.db import (
     get_due_scheduled_dms,
     get_engagement_preferences,
     get_orphaned_catchup_touches,
-    get_user_ids_with_catchup_touches_in_flight,
     get_orphaned_connection_requests,
     get_orphaned_occasion_claims,
     get_orphaned_scheduled_dms,
@@ -82,6 +82,7 @@ from cqc_lem.utilities.db import (
     get_posts_missing_their_seed_comment,
     get_ready_occasion_posts,
     get_ready_to_post_posts,
+    get_user_ids_with_catchup_touches_in_flight,
     get_user_ids_with_dms_in_flight,
     get_user_timezone,
     get_users_with_reply_mode,
@@ -788,6 +789,11 @@ def dispatch_comment_outcome_sweeps():
             except Exception:
                 due = True
         if due:
+            try:
+                check_outcome_reader_disagreement(user_id)  # DB-only daily tripwire (#2663)
+            except Exception as e:
+                log_warning("Outcome reader disagreement check failed", exc=e, user_id=user_id,
+                            task_name="dispatch_comment_outcome_sweeps")
             sweep_comment_outcomes.apply_async(kwargs={'user_id': user_id},
                                                countdown=dispatch_jitter_seconds())
             dispatched += 1

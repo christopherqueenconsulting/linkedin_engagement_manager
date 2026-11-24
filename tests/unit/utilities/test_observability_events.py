@@ -56,6 +56,7 @@ ALERT_FILTERED = (
     ("comment_outcome", "status"),
     ("comment_outcome", "skip_reason"),
     ("comment_quality", "verdict"),
+    ("outcome_reader_disagreement", "status"),
     ("golden_hour_report", "status"),
     ("golden_hour_report", "phase"),
     ("pre_post_engagement", "status"),
