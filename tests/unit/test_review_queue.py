@@ -40,9 +40,25 @@ def lanes():
          patch(DB + "get_pending_newsletter_editions", return_value=[
              {"id": 7, "title": "T", "body": "b", "status": "draft", "fact_hold": None},
              {"id": 8, "title": "A", "body": "b", "status": "approved"}]), \
+         patch(DB + "get_recent_unreadable_stopped_followups", return_value=[
+             {"id": 10, "profile_url": "p", "first_name": "Di", "event_type": "manual",
+              "next_step": 1, "updated_at": _ago(4)}]), \
          patch(DB + "get_open_group_post_draft", return_value={
              "id": 9, "group_name": "G", "content": "c", "created_at": _ago(30)}):
         yield
+
+
+def test_unreadable_followup_lane_is_a_notice_with_no_actions(lanes):
+    (item,) = rq.get_review_queue(1, lane="stopped_followups", now=NOW)
+    assert item["summary"] == "Follow-up to Di stopped"
+    assert item["allowed_actions"] == [] and item["age_hours"] == 4.0
+    assert "never became readable" in item["hold_reason"]
+
+
+def test_unreadable_followup_reader_failure_skips_only_that_lane(lanes):
+    with patch(DB + "get_recent_unreadable_stopped_followups", side_effect=RuntimeError("x")):
+        lanes_seen = {i["lane"] for i in rq.get_review_queue(1, now=NOW)}
+    assert "stopped_followups" not in lanes_seen and "posts" in lanes_seen
 
 
 def test_every_lane_returns_items_oldest_first_with_the_item_shape(lanes):
@@ -80,7 +96,7 @@ def test_empty_group_draft_is_no_item():
 
 def test_summary_counts_stale_and_ignores_unmeasured(lanes):
     s = rq.summarize(rq.get_review_queue(1, now=NOW))
-    assert s["total"] == 8 and s["stale_48h"] == 1 and s["oldest_age_hours"] == 72.0
+    assert s["total"] == 9 and s["stale_48h"] == 1 and s["oldest_age_hours"] == 72.0
     assert s["by_lane"]["posts"] == 2
     assert rq.summarize([])["oldest_age_hours"] is None
 

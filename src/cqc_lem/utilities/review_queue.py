@@ -137,6 +137,23 @@ def _read_group_post_draft(user_id: int, now: datetime) -> list[dict]:
                   _EDIT_ONLY, "/content?tab=groups")]
 
 
+def _read_unreadable_followups(user_id: int, now: datetime) -> list[dict]:
+    """Follow-ups ended as `unreadable_thread` (#2622): a notice, not an approval.
+
+    Nothing can be approved or cancelled (the stop is one-way and sends nothing), so the item
+    carries no actions. It drops off after REVIEW_STALE_HOURS, which also means it can never
+    count as stale and trigger the digest by itself.
+    """
+    from cqc_lem.utilities.db import get_recent_unreadable_stopped_followups
+    rows = get_recent_unreadable_stopped_followups(user_id, REVIEW_STALE_HOURS)
+    return [_item("stopped_followups", r["id"], _age_hours(r.get("updated_at"), now),
+                  f"Follow-up to {r.get('first_name') or r.get('profile_url')} stopped", None,
+                  (), "/content?tab=dms",
+                  hold_reason="The thread never became readable, so the follow-up sequence "
+                              "ended without sending. Message them yourself if it still matters.")
+            for r in rows]
+
+
 @dataclass(frozen=True)
 class Lane:
     """One approval lane: its id and the adapter onto the common item shape."""
@@ -153,13 +170,16 @@ LANES: tuple[Lane, ...] = (
     Lane("posts", _read_held_posts),
     Lane("newsletter_editions", _read_newsletter_draft),
     Lane("group_posts", _read_group_post_draft),
+    Lane("stopped_followups", _read_unreadable_followups),
+    # Hook for the comment-draft lane (#2647 P3): it has not merged, so there is no reader yet.
+    # Landing it is one `Lane(...)` row here plus a label below.
 )
 LANE_IDS = tuple(lane.id for lane in LANES)
 LANE_LABELS = {
     "scheduled_dms": "Scheduled DMs", "connection_requests": "Connection requests",
     "outreach_funnel_targets": "Funnel targets", "catchup_touches": "Catch-up touches",
     "posts": "Held posts", "newsletter_editions": "Newsletter draft",
-    "group_posts": "Group post",
+    "group_posts": "Group post", "stopped_followups": "Stopped follow-ups",
 }
 
 

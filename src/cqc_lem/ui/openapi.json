@@ -1795,6 +1795,17 @@
             "title": "Reply To Own Comments",
             "type": "boolean"
           },
+          "review_digest_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Digest Enabled"
+          },
           "roster_auto_connect": {
             "title": "Roster Auto Connect",
             "type": "boolean"
@@ -1875,6 +1886,7 @@
           "followup_step_mode",
           "appreciation_dm_mode",
           "funnel_stage_mode",
+          "review_digest_enabled",
           "roster_auto_connect",
           "hold_repaired_posts_for_review",
           "profile_viewer_dm_auto_send",
@@ -2345,6 +2357,17 @@
             "default": true,
             "title": "Reply To Own Comments",
             "type": "boolean"
+          },
+          "review_digest_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Digest Enabled"
           },
           "roster_auto_connect": {
             "default": false,
