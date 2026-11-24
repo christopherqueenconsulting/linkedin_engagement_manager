@@ -137,14 +137,20 @@ class TestGenerateAgentPostImage:
         fn.assert_called_once_with(5)
 
 
+def _store_signed(*_args: Any, signing: dict, **_kwargs: Any) -> str:
+    signing.update(ai=True, signed=False)
+    return "/api/assets/v.mp4"
+
+
 @pytest.fixture
 def video_engine() -> Iterator[dict[str, MagicMock]]:
     with patch.object(rcp, "_generate_video_src", return_value="https://runway/clip.mp4") as src, \
-            patch.object(rcp, "_store_video_asset", return_value="/api/assets/v.mp4") as store, \
+            patch.object(rcp, "_store_video_asset", side_effect=_store_signed) as store, \
             patch.object(rcp, "load_profile_for_user", return_value=None), \
             patch.object(rcp, "_apply_ai_disclosure", side_effect=lambda c: c + " [AI]"), \
+            patch.object(rcp, "_needs_ai_disclosure", return_value=True) as decide, \
             patch(f"{_DB}.convert_pending_post_to_video", return_value=True) as convert:
-        yield {"src": src, "store": store, "convert": convert}
+        yield {"src": src, "store": store, "convert": convert, "decide": decide}
 
 
 class TestGenerateAgentPostVideo:
@@ -155,8 +161,13 @@ class TestGenerateAgentPostVideo:
         video_engine["store"].assert_called_once()
         video_engine["convert"].assert_called_once_with(5, _UID, _TEXT + " [AI]")
 
-    def test_the_local_title_card_is_not_labelled_ai(self, row: dict, video_engine: dict) -> None:
-        video_engine["src"].return_value = "/tmp/title_card.mp4"
+    def test_the_one_disclosure_decision_is_fed_what_storage_reported(
+            self, row: dict, video_engine: dict) -> None:
+        rcp.generate_agent_post_video(5)
+        video_engine["decide"].assert_called_once_with(5, ai_video=True, ai_video_signed=False)
+
+    def test_no_line_when_the_decision_says_none(self, row: dict, video_engine: dict) -> None:
+        video_engine["decide"].return_value = False
         rcp.generate_agent_post_video(5)
         video_engine["convert"].assert_called_once_with(5, _UID, _TEXT)
 
@@ -175,6 +186,7 @@ class TestGenerateAgentPostVideo:
         video_engine["convert"].assert_not_called()
 
     def test_an_unstored_clip_converts_nothing(self, row: dict, video_engine: dict) -> None:
+        video_engine["store"].side_effect = None
         video_engine["store"].return_value = None
         assert rcp.generate_agent_post_video(5) is None
         video_engine["convert"].assert_not_called()

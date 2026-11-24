@@ -3189,8 +3189,8 @@ def generate_agent_post_video(post_id: int) -> Optional[str]:
 
     The same source + store steps `regenerate_post`'s video branch runs, on the post's own text.
     The post becomes a video post only AFTER the asset is stored (see
-    `convert_pending_post_to_video`), and the AI-visuals disclosure is added exactly when that branch
-    adds it: when the clip came from a remote render, not the local title-card fallback.
+    `convert_pending_post_to_video`), and the AI-visuals line is decided by `_needs_ai_disclosure`,
+    the one decision every video path uses, from what `_store_video_asset` reports about signing.
 
     Args:
         post_id: The post to render a video for.
@@ -3208,6 +3208,7 @@ def generate_agent_post_video(post_id: int) -> Optional[str]:
                  task_name="generate_agent_post_video")
         return None
     brief_info: dict = {}
+    signing: dict = {}
     try:
         with admit_pipeline(user_id):
             video_src_url = _generate_video_src(user_id, text, load_profile_for_user(user_id),
@@ -3215,7 +3216,8 @@ def generate_agent_post_video(post_id: int) -> Optional[str]:
             api_video_url = _store_video_asset(post_id, video_src_url, content=text,
                                                user_id=user_id, brief=brief_info.get("brief"),
                                                gate_verdict=brief_info.get("gate_verdict"),
-                                               clip_check=brief_info.get("clip_check")) \
+                                               clip_check=brief_info.get("clip_check"),
+                                               signing=signing) \
                 if video_src_url else None
     except DailyAICapReached:
         return None
@@ -3227,7 +3229,10 @@ def generate_agent_post_video(post_id: int) -> Optional[str]:
         log_info("Agent post video was not rendered", user_id=user_id, post_id=post_id,
                  task_name="generate_agent_post_video")
         return None
-    caption = _apply_ai_disclosure(text) if str(video_src_url).startswith("http") else text
+    # The ONE disclosure decision (issue #2634), fed exactly as `regenerate_video_for_post` feeds it.
+    needs_line = _needs_ai_disclosure(post_id, ai_video=bool(signing.get("ai")),
+                                      ai_video_signed=bool(signing.get("signed")))
+    caption = _apply_ai_disclosure(text) if needs_line else text
     if not convert_pending_post_to_video(post_id, user_id, caption):
         log_info("Agent post left pending while its video rendered; post not converted",
                  user_id=user_id, post_id=post_id, task_name="generate_agent_post_video")
