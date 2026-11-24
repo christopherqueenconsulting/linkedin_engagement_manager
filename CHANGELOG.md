@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.221.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.220.0...v0.221.0) (2026-11-24)
+
+
+### Features
+
+* **profile:** profile audit API and Account card — Phase 2 (closes [#2753](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2753)) ([#2771](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2771)) ([ae62c53](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ae62c53d2d1f4fba9045fbaea596531fcb15a1c5))
+* **voice:** lem-voice writer tier + sensitive-info check (refs [#2750](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2750)) ([#2776](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2776)) ([17d92b4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/17d92b453a009d8634e7f646965b6c0070bb4b0a))
+
 ## [0.220.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.219.0...v0.220.0) (2026-11-24)
 
 
