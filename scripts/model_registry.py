@@ -57,8 +57,8 @@ _LEADERBOARDS = (("<!-- LEADERBOARD:BEGIN -->", "<!-- LEADERBOARD:END -->"),
 # Fields copied when a price is re-pinned. Anything else in LiteLLM's entry (batch/priority/cache
 # rates, context windows) is not something the registry or the spend estimate reads.
 _PRICE_FIELDS = ("input_cost_per_token", "output_cost_per_token", "input_cost_per_image_token",
-                 "output_cost_per_image_token", "input_cost_per_character", "deprecation_date",
-                 "mode")
+                 "output_cost_per_image_token", "input_cost_per_character",
+                 "input_cost_per_second", "deprecation_date", "mode")
 
 
 # ─────────────────────────────── pure ───────────────────────────────
@@ -93,6 +93,8 @@ def price_text(row: dict, prices: dict) -> str:
                 else "unpriced")
     if spec.get("input_cost_per_character") is not None:
         return f"{_per_million(float(spec['input_cost_per_character']))} per 1M chars"
+    if spec.get("input_cost_per_second") is not None:
+        return f"${float(spec['input_cost_per_second']) * 60:.3f} per audio minute"
     cin, cout = spec.get("input_cost_per_token"), spec.get("output_cost_per_token")
     if cin is None:
         return "unpriced"

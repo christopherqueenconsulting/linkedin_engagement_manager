@@ -2621,6 +2621,10 @@ _ENGAGEMENT_DEFAULTS: dict = {
     # Daily-review stale digest opt-out (#2669). NULL in the column = on, so it is read apart from
     # `_ENGAGEMENT_BOOL_FIELDS` (which would turn NULL into off and silence every existing user).
     "review_digest_enabled": True,
+    # Per-user background-session windows and timezone override (issue #2767). None = the default
+    # A/C windows and users.timezone; only SESSION_WINDOW_MODE=enforce reads them. Validated by
+    # `engagement_window`, decoded like `brand_kit`, never through `_ENGAGEMENT_JSON_FIELDS`.
+    "session_windows": None, "session_timezone": None,
 }
 _ENGAGEMENT_JSON_FIELDS = ("include_topics", "exclude_topics", "include_keywords",
                            "exclude_keywords", "include_authors", "exclude_authors", "post_types",
@@ -2653,7 +2657,7 @@ _ENGAGEMENT_COLS = ("tone", "comment_length", "comment_style", "use_emojis", "us
                     "audience_mix", "icp_builder_enabled", "icp_definition",
                     "nurture_dm_mode", "artifact_dm_mode", "group_post_mode",
                     "followup_step_mode", "appreciation_dm_mode", "funnel_stage_mode",
-                    "review_digest_enabled")
+                    "review_digest_enabled", "session_windows", "session_timezone")
 _APPROVAL_MODE_COLS = ("nurture_dm_mode", "artifact_dm_mode", "group_post_mode",
                        "followup_step_mode", "appreciation_dm_mode", "funnel_stage_mode")
 VALID_APPROVAL_MODES = ("pre_review", "auto_approve")
@@ -2760,6 +2764,12 @@ def _select_engagement_row(user_id: int) -> Optional[dict]:
         row["brand_kit"] = _decode_brand_kit(row.get("brand_kit"), user_id)
         row["audience_mix"] = parse_audience_mix(row.get("audience_mix"))
         row["icp_definition"] = _decode_json_object(row.get("icp_definition"))
+        from cqc_lem.utilities.engagement_window import (
+            normalize_session_windows,
+            valid_session_timezone,
+        )
+        row["session_windows"] = normalize_session_windows(row.get("session_windows"))
+        row["session_timezone"] = valid_session_timezone(row.get("session_timezone"))
         return row
     finally:
         cursor.close()
@@ -2898,6 +2908,13 @@ def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
     merged["brand_kit"] = None if _kit is None or _kit.is_empty() else _kit.to_dict()
     # The audience mix, normalized here for the same reason; nothing to store is NULL.
     merged["audience_mix"] = parse_audience_mix(merged.get("audience_mix"))
+    # Session windows and zone (issue #2767): anything invalid is stored as NULL = the defaults.
+    from cqc_lem.utilities.engagement_window import (
+        normalize_session_windows,
+        valid_session_timezone,
+    )
+    merged["session_windows"] = normalize_session_windows(merged.get("session_windows"))
+    merged["session_timezone"] = valid_session_timezone(merged.get("session_timezone"))
     if merged.get("catchup_touch_mode") not in VALID_CATCHUP_TOUCH_MODES:
         merged["catchup_touch_mode"] = "pre_review"
     if merged.get("catchup_message_source") not in VALID_CATCHUP_MESSAGE_SOURCES:
@@ -2937,7 +2954,7 @@ def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
 
     def _val(col):
         v = merged[col]
-        if col in ("brand_kit", "audience_mix", "icp_definition"):
+        if col in ("brand_kit", "audience_mix", "icp_definition", "session_windows"):
             return None if v is None else json.dumps(v)
         if col in _ENGAGEMENT_JSON_FIELDS:
             return json.dumps(v or [])
@@ -3158,6 +3175,23 @@ def get_review_digest_enabled(user_id: int) -> bool:
     except mysql.connector.Error as err:
         log_error("Could not read review_digest_enabled", exc=err, user_id=user_id)
         return True
+
+
+def get_session_window_prefs(user_id: int) -> tuple:
+    """The user's stored `(session_windows, session_timezone)`, raw, NULL meaning "use the defaults".
+
+    Validation is the gate's job (`engagement_window.parse_session_windows`), so a bad stored value
+    degrades there. An unreadable row answers `(None, None)` — the defaults, never a refusal.
+    """
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute("SELECT session_windows, session_timezone FROM engagement_preferences "
+                           "WHERE user_id = %s", (user_id,))
+            row = cursor.fetchone()
+            return (row["session_windows"], row["session_timezone"]) if row else (None, None)
+    except mysql.connector.Error as err:
+        log_error("Could not read session window prefs", exc=err, user_id=user_id)
+        return None, None
 
 
 def get_weekly_report_enabled(user_id: int) -> bool:

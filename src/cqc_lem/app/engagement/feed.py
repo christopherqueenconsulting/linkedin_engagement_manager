@@ -2814,7 +2814,10 @@ def comment_on_roster_posts(ctx: FeedRunContext, max_posts: int) -> dict:
     stats = {"posted": 0, "targets_visited": 0, "examined": 0, "off_topic_skipped": 0,
              "comment_blocked": 0, "followed": 0, "connect_requested": 0,
              "key_sources": {}, "commented_key_sources": {}, "drops": {}}
-    if max_posts <= 0:
+    # A group feed has no roster pass: visiting a target navigates the browser to the home feed, so
+    # the group walk that follows would no longer be on the group, and the golden-hour run already
+    # does the user's daily roster pass.
+    if max_posts <= 0 or ctx.is_group_feed:
         return stats
     targets = get_engagement_targets(user_id, active_only=True)
     if not targets:
@@ -3329,7 +3332,7 @@ def comment_on_feed_inline(driver, wait, my_profile: LinkedInProfile, user_id: i
     # Roster FIRST (issue #616): curated peers / ICP / large creators outrank whatever the home
     # feed happens to serve. An empty roster returns zeros here and the run degrades to the plain
     # feed walk below. `seen` is shared, so a roster post can never be re-commented from the feed.
-    # Group feeds have no roster pass, so this call returns zeros immediately.
+    # Group feeds have no roster pass: `comment_on_roster_posts` returns zeros on `ctx.is_group_feed`.
     roster_stats = comment_on_roster_posts(ctx, max_posts)
     posted = roster_stats["posted"]
     off_topic_skipped = 0
@@ -4620,7 +4623,7 @@ def auto_draft_group_post(self, user_id: int, group_id: str, group_name: str = N
         # blind: it also runs over comments and invite notes written about someone ELSE's content.
         text = strip_non_bmp(normalize_currency_symbols(generate_group_post(
             my_profile, group_name=group_name, prefs=prefs,
-            profile_synthesis=synthesis) or ""))
+            profile_synthesis=synthesis, user_id=user_id) or ""))
     if not text.strip():
         return "No group post generated"
     # Silence ships a READY draft, so a draft stating a first-person number the author never gave

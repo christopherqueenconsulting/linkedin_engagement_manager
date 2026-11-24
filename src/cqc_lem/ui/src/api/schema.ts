@@ -2216,6 +2216,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/user/call-ingest/enroll": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Enroll Call Voice Endpoint
+         * @description Enrol the user's own voice from a short sample (5 s to 2 min of just them speaking).
+         *
+         *     Stores one sealed embedding and nothing else — the sample itself is deleted before returning.
+         *     Replaces any earlier enrollment. Speaker ID not being installed is a 503, never a silent pass.
+         */
+        post: operations["enroll_call_voice_endpoint_api_user_call_ingest_enroll_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/user/call-ingest/review": {
         parameters: {
             query?: never;
@@ -2574,6 +2597,28 @@ export interface paths {
          * @description Save the per-group commenting/posting toggles.
          */
         put: operations["update_user_groups_endpoint_api_user_groups_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/user/icp-audience-report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Icp Audience Report Endpoint
+         * @description Return who engages with the caller's posts versus who they want (issue #2667).
+         *
+         *     On demand and in-app only. Reads the caller's own rows; 404 while `weekly-report-enabled` is off.
+         */
+        get: operations["icp_audience_report_endpoint_api_user_icp_audience_report_get"];
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
@@ -3593,6 +3638,53 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/user/profile-audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Profile Audit Endpoint
+         * @description The caller's profile audit history: score trend, latest findings, follower join (#2753).
+         *
+         *     Read-only; LEM never edits the LinkedIn profile. A failed read is 503, never an empty answer —
+         *     "no audits yet" (`latest: null`) is only said when it is true. 404 while the flag is off.
+         */
+        get: operations["get_profile_audit_endpoint_api_user_profile_audit_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/user/profile-audit/finding": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Post Profile Audit Finding Endpoint
+         * @description Mark a finding of the latest audit done, ignore it, or reopen it (#2753).
+         *
+         *     An ignore holds across later audits; a done covers the audit it was pressed on, and the next
+         *     audit re-grades. 404 for an unknown check or before the first audit; 503 if it could not be
+         *     stored — never a success that did not persist.
+         */
+        post: operations["post_profile_audit_finding_endpoint_api_user_profile_audit_finding_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/user/recovery-codes/regenerate": {
         parameters: {
             query?: never;
@@ -3898,6 +3990,30 @@ export interface paths {
          *     a sheet BEFORE they close the page — from here an email PIN alone will not sign them in.
          */
         post: operations["totp_enroll_confirm_api_user_totp_enroll_confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/user/voice-exemplars": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload Voice Exemplars Endpoint
+         * @description Ingest the author's LinkedIn export CSV as voice exemplars (issue #2627, Phase 1a).
+         *
+         *     `kind=comments` takes `Comments.csv`, `kind=shares` takes `Shares.csv`. The caller is the
+         *     session user; the file is spooled with the same bounded reader as a post video, parsed,
+         *     deduped, length- and row-capped, and embedded at ingest. Behind `VOICE_EXEMPLARS`.
+         */
+        post: operations["upload_voice_exemplars_endpoint_api_user_voice_exemplars_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4322,6 +4438,13 @@ export interface components {
             /** Session Token */
             session_token: string;
         };
+        /** Body_enroll_call_voice_endpoint_api_user_call_ingest_enroll_post */
+        Body_enroll_call_voice_endpoint_api_user_call_ingest_enroll_post: {
+            /** File */
+            file: string;
+            /** Session Token */
+            session_token: string;
+        };
         /** Body_start_avatar_training_endpoint_api_avatar_training_post */
         Body_start_avatar_training_endpoint_api_avatar_training_post: {
             /** Photos */
@@ -4368,6 +4491,15 @@ export interface components {
         Body_upload_post_video_endpoint_api_user_post_video_post: {
             /** File */
             file: string;
+            /** Session Token */
+            session_token: string;
+        };
+        /** Body_upload_voice_exemplars_endpoint_api_user_voice_exemplars_post */
+        Body_upload_voice_exemplars_endpoint_api_user_voice_exemplars_post: {
+            /** File */
+            file: string;
+            /** Kind */
+            kind: string;
             /** Session Token */
             session_token: string;
         };
@@ -4926,6 +5058,16 @@ export interface components {
             roster_auto_connect: boolean;
             /** Roster Auto Follow */
             roster_auto_follow: boolean;
+            /** Session Timezone */
+            session_timezone: string | null;
+            /** Session Window Defaults */
+            session_window_defaults: {
+                [key: string]: string;
+            }[];
+            /** Session Windows */
+            session_windows: {
+                [key: string]: string;
+            }[] | null;
             /** Text Post Images */
             text_post_images: boolean;
             /** Tone */
@@ -5187,8 +5329,14 @@ export interface components {
              * @default false
              */
             roster_auto_follow: boolean;
+            /** Session Timezone */
+            session_timezone?: string | null;
             /** Session Token */
             session_token: string;
+            /** Session Windows */
+            session_windows?: {
+                [key: string]: string;
+            }[] | null;
             /**
              * Text Post Images
              * @default true
@@ -6655,6 +6803,133 @@ export interface components {
             /** Total */
             total: number;
         };
+        /**
+         * ProfileAuditActionRequest
+         * @description Body of `POST /user/profile-audit/finding`: what the user says about one finding.
+         *
+         *     `reopen` clears an earlier done or ignore.
+         */
+        ProfileAuditActionRequest: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "done" | "ignored" | "reopen";
+            /** Check Id */
+            check_id: string;
+            /** Session Token */
+            session_token: string;
+        };
+        /**
+         * ProfileAuditCorrelation
+         * @description The follower join: a note saying what it does not claim, and the rows (#2753).
+         */
+        ProfileAuditCorrelation: {
+            /** Note */
+            note: string;
+            /** Rows */
+            rows: components["schemas"]["ProfileAuditCorrelationRow"][];
+        };
+        /**
+         * ProfileAuditCorrelationRow
+         * @description An audit beside the audience reading nearest before it. Correlation display only (#2753).
+         */
+        ProfileAuditCorrelationRow: {
+            /** Follower Change */
+            follower_change: number | null;
+            /** Follower Count */
+            follower_count: number | null;
+            /** Open Count */
+            open_count: number;
+            /** Period Key */
+            period_key: string;
+            /** Profile Views */
+            profile_views: number | null;
+            /** Score */
+            score: number | null;
+        };
+        /**
+         * ProfileAuditDetail
+         * @description `detail` of `GET /user/profile-audit` (#2753): `latest` is None before the first audit.
+         */
+        ProfileAuditDetail: {
+            correlation: components["schemas"]["ProfileAuditCorrelation"];
+            latest: components["schemas"]["ProfileAuditLatest"] | null;
+            /** Trend */
+            trend: components["schemas"]["ProfileAuditTrendPoint"][];
+        };
+        /**
+         * ProfileAuditFinding
+         * @description One rubric check of the latest audit, with the user's state for it (#2753).
+         */
+        ProfileAuditFinding: {
+            /** Check Id */
+            check_id: string;
+            /** Delta */
+            delta: ("closed" | "new" | "still_open") | null;
+            /** Detail */
+            detail: string;
+            /** Fix Hint */
+            fix_hint: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "open" | "done" | "ignored" | "passing" | "unknown";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pass" | "warn" | "fail" | "unknown";
+            /** Weight */
+            weight: number;
+        };
+        /**
+         * ProfileAuditLatest
+         * @description The newest audit and its findings (#2753).
+         */
+        ProfileAuditLatest: {
+            /** Audit Id */
+            audit_id: number;
+            /** Created At */
+            created_at: string | null;
+            /** Findings */
+            findings: components["schemas"]["ProfileAuditFinding"][];
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "weekly" | "monthly";
+            /** Open Count */
+            open_count: number;
+            /** Period Key */
+            period_key: string;
+            /** Rubric Version */
+            rubric_version: string;
+            /** Score */
+            score: number | null;
+        };
+        /**
+         * ProfileAuditTrendPoint
+         * @description One audit on the score trend, oldest first (#2753).
+         */
+        ProfileAuditTrendPoint: {
+            /** Closed Count */
+            closed_count: number;
+            /** Created At */
+            created_at: string | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "weekly" | "monthly";
+            /** Opened Count */
+            opened_count: number;
+            /** Period Key */
+            period_key: string;
+            /** Score */
+            score: number | null;
+        };
         /** ResponseModel[DashboardStats] */
         ResponseModel_DashboardStats_: {
             detail: components["schemas"]["DashboardStats"];
@@ -6745,6 +7020,12 @@ export interface components {
         /** ResponseModel[PostsPage] */
         ResponseModel_PostsPage_: {
             detail: components["schemas"]["PostsPage"];
+            /** Status Code */
+            status_code: number;
+        };
+        /** ResponseModel[ProfileAuditDetail] */
+        ResponseModel_ProfileAuditDetail_: {
+            detail: components["schemas"]["ProfileAuditDetail"];
             /** Status Code */
             status_code: number;
         };
@@ -11204,6 +11485,39 @@ export interface operations {
             };
         };
     };
+    enroll_call_voice_endpoint_api_user_call_ingest_enroll_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_enroll_call_voice_endpoint_api_user_call_ingest_enroll_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     review_call_candidate_endpoint_api_user_call_ingest_review_post: {
         parameters: {
             query?: never;
@@ -11871,6 +12185,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ResponseModel_str_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    icp_audience_report_endpoint_api_user_icp_audience_report_get: {
+        parameters: {
+            query: {
+                session_token: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
                 };
             };
             /** @description Validation Error */
@@ -13920,6 +14265,70 @@ export interface operations {
             };
         };
     };
+    get_profile_audit_endpoint_api_user_profile_audit_get: {
+        parameters: {
+            query: {
+                session_token: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_ProfileAuditDetail_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_profile_audit_finding_endpoint_api_user_profile_audit_finding_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProfileAuditActionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_str_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     regenerate_recovery_codes_api_user_recovery_codes_regenerate_post: {
         parameters: {
             query?: never;
@@ -14455,6 +14864,60 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_voice_exemplars_endpoint_api_user_voice_exemplars_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_voice_exemplars_endpoint_api_user_voice_exemplars_post"];
+            };
+        };
+        responses: {
+            /** @description Export ingested; counts of what was stored and skipped */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Voice exemplars are not enabled */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

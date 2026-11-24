@@ -861,6 +861,9 @@ def weekly_report_lines(report: dict) -> Tuple[list, list]:
         ("Engagers in your ICP", None if not icp else f"{icp['share'] * 100:.0f}% of {icp['n']}"),
     ]
     numbers = [f"{label}: {value}" for label, value in candidates if value is not None][:5]
+    audit = report.get("profile_audit")
+    if audit and audit.get("line"):
+        numbers.append(audit["line"])  # the one profile-audit line (#2753), on top of the 5
     actions = [(a["text"], a["link"]) for a in (report.get("actions") or [])][:3]
     return numbers, actions
 

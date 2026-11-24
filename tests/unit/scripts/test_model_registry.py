@@ -102,6 +102,9 @@ class TestCells:
         assert rows[("lem-tts", "tts-1")]["price"] == "$15.00 per 1M chars"
         assert rows[("lem-embedding", "text-embedding-3-small")]["price"] == "$0.02 per 1M in"
         assert rows[("lem-vision", "gpt-9-mystery")]["price"] == "unpriced"
+        assert reg.price_text({"model": "openai/whisper-1", "bare": "whisper-1", "is_ollama": False},
+                              {"openai/whisper-1": {"input_cost_per_second": 0.0001}}) == \
+            "$0.006 per audio minute"
         assert reg.price_text({"model": "openai/x", "bare": "x", "is_ollama": True}, {}) == \
             "plan-metered"
         assert reg.price_text({"model": "openai/x", "bare": "x", "is_ollama": False},

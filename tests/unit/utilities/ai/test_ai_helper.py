@@ -25,7 +25,7 @@ class TestGenerateAiResponse:
             assert mock_openai_client.chat.completions.create.called
             assert isinstance(result, str)
 
-    def test_uses_medium_tier_model(self, mock_openai_client, sample_linkedin_profile):
+    def test_uses_voice_tier_model(self, mock_openai_client, sample_linkedin_profile):
         with patch("cqc_lem.utilities.ai.ai_helper.client", mock_openai_client):
             from cqc_lem.utilities.ai.ai_helper import generate_ai_response
             from cqc_lem.utilities.linkedin.profile import LinkedInProfile
@@ -34,7 +34,7 @@ class TestGenerateAiResponse:
             generate_ai_response("Write a comment", profile)
 
             call_kwargs = mock_openai_client.chat.completions.create.call_args[1]
-            assert call_kwargs.get("model") == "lem-medium"
+            assert call_kwargs.get("model") == "lem-voice"
 
     def test_returns_none_for_empty_response(self, mock_openai_client, sample_linkedin_profile):
         mock_openai_client.chat.completions.create.return_value.choices[0].message.content = None

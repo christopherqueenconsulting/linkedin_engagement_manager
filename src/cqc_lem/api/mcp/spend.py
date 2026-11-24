@@ -205,7 +205,11 @@ def claim_inflight(post_id: int, kind: str) -> bool:
 
 
 def release_inflight(post_id: int, kind: str) -> None:
-    """Drop the in-flight marker for (post, kind). Never raises."""
+    """Drop the in-flight marker for (post, kind). Never raises.
+
+    During a Redis outage the delete fails too (logged at DEBUG), so the marker then clears on its
+    own TTL rather than at once.
+    """
     _release("inflight", kind, post_id)
 
 
@@ -219,7 +223,10 @@ def claim_run(post_id: int, kind: str) -> bool:
 
 
 def release_run(post_id: int, kind: str) -> None:
-    """Drop the task's run claim after a terminal failure. Never raises."""
+    """Drop the task's run claim after a terminal failure. Never raises.
+
+    During a Redis outage the delete fails too, so the claim then clears on its own TTL.
+    """
     _release("run", kind, post_id)
 
 

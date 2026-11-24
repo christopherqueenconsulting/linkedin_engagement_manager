@@ -1543,7 +1543,8 @@ def _nurture_after_reply(user_id: int, followup: dict, their_message: str,
                 their_message, intent, my_profile, first_name=first_name,
                 template_hint=(tmpl or {}).get("template_text"),
                 history=get_dm_history_for_profile(user_id, profile_url),
-                prefs=prefs, profile_synthesis=profile_synthesis, recipient_context=who)
+                prefs=prefs, profile_synthesis=profile_synthesis, recipient_context=who,
+                user_id=user_id)
         except Exception as e:
             log_warning("Nurture draft failed; falling back to the template", exc=e,
                         user_id=user_id, action_type="dm")

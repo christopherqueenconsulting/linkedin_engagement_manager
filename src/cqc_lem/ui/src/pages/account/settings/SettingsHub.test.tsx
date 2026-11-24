@@ -51,6 +51,7 @@ vi.mock('../YouTubePublishingCard', () => ({ default: () => <div data-testid="yo
 vi.mock('../CompanyPageCard', () => ({ default: () => <div data-testid="company-page-card" /> }))
 vi.mock('../ContentProfileCard', () => ({ default: () => <div data-testid="content-profile-card" /> }))
 vi.mock('../StoryBankCard', () => ({ default: () => <div data-testid="story-bank-card" /> }))
+vi.mock('../VoiceExemplarsCard', () => ({ default: () => <div data-testid="voice-exemplars-card" /> }))
 vi.mock('../NewsletterCard', () => ({ default: () => <div data-testid="newsletter-card" /> }))
 vi.mock('../GroupsCard', () => ({ default: () => <div data-testid="groups-card" /> }))
 vi.mock('../DmTemplatesCard', () => ({ default: () => <div data-testid="dm-templates-card" /> }))

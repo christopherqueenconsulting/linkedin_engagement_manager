@@ -2494,7 +2494,9 @@ def embed_comments(texts: list) -> Optional[list]:
     similarity report shares: the post gate (#1265) and the nightly telemetry (#630) embed posts and
     newsletter editions through it, on the same char cap, so their scores stay comparable.
     """
-    batch = [str(t or "")[:COMMENT_EMBED_CHARS] for t in (texts or [])]
+    from cqc_lem.utilities.ai.sensitive_info import redact_sensitive  # #2750: pure, stdlib-only
+
+    batch = [redact_sensitive(str(t or "")[:COMMENT_EMBED_CHARS]) for t in (texts or [])]
     if not batch or not all(batch):
         return None
     try:

@@ -55,7 +55,9 @@ class TestUpdatePost:
             resp = api_client.post("/api/update_post/?post_id=33",
                                    json={**_BODY, "status": "approved"})
         assert resp.status_code == 200
-        read.assert_not_called()
+        # `update_post` reads the stored body once for the voice-note edit capture; the placeholder
+        # guard adds no read of its own, so that single read is the whole count.
+        assert read.call_count == 1
         write.assert_called_once()
 
     def test_a_stale_save_cannot_overwrite_a_written_draft(self, api_client: Any,

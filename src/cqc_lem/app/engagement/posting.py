@@ -2727,7 +2727,8 @@ def update_stale_profile(self, user_id: int, force_refresh: bool = False):
     log_info(f"Updating Stale Profile. User ID: {user_id}")
     try:
         driver, wait, user_email, my_profile = get_current_profile(
-            user_id=user_id, session_name="Update Stale Profile", force_refresh=force_refresh)
+            user_id=user_id, session_name="Update Stale Profile", force_refresh=force_refresh,
+            user_started=force_refresh)  # only the SPA refresh button sets force_refresh (#2628)
     except LinkedInRateLimited as e:
         # A known, self-clearing back-off (429 breaker, manual pause, or this account's own
         # challenge-unsolvable cooldown per issue #1920) — not a fresh failure, so WARNING rather

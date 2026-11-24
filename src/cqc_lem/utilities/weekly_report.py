@@ -22,9 +22,11 @@ from cqc_lem.utilities.db import (
     get_comment_log_times,
     get_comment_outcomes,
     get_follower_stats,
+    get_weekly_conversion_counts,
     get_weekly_engager_icp_scores,
     get_weekly_post_rows,
 )
+from cqc_lem.utilities.logger import log_debug
 from cqc_lem.utilities.post_stats import third_party_engagement_rate
 
 MAX_ACTIONS = 3
@@ -46,8 +48,7 @@ NOT_MEASURED_LABELS = {
     "icp_share_delta": "ICP share week over week (engager history is not kept)",
     "saves": "saves (official analytics read not enabled)",
     "sends": "sends (official analytics read not enabled)",
-    "new_conversations": "new conversations (reply detection not trustworthy yet)",
-    "calls_booked": "calls booked (no meeting stage yet)",
+    "new_conversations": "new conversations and calls booked (lead events could not be read)",
     "comment_volume": "comments per day by mode (comment or Assist records unreadable)",
     "review_seconds": "seconds per review decision (too few approvals in one sitting)",
     "comment_outcomes": "comment outcome rates (no checked comments)",
@@ -56,7 +57,7 @@ NOT_MEASURED_LABELS = {
 REVIEW_SITTING_GAP_S = 300
 REVIEW_MIN_GAPS = 3
 # Always unmeasured in phase 1: named every week so a silence is never read as a zero.
-_ALWAYS_NOT_MEASURED = ("icp_share_delta", "saves", "sends", "new_conversations", "calls_booked")
+_ALWAYS_NOT_MEASURED = ("icp_share_delta", "saves", "sends")
 
 
 def _week_numbers(rows: Optional[Sequence[Mapping[str, Any]]]) -> dict:
@@ -205,6 +206,8 @@ def build_weekly_report(
     comment_log_times: Optional[Sequence[datetime]] = None,
     assist_activity: Optional[Mapping[str, Sequence[datetime]]] = None,
     outcome_rows: Optional[Sequence[Mapping[str, Any]]] = None,
+    conversions: Optional[Mapping[str, int]] = None,
+    profile_audit: Optional[Mapping[str, Any]] = None,
 ) -> dict:
     """The report payload. Pure: no I/O, every unreadable input is None and listed in `not_measured`."""
     this_week = _week_numbers(this_week_rows)
@@ -226,9 +229,14 @@ def build_weekly_report(
         missing.append("review_seconds")
     if volume["outcomes"] is None:
         missing.append("comment_outcomes")
+    if conversions is None:
+        missing.append("new_conversations")
     missing.extend(_ALWAYS_NOT_MEASURED)
 
     return {
+        # Absent, not unmeasured, when the audit is off or has not run: no audit is not a zero.
+        "profile_audit": dict(profile_audit) if profile_audit else None,
+        "conversions": dict(conversions) if conversions is not None else None,
         "comment_volume": volume,
         "week_start": week_start.isoformat(),
         "week_end": week_end.isoformat(),
@@ -312,11 +320,25 @@ def send_weekly_reports(now: Optional[datetime] = None) -> dict:
     return result
 
 
+def _profile_audit_line(user_id: int) -> Optional[dict]:
+    """The profile-audit line (#2753), or None when the flag is off, nothing is scored or a read fails."""
+    from cqc_lem.utilities.flags import PROFILE_AUDIT, flag_enabled
+    from cqc_lem.utilities.profile_audit_view import load_audit_view, report_line
+    try:
+        if not flag_enabled(PROFILE_AUDIT, user_id):
+            return None
+        return report_line(load_audit_view(user_id))
+    except Exception as exc:
+        log_debug("Profile audit report line unavailable", exc=exc, user_id=user_id)
+        return None
+
+
 def load_weekly_report(user_id: int, now: Optional[datetime] = None) -> dict:
     """Read the inputs for the 7 days ending `now` and build the payload."""
     end = now or datetime.now(timezone.utc)
     start = end - timedelta(days=7)
     return build_weekly_report(
+        profile_audit=_profile_audit_line(user_id),
         week_start=start, week_end=end,
         this_week_rows=get_weekly_post_rows(user_id, start, end),
         last_week_rows=get_weekly_post_rows(user_id, start - timedelta(days=7), start),
@@ -327,4 +349,5 @@ def load_weekly_report(user_id: int, now: Optional[datetime] = None) -> dict:
         assist_activity=get_assist_activity(user_id, start, end),
         # get_comment_outcomes returns [] on a fault, so an empty list reads as unknown here.
         outcome_rows=get_comment_outcomes(user_id, days=7),
+        conversions=get_weekly_conversion_counts(user_id, start, end),
     )

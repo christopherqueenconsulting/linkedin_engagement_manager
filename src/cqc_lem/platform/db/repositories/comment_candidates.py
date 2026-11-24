@@ -110,6 +110,24 @@ def count_comment_candidates(user_id: int, day: Optional[date] = None,
         return None
 
 
+def get_icp_post_texts(user_id: int, days: int = 90, limit: int = 60) -> Optional[list]:
+    """Post text the roster scan stored from the user's ICP targets, newest first.
+
+    The vocabulary source for the monthly profile audit (issue #2754). None on a read error.
+    """
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT post_text FROM comment_candidates WHERE user_id = %s AND source = 'roster' "
+                "AND post_text IS NOT NULL AND post_text <> '' "
+                "AND scanned_at >= (NOW() - INTERVAL %s DAY) ORDER BY id DESC LIMIT %s",
+                (user_id, int(days), int(limit)))
+            return [str(r[0]) for r in (cursor.fetchall() or []) if r and r[0]]
+    except mysql.connector.Error as err:
+        log_error("Could not read ICP post texts", exc=err, user_id=user_id)
+        return None
+
+
 def get_approved_comment_candidates(user_id: int, limit: int = 150) -> Optional[list]:
     """The user's candidates a human approved and nobody has posted, oldest approval first.
 

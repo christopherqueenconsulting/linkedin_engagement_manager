@@ -126,6 +126,56 @@ export default function PrivacyPolicy() {
               </a>.
             </p>
           </section>
+
+          <section data-testid="calls-draft">
+            <h2 className="text-xl font-semibold text-fg mb-3">
+              10. Calls and transcripts{' '}
+              <span className="text-sm font-semibold text-danger">(DRAFT — not final)</span>
+            </h2>
+            <p className="mb-3 font-medium">
+              DRAFT: this section is awaiting legal review and is not in force. The feature it
+              describes is limited to the service owner's own account until that review is done.
+            </p>
+            <ul className="list-disc pl-6 space-y-2">
+              <li>
+                <strong>Roles:</strong> you, the LEM user, are the controller of any call or
+                voice-note transcript you upload, including what it says about other people.
+                Christopher Queen Consulting is your processor and acts on your instructions.
+              </li>
+              <li>
+                <strong>Consent:</strong> you may upload a call only after confirming that
+                everyone on it was told it was recorded. We do not ingest from a source without
+                that confirmation.
+              </li>
+              <li>
+                <strong>What we keep:</strong> only your own turns, with other people's names,
+                email addresses, phone numbers and links replaced by placeholders before any
+                model sees the text. The transcript is stored encrypted and deleted once you
+                finish reviewing the call, and in every case within 7 days. Facts you accept keep
+                only a short quote and your edits.
+              </li>
+              <li>
+                <strong>Deleting:</strong> “Purge all call data” in the Story Bank removes every
+                transcript, candidate, source and fact learned from calls. Encrypted database
+                backups are kept for 35 days, so a deleted item can persist in a backup for up to
+                that long before it is overwritten.
+              </li>
+              <li>
+                <strong>Subprocessors (draft list):</strong> our hosting provider, and the AI
+                model providers we route text through (currently OpenAI, Anthropic and
+                OpenRouter). Redacted text is sent to a model only to propose facts, and is not
+                used by us to train models.
+              </li>
+              <li>
+                <strong>Recordings (draft):</strong> an audio recording is sent whole to OpenAI,
+                our transcription subprocessor, because it has to be transcribed before anyone's
+                words can be told apart or redacted. We then keep only your own turns, matched to
+                a voice sample you enrol, and delete the recording as soon as the transcript is
+                written, or within 24 hours if transcription fails. Your voice sample is stored
+                as a numeric voiceprint, encrypted, and removed by “Purge all call data”.
+              </li>
+            </ul>
+          </section>
         </div>
       </div>
     </div>

@@ -1,8 +1,8 @@
 {
   "prompt_id": "comment.seed",
   "target": "cqc_lem.utilities.ai.ai_helper.generate_seed_comment",
-  "tier": "lem-medium",
-  "content_hash": "sha256:b8a78a2131b07c7fe62a0a176f481b1805d7903add3242f8c7519faff780ff33",
+  "tier": "lem-voice",
+  "content_hash": "sha256:8845f92642b4a9bd9a4391455b7dbaffd1e819c479ab4f9bece244cef6ded8a7",
   "messages": [
     {
       "role": "system",
@@ -10,7 +10,7 @@
     },
     {
       "role": "user",
-      "content": "My LinkedIn profile:\n{\"full_name\":\"Marcus Oyelaran\",\"job_title\":\"Fractional CFO\",\"company_name\":\"Ledgerline Partners\",\"industry\":\"Financial Services\",\"profile_url\":null,\"connection\":null,\"password\":null,\"email\":null,\"recent_activities\":[],\"mutual_connections\":[],\"endorsements\":[],\"education\":[],\"experiences\":[],\"certifications\":[],\"skills\":[\"Cash Flow Forecasting\",\"Financial Planning\",\"Month-End Close\",\"Board Reporting\"],\"awards\":[],\"groups\":[],\"interests\":[\"cash flow\",\"month-end close\",\"founder finance\"]}\n\nMy post:\n<content>We cut our month-end close from 9 days to 4. The biggest win wasn't speed.</content>\n\n\nEngagement intention (baseline — always applies):\n- Build a genuine relationship: every comment should draw a real connection either to the POSTER (the author of this post) or to POTENTIAL FOLLOWERS reading the thread — start a conversation worth replying to, grounded in the post's actual topic and written in the user's authentic voice.\n\n\nLanguage (follow exactly): write your ENTIRE response in English (en-US), no matter what language the post or comment you are responding to is written in. Never switch languages to match it.\n"
+      "content": "My LinkedIn profile:\n{\"full_name\":\"Marcus Oyelaran\",\"job_title\":\"Fractional CFO\",\"company_name\":\"Ledgerline Partners\",\"industry\":\"Financial Services\",\"profile_url\":null,\"connection\":null,\"password\":null,\"email\":null,\"headline\":null,\"about\":null,\"featured_count\":null,\"banner_state\":null,\"custom_url\":null,\"recent_activities\":[],\"mutual_connections\":[],\"endorsements\":[],\"education\":[],\"experiences\":[],\"certifications\":[],\"skills\":[\"Cash Flow Forecasting\",\"Financial Planning\",\"Month-End Close\",\"Board Reporting\"],\"awards\":[],\"groups\":[],\"interests\":[\"cash flow\",\"month-end close\",\"founder finance\"]}\n\nMy post:\n<content>We cut our month-end close from 9 days to 4. The biggest win wasn't speed.</content>\n\n\nEngagement intention (baseline — always applies):\n- Build a genuine relationship: every comment should draw a real connection either to the POSTER (the author of this post) or to POTENTIAL FOLLOWERS reading the thread — start a conversation worth replying to, grounded in the post's actual topic and written in the user's authentic voice.\n\n\nLanguage (follow exactly): write your ENTIRE response in English (en-US), no matter what language the post or comment you are responding to is written in. Never switch languages to match it.\n"
     }
   ],
   "params": {
@@ -20,7 +20,7 @@
         "user_id": "system"
       }
     },
-    "model": "lem-medium",
+    "model": "lem-voice",
     "temperature": 0.7
   }
 }

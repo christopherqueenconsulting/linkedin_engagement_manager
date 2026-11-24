@@ -7,6 +7,7 @@ import type { GetDetail } from '../../api/types'
 import type { StoryEntry, StoryKind } from './types'
 import { useRegisterSaveSection, sectionSaveCallbacks } from './settingsSave'
 import { EVENTS, capture, maskProps } from '../../utils/analytics'
+import CallIngestPanel from './CallIngestPanel'
 
 type StoryBankResponse = GetDetail<'/api/user/story-bank'>
 
@@ -21,7 +22,7 @@ const blank = (): StoryEntry => ({
  * anecdotes. Quick capture on purpose: one textarea per entry, everything else optional.
  */
 export default function StoryBankCard() {
-  const { sessionToken } = useAuth()
+  const { sessionToken, isAdmin } = useAuth()
   const queryClient = useQueryClient()
   // The edited list, once the user touches one — null means "show what the API returned". Derived
   // rather than seeded in an effect, so a refetch can never discard rows being typed.
@@ -163,6 +164,8 @@ export default function StoryBankCard() {
 
       <button type="button" onClick={addRow}
         className="text-xs text-accent font-medium hover:text-accent">+ Add entry</button>
+
+      {isAdmin && <CallIngestPanel />}
 
       {msg && <p className={`text-sm font-medium ${msg.ok ? 'text-success' : 'text-danger'}`}>{msg.text}</p>}
       <button type="button" onClick={() => saveMutation.mutate(undefined, sectionSaveCallbacks('story-bank'))}

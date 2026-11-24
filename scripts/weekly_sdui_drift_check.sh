@@ -15,9 +15,8 @@
 # docstrings in scripts/linkedin_live_validation.py. The only writes this job makes are GitHub
 # issues, and `unknown` (the page did not render) is never one of them.
 #
-# Install (VPS, as `lem`) — Mondays 06:40 UTC, before the 11:00 release window and outside the
-# golden-hour engagement beats that need the Chrome slots:
-#   40 6 * * 1 /home/lem/cron-runner/repo/scripts/run_at_deployed_tag.sh scripts/weekly_sdui_drift_check.sh
+# Install (VPS, as `lem`) — Mondays 16:00 UTC (weekday daytime in the owner's timezone, #2628):
+#   0 16 * * 1 /home/lem/cron-runner/repo/scripts/run_at_deployed_tag.sh scripts/weekly_sdui_drift_check.sh
 set -uo pipefail
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/lem/.local/bin"
 

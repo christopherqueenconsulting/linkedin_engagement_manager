@@ -1,5 +1,60 @@
 # Changelog
 
+## [0.222.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.221.0...v0.222.0) (2026-11-24)
+
+
+### Features
+
+* **engagement:** per-user session windows and timezone in preferences (refs [#2767](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2767)) ([#2777](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2777)) ([fbe219f](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/fbe219f50ed2977a22ab19162d55e618e90492d6))
+* **voice:** multi-candidate comments with cross-family judge (refs [#2751](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2751)) ([#2779](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2779)) ([e7b4a9b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/e7b4a9b8dd8cd95e4c10d7dca17ce67f1798cab3))
+
+## [0.221.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.220.0...v0.221.0) (2026-11-24)
+
+
+### Features
+
+* **profile:** profile audit API and Account card — Phase 2 (closes [#2753](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2753)) ([#2771](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2771)) ([ae62c53](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ae62c53d2d1f4fba9045fbaea596531fcb15a1c5))
+* **voice:** lem-voice writer tier + sensitive-info check (refs [#2750](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2750)) ([#2776](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2776)) ([17d92b4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/17d92b453a009d8634e7f646965b6c0070bb4b0a))
+
+## [0.220.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.219.0...v0.220.0) (2026-11-24)
+
+
+### Features
+
+* **profile:** headline and banner locator chains, targeted probe capture (refs [#2755](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2755)) ([#2772](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2772)) ([27cfd10](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/27cfd1075db9b25b9a3e330708df4221e310174e))
+* **reports:** monthly ICP-audience report run (closes [#2758](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2758)) ([#2774](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2774)) ([7da5ced](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7da5ced8952aa65a2e872fb76afa5933d5ae0f53))
+
+## [0.219.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.218.0...v0.219.0) (2026-11-24)
+
+
+### Features
+
+* **voice:** few-shot in more writers, edited-draft labels, upload card (closes [#2749](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2749)) ([#2766](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2766)) ([37ee61b](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/37ee61babf7deb8877a51b16c5f4cda9aa02c811))
+
+## [0.218.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.217.0...v0.218.0) (2026-11-24)
+
+
+### Features
+
+* **probe:** own-profile audit fields live probe (refs [#2755](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2755)) ([#2769](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2769)) ([ca861d2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ca861d2ccfd3691c481cf0635dd42931c9a80100))
+* **reports:** conversations, calls and profile-view-to-call attribution (closes [#2668](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2668)) ([#2763](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2763)) ([c50775e](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c50775e995b2e3b232ad875620d7440ddaa1f4b2))
+
+## [0.217.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.216.0...v0.217.0) (2026-11-24)
+
+
+### Features
+
+* **voice:** call review tab, consent opt-in and DRAFT privacy text, Phase 1c (refs [#2629](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2629)) ([#2759](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2759)) ([ca97c31](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ca97c31c7b4a9a8bbb435ad02e8505092e045c1b))
+
+## [0.216.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.215.0...v0.216.0) (2026-11-24)
+
+
+### Features
+
+* **content-quality:** voice exemplars from the user's own writing, Phase 1a (refs [#2627](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2627)) ([#2743](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2743)) ([947b042](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/947b0425ec81ffc58ec38dbb33d45061248a89cc))
+* **profile:** profile audit rubric, history tables and weekly/monthly beats, Phase 1 (refs [#2631](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2631)) ([#2745](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2745)) ([c928717](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c92871769dc488322a6408f721ccd293d744f861))
+* **reports:** weekly report SPA page and on-demand ICP audience report (closes [#2667](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2667)) ([#2748](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2748)) ([9aaaaa3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/9aaaaa37dfd84f6a420ed31c622f24a94514654b))
+
 ## [0.215.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.214.0...v0.215.0) (2026-11-24)
 
 

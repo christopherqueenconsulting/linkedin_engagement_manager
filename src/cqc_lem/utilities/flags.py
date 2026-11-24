@@ -87,12 +87,35 @@ WEEKLY_REPORT = "weekly-report-enabled"
 COMMENT_CANDIDATE_CRAWL = "comment-candidate-crawl-enabled"
 IMPACT_REPORT = "impact-report-enabled"
 COMMENT_RAMP = "comment-ramp-enabled"
+PROFILE_AUDIT = "profile-audit-enabled"
 MCP_SERVER = "mcp-server-enabled"
 MCP_SERVER_WRITES = "mcp-server-writes"
 COMMENT_CANDIDATE_DRAFTS = "comment-candidate-drafts-enabled"
+VOICE_EXEMPLARS = "voice-exemplars-enabled"
+COMMENT_MULTI_CANDIDATE = "comment-multi-candidate-enabled"
 
 FLAGS: Dict[str, FlagSpec] = {
     spec.key: spec for spec in (
+        FlagSpec(
+            key=COMMENT_MULTI_CANDIDATE,
+            env_var="COMMENT_MULTI_CANDIDATE",
+            default=False,
+            owner="content-quality",
+            description=("Draw 3 feed-comment candidates, run the deterministic gates on each and "
+                         "let a cross-family judge (`lem-judge`) pick the one a busy practitioner "
+                         "would plausibly type (issue #2627, Phase 3). OFF by default: one draft "
+                         "per attempt, unchanged."),
+        ),
+        FlagSpec(
+            key=VOICE_EXEMPLARS,
+            env_var="VOICE_EXEMPLARS",
+            default=False,
+            owner="content-quality",
+            description=("Ground comment and nurture-DM voice in the user's own uploaded writing: "
+                         "the nearest 5 embedded exemplars go into the prompt as few-shot, and a "
+                         "draft too close to one is regenerated (issue #2627, Phase 1a). Below 4 "
+                         "exemplars the adjective brief is used unchanged. OFF by default."),
+        ),
         FlagSpec(
             key=COMMENT_CANDIDATE_DRAFTS,
             env_var="COMMENT_CANDIDATE_DRAFTS_ENABLED",
@@ -276,6 +299,16 @@ FLAGS: Dict[str, FlagSpec] = {
                          "emails the owner a before/after report 14 days after each release and "
                          "a monthly baseline, and posts a one-line metric-free note on the "
                          "tracker issue. OFF by default; the admin route is not gated by it."),
+        ),
+        FlagSpec(
+            key=PROFILE_AUDIT,
+            env_var="PROFILE_AUDIT_ENABLED",
+            default=False,
+            owner="analytics",
+            description=("The weekly and monthly profile audit beats (utilities/profile_audit_job.py, "
+                         "issue #2631, Phase 1): grade the cached own-profile JSON against a "
+                         "deterministic rubric and store the history. Browser-free, read-only; LEM "
+                         "never edits the LinkedIn profile. OFF by default."),
         ),
         FlagSpec(
             key=MCP_SERVER,
