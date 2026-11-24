@@ -2581,6 +2581,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/user/icp-audience-report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Icp Audience Report Endpoint
+         * @description Who engages with the caller's posts versus who they want, by month (issue #2667).
+         *
+         *     On demand and in-app only. Reads the caller's own rows; 404 while `weekly-report-enabled` is off.
+         */
+        get: operations["icp_audience_report_endpoint_api_user_icp_audience_report_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/user/icp-definition": {
         parameters: {
             query?: never;
@@ -11760,6 +11782,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ResponseModel_str_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    icp_audience_report_endpoint_api_user_icp_audience_report_get: {
+        parameters: {
+            query: {
+                session_token: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
                 };
             };
             /** @description Validation Error */

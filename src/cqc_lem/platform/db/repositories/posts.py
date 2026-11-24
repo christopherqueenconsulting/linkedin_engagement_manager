@@ -2759,6 +2759,40 @@ def get_weekly_engager_icp_scores(user_id: int, start: datetime, end: datetime) 
         return None
 
 
+def get_icp_audience_rows(user_id: int, start: datetime, end: datetime) -> Optional[list]:
+    """One row per person who engaged with the user's posts in [start, end) (issue #2667).
+
+    Each row is `{engaged_at, icp_score, segment_id}`. `icp_score` is None without a `leads` row
+    and `segment_id` is None unless an ICP-rubric connection request for that person recorded one,
+    so neither is ever a guess. Every statement is scoped by `user_id`: no other user's row can be
+    read. Matched on `person_key`, as `get_weekly_engager_icp_scores`. None on a database fault.
+    """
+    from cqc_lem.utilities.lead_scoring import person_key
+    try:
+        with db_cursor(dictionary=True) as cursor:
+            cursor.execute(
+                "SELECT engager_name, engager_profile_url, last_engaged_at FROM post_engagers "
+                "WHERE user_id=%s AND last_engaged_at >= %s AND last_engaged_at < %s",
+                (user_id, to_naive_utc(start), to_naive_utc(end)))
+            engagers = cursor.fetchall() or []
+            cursor.execute("SELECT person_key, icp_score FROM leads WHERE user_id=%s", (user_id,))
+            scores = {r["person_key"]: r.get("icp_score") for r in (cursor.fetchall() or [])}
+            cursor.execute(
+                "SELECT recipient_profile_url, segment_id FROM connection_requests "
+                "WHERE user_id=%s AND segment_id IS NOT NULL ORDER BY id ASC", (user_id,))
+            segments = {person_key(None, r.get("recipient_profile_url")): r["segment_id"]
+                        for r in (cursor.fetchall() or [])}
+        rows = []
+        for e in engagers:
+            key = person_key(e.get("engager_name"), e.get("engager_profile_url"))
+            rows.append({"engaged_at": e.get("last_engaged_at"), "icp_score": scores.get(key),
+                         "segment_id": segments.get(key)})
+        return rows
+    except mysql.connector.Error as err:
+        log_error("Could not read ICP audience rows", exc=err, user_id=user_id)
+        return None
+
+
 def get_impact_post_rows(user_id: int, start: datetime, end: datetime) -> Optional[list]:
     """Posts published in [start, end) with their LATEST `post_stats` row and `scheduled_time` (#2643).
 

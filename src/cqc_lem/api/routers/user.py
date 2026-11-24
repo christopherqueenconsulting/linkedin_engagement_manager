@@ -3429,6 +3429,22 @@ def weekly_report_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
     return ResponseModel(status_code=200, detail=load_weekly_report(user_id))
 
 
+@router.get("/icp-audience-report")
+def icp_audience_report_endpoint(session_token: str) -> ResponseModel[dict[str, Any]]:
+    """Who engages with the caller's posts versus who they want, by month (issue #2667).
+
+    On demand and in-app only. Reads the caller's own rows; 404 while `weekly-report-enabled` is off.
+    """
+    from cqc_lem.utilities.flags import WEEKLY_REPORT, flag_enabled
+    from cqc_lem.utilities.icp_audience_report import load_icp_audience_report
+    user_id = _main.get_session_user_id(session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    if not flag_enabled(WEEKLY_REPORT, user_id):
+        raise HTTPException(status_code=404, detail="Not found")
+    return ResponseModel(status_code=200, detail=load_icp_audience_report(user_id))
+
+
 def _suppression_status(user_id: int) -> dict:
     """Current suppression-tripwire picture for one user (issue #629): the standing trip (if any)
     plus a FRESH evaluation of the same signals. Both are returned on purpose — the trip is what
