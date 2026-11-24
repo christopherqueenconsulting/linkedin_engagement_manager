@@ -879,6 +879,14 @@ from cqc_lem.platform.db.repositories.users import (
     update_user_settings,
     update_user_timezone,
 )
+from cqc_lem.platform.db.repositories.voice_exemplars import (
+    MAX_EXEMPLARS_PER_USER,
+    count_voice_exemplars,
+    exemplar_hash,
+    get_embedded_voice_exemplars,
+    get_existing_exemplar_hashes,
+    insert_voice_exemplar,
+)
 from cqc_lem.platform.db.shared import (
     _FEEDBACK_COLUMNS,
     AUTH_FACTOR_PASSKEY,
@@ -1197,6 +1205,12 @@ __all__ = [
     "get_call_transcript",
     "get_pending_candidates",
     "insert_call_ingest",
+    "MAX_EXEMPLARS_PER_USER",
+    "count_voice_exemplars",
+    "exemplar_hash",
+    "get_embedded_voice_exemplars",
+    "get_existing_exemplar_hashes",
+    "insert_voice_exemplar",
     "insert_extract_candidates",
     "is_call_source_enabled",
     "purge_all_call_data",

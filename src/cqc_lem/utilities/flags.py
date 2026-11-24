@@ -90,9 +90,20 @@ COMMENT_RAMP = "comment-ramp-enabled"
 MCP_SERVER = "mcp-server-enabled"
 MCP_SERVER_WRITES = "mcp-server-writes"
 COMMENT_CANDIDATE_DRAFTS = "comment-candidate-drafts-enabled"
+VOICE_EXEMPLARS = "voice-exemplars-enabled"
 
 FLAGS: Dict[str, FlagSpec] = {
     spec.key: spec for spec in (
+        FlagSpec(
+            key=VOICE_EXEMPLARS,
+            env_var="VOICE_EXEMPLARS",
+            default=False,
+            owner="content-quality",
+            description=("Ground comment and nurture-DM voice in the user's own uploaded writing: "
+                         "the nearest 5 embedded exemplars go into the prompt as few-shot, and a "
+                         "draft too close to one is regenerated (issue #2627, Phase 1a). Below 4 "
+                         "exemplars the adjective brief is used unchanged. OFF by default."),
+        ),
         FlagSpec(
             key=COMMENT_CANDIDATE_DRAFTS,
             env_var="COMMENT_CANDIDATE_DRAFTS_ENABLED",

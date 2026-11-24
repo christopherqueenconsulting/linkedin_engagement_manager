@@ -636,6 +636,30 @@
         "title": "Body_upload_post_video_endpoint_api_user_post_video_post",
         "type": "object"
       },
+      "Body_upload_voice_exemplars_endpoint_api_user_voice_exemplars_post": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "session_token": {
+            "title": "Session Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_token",
+          "kind",
+          "file"
+        ],
+        "title": "Body_upload_voice_exemplars_endpoint_api_user_voice_exemplars_post",
+        "type": "object"
+      },
       "BulkDeleteRequest": {
         "description": "Body of `DELETE /posts/` \u2014 a SOFT delete.\n\n`rejection_reason` is the author's own words on why the draft was no good, and is fed back in when the post is\nlater regenerated (issue #713).",
         "properties": {
@@ -16168,6 +16192,54 @@
           }
         },
         "summary": "Totp Enroll Confirm"
+      }
+    },
+    "/api/user/voice-exemplars": {
+      "post": {
+        "description": "Ingest the author's LinkedIn export CSV as voice exemplars (issue #2627, Phase 1a).\n\n`kind=comments` takes `Comments.csv`, `kind=shares` takes `Shares.csv`. The caller is the\nsession user; the file is spooled with the same bounded reader as a post video, parsed,\ndeduped, length- and row-capped, and embedded at ingest. Behind `VOICE_EXEMPLARS`.",
+        "operationId": "upload_voice_exemplars_endpoint_api_user_voice_exemplars_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_voice_exemplars_endpoint_api_user_voice_exemplars_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Export ingested; counts of what was stored and skipped"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "404": {
+            "description": "Voice exemplars are not enabled"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Voice Exemplars Endpoint"
       }
     },
     "/api/user/weekly-report": {
