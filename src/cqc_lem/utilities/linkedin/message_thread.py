@@ -695,10 +695,17 @@ def read_last_sender(driver: WebDriver) -> str:
 
 
 def read_last_message(driver: WebDriver) -> str:
-    """Text of the newest message in the ALREADY-OPEN thread ('' when unreadable)."""
+    """Text of the newest message in the ALREADY-OPEN thread ('' when unreadable).
+
+    A crashed tab re-raises (issue #2828), like `read_last_sender`: the follow-up run's reply branch
+    reads this after the sender read succeeded, so swallowing the crash here warned a second time
+    under a different call site and let the run carry on against a dead tab.
+    """
     try:
         return (driver.execute_script(_LAST_MESSAGE_JS) or "").strip()
     except Exception as e:
+        if is_tab_crashed(e):
+            raise
         log_warning("Could not read the last DM body", exc=e, action_type="dm")
         return ""
 

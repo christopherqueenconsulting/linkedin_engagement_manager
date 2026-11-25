@@ -248,6 +248,18 @@ class TestSendLanded:
              patch(f"{_OUT}.DM_SEND_CONFIRM_SECONDS", 0):
             assert ra._dm_send_landed(driver, "Congrats Jane!") is True
 
+    def test_a_crashed_tab_after_the_click_trusts_the_click_not_a_failure(self):
+        # Issue #2828: read_last_message now re-raises a crash; a landed click must not become FAILURE.
+        from cqc_lem.app.engagement import outreach as ra
+        with patch(f"{_OUT}.read_last_message", side_effect=WebDriverException("tab crashed")):
+            assert ra._dm_send_landed(self._driver(), "Congrats Jane!") is True
+
+    def test_a_non_crash_read_error_still_propagates(self):
+        from cqc_lem.app.engagement import outreach as ra
+        with patch(f"{_OUT}.read_last_message", side_effect=WebDriverException("boom")):
+            with pytest.raises(WebDriverException):
+                ra._dm_send_landed(self._driver(), "Congrats Jane!")
+
     def test_a_long_message_is_matched_on_its_head(self):
         from cqc_lem.app.engagement import outreach as ra
         message = "Congrats on the new role, Jane! " + "x" * 400

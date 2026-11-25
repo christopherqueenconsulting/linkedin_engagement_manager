@@ -858,6 +858,21 @@ class TestReaders:
         warn.assert_not_called()
         assert d.execute_script.call_count == 1
 
+    def test_read_last_message_raises_on_a_crashed_tab(self):
+        # Issue #2828: the reply branch's body read swallowed the crash as its own warning.
+        d = MagicMock()
+        d.execute_script.side_effect = WebDriverException("tab crashed\n  (Session info: chrome=155)")
+        with patch.object(mt, "log_warning") as warn, pytest.raises(WebDriverException):
+            mt.read_last_message(d)
+        warn.assert_not_called()
+
+    def test_read_last_message_still_swallows_other_failures(self):
+        d = MagicMock()
+        d.execute_script.side_effect = WebDriverException("javascript error")
+        with patch.object(mt, "log_warning") as warn:
+            assert mt.read_last_message(d) == ""
+        warn.assert_called_once()
+
 
 class TestResolveSelfName:
     """The name reply detection compares the last sender against (issue #731).
