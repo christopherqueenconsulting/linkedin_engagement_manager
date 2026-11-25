@@ -52,6 +52,9 @@ PUBLIC_ROOT_FILES: Dict[str, str] = {
     # The brand package ships raster only (PR #1294) — PNG, PDF and ICO, no SVG — so since issue
     # #1300 the mark is an .ico rather than the purple template favicon.svg it replaced.
     "favicon.ico": "image/x-icon",
+    # The agent install guide (#2799): public, static, no user data or token. A root-file route, not
+    # an `/api` one, so it never touches the MCP auth path or `_PUBLIC_API_PREFIXES`.
+    "agents/install.md": "text/markdown; charset=utf-8",
 }
 
 # Vite copies public/ VERBATIM — no env substitution reaches it — but a sitemap `<loc>` and a

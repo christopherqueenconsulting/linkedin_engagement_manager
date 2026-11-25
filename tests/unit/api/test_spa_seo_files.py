@@ -159,6 +159,20 @@ class TestServedFiles:
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("image/x-icon")
 
+    def test_the_agent_install_guide_is_served_as_markdown_not_html(self, dist):
+        # #2799: the guide ships in the SPA build, outside `/api`, so no MCP/auth path is involved.
+        (dist / "agents").mkdir()
+        (dist / "agents" / "install.md").write_text("# Install the LEM MCP server\n")
+        response = _client(dist).get("/agents/install.md")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/markdown")
+        assert response.text.startswith("# Install")
+
+    def test_the_shipped_agent_guide_holds_no_token(self):
+        body = (UI_PUBLIC / "agents" / "install.md").read_text()
+        assert "lem_mcp_" not in body
+        assert "<LEM_MCP_URL>" in body
+
     def test_a_missing_file_404s_instead_of_returning_the_shell(self, tmp_path):
         response = _client(tmp_path).get("/robots.txt")
         assert response.status_code == 404

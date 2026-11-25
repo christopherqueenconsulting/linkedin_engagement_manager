@@ -36,7 +36,7 @@ export interface Snippet {
   note?: string
   stores?: StorageKind
   /** The analytics `variant` for a copy of THIS block: what the copied text actually carries. */
-  copyVariant: 'env' | 'inline' | 'placeholder'
+  copyVariant: 'env' | 'inline' | 'placeholder' | 'agent'
 }
 
 export type ClientId =
@@ -363,6 +363,49 @@ function draftSnippets(client: ClientId, url: string, secret: string, inline: bo
     case 'chatgpt':
     case 'claude-ai':
       return []
+  }
+}
+
+/** Where the public install guide lives (issue #2799): a static file the SPA build ships. */
+export const INSTALL_GUIDE_PATH = '/agents/install.md'
+
+/** The guide's server-URL placeholder; the agent prompt supplies the real URL. */
+export const GUIDE_URL_PLACEHOLDER = '<LEM_MCP_URL>'
+
+function originOf(url: string): string {
+  try {
+    return new URL(url).origin
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * The prompt a user pastes into an agent session so the agent installs LEM's MCP server itself
+ * (issue #2799). A pure function of (client, url): it never takes a token, so it cannot contain one
+ * in any variant. The guide it links holds the per-client steps and the token-handling rules.
+ */
+export function agentPrompt(client: ClientId, url: string): string {
+  const stem = client === 'generic' ? null : clientInfo(client).labelStem
+  const subject = stem ? `this ${stem} session` : 'this session'
+  const section = stem
+    ? `follow the ${stem} section`
+    : 'work out which client you are running in (a T3 Code thread, say) and follow its section'
+  return `Install the LEM MCP server for ${subject}. Read ${originOf(url)}${INSTALL_GUIDE_PATH} and ${section}. ` +
+    `Server URL: ${url}. Ask me for my LEM token only through a secure input, never in chat.`
+}
+
+/** The "Agent command" block: the prompt above, carrying the same never-in-chat header as the rest. */
+export function agentSnippet(client: ClientId, url: string): Snippet {
+  return {
+    id: 'agent',
+    label: 'Agent command',
+    kind: 'text',
+    text: agentPrompt(client, url),
+    warning: "Paste into your agent's chat — it holds no token. Never paste your token there",
+    note: 'The agent reads the install guide and sets itself up, asking for the token through a secure ' +
+      'input or a terminal line you run yourself.',
+    copyVariant: 'agent',
   }
 }
 

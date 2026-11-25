@@ -8,6 +8,16 @@ owner ruling, is [agent-mcp-plan.md](agent-mcp-plan.md); the token scopes are in
 (read tools #2686, queue-only write tools and the internal/sandbox `lem_approve_item` #2688, epic
 #2682).
 
+## Agent install guide (#2799)
+
+The Agents tab offers an "Agent command" per client: a short prompt the user pastes into an agent
+session. The agent reads the public guide `/agents/install.md` (source:
+`src/cqc_lem/ui/public/agents/install.md`, served by `api/spa_assets.py`, outside `/api` and the MCP
+auth path), configures its own client to reference only the name `LEM_MCP_TOKEN`, gets the token
+through a secure input or a terminal line the user runs, and verifies with `lem_whoami`. The prompt
+(`agentPrompt` in `clientSnippets.ts`) never carries a token. A vitest golden test asserts every
+config snippet in the guide equals the snippet builder's env output, so the two cannot drift.
+
 ## How a call flows
 
 1. **The gate** (`api/mcp/gate.py`, `McpGate`) checks the request in a fixed order and answers every

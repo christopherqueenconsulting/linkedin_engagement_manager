@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import CopyBlock from '../../components/CopyBlock'
 import SettingsCard from '../../components/SettingsCard'
-import { CLIENTS, buildClientSnippets, clientInfo, defaultShell } from './clientSnippets'
+import { CLIENTS, agentSnippet, buildClientSnippets, clientInfo, defaultShell } from './clientSnippets'
 import type { ClientId, ShellKind, SnippetVariant } from './clientSnippets'
 
 const TAB_BASE = 'shrink-0 min-h-9 px-3 py-1.5 rounded-control text-xs font-semibold whitespace-nowrap border'
@@ -37,6 +37,7 @@ export default function ConnectCommands({
   const [shell, setShell] = useState<ShellKind>(() =>
     defaultShell(typeof navigator === 'undefined' ? '' : navigator.userAgent))
   const info = clientInfo(client)
+  const agent = agentSnippet(client, url)
   const snippets = info.supported ? buildClientSnippets(client, url, token, variant, shell) : []
 
   return (
@@ -124,6 +125,14 @@ export default function ConnectCommands({
                 onCopied={() => onCopied(client, s.copyVariant)}
               />
             ))}
+            <CopyBlock
+              key={`${client}-agent`}
+              label={agent.label}
+              text={agent.text}
+              warning={agent.warning}
+              note={agent.note}
+              onCopied={() => onCopied(client, agent.copyVariant)}
+            />
             {info.docsUrl && (
               <p className="text-xs text-fg-muted">
                 Checked against{' '}
