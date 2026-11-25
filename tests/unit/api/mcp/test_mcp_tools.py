@@ -381,7 +381,8 @@ class TestResourcesAndPrompts:
         """`mcp` lists the read prompts and the content-plan write prompt, never the outreach one."""
         prompts = rpc(api_client, "prompts/list").json()["result"]["prompts"]
         assert {p["name"] for p in prompts} == {"weekly_review", "whats_wrong",
-                                                "explain_my_performance", "fill_my_content_plan"}
+                                                "explain_my_performance", "fill_my_content_plan",
+                                                "align_my_account"}
         got = rpc(api_client, "prompts/get", {"name": "explain_my_performance",
                                               "arguments": {"post_id": "5"}}).json()
         assert "post_id=5" in got["result"]["messages"][0]["content"]["text"]

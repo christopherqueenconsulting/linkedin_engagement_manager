@@ -10,7 +10,8 @@ does, and exits non-zero on the first mismatch it reports (it keeps going to rep
    so step 3 never calls it (a smoke run must not leave an unconfirmed fact in a real story bank).
 3. Every READ tool is called with minimal valid arguments and must not come back `isError`
    (`lem_get_post` uses the first post `lem_list_posts` returns, and is skipped when there is none;
-   `lem_list_outreach` is called once per queue on an `mcp_outreach` token).
+   `lem_list_outreach` is called once per queue on an `mcp_outreach` token;
+   `lem_get_setup_checklist` (#2802) is a read and is called once with no arguments).
 4. A token in the query string gets 400 `token_in_url_refused`. With a throwaway token (minted by
    `--mint-local-for`), the token must ALSO be revoked by that request.
 5. A bad bearer gets 401 `invalid_token`.

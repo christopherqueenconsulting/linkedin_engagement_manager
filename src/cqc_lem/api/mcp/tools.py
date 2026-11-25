@@ -43,6 +43,8 @@ from cqc_lem.api.mcp.loopback import FAN_OUT_CONCURRENCY, REFUSED, Loopback, Too
 from cqc_lem.api.mcp.redact import THIRD_PARTY_NOTE, fence_row, fence_rows
 from cqc_lem.api.mcp.tools_spend import SPEND_EXPLANATION, spend_tools
 from cqc_lem.utilities.db import (
+    DEFAULT_POSTING_DAYS,
+    DEFAULT_POSTS_PER_WEEK,
     SESSION_SCOPE_MCP,
     SESSION_SCOPE_MCP_OUTREACH,
     AuthAuditEvent,
@@ -625,6 +627,145 @@ async def _newsletter_subscribers(lb: Loopback, args: SubscriberArgs) -> dict[st
                      "this is the paged count history.")}
 
 
+# --- the setup checklist (#2802) -------------------------------------------------------------------
+
+_CHECKLIST_CALLS = ((GET, "/user/account-readiness"), (GET, "/user/engagement-preferences"),
+                    (GET, "/user/story-bank"), (GET, "/user/lead-magnet"),
+                    (GET, "/user/newsletter-settings"), (GET, "/user/timezone"))
+_UPDATE_SETTINGS = "lem_update_settings"
+_READINESS_WHY_CAP = 200
+
+
+def _settings_fix(*fields: str) -> dict[str, Any]:
+    return {"tool": _UPDATE_SETTINGS, "fields": list(fields)}
+
+
+def _open_fix(screen: str = "account") -> dict[str, Any]:
+    return {"open_in_lem": screen}
+
+
+def _checklist_item(key: str, label: str, ok: Optional[bool], why: str,
+                    fix: dict[str, Any], **extra: Any) -> dict[str, Any]:
+    return {"key": key, "label": label, "ok": ok, "why_it_matters": why, "fix": fix, **extra}
+
+
+def _readable(value: Any) -> Optional[dict[str, Any]]:
+    """A fan-out part as a dict, or None when it failed or is not the shape the route promises."""
+    return value if isinstance(value, dict) else None
+
+
+def _blank(value: Any) -> bool:
+    return not (isinstance(value, str) and value.strip())
+
+
+def _readiness_items(readiness: Any) -> list[dict[str, Any]]:
+    """The account-readiness items as checklist rows; a part that cannot be read is one unknown row."""
+    rows = readiness.get("items") if isinstance(readiness, dict) else None
+    if not isinstance(rows, list):
+        return [_checklist_item("account_readiness", "Account readiness", None,
+                                "LEM could not read the account's connection checks just now.",
+                                _open_fix())]
+    items = []
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("key"), str):
+            continue
+        hint = row.get("hint")
+        why = hint[:_READINESS_WHY_CAP] if isinstance(hint, str) and hint else "Needed by LEM's automation."
+        ok = row["ok"] if isinstance(row.get("ok"), bool) else None
+        items.append(_checklist_item(f"readiness_{row['key']}", str(row.get("label") or row["key"]),
+                                     ok, why, _open_fix(), required=bool(row.get("required"))))
+    return items
+
+
+def _story_count(stories: Any) -> tuple[Optional[int], list[str]]:
+    """How many story-bank entries count, and a note when "verified" could not be applied."""
+    entries = stories.get("entries") if isinstance(stories, dict) else None
+    if not isinstance(entries, list):
+        return None, []
+    rows = [e for e in entries if isinstance(e, dict)]
+    if any("verified" in e for e in rows):
+        return sum(1 for e in rows if e.get("verified") is True), []
+    return len(rows), ["The story bank does not report which entries the user verified, so every "
+                       "entry is counted."]
+
+
+def _cadence_ok(prefs: Optional[dict[str, Any]]) -> Optional[bool]:
+    if prefs is None:
+        return None
+    days, per_week = prefs.get("posting_days"), prefs.get("posts_per_week")
+    if not isinstance(days, list) or not isinstance(per_week, int):
+        return None
+    return not (sorted(days) == sorted(DEFAULT_POSTING_DAYS) and per_week == DEFAULT_POSTS_PER_WEEK)
+
+
+def _windows_ok(prefs: Optional[dict[str, Any]], zone: Any) -> Optional[bool]:
+    """Posting windows are set AND there is a timezone to read them in; unreadable is None."""
+    if prefs is None:
+        return None
+    if not prefs.get("session_windows"):
+        return False
+    if not _blank(prefs.get("session_timezone")):
+        return True
+    named = _readable(zone)
+    return None if named is None else not _blank(named.get("timezone"))
+
+
+def _alignment_items(prefs: Optional[dict[str, Any]], stories: Any, magnet: Any, newsletter: Any,
+                     zone: Any) -> tuple[list[dict[str, Any]], list[str]]:
+    def pref(test: Callable[[dict[str, Any]], bool]) -> Optional[bool]:
+        return None if prefs is None else test(prefs)
+
+    count, notes = _story_count(stories)
+    magnet, newsletter = _readable(magnet), _readable(newsletter)
+    items = [
+        _checklist_item("icp_defined", "Ideal customer profile", pref(
+            lambda p: isinstance(p.get("icp_definition"), dict) and bool(p["icp_definition"])),
+            "Lead scoring and comment targeting use it to tell a prospect from a bystander.",
+            _settings_fix("icp_definition", "icp_builder_enabled")),
+        _checklist_item("focus_topics", "Focus topics", pref(lambda p: bool(p.get("focus_topics"))),
+                        "The feed scan and your posts stay on the subjects you want to be known for.",
+                        _settings_fix("focus_topics")),
+        _checklist_item("voice", "Voice (tone and style)", pref(
+            lambda p: not (_blank(p.get("tone")) and _blank(p.get("comment_style")))),
+            "Without it every comment and draft falls back to a generic voice.",
+            _settings_fix("tone", "comment_style")),
+        _checklist_item("story_bank", "Story bank", None if count is None else count > 0,
+                        "Posts may only cite facts the user supplied; an empty bank leaves drafts "
+                        "with nothing true to say.", _open_fix(), count=count),
+        _checklist_item("lead_magnet", "Lead magnet", None if magnet is None else bool(
+            magnet.get("enabled") and not _blank(magnet.get("keyword"))),
+            "A keyword and an asset give every post a call to action that is not a meeting ask.",
+            _settings_fix("lead_magnet_enabled", "lead_magnet_keyword", "lead_magnet_message")),
+        _checklist_item("cadence", "Posting cadence chosen", _cadence_ok(prefs),
+                        "Posting days and posts per week still match LEM's defaults; confirm they "
+                        "fit the user's week.", _settings_fix("posting_days", "posts_per_week")),
+        _checklist_item("session_windows", "Active hours and timezone", _windows_ok(prefs, zone),
+                        "Engagement runs inside the user's own working hours, in their timezone.",
+                        _settings_fix("session_windows", "session_timezone", "timezone")),
+        _checklist_item("newsletter_topic", "Newsletter topic",
+                        None if newsletter is None else not (
+                            newsletter.get("enabled") and _blank(newsletter.get("topic"))),
+                        "An enabled newsletter with no topic has nothing to write about.",
+                        _settings_fix("newsletter_topic", "newsletter_cadence")),
+    ]
+    return items, notes
+
+
+async def _setup_checklist(lb: Loopback, _args: NoArgs) -> dict[str, Any]:
+    readiness, prefs, stories, magnet, newsletter, zone = await _gather(
+        *(lambda path=path: lb.get(path) for _method, path in _CHECKLIST_CALLS))
+    alignment, notes = _alignment_items(_readable(prefs), stories, magnet, newsletter, zone)
+    items = _readiness_items(readiness) + alignment
+    return {
+        "items": items,
+        "summary": {"missing": sum(1 for i in items if i["ok"] is False),
+                    "unknown": sum(1 for i in items if i["ok"] is None),
+                    "done": sum(1 for i in items if i["ok"] is True)},
+        "notes": [*notes, "`ok: null` means LEM could not read that section: it is unknown, not "
+                  "missing. Nothing here quotes the user's content or anyone else's text."],
+    }
+
+
 # The queue-only write tools' sentence in `agent_capabilities` (W2, `tools_write.py`). Spelled
 # here, not imported: `tools_write` imports this module.
 _WRITE_EXPLANATION = (
@@ -707,6 +848,12 @@ READ_TOOLS: tuple[ToolSpec, ...] = (
              "Whether automation is running safely: pause and rate-limit state (fleet-global), "
              "LinkedIn sign-in status and account readiness. `unknown` is not broken.",
              NoArgs, BOTH_SCOPES, _HEALTH_CALLS, _automation_health),
+    ToolSpec("lem_get_setup_checklist", "Setup checklist",
+             "What is still missing for LEM to work well for you: connection checks plus alignment "
+             "gaps (ICP, focus topics, voice, story bank, lead magnet, cadence, active hours, "
+             "newsletter topic). Each item has `ok` (true, false, or null when unreadable) and a "
+             "`fix`: the settings fields to change, or a screen to open in LEM.",
+             NoArgs, BOTH_SCOPES, _CHECKLIST_CALLS, _setup_checklist),
     ToolSpec("lem_list_posts", "List posts",
              "Your posts, newest first by default, with status, gate reasons and authenticity "
              "score. Page with `cursor`. A curated post's source credit and URL are withheld "
