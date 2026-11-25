@@ -96,6 +96,11 @@ BUILTIN_EXCLUDED_PREFIXES = (
     # can't ground a personal claim for a given post; escalating it filed a GitHub issue against a
     # safety gate working exactly as designed (#1995).
     "Comment failed the quality contract after ",
+    # `api.mcp.gate._query_token_refusal`'s revocation line (`gate.EXPOSED_TOKEN_LOG_PREFIX`). A
+    # token sent in a URL is already fully handled (revoked, audited, owner emailed) and recurs at
+    # whatever rate a client leaks credentials, so escalating it files a code defect against a
+    # defence working as designed (#2825).
+    "MCP request refused: exposed token in query string was revoked",
 )
 
 
