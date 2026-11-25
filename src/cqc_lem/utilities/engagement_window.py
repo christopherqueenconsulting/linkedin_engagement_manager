@@ -535,7 +535,7 @@ def session_window_mode() -> str:
 
 
 SESSION_WINDOW_MODE_LOG_PREFIX = "Session window mode: "
-_MODE_LOGGED = False
+_MODE_LOGGED: set[str] = set()
 
 
 def log_session_window_mode_once() -> str:
@@ -544,10 +544,9 @@ def log_session_window_mode_once() -> str:
     The audit reads this line back from the persistent log to say how long a mode has held, so
     the format is a contract: `Session window mode: off|shadow|enforce`. Never a warning.
     """
-    global _MODE_LOGGED
     mode = session_window_mode()
     if not _MODE_LOGGED:
-        _MODE_LOGGED = True
+        _MODE_LOGGED.add(mode)
         log_info(f"{SESSION_WINDOW_MODE_LOG_PREFIX}{mode}")
     return mode
 

@@ -215,7 +215,7 @@ class TestReadOnly:
 
 class TestModeLogOnce:
     def test_logged_once_per_process(self, monkeypatch):
-        monkeypatch.setattr(ew, "_MODE_LOGGED", False)
+        monkeypatch.setattr(ew, "_MODE_LOGGED", set())
         monkeypatch.setenv("SESSION_WINDOW_MODE", "shadow")
         with patch(f"{ew.__name__}.log_info") as info, patch(f"{ew.__name__}.log_warning") as warn:
             assert ew.log_session_window_mode_once() == "shadow"
