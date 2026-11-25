@@ -168,14 +168,19 @@ def _audit_write(principal: Any, tool: str, target_id: Any, spec: Any = None,
 
 
 def _audit_settings_failure(principal: Any, spec: Any, landed: list[str],
-                            unconfirmed: list[str]) -> None:
+                            unconfirmed: list[str], raised: Optional[list[str]] = None) -> None:
     """One `mcp_settings` row for a settings call that failed after a PUT was sent: names only.
 
     `fields` landed for certain; `unconfirmed` were sent and may or may not have landed (a timeout or
-    a 5xx). Best effort, like `_audit_write`.
+    a 5xx). `raised` are the landed cap names that moved toward more LinkedIn activity (#2801), so a
+    raise that landed before a later failure is still marked. Best effort, like `_audit_write`.
     """
-    details = {"tool": spec.name, "fields": sorted(set(landed)),
-               "unconfirmed": sorted(set(unconfirmed) - set(landed)), "scope": principal.scope}
+    details: dict[str, Any] = {"tool": spec.name, "fields": sorted(set(landed)),
+                               "unconfirmed": sorted(set(unconfirmed) - set(landed)),
+                               "scope": principal.scope}
+    landed_raised = sorted(set(raised or []) & set(landed))
+    if landed_raised:
+        details.update({"raised": True, "raised_fields": landed_raised})
     try:
         record_auth_event(spec.audit_event, user_id=principal.user_id,
                           session_id=principal.session_id, details=details)
@@ -286,17 +291,20 @@ async def run_write(spec: Any, args: BaseModel, principal: Any,
     def _sent() -> bool:
         return True if attempted is None else bool(attempted())
 
-    def _fields() -> tuple[list[str], list[str]]:
-        return ledger() if ledger is not None else ([], [])
+    def _fields() -> tuple[list[str], list[str], list[str]]:
+        if ledger is None:
+            return [], [], []
+        got = tuple(ledger())
+        return got[0], got[1], (got[2] if len(got) > 2 else [])
 
     async def _audit_failure(unconfirmed_too: bool) -> list[str]:
         """Audit a settings call that failed part-way; returns the landed field names."""
         if getattr(spec, "audit_event", None) is None:
             return []
-        landed, tried = _fields()
+        landed, tried, raised = _fields()
         if landed or (unconfirmed_too and tried):
             await run_in_threadpool(_audit_settings_failure, principal, spec, landed,
-                                    tried if unconfirmed_too else [])
+                                    tried if unconfirmed_too else [], raised)
         return landed
 
     unknown_text = (UNKNOWN_MESSAGE if getattr(spec, "audit_event", None) is None else

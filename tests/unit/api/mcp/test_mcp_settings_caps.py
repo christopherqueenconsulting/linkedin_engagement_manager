@@ -264,3 +264,63 @@ class TestTheRouteGuardEnforcesItToo:
         finally:
             main._request_session_scope.reset(scope)
         assert exc.value.detail["code"] == "mcp_field_not_editable"
+
+
+class TestHardeningResiduals:
+    def test_a_raise_that_landed_before_a_later_failure_is_still_marked_in_the_audit(
+            self, api_client: Any, seat: Store, audit: MagicMock) -> None:
+        with patch("cqc_lem.api.routers.user.update_user_timezone", return_value=False):
+            result = _update(api_client, {"max_dms_per_day": 9, "timezone": "Europe/Paris"},
+                             acknowledge_risk=True)
+        assert result["isError"] is True
+        assert seat.prefs["max_dms_per_day"] == 9
+        details = audit.call_args.kwargs["details"]
+        assert details["fields"] == ["max_dms_per_day"]
+        assert details["raised"] is True and details["raised_fields"] == ["max_dms_per_day"]
+
+    def test_a_failure_after_only_a_lowering_carries_no_raised_marker(
+            self, api_client: Any, seat: Store, audit: MagicMock) -> None:
+        with patch("cqc_lem.api.routers.user.update_user_timezone", return_value=False):
+            _update(api_client, {"max_dms_per_day": 1, "timezone": "Europe/Paris"},
+                    acknowledge_risk=True)
+        assert "raised" not in audit.call_args.kwargs["details"]
+
+    def test_an_unparseable_cap_value_fails_closed_without_the_acknowledgement(
+            self, seat: Store) -> None:
+        from cqc_lem.api import main
+        from cqc_lem.api.routers import user as routes
+
+        class _Body:
+            max_dms_per_day = "lots"
+
+        http = MagicMock()
+        http.headers = {}
+        scope = main._request_session_scope.set("mcp")
+        req = main._request_object.set(http)
+        try:
+            with pytest.raises(HTTPException) as exc:
+                routes._mcp_cap_raise_check(UID, _Body(), {"max_dms_per_day"})
+        finally:
+            main._request_object.reset(req)
+            main._request_session_scope.reset(scope)
+        assert exc.value.status_code == 403
+        assert exc.value.detail["code"] == "cap_raise_needs_acknowledgement"
+        assert "max_dms_per_day" in exc.value.detail["message"]
+
+    def test_the_header_is_never_sent_when_nothing_is_raised(self, api_client: Any,
+                                                             seat: Store) -> None:
+        from cqc_lem.api.mcp.loopback import Loopback
+
+        seen: list[Any] = []
+        real = Loopback.write
+
+        async def spy(self: Any, *args: Any, **kwargs: Any) -> Any:
+            seen.append(kwargs.get("headers"))
+            return await real(self, *args, **kwargs)
+
+        with patch.object(Loopback, "write", spy):
+            _update(api_client, {"tone": "direct"}, acknowledge_risk=True)
+            _update(api_client, {"max_comments_per_day": 2, "timezone": "Europe/Paris"},
+                    acknowledge_risk=True)
+            _update(api_client, {"max_dms_per_day": 4}, acknowledge_risk=True)  # unchanged
+        assert seen and all(h is None for h in seen)

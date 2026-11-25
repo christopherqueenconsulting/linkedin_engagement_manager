@@ -157,6 +157,8 @@ class Loopback:
     # be audited by `run_write` (never values).
     attempted_fields: list = field(default_factory=list)
     landed_fields: list = field(default_factory=list)
+    # The cap names among `landed_fields` that moved toward more LinkedIn activity (#2801).
+    raised_fields: list = field(default_factory=list)
     last_status: Optional[int] = None
     _limiter: anyio.Semaphore = field(default_factory=lambda: anyio.Semaphore(FAN_OUT_CONCURRENCY),
                                       repr=False)

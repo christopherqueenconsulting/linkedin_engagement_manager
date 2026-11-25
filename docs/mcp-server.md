@@ -213,8 +213,13 @@ preferences row: `max_comments_per_day`, `max_dms_per_day`, `max_invites_per_day
   bounds, and refuses an MCP seat's un-acknowledged raise with 403 `cap_raise_needs_acknowledgement`
   (503 `settings_unavailable` if the stored caps cannot be read: a raise cannot be ruled out). Other
   scopes, the SPA included, are untouched by the rule.
+  This re-check guards against a tool bug. It does not stop a hostile agent from setting
+  `acknowledge_risk: true` itself: that case is bounded by the ceilings below, the write budgets (30 an
+  hour, 150 a day) and the audit `raised` marker.
 - **Audit.** The `mcp_settings` row gains `raised: true` and `raised_fields: [names]` when a cap was
-  raised. Names only, never a value.
+  raised, including a raise that landed before a later resource failed. Names only, never a value.
+- **If undo is unavailable** (Redis down or the 7 days passed), change the value back on the SPA
+  Account page.
 
 Ceilings (`routers/user._cap_bounds`, the one table the tool and the route read; the SPA's PUT enforces
 the same numbers through the request-model validators and the upsert):
@@ -232,7 +237,9 @@ the same numbers through the request-model validators and the upsert):
 
 The DM and invite ceilings are new because nothing server-side bounded them before: only the SPA's
 presets did. They sit above every preset and the brand account's own ceilings (20 DMs, 10 invites), so
-they bound a mistake and change no existing behaviour. When a clamp bites the answer carries
+they bound a mistake. A stored row already above 100 DMs or 30 invites is clamped down to the ceiling
+on its next write (any save of the preferences, SPA or MCP), so this is a behaviour change for such a
+row. When a clamp bites the answer carries
 `clamped: {field: {requested, applied, limit}}` plus a note, and `changed` shows the stored value.
 
 **Merge, never replace.** `PUT /user/engagement-preferences` replaces the whole record and Pydantic

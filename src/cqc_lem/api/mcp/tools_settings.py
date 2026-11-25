@@ -252,7 +252,7 @@ def _drop_undo(user_id: int, undo_id: str) -> None:
 # --- writing --------------------------------------------------------------------------------------
 
 
-async def _apply(lb: Loopback, values: dict[str, Any], acknowledged: bool = False) -> list[str]:
+async def _apply(lb: Loopback, values: dict[str, Any], raised: Any = ()) -> list[str]:
     """PUT `values` (`{field: value}`) one resource at a time, sending only those keys.
 
     Returns:
@@ -264,7 +264,8 @@ async def _apply(lb: Loopback, values: dict[str, Any], acknowledged: bool = Fals
         ToolFailure: The first write failed: nothing changed.
     """
     done: list[str] = []
-    headers = {policy.ACK_HEADER: "true"} if acknowledged else None
+    # The acknowledgement header goes out only when this call really raises a cap.
+    headers = {policy.ACK_HEADER: "true"} if raised else None
     for resource, fields in policy.by_resource(values).items():
         body = {policy.FIELD_TARGETS[f][1]: values[f] for f in fields}
         none_keys = frozenset(k for k, v in body.items() if v is None)
@@ -273,6 +274,7 @@ async def _apply(lb: Loopback, values: dict[str, Any], acknowledged: bool = Fals
             await lb.write(PUT, _WRITE_PATHS[resource], body, keep_none=none_keys,
                            headers=headers)
             lb.landed_fields.extend(fields)
+            lb.raised_fields.extend(f for f in fields if f in raised)
         except ToolFailure as failure:
             if done:
                 raise _Partial(failure, done) from None
@@ -354,7 +356,7 @@ async def _update_settings(lb: Loopback, args: UpdateSettingsArgs) -> dict[str, 
     applied: list[str] = []
     partial: Optional[_Partial] = None
     try:
-        applied = await _apply(lb, to_write, acknowledged=bool(raised))
+        applied = await _apply(lb, to_write, raised=frozenset(raised))
     except _Partial as exc:
         partial, applied = exc, exc.applied
     after = {f: normal[f] for f in applied}
@@ -414,8 +416,10 @@ async def _undo_settings(lb: Loopback, args: UndoSettingsArgs) -> dict[str, Any]
     current = {f: _value(f, blobs) for f in values}
     warnings = _gate_raises({f: v for f, v in values.items() if not policy.same(current[f], v)},
                             current, bounds, args.acknowledge_risk)
+    undo_raised = frozenset(f for f in values if f in policy.CAP_EDITABLE
+                            and policy.is_raise(f, current[f], values[f]))
     try:
-        restored = await _apply(lb, values, acknowledged=bool(warnings)) if values else []
+        restored = await _apply(lb, values, raised=undo_raised) if values else []
     except _Partial as exc:
         raise _partial_failure(exc, None) from None
     if len(restored) == len(fields):

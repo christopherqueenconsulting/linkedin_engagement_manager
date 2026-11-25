@@ -369,6 +369,9 @@ def _mcp_cap_raise_check(user_id: int, body: Any, sent: Any) -> None:
         try:
             value = min(high, max(low, int(getattr(body, field))))
         except (TypeError, ValueError):
+            # Unparseable: a raise cannot be ruled out, so it needs the acknowledgement (fails closed).
+            warnings.append(f"{field} could not be read as a number, so it is treated as a raise. "
+                            + raise_warning(field, stored.get(field), "(unreadable)", low, high))
             continue
         if is_raise(field, stored.get(field), value):
             warnings.append(raise_warning(field, stored.get(field), value, low, high))
