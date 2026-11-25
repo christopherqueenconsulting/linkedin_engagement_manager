@@ -54,7 +54,7 @@ from cqc_lem.utilities.db import (
     record_auth_event,
 )
 from cqc_lem.utilities.flags import MCP_SERVER_WRITES, flag_enabled
-from cqc_lem.utilities.logger import log_debug, log_info
+from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 
 DEDUPE_TTL_SECONDS = 600
 _PENDING, _DONE, _UNKNOWN = "pending", "done", "unknown"
@@ -160,7 +160,23 @@ def _audit_write(principal: Any, tool: str, target_id: Any, spec: Any = None,
         record_auth_event(event, user_id=principal.user_id, session_id=principal.session_id,
                           details=details)
     except Exception as exc:  # noqa: BLE001 — the write landed; a lost audit row must not undo it.
-        log_debug("MCP write audit row not written", error_type=type(exc).__name__)
+        log_warning("MCP write audit row not written", error_type=type(exc).__name__)
+
+
+def _audit_settings_failure(principal: Any, spec: Any, landed: list[str],
+                            unconfirmed: list[str]) -> None:
+    """One `mcp_settings` row for a settings call that failed after a PUT was sent: names only.
+
+    `fields` landed for certain; `unconfirmed` were sent and may or may not have landed (a timeout or
+    a 5xx). Best effort, like `_audit_write`.
+    """
+    details = {"tool": spec.name, "fields": sorted(set(landed)),
+               "unconfirmed": sorted(set(unconfirmed) - set(landed)), "scope": principal.scope}
+    try:
+        record_auth_event(spec.audit_event, user_id=principal.user_id,
+                          session_id=principal.session_id, details=details)
+    except Exception as exc:  # noqa: BLE001
+        log_warning("MCP settings audit row not written", error_type=type(exc).__name__)
 
 
 async def _check_preconditions(spec: Any, principal: Any) -> None:
@@ -229,7 +245,9 @@ async def _spend_budget(key: Optional[str], principal: Any) -> None:
 
 async def run_write(spec: Any, args: BaseModel, principal: Any,
                     run: Callable[[], Awaitable[dict[str, Any]]], timeout: float,
-                    attempted: Optional[Callable[[], bool]] = None) -> dict[str, Any]:
+                    attempted: Optional[Callable[[], bool]] = None,
+                    ledger: Optional[Callable[[], tuple[list[str], list[str]]]] = None
+                    ) -> dict[str, Any]:
     """Run one write tool call through the flag, dedupe, budgets, time limit and audit.
 
     Args:
@@ -240,6 +258,9 @@ async def run_write(spec: Any, args: BaseModel, principal: Any,
         timeout: The tool time limit, in seconds.
         attempted: Whether the runner has SENT a write yet (`Loopback.writes_attempted`). A failure
             before that changed nothing, so it is never `unknown`. None means "assume it did".
+        ledger: For a spec with an `audit_event` (settings): `(landed, attempted)` field names so far.
+            A failure after a PUT landed or was sent writes ONE audit row with those names, and
+            settles the dedupe key instead of releasing it, so a retry never re-runs the first PUT.
 
     Returns:
         The tool's answer, or the first answer replayed for a duplicate.
@@ -261,6 +282,22 @@ async def run_write(spec: Any, args: BaseModel, principal: Any,
     def _sent() -> bool:
         return True if attempted is None else bool(attempted())
 
+    def _fields() -> tuple[list[str], list[str]]:
+        return ledger() if ledger is not None else ([], [])
+
+    async def _audit_failure(unconfirmed_too: bool) -> list[str]:
+        """Audit a settings call that failed part-way; returns the landed field names."""
+        if getattr(spec, "audit_event", None) is None:
+            return []
+        landed, tried = _fields()
+        if landed or (unconfirmed_too and tried):
+            await run_in_threadpool(_audit_settings_failure, principal, spec, landed,
+                                    tried if unconfirmed_too else [])
+        return landed
+
+    unknown_text = (UNKNOWN_MESSAGE if getattr(spec, "audit_event", None) is None else
+                    "LEM did not confirm this settings change, so it may or may not have happened. "
+                    "Do NOT retry it: read lem_get_engagement_settings first.")
     try:
         payload = await asyncio.wait_for(run(), timeout)
     except asyncio.TimeoutError:
@@ -270,17 +307,24 @@ async def run_write(spec: Any, args: BaseModel, principal: Any,
                               "LEM took too long before anything was written. Nothing changed; "
                               "try again.") from None
         await _settle(key, digest, _UNKNOWN)
-        raise ToolFailure(UNKNOWN, "outcome_unknown", UNKNOWN_MESSAGE) from None
+        await _audit_failure(True)
+        raise ToolFailure(UNKNOWN, "outcome_unknown", unknown_text) from None
     except ToolFailure as failure:
         if failure.outcome == UPSTREAM_ERROR and _sent():
             await _settle(key, digest, _UNKNOWN)
-            raise ToolFailure(UNKNOWN, failure.code, UNKNOWN_MESSAGE,
+            await _audit_failure(True)
+            raise ToolFailure(UNKNOWN, failure.code, unknown_text,
                               failure.inner_status) from None
-        await _release(key)
+        if await _audit_failure(False):
+            # Part of it landed: a retry must not run the first PUT again.
+            await _settle(key, digest, _UNKNOWN)
+        else:
+            await _release(key)
         raise
     except Exception:
         if _sent():
             await _settle(key, digest, _UNKNOWN)
+            await _audit_failure(True)
         else:
             await _release(key)
         raise

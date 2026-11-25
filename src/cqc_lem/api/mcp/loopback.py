@@ -153,6 +153,10 @@ class Loopback:
     inner_calls: int = 0
     # Writes SENT to a route (W2): a write tool's failure before the first one changed nothing.
     writes_attempted: int = 0
+    # Settings field NAMES a settings tool has sent / seen land (#2800), so a failure part-way can
+    # be audited by `run_write` (never values).
+    attempted_fields: list = field(default_factory=list)
+    landed_fields: list = field(default_factory=list)
     last_status: Optional[int] = None
     _limiter: anyio.Semaphore = field(default_factory=lambda: anyio.Semaphore(FAN_OUT_CONCURRENCY),
                                       repr=False)

@@ -41,7 +41,7 @@ from cqc_lem.api.mcp.tools import BOTH_SCOPES, ToolSpec, _spa_url
 from cqc_lem.api.mcp.tools_write import WriteArgs
 from cqc_lem.utilities.db import AuthAuditEvent
 from cqc_lem.utilities.flags import MCP_SETTINGS_WRITES
-from cqc_lem.utilities.logger import log_debug
+from cqc_lem.utilities.logger import log_debug, log_warning
 
 PUT = "PUT"
 UNDO_TTL_SECONDS = 7 * 24 * 3600
@@ -203,7 +203,7 @@ def _save_undo(user_id: int, record: dict[str, Any]) -> Optional[str]:
         client.set(_undo_key(user_id, undo_id), json.dumps(record, default=str),
                    ex=UNDO_TTL_SECONDS)
     except Exception as exc:  # noqa: BLE001 — the change landed; a lost undo only loses the undo.
-        log_debug("MCP settings undo record not stored", error_type=type(exc).__name__)
+        log_warning("MCP settings undo record not stored", error_type=type(exc).__name__)
         return None
     return undo_id
 
@@ -255,8 +255,10 @@ async def _apply(lb: Loopback, values: dict[str, Any]) -> list[str]:
     for resource, fields in policy.by_resource(values).items():
         body = {policy.FIELD_TARGETS[f][1]: values[f] for f in fields}
         none_keys = frozenset(k for k, v in body.items() if v is None)
+        lb.attempted_fields.extend(fields)
         try:
             await lb.write(PUT, _WRITE_PATHS[resource], body, keep_none=none_keys)
+            lb.landed_fields.extend(fields)
         except ToolFailure as failure:
             if done:
                 raise _Partial(failure, done) from None

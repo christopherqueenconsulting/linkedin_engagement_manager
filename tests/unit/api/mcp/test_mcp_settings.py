@@ -312,6 +312,86 @@ class TestTheDiffAndTheAudit:
         assert spend.call_count == 1
 
 
+def _refuse(status: int = 403) -> HTTPException:
+    return HTTPException(status_code=status, detail={"code": "nope", "message": "refused"})
+
+
+class TestAPartialOrUnknownWriteLeavesARow:
+    """A multi-resource call that fails after the first PUT landed is audited, names only."""
+
+    CHANGES = {"tone": _CANARY, "lead_magnet_keyword": "AUDIT"}
+
+    def test_a_second_resource_refusal_audits_only_the_first_resources_fields(
+            self, api_client: Any, seat: Store, audit: MagicMock) -> None:
+        with patch(f"{_U}.update_lead_magnet_settings", side_effect=_refuse()):
+            error = _error(_update(api_client, self.CHANGES))
+        assert seat.prefs["tone"] == _CANARY and seat.magnet["keyword"] == "GUIDE"
+        audit.assert_called_once()
+        assert audit.call_args.args[0] == AuthAuditEvent.MCP_SETTINGS
+        assert audit.call_args.kwargs["details"] == {
+            "tool": "lem_update_settings", "fields": ["tone"], "unconfirmed": [], "scope": "mcp"}
+        assert _CANARY not in json.dumps(audit.call_args.kwargs, default=str)
+        assert "tone" in error["message"] and "undo_id" in error["message"]
+
+    def test_the_undo_for_what_landed_is_saved_and_works(self, api_client: Any, seat: Store,
+                                                         fake_redis: Any) -> None:
+        with patch(f"{_U}.update_lead_magnet_settings", side_effect=_refuse()):
+            error = _error(_update(api_client, self.CHANGES))
+        undo_id = error["message"].split("undo_id ")[1].rstrip(".")
+        assert any(k.endswith(undo_id) for k in fake_redis.store)
+        call(api_client, "lem_undo_settings_change", {"undo_id": undo_id})
+        assert seat.prefs["tone"] == "warm"
+
+    def test_a_replay_with_the_same_request_id_does_not_rerun_the_first_put(
+            self, api_client: Any, seat: Store, audit: MagicMock) -> None:
+        with patch(f"{_U}.update_lead_magnet_settings", side_effect=_refuse()):
+            _update(api_client, self.CHANGES, client_request_id="req-p")
+            again = _error(_update(api_client, self.CHANGES, client_request_id="req-p"))
+        assert again["code"] == "duplicate_outcome_unknown"
+        assert seat.prefs_writes == [{"tone": _CANARY}]
+        audit.assert_called_once()
+
+    def test_a_timeout_after_the_first_write_is_one_row_marked_unconfirmed(
+            self, api_client: Any, seat: Store, audit: MagicMock) -> None:
+        import time
+
+        def slow(_user: int, settings: dict) -> bool:
+            time.sleep(0.6)
+            return seat.put_magnet(_user, settings)
+
+        with patch("cqc_lem.api.mcp.calls.TOOL_TIMEOUT_SECONDS", 0.25), \
+                patch(f"{_U}.update_lead_magnet_settings", side_effect=slow):
+            error = _error(_update(api_client, self.CHANGES))
+        assert error["code"] == "outcome_unknown" and error["outcome"] == "unknown"
+        audit.assert_called_once()
+        assert audit.call_args.kwargs["details"] == {
+            "tool": "lem_update_settings", "fields": ["tone"],
+            "unconfirmed": ["lead_magnet_keyword"], "scope": "mcp"}
+
+    def test_a_server_error_after_a_write_is_unknown_and_audited(
+            self, api_client: Any, seat: Store, audit: MagicMock) -> None:
+        with patch(f"{_U}.update_lead_magnet_settings", return_value=False):
+            error = _error(_update(api_client, self.CHANGES))
+        assert error["outcome"] == "unknown"
+        details = audit.call_args.kwargs["details"]
+        assert details["fields"] == ["tone"] and details["unconfirmed"] == ["lead_magnet_keyword"]
+
+    def test_a_failure_before_any_write_leaves_no_row_and_frees_the_id(
+            self, api_client: Any, seat: Store, audit: MagicMock) -> None:
+        with patch(f"{_U}.update_engagement_preferences", side_effect=_refuse()):
+            _error(_update(api_client, self.CHANGES, client_request_id="req-n"))
+        audit.assert_not_called()
+        ok = _update(api_client, self.CHANGES, client_request_id="req-n")
+        assert ok["isError"] is False
+
+    def test_a_lost_audit_row_is_a_warning_not_a_failure(self, api_client: Any, seat: Store,
+                                                         audit: MagicMock, caplog: Any) -> None:
+        audit.side_effect = RuntimeError("db down")
+        result = _update(api_client, {"tone": "direct"})
+        assert result["isError"] is False
+        assert "MCP write audit row not written" in caplog.text
+
+
 class TestUndo:
     def _change(self, client: Any) -> str:
         return structured(_update(client, {"tone": "direct", "include_topics": ["x"],

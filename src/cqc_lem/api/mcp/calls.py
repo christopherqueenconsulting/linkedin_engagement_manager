@@ -201,7 +201,9 @@ async def call_tool(request: Optional[Request], name: str,
             bound = loopback
             payload = await writes.run_write(spec, args, principal,
                                              lambda: spec.run(bound, args), TOOL_TIMEOUT_SECONDS,
-                                             attempted=lambda: bound.writes_attempted > 0)
+                                             attempted=lambda: bound.writes_attempted > 0,
+                                             ledger=lambda: (list(bound.landed_fields),
+                                                             list(bound.attempted_fields)))
         else:
             payload = await asyncio.wait_for(spec.run(loopback, args), TOOL_TIMEOUT_SECONDS)
         shaped = finalize(payload)

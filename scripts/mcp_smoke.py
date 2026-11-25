@@ -258,6 +258,8 @@ def run_settings_checks(smoke: Smoke, token: str) -> None:
     marker = "smoke-" + secrets.token_hex(3)
     current = ((smoke.tool(token, "lem_get_engagement_settings") or {}).get("preferences") or {})
     original = current.get("tone")
+    smoke.out.write(f"       settings round trip: original tone = {original!r}. If this run dies "
+                    "before the undo, set tone back to that value in LEM -> Account.\n")
     changed = smoke.tool(token, "lem_update_settings",
                          {"changes": {"tone": marker}, "client_request_id": "smoke-" + marker}) or {}
     diff = (changed.get("changed") or {}).get("tone") or {}
@@ -266,6 +268,7 @@ def run_settings_checks(smoke: Smoke, token: str) -> None:
     capped = smoke.refusal(token, "lem_update_settings", {"changes": {"max_comments_per_day": 1}})
     smoke.check(capped == "cap_not_editable", "a daily cap is refused", str(capped))
     undo_id = changed.get("undo_id")
+    smoke.out.write(f"       undo_id = {undo_id} (lem_undo_settings_change restores tone)\n")
     if not undo_id:
         smoke.check(False, "lem_update_settings returns an undo_id")
         return

@@ -208,6 +208,24 @@ field NAMES only, instead of `mcp_write`. No setting value goes to PostHog or a 
 only if every field still holds the value the agent set; otherwise it refuses (`undo_conflict`),
 naming the fields, and restores nothing. A used, expired or another user's id is `undo_not_found`.
 
+**A partial or unknown write.** A call can touch several resources (preferences, ICP, lead magnet,
+newsletter, timezone), each its own PUT. If a later PUT fails after an earlier one landed, or a PUT
+was sent and the call times out or gets a 5xx, `run_write` writes ONE `mcp_settings` row anyway:
+`fields` are the names that landed for certain, `unconfirmed` the names that were sent and may or
+may not have landed. Names only, never a value. The dedupe key is then settled as unknown rather
+than released, so the same `client_request_id` answers `duplicate_outcome_unknown` and never re-runs
+the first PUT. A refused later PUT (a 4xx) saves the undo record for what landed BEFORE raising and
+names the `undo_id` in the error message. A timeout or a 5xx has no undo record (the call was cut
+off before it could be built). To find it, read the account's `mcp_settings` rows in Agents ->
+activity; to reverse it, read `lem_get_engagement_settings` (and the lead magnet, newsletter and
+timezone) and set the fields back with `lem_update_settings`, or in LEM. A failure before any PUT
+leaves no row and frees the id.
+
+**Where values are stored.** Setting values, free text included, are held in plain text in Redis in
+two places: the dedupe record of a finished call (`mcp:dedupe:*`, 10 minutes, holds the answer with
+its before/after diff) and the undo record (`mcp:settings-undo:{user}:{undo_id}`, 7 days). The audit
+row and every log line carry field names only. A failed audit or undo write is a `log_warning`.
+
 **Limits and dedupe.** Both tools count against the write budgets (30 an hour, 150 a day) and dedupe on
 `client_request_id` through `run_write`, exactly like a queue write.
 
@@ -414,7 +432,9 @@ It calls `initialize`, compares `tools/list` with the registry for the token's s
 query-string token is refused (and, with a throwaway token, revoked) and a bad bearer is 401, and
 exits non-zero on any mismatch. `--settings` (#2800) adds an optional round trip: it changes `tone` to a
 marker, checks the diff, checks a daily cap is refused, undoes it and checks `tone` is back (skipped
-when `lem_update_settings` is not listed). `--write --recipient <profile URL> --account-kind KIND` (W2,
+when `lem_update_settings` is not listed). It prints the original tone and the `undo_id`; if the run
+dies between the change and the undo, call `lem_undo_settings_change` with that `undo_id`, or set
+tone back to the printed value in LEM. `--write --recipient <profile URL> --account-kind KIND` (W2,
 `mcp_outreach` token, a fixed test recipient) also queues ONE DM and checks it lands pending with
 `source='mcp'`, that a retry with the same `client_request_id` replays, and that a reused request
 id and an `action` on an edit tool are refused. `KIND` is the operator's statement of the
