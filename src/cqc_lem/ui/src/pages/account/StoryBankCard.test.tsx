@@ -99,8 +99,8 @@ describe('StoryBankCard agent drafts (issue #2804)', () => {
     serveEntries([entry({ verified: false, source: 'mcp' })])
     harness(<StoryBankCard />)
     await waitFor(() => expect(screen.getByText(BADGE)).toBeTruthy())
-    expect(screen.getByRole('button', { name: 'Confirm' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Discard' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Confirm Saved a launch' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Discard Saved a launch' })).toBeTruthy()
   })
 
   it("shows no badge on the user's own or an already-confirmed entry", async () => {
@@ -123,10 +123,38 @@ describe('StoryBankCard agent drafts (issue #2804)', () => {
     harness(<StoryBankCard />)
     await waitFor(() => expect(screen.getByText(BADGE)).toBeTruthy())
     const before = get.mock.calls.length
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm Saved a launch' }))
     await waitFor(() => expect(post).toHaveBeenCalledWith('/user/story-bank/confirm',
       { session_token: 'tok', entry_id: 7 }))
     await waitFor(() => expect(get.mock.calls.length).toBeGreaterThan(before))
+  })
+
+  it('after Confirm, announces it in the live region and keeps focus inside the card', async () => {
+    let rows = [entry({ verified: false, source: 'mcp' })]
+    get.mockImplementation(() => Promise.resolve({
+      data: { detail: { entries: rows, kinds: [], target_entries: 5 } } }))
+    post.mockImplementation(() => {
+      rows = [entry({ verified: true, source: 'mcp' })]
+      return Promise.resolve({ data: { detail: 'ok' } })
+    })
+    harness(<StoryBankCard />)
+    await waitFor(() => expect(screen.getByText(BADGE)).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm Saved a launch' }))
+    await waitFor(() => expect(screen.getByTestId('story-bank-live').textContent)
+      .toContain('Entry confirmed.'))
+    expect(screen.queryByText(BADGE)).toBeNull()
+    expect(screen.getByTestId('story-bank').contains(document.activeElement)).toBe(true)
+    expect(document.activeElement).toBe(bodyBox())
+  })
+
+  it('announces a failed confirm in the live region', async () => {
+    serveEntries([entry({ verified: false, source: 'mcp' })])
+    post.mockRejectedValue(new Error('x'))
+    harness(<StoryBankCard />)
+    await waitFor(() => expect(screen.getByText(BADGE)).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm Saved a launch' }))
+    await waitFor(() => expect(screen.getByTestId('story-bank-live').textContent)
+      .toContain('Could not confirm'))
   })
 
   it('Discard deletes the entry', async () => {
@@ -134,7 +162,7 @@ describe('StoryBankCard agent drafts (issue #2804)', () => {
     del.mockResolvedValue({ data: {} })
     harness(<StoryBankCard />)
     await waitFor(() => expect(screen.getByText(BADGE)).toBeTruthy())
-    fireEvent.click(screen.getByRole('button', { name: 'Discard' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Discard Saved a launch' }))
     await waitFor(() => expect(del).toHaveBeenCalledWith('/user/story-bank',
       { data: { session_token: 'tok', entry_id: 7 } }))
     expect(screen.queryByText(BADGE)).toBeNull()

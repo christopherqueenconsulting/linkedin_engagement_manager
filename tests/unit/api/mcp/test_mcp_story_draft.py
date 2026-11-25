@@ -183,3 +183,32 @@ class TestRoutePolicy:
                  for m in (getattr(r, "methods", None) or ())}
         assert ("POST", "/api/user/story-bank/confirm") in paths
         assert ("POST", "/api/user/story-bank/draft") in paths
+
+
+class TestConfirmRouteIsHumanOnly:
+    @pytest.mark.parametrize("scope", ["mcp", "mcp_outreach", "agent", "observer", "operator"])
+    def test_a_machine_scope_is_refused_and_confirms_nothing(self, scope: str) -> None:
+        from fastapi import HTTPException
+
+        from cqc_lem.api.routers import user as route
+
+        with patch.object(route._main, "get_session_user_id", return_value=UID), \
+                patch.object(route._main, "_request_session_scope") as current, \
+                patch.object(route, "confirm_story_bank_entry") as confirm:
+            current.get.return_value = scope
+            with pytest.raises(HTTPException) as exc:
+                route.confirm_story_bank_endpoint(
+                    route.StoryBankConfirmRequest(session_token="t", entry_id=3))
+        assert exc.value.status_code == 403 and exc.value.detail["code"] == "human_only"
+        confirm.assert_not_called()
+
+    def test_a_full_session_confirms(self) -> None:
+        from cqc_lem.api.routers import user as route
+
+        with patch.object(route._main, "get_session_user_id", return_value=UID), \
+                patch.object(route._main, "_request_session_scope") as current, \
+                patch.object(route, "confirm_story_bank_entry", return_value=True) as confirm:
+            current.get.return_value = "full"
+            route.confirm_story_bank_endpoint(
+                route.StoryBankConfirmRequest(session_token="t", entry_id=3))
+        confirm.assert_called_once_with(UID, 3)

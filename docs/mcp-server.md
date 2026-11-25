@@ -368,6 +368,18 @@ the agent must feed only with what the user actually told it; its description sa
   (`DELETE`). Editing the text and saving also confirms it (decided in SQL: a save that changes
   nothing, or only the `active` switch, confirms nothing).
 
+**Rollback and operations (#2804).**
+- Before rolling back past this release, set `mcp-story-drafts` off (`MCP_STORY_DRAFTS_ENABLED=false`):
+  older readers do not filter unverified rows, so an agent draft would start anchoring posts.
+- Waiting drafts: `SELECT count(*) FROM story_bank WHERE source IS NOT NULL AND verified_at IS NULL`.
+  If you must roll back with drafts present, set them `active=0` first
+  (`UPDATE story_bank SET active=0 WHERE source IS NOT NULL AND verified_at IS NULL`).
+- An agent stuck at the 20-draft cap shows as the tool's 409 `too_many_unverified_drafts` reply
+  (visible to the agent and in its transcript); the drafts themselves are the `mcp_story_draft`
+  rows in the Agents tab activity / `auth_audit_log`. Clear it by confirming or discarding drafts.
+- The tool's `review_url` is `/account?section=content`, which opens the Story Bank card
+  (`SettingsHub` section `content`).
+
 ## AI/media spend tools (W2b, owner ruling O4)
 
 `lem_generate_post`, `lem_generate_post_image`, `lem_generate_post_video`, behind `mcp-server-writes`.

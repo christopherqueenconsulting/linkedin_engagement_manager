@@ -4095,6 +4095,10 @@ def confirm_story_bank_endpoint(request: StoryBankConfirmRequest) -> ResponseMod
     user_id = _main.get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
+    # Defence in depth: the grant table already withholds this path from every machine scope.
+    if _main._request_session_scope.get() not in _HUMAN_SESSION_SCOPES:
+        raise HTTPException(status_code=403, detail={
+            "code": "human_only", "message": "Only the signed-in user confirms a story-bank entry."})
     if not confirm_story_bank_entry(user_id, request.entry_id):
         raise HTTPException(status_code=404, detail="Story bank entry not found")
     return ResponseModel(status_code=200, detail="Story bank entry confirmed")

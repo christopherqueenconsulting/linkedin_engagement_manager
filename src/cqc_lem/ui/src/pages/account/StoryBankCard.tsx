@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
 import { useAuth } from '../../contexts/useAuth'
@@ -60,10 +60,17 @@ export default function StoryBankCard() {
     if (entry?.id) removeMutation.mutate(entry.id)
   }
 
+  // Focus must not fall to <body> when the Confirm button it was on disappears with the badge.
+  const bodyRefs = useRef<Record<number, HTMLTextAreaElement | null>>({})
   const confirmMutation = useMutation({
     mutationFn: (entry_id: number) =>
       api.post('/user/story-bank/confirm', { session_token: sessionToken, entry_id }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['story-bank'] }),
+    onSuccess: async (_r, entry_id) => {
+      await queryClient.invalidateQueries({ queryKey: ['story-bank'] })
+      setMsg({ ok: true, text: 'Entry confirmed.' })
+      setTimeout(() => setMsg(null), 3000)
+      bodyRefs.current[entry_id]?.focus()
+    },
     onError: () => {
       setMsg({ ok: false, text: 'Could not confirm — try again.' })
       setTimeout(() => setMsg(null), 5000)
@@ -170,12 +177,14 @@ export default function StoryBankCard() {
                   LEM will not use it until you confirm it. Editing it and saving also confirms it.
                 </span>
                 <button type="button" onClick={() => confirmMutation.mutate(e.id!)}
+                  aria-label={`Confirm ${e.title || 'story entry'}`}
                   disabled={confirmMutation.isPending}
                   className="px-3 py-1 rounded-control bg-accent text-white text-xs font-semibold
                              disabled:opacity-50">
                   Confirm
                 </button>
                 <button type="button" onClick={() => removeRow(idx)}
+                  aria-label={`Discard ${e.title || 'story entry'}`}
                   className="px-3 py-1 rounded-control border border-danger/50 text-danger
                              text-xs font-semibold">
                   Discard
@@ -183,6 +192,7 @@ export default function StoryBankCard() {
               </div>
             )}
             <textarea value={e.body} rows={3} maxLength={5000}
+              ref={(el) => { if (e.id) bodyRefs.current[e.id] = el }}
               onChange={(ev) => update(idx, { body: ev.target.value })}
               aria-label="What actually happened"
               placeholder="What actually happened — the real numbers, names, dates and outcome. Write it how you'd tell a colleague."
@@ -202,7 +212,10 @@ export default function StoryBankCard() {
 
       {isAdmin && <CallIngestPanel />}
 
-      {msg && <p className={`text-sm font-medium ${msg.ok ? 'text-success' : 'text-danger'}`}>{msg.text}</p>}
+      {/* Always mounted so a screen reader announces the text when it appears. */}
+      <div role="status" aria-live="polite" data-testid="story-bank-live">
+        {msg && <p className={`text-sm font-medium ${msg.ok ? 'text-success' : 'text-danger'}`}>{msg.text}</p>}
+      </div>
       <button type="button" onClick={() => saveMutation.mutate(undefined, sectionSaveCallbacks('story-bank'))}
         disabled={saveMutation.isPending}
         className="w-full bg-accent text-white py-2 rounded-panel text-sm font-semibold hover:bg-accent/90 disabled:opacity-50 transition-colors">
