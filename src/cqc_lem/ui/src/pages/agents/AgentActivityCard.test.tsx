@@ -35,6 +35,17 @@ suite('describe', () => {
     expect(describe(ev({ details: null }))).toBe('Agent change')
   })
 
+  it('reads a change request as its field names, never a value or the agent\'s reason', () => {
+    const row = { tool: 'lem_request_settings_change', fields: ['roster_auto_follow'], proposal_id: 3 }
+    expect(describe(ev({ event: 'mcp_settings_proposed', details: row })))
+      .toBe('Asked you to approve a settings change: roster_auto_follow')
+    expect(describe(ev({ event: 'mcp_settings_approved', details: { proposal_id: 3, applied: ['tone'] } })))
+      .toBe('You approved a settings request: tone')
+    expect(describe(ev({ event: 'mcp_settings_rejected', details: { proposal_id: 3, fields: ['a', 'b'] } })))
+      .toBe('You rejected a settings request: a, b')
+    expect(describe(ev({ event: 'mcp_settings_rejected', details: null }))).toBe('You rejected a settings request')
+  })
+
   it('never renders a non-write event\'s tool as its object', () => {
     expect(describe(ev({ event: 'mcp_access', details: { tool: 'lem_queue_dm', scope: 'mcp' } })))
       .toBe('Connected')

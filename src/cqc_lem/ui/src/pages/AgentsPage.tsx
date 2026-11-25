@@ -14,6 +14,7 @@ import {
   recordMcpTokenRotated,
 } from '../utils/analytics'
 import AgentActivityCard from './agents/AgentActivityCard'
+import AgentChangeRequestsCard from './agents/AgentChangeRequestsCard'
 import ConnectCommands from './agents/ConnectCommands'
 import ConnectedAgentsCard from './agents/ConnectedAgentsCard'
 import McpCredentialCard from './agents/McpCredentialCard'
@@ -210,6 +211,7 @@ function AgentsContent({ readOnly }: { readOnly: boolean }) {
         {stepUpModal}
         {header}
         {offBanner}
+        <AgentChangeRequestsCard />
         <ConnectedAgentsCard
           tokens={info.data.tokens}
           busyId={rowBusy}
@@ -234,6 +236,8 @@ function AgentsContent({ readOnly }: { readOnly: boolean }) {
       {header}
 
       {info.data?.enabled === false && offBanner}
+
+      <AgentChangeRequestsCard />
 
       <McpCredentialCard
         client={client}
