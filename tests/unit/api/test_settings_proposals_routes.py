@@ -297,6 +297,33 @@ class TestApprove:
         assert detail["applied"] == [] and detail["stale"] == ["roster_auto_follow"]
         assert settings.prefs_writes == []
 
+    def test_a_run_that_applies_nothing_audits_as_unsuccessful_and_says_so(
+            self, wired: None, repo: FakeRepo, settings: Settings, audit: MagicMock) -> None:
+        pid = repo.add({"roster_auto_follow": _change(False, True)})
+        settings.prefs["roster_auto_follow"] = True
+        with as_user():
+            detail = _approve(pid).detail
+        assert detail["outcome"] == "nothing_applied_stale" and "Nothing was applied" in detail["note"]
+        assert audit.call_args.kwargs["success"] is False
+        assert audit.call_args.kwargs["details"]["outcome"] == "nothing_applied_stale"
+
+    def test_a_successful_approval_audits_success_with_an_applied_label(
+            self, wired: None, repo: FakeRepo, audit: MagicMock) -> None:
+        pid = repo.add({"roster_auto_follow": _change(False, True)})
+        with as_user():
+            detail = _approve(pid).detail
+        assert detail["outcome"] == "applied" and detail["note"] is None
+        assert audit.call_args.kwargs["success"] is True
+
+    def test_when_every_write_fails_the_audit_row_is_unsuccessful_too(
+            self, wired: None, repo: FakeRepo, audit: MagicMock) -> None:
+        pid = repo.add({"roster_auto_follow": _change(False, True)})
+        with as_user(), patch(f"{_R}.update_engagement_preferences", return_value=False), \
+                pytest.raises(HTTPException):
+            _approve(pid)
+        assert audit.call_args.kwargs["success"] is False
+        assert audit.call_args.kwargs["details"]["outcome"] == "nothing_applied_failed"
+
     def test_an_expired_proposal_cannot_be_approved(
             self, wired: None, repo: FakeRepo, settings: Settings, audit: MagicMock) -> None:
         pid = repo.add(BUNDLE, expires_at=NOW - timedelta(seconds=1))

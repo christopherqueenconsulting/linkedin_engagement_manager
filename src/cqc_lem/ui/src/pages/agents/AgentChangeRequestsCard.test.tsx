@@ -93,7 +93,7 @@ describe('AgentChangeRequestsCard', () => {
     serve([proposal()])
     post.mockResolvedValue(decision({ applied: ['connection_request_mode', 'roster_auto_follow'] }))
     mount()
-    fireEvent.click(await screen.findByRole('button', { name: 'Approve all' }))
+    fireEvent.click(await screen.findByRole('button', { name: /^Approve all/ }))
     await waitFor(() => expect(post).toHaveBeenCalledTimes(1))
     expect(post.mock.calls[0][0]).toBe('/user/settings-proposals/4/approve')
     expect(post.mock.calls[0][1]).toEqual({ session_token: 'tok', fields: undefined })
@@ -105,7 +105,7 @@ describe('AgentChangeRequestsCard', () => {
     post.mockResolvedValue(decision({ applied: ['roster_auto_follow'], declined: ['connection_request_mode'] }))
     mount()
     fireEvent.click(await screen.findByLabelText(/Connection requests/))
-    fireEvent.click(screen.getByRole('button', { name: 'Approve selected (1)' }))
+    fireEvent.click(screen.getByRole('button', { name: /^Approve selected \(1\)/ }))
     await waitFor(() => expect(post).toHaveBeenCalled())
     expect(post.mock.calls[0][1]).toEqual({ session_token: 'tok', fields: ['roster_auto_follow'] })
     expect(await screen.findByText(/Left out: Connection requests\./)).toBeDefined()
@@ -116,7 +116,7 @@ describe('AgentChangeRequestsCard', () => {
     mount()
     fireEvent.click(await screen.findByLabelText(/Connection requests/))
     fireEvent.click(screen.getByLabelText(/Auto-follow roster targets/))
-    const button = screen.getByRole('button', { name: 'Approve selected (0)' }) as HTMLButtonElement
+    const button = screen.getByRole('button', { name: /^Approve selected \(0\)/ }) as HTMLButtonElement
     expect(button.disabled).toBe(true)
   })
 
@@ -124,7 +124,7 @@ describe('AgentChangeRequestsCard', () => {
     serve([proposal()])
     post.mockResolvedValue(decision({ applied: ['connection_request_mode'], stale: ['roster_auto_follow'] }))
     mount()
-    fireEvent.click(await screen.findByRole('button', { name: 'Approve all' }))
+    fireEvent.click(await screen.findByRole('button', { name: /^Approve all/ }))
     expect(await screen.findByText(/Skipped because it changed since your agent asked: Auto-follow roster targets\./))
       .toBeDefined()
   })
@@ -136,7 +136,7 @@ describe('AgentChangeRequestsCard', () => {
       .mockResolvedValueOnce({ data: { detail: {} } })          // /user/step-up/verify
       .mockResolvedValueOnce(decision({ applied: ['connection_request_mode', 'roster_auto_follow'] }))
     mount()
-    fireEvent.click(await screen.findByRole('button', { name: 'Approve all' }))
+    fireEvent.click(await screen.findByRole('button', { name: /^Approve all/ }))
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).getByText(/loosens a safety setting/)).toBeDefined()
     fireEvent.change(within(dialog).getByLabelText('Authenticator code'), { target: { value: '123456' } })
@@ -150,19 +150,19 @@ describe('AgentChangeRequestsCard', () => {
     serve([proposal()])
     post.mockRejectedValueOnce({ response: { status: 403, data: { detail: { code: 'step_up_required', methods: ['totp'] } } } })
     mount()
-    fireEvent.click(await screen.findByRole('button', { name: 'Approve all' }))
+    fireEvent.click(await screen.findByRole('button', { name: /^Approve all/ }))
     const dialog = await screen.findByRole('dialog')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     expect(post).toHaveBeenCalledTimes(1)
-    expect(screen.queryByRole('status')).toBeNull()
+    expect(screen.getByRole('status').textContent).toBe('')
   })
 
   it('Reject all closes it with no step-up and applies nothing', async () => {
     serve([proposal()])
     post.mockResolvedValue({ data: { detail: { status: 'rejected' } } })
     mount()
-    fireEvent.click(await screen.findByRole('button', { name: 'Reject all' }))
+    fireEvent.click(await screen.findByRole('button', { name: /^Reject all/ }))
     await waitFor(() => expect(post).toHaveBeenCalledTimes(1))
     expect(post.mock.calls[0][0]).toBe('/user/settings-proposals/4/reject')
     expect(await screen.findByText('Rejected. Nothing was changed.')).toBeDefined()
@@ -173,7 +173,7 @@ describe('AgentChangeRequestsCard', () => {
     post.mockRejectedValue({ response: { status: 409, data: { detail: {
       code: 'proposal_expired', message: 'This request expired. Ask your agent to file it again.' } } } })
     mount()
-    fireEvent.click(await screen.findByRole('button', { name: 'Approve all' }))
+    fireEvent.click(await screen.findByRole('button', { name: /^Approve all/ }))
     expect(await screen.findByText('This request expired. Ask your agent to file it again.')).toBeDefined()
   })
 
@@ -184,6 +184,50 @@ describe('AgentChangeRequestsCard', () => {
     mount()
     const text = await screen.findByText(/loosens nothing/)
     expect(text.className).not.toContain('warning')
+  })
+
+  it('gives two requests different accessible names that start with their visible text', async () => {
+    serve([proposal({ id: 4 }), proposal({ id: 5 })])
+    mount()
+    const approve = await screen.findAllByRole('button', { name: /^Approve all/ })
+    const reject = screen.getAllByRole('button', { name: /^Reject all/ })
+    const names = [...approve, ...reject].map((b) => b.getAttribute('aria-label'))
+    expect(new Set(names).size).toBe(4)
+    expect(names[0]).toMatch(/^Approve all, request #4 from /)
+    expect(names[2]).toMatch(/^Reject all, request #4 from /)
+  })
+
+  it('ties each warning to its checkbox and prefixes a loosening one', async () => {
+    serve([proposal()])
+    mount()
+    const box = await screen.findByLabelText(/Connection requests/)
+    const id = box.getAttribute('aria-describedby')!
+    expect(id).toBe('proposal-4-connection_request_mode-warning')
+    const warning = document.getElementById(id)!
+    expect(warning.textContent).toMatch(/^Loosens a safety setting: Approving this lets LEM send/)
+  })
+
+  it('groups the checkboxes in a fieldset and reads the arrow as words', async () => {
+    serve([proposal()])
+    mount()
+    const group = await screen.findByRole('group', { name: 'Changes in request #4' })
+    expect(within(group).getAllByRole('checkbox')).toHaveLength(2)
+    expect(group.querySelector('[aria-label="changes to"]')).toBeNull()
+    expect(group.querySelector('[aria-hidden="true"]')?.textContent).toBe('→')
+    expect(group.querySelector('.sr-only')).not.toBeNull()
+  })
+
+  it('keeps one status element mounted and moves focus to it after a decision', async () => {
+    serve([proposal()])
+    post.mockResolvedValue({ data: { detail: { status: 'rejected' } } })
+    mount()
+    const status = await screen.findByRole('status')
+    expect(status.textContent).toBe('')
+    fireEvent.click(screen.getByRole('button', { name: /^Reject all/ }))
+    await screen.findByText('Rejected. Nothing was changed.')
+    expect(screen.getByRole('status')).toBe(status)
+    await waitFor(() => expect(document.activeElement).toBe(status))
+    expect(document.activeElement).not.toBe(document.body)
   })
 
   it('a failed read says so and offers a retry, never an empty card', async () => {

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../../api/client'
 import type { ApiEnvelope } from '../../api/types'
@@ -53,6 +53,9 @@ function ProposalBlock({
   const [off, setOff] = useState<Set<string>>(new Set())
   const chosen = proposal.fields.filter((f) => !off.has(f.field)).map((f) => f.field)
 
+  const approveText =
+    chosen.length === proposal.fields.length ? 'Approve all' : `Approve selected (${chosen.length})`
+
   function toggle(field: string) {
     setOff((current) => {
       const next = new Set(current)
@@ -82,7 +85,8 @@ function ProposalBlock({
         </figure>
       )}
 
-      <ul className="space-y-3">
+      <fieldset className="space-y-3">
+        <legend className="sr-only">Changes in request #{proposal.id}</legend>
         {proposal.fields.map((f) => {
           const id = `proposal-${proposal.id}-${f.field}`
           return (
@@ -90,6 +94,7 @@ function ProposalBlock({
               <label htmlFor={id} className="flex items-start gap-3 min-h-11 cursor-pointer">
                 <input
                   id={id}
+                  aria-describedby={`${id}-warning`}
                   type="checkbox"
                   checked={!off.has(f.field)}
                   onChange={() => toggle(f.field)}
@@ -99,33 +104,37 @@ function ProposalBlock({
                 <span className="min-w-0">
                   <span className="block text-sm font-semibold text-fg">{f.label}</span>
                   <span className="block text-sm text-fg">
-                    {formatValue(f.before)} <span aria-label="changes to">→</span> {formatValue(f.requested)}
+                    {formatValue(f.before)} <span aria-hidden="true">→</span>
+                    <span className="sr-only"> changes to </span> {formatValue(f.requested)}
                   </span>
                 </span>
               </label>
               <p
+                id={`${id}-warning`}
                 className={`ml-8 rounded-control px-3 py-2 text-sm ${
                   f.loosens ? 'border border-warning/50 bg-warning/5 text-warning' : 'text-fg-muted'
                 }`}
               >
-                {f.warning}
+                {f.loosens ? `Loosens a safety setting: ${f.warning}` : f.warning}
               </p>
             </li>
           )
         })}
-      </ul>
+      </fieldset>
 
       <div className="flex flex-wrap items-center gap-3 pt-1">
         <button
           type="button"
+          aria-label={`${approveText}, request #${proposal.id} from ${when(proposal.created_at)}`}
           onClick={() => onApprove(proposal, chosen)}
           disabled={busy || chosen.length === 0}
           className="min-h-11 bg-accent text-white px-4 rounded-panel text-sm font-semibold hover:bg-accent/90 disabled:opacity-50"
         >
-          {chosen.length === proposal.fields.length ? 'Approve all' : `Approve selected (${chosen.length})`}
+          {approveText}
         </button>
         <button
           type="button"
+          aria-label={`Reject all, request #${proposal.id} from ${when(proposal.created_at)}`}
           onClick={() => onReject(proposal)}
           disabled={busy}
           className="min-h-11 px-4 rounded-panel border border-field text-sm font-semibold text-fg hover:bg-page disabled:opacity-50"
@@ -155,6 +164,13 @@ export default function AgentChangeRequestsCard() {
     staleTime: 30 * 1000,
     retry: 1,
   })
+
+  // The status line stays mounted and only its text changes; after a decision the decided request's
+  // buttons are gone, so focus moves here rather than falling back to the page.
+  const statusRef = useRef<HTMLParagraphElement>(null)
+  useEffect(() => {
+    if (message) statusRef.current?.focus()
+  }, [message])
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: [SETTINGS_PROPOSALS_KEY] })
 
@@ -231,11 +247,15 @@ export default function AgentChangeRequestsCard() {
           ))}
         </ul>
       )}
-      {message && (
-        <p role="status" className={`text-sm font-medium ${message.ok ? 'text-success' : 'text-danger'}`}>
-          {message.text}
-        </p>
-      )}
+      <p
+        ref={statusRef}
+        role="status"
+        tabIndex={-1}
+        className={`text-sm font-medium outline-none ${
+          message ? (message.ok ? 'text-success' : 'text-danger') : ''}`}
+      >
+        {message?.text ?? ''}
+      </p>
     </SettingsCard>
   )
 }

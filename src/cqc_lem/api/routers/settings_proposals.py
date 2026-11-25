@@ -242,20 +242,30 @@ def approve_settings_proposal(
             "code": "proposal_not_pending",
             "message": "This request was already decided, or has just expired."})
     applied, failed = _apply(user_id, to_apply) if to_apply else ([], [])
+    label = ("applied" if applied else "nothing_applied_failed" if failed else "nothing_applied_stale")
+    outcome = {"applied": sorted(applied), "stale": sorted(stale), "declined": sorted(declined),
+               "failed": sorted(failed), "outcome": label}
+
+    def _audit() -> None:
+        # success=False whenever nothing landed or a write failed: the row must not read as a change.
+        record_auth_event(AuthAuditEvent.MCP_SETTINGS_APPROVED, user_id=user_id,
+                          ip=_main._client_ip(http_request), user_agent=_main._user_agent(http_request),
+                          session_id=_session_id(request.session_token),
+                          success=bool(applied) and not failed,
+                          details={"proposal_id": proposal_id, **outcome})
+
     if failed and not applied:
         reopen_agent_proposal(user_id, proposal_id)
+        _audit()
         raise HTTPException(status_code=503, detail="Could not save your settings. Nothing was changed.")
-    outcome = {"applied": sorted(applied), "stale": sorted(stale), "declined": sorted(declined),
-               "failed": sorted(failed)}
     set_agent_proposal_outcome(user_id, proposal_id, outcome)
-    record_auth_event(AuthAuditEvent.MCP_SETTINGS_APPROVED, user_id=user_id,
-                      ip=_main._client_ip(http_request), user_agent=_main._user_agent(http_request),
-                      session_id=_session_id(request.session_token),
-                      success=not failed, details={"proposal_id": proposal_id, **outcome})
+    _audit()
     log_info("Agent settings request decided", user_id=user_id, action_type="approve_settings_proposal",
              applied=len(applied), stale=len(stale))
+    note = None if applied else ("Nothing was applied: every field you approved had changed since your "
+                                 "agent asked, so none was overwritten.")
     return ResponseModel(status_code=200, detail={"proposal_id": proposal_id, "status": PROPOSAL_APPROVED,
-                                                   **outcome})
+                                                   **outcome, "note": note})
 
 
 @router.post("/{proposal_id}/reject", responses={

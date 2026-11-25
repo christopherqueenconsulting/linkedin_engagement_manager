@@ -355,6 +355,16 @@ nothing to decide): per field, before to after and the warning, a toggle per fie
 selected / Reject all, the agent's reason as a quote under "written by the agent, not by LEM" (a React
 text child, never HTML), and the usual step-up modal.
 
+**Rollback of an approved change.** There is no undo tool for an approval (an agent must never be able to
+loosen a gate back). To revert one by hand, read the row in `agent_change_proposals` and set each applied
+field back to its `payload.<field>.before` value in LEM (Account) or through the database facade; its `outcome`
+says which fields applied. An `approved` row whose `outcome` is NULL means the approval did not finish
+(the process stopped between the claim and the record): check the settings, then ask the agent to file the
+request again. An approval that applied nothing (every field stale, or every write failed) writes its
+`mcp_settings_approved` audit row with `success=0` and an `outcome` label (`nothing_applied_stale` /
+`nothing_applied_failed`). Backing out the migration is `DROP TABLE agent_change_proposals`: it is purely
+additive and nothing references it.
+
 **Not done yet:** a badge in the Settings nav, and a line about pending requests in the stale-approvals
 digest email (`notify_stale_approvals` is built around the review queue's lane counts).
 
