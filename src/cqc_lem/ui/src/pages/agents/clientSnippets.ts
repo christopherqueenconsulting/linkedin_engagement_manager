@@ -376,7 +376,7 @@ function originOf(url: string): string {
   try {
     return new URL(url).origin
   } catch {
-    return ''
+    return typeof window === 'undefined' ? '' : window.location.origin
   }
 }
 
@@ -392,19 +392,19 @@ export function agentPrompt(client: ClientId, url: string): string {
     ? `follow the ${stem} section`
     : 'work out which client you are running in (a T3 Code thread, say) and follow its section'
   return `Install the LEM MCP server for ${subject}. Read ${originOf(url)}${INSTALL_GUIDE_PATH} and ${section}. ` +
-    `Server URL: ${url}. Ask me for my LEM token only through a secure input, never in chat.`
+    `Server URL: ${url}. Ask me for my LEM token only through a secure input or a command I run myself, never in chat.`
 }
 
 /** The "Agent command" block: the prompt above, carrying the same never-in-chat header as the rest. */
 export function agentSnippet(client: ClientId, url: string): Snippet {
   return {
     id: 'agent',
-    label: 'Agent command',
+    label: 'Or let your agent do it: Agent command',
     kind: 'text',
     text: agentPrompt(client, url),
     warning: "Paste into your agent's chat — it holds no token. Never paste your token there",
-    note: 'The agent reads the install guide and sets itself up, asking for the token through a secure ' +
-      'input or a terminal line you run yourself.',
+    note: 'Create a token above first. The agent reads the install guide and sets itself up, asking for ' +
+      'the token through a secure input or a terminal line you run yourself.',
     copyVariant: 'agent',
   }
 }

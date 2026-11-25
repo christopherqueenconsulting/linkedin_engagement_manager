@@ -6,6 +6,7 @@ import {
   AGENT_PROMPT,
   GUIDE_URL_PLACEHOLDER,
   agentPrompt,
+  agentSnippet,
   CLIENTS,
   MCP_REMOTE_VERSION,
   STARTER_PROMPTS,
@@ -665,7 +666,8 @@ describe('the agent prompt', () => {
 
 describe('the per-client agent command (#2799)', () => {
   const ORIGIN = 'https://lem.example.com'
-  const TAIL = `Server URL: ${URL}. Ask me for my LEM token only through a secure input, never in chat.`
+  const TAIL = `Server URL: ${URL}. Ask me for my LEM token only through a secure input or a command I run ` +
+    'myself, never in chat.'
   const named = (stem: string) =>
     `Install the LEM MCP server for this ${stem} session. Read ${ORIGIN}/agents/install.md and follow the ` +
     `${stem} section. ${TAIL}`
@@ -684,6 +686,18 @@ describe('the per-client agent command (#2799)', () => {
 
   it.each(SUPPORTED)('%s: golden prompt', (client) => {
     expect(agentPrompt(client, URL)).toBe(goldens[client])
+  })
+
+  it('falls back to the page origin, never a relative link, when the URL cannot be parsed', () => {
+    const prompt = agentPrompt('codex', 'not a url')
+    expect(prompt).toContain(`Read ${window.location.origin}/agents/install.md`)
+    expect(prompt).not.toContain('Read /agents')
+  })
+
+  it('the UI block says to create a token first and reads as an alternative', () => {
+    const block = agentSnippet('codex', URL)
+    expect(block.note).toMatch(/^Create a token above first\./)
+    expect(block.label).toBe('Or let your agent do it: Agent command')
   })
 
   it('has a golden for every supported client', () => {

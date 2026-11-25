@@ -15,8 +15,9 @@ session. The agent reads the public guide `/agents/install.md` (source:
 `src/cqc_lem/ui/public/agents/install.md`, served by `api/spa_assets.py`, outside `/api` and the MCP
 auth path), configures its own client to reference only the name `LEM_MCP_TOKEN`, gets the token
 through a secure input or a terminal line the user runs, and verifies with `lem_whoami`. The prompt
-(`agentPrompt` in `clientSnippets.ts`) never carries a token. A vitest golden test asserts every
-config snippet in the guide equals the snippet builder's env output, so the two cannot drift.
+(`agentPrompt` in `clientSnippets.ts`) never carries a token. A vitest test checks that every env-variant
+snippet the builder emits appears verbatim in the guide (the `export` line and `code --add-mcp` are
+excluded); prose in the guide is not checked.
 
 ## How a call flows
 
