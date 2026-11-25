@@ -1,4 +1,4 @@
-import Icon, { IncludedMark } from './Icon'
+import Icon from './Icon'
 import ProductPanel, { type PanelVariant } from './ProductPanel'
 import Section, { SectionHeading } from './Section'
 
@@ -9,54 +9,38 @@ import Section, { SectionHeading } from './Section'
 // write it, schedule it, engage with it, then measure what it earned. Since #2366 the engagement
 // beat describes suggestions the user sends, never actions LEM takes on their behalf.
 //
-// Design pass r2: no small label above each beat (the section heading already names the four), and
-// a point that the beat's own panel draws is not listed again beside it (the 30-day plan and the
-// 70/20/10 mix, the two-to-seven weekly range, the reply suggestions).
+// Design pass r2: no small label above each beat (the section heading already names the four).
+// Design pass r3: one sentence per beat and no bullet list, so the section holds about 60 body words
+// (density budget). The beat's own panel carries the detail; the safety ledger carries the quality
+// gate. The cut bullets are listed in the design plan for the spec owner's sign-off.
 const BEATS: {
   key: string
   title: string
   body: string
-  points: string[]
   panel: PanelVariant
 }[] = [
   {
     key: 'content',
     title: 'Content that sounds like you, not like a content tool',
-    body: 'A voice profile distilled from your own posts and profile drives every draft, and the plan is built around a buyer journey rather than a topic list.',
-    points: [
-      'Thought leadership, industry commentary, personal story, carousels, native video and newsletters',
-      'A quality contract and slop lint that block the tells before you ever see the draft',
-    ],
+    body: 'A voice profile distilled from your own posts and profile drives every draft.',
     panel: 'plan',
   },
   {
     key: 'scheduling',
     title: 'Published when your audience is actually there',
-    body: 'Slots are placed against your golden and peak hours in your own timezone, on the days you allow — not whenever the job happened to run.',
-    points: [
-      'Posting days you choose — weekdays out of the box, weekends opt in',
-      'Golden-hour placement measured from real publish time, never the time it was scheduled for',
-      'Self-healing carousels and asset backfill, so a broken draft does not become a silent day',
-    ],
+    body: 'Slots land in your golden and peak hours, in your own timezone, on the days you allow.',
     panel: 'schedule',
   },
   {
     key: 'engagement',
     title: 'The daily hour, cut down to a review',
-    body: 'The half that actually earns reach: commenting on the right posts, answering the people who answer you, and following up. LEM drafts these as suggestions; you review them and send the ones you want yourself.',
-    points: [
-      'Comment suggestions for posts that match your topics, keywords, authors and minimum-reaction rules',
-      'Suggested appreciation and follow-up DMs',
-    ],
+    body: 'LEM drafts comments, replies and follow-up DMs as suggestions; you send the ones you want yourself.',
     panel: 'engagement',
   },
   {
     key: 'measurement',
     title: 'You approve; then it shows what each post earned',
-    body: 'Nothing here is a vanity chart: the numbers come from your own LinkedIn account.',
-    points: [
-      'Post and audience statistics pulled from your own account',
-    ],
+    body: 'The numbers come from your own LinkedIn account, not a vanity chart.',
     panel: 'measure',
   },
 ]
@@ -66,7 +50,6 @@ export default function FeatureNarrative() {
     <Section id="features" analyticsName="features" tone="white">
       <SectionHeading
         title="One loop: write, schedule, engage, measure"
-        lede="Four beats, in the order they run."
       />
       <div className="space-y-16 lg:space-y-24">
         {BEATS.map((beat, index) => (
@@ -80,15 +63,7 @@ export default function FeatureNarrative() {
                 front page out wider than the screen and zooms out to fit. */}
             <div className={`min-w-0 ${index % 2 === 1 ? 'lg:order-2' : ''}`.trim()}>
               <h3 className="text-section font-semibold text-fg">{beat.title}</h3>
-              <p className="mt-4 leading-relaxed text-fg-muted">{beat.body}</p>
-              <ul className="mt-6 space-y-3">
-                {beat.points.map((point) => (
-                  <li key={point} className="flex items-start gap-3">
-                    <IncludedMark included />
-                    <span className="text-fg">{point}</span>
-                  </li>
-                ))}
-              </ul>
+              <p className="mt-4 max-w-measure leading-relaxed text-fg-muted">{beat.body}</p>
             </div>
             <div className={`min-w-0 ${index % 2 === 1 ? 'lg:order-1' : ''}`.trim()}>
               <ProductPanel variant={beat.panel} />
@@ -100,8 +75,8 @@ export default function FeatureNarrative() {
         <span className="shrink-0 text-accent">
           <Icon name="users" className="h-5 w-5" />
         </span>
-        Occasion and milestone posts are drafted for you to paste yourself — LinkedIn&apos;s
-        celebrate composer has no API, and we would rather say so than pretend it is automated.
+        Occasion and milestone posts are drafted for you to paste yourself, because LinkedIn&apos;s
+        celebrate composer has no API.
       </p>
     </Section>
   )

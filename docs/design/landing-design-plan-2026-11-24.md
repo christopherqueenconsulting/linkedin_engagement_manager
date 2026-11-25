@@ -7,10 +7,12 @@ The logged-out front page (`src/cqc_lem/ui/src/pages/Landing.tsx` and
 It does not change what the page claims: every claim, link, analytics name, anchor and behaviour
 stays. The section order, the copy owned by `docs/marketing-page-ux-spec.md` and the honesty
 tests in `pages/Landing.test.tsx` are unchanged. Round 2 (below) changes the H1 wording and trims
-restated sentences, and those copy changes are listed there for the owner's sign-off.
+restated sentences, and Round 3 cuts copy to meet the density budget; both rounds list their copy
+changes for the sign-off of the owner of `docs/marketing-page-ux-spec.md`.
 
 - **Brand pack:** `brand/lem/DESIGN.md` and `brand/lem/assets.json`. LEM tokens only; no new
-  token, colour, font or image.
+  token, colour or font. Round 3 adds three owned screenshot images, each with an `assets.json`
+  entry.
 - **Exploration:** skipped. The two approved exploration tools were not available to this pass,
   so no divergent directions were generated. This is a refine pass on the existing page.
 - **Verification:** captured in a headless Chromium at 1440x900, 768x1024 and 390x844, light and
@@ -27,16 +29,17 @@ restated sentences, and those copy changes are listed there for the owner's sign
 
 ## The bold element
 
-The hero product panel: the approval queue beside a suggested comment, drawn as a labelled
-diagram of real LEM surfaces. It is the brand pack's chosen bold element (the product itself).
-Everything around it stays quiet. The nav trial button is now outlined, so the hero's filled
-button is the only filled action in each fold.
+Since round 3: a real screenshot of LEM's Content Studio queue ("Review & Edit" tab) on sample
+data, as DESIGN.md Rationale's last bullet asks. Rounds 1 and 2 used a drawn panel here. The
+crop starts at the tab row, so the app heading's filled "Generate Weekly Content" button is not in
+the fold. Everything around the screenshot stays quiet. The nav trial button is outlined, so the
+hero's filled button is the only filled action in each fold.
 
 ## Representation plan
 
 | Section | Must understand | Representation | Focal point | Essential copy and action | Phone |
 |---|---|---|---|---|---|
-| Hero | "It writes my posts, and nothing publishes until I approve it." | Split: copy left, product panel right (a diagram of the queue and a suggestion, captioned as an example) | The panel's status pills | H1 (10 words), 27-word body, Start free trial, a See how it works text link, trial line | Copy, then the panel; H1 one scale step smaller |
+| Hero | "It writes my posts, and nothing publishes until I approve it." | Split: copy left, a real Content Studio screenshot right (sample posts, captioned as an example) | The screenshot's status pills | H1 (10 words), 27-word body, Start free trial, a See how it works text link, trial line | Copy, then the app's own phone-width screenshot; H1 one scale step smaller |
 | Proof strip | "The safety posture in four statements." | Short text: one ruled row of four statements, each with a drawn check | The row of checks | The early-access line and four statements; the detail lives in the safety section | Stacks to one column |
 | Problem | "This is my week." | Short text on hairline rules, two columns | The heading | Heading, lede, four short statements | One column |
 | How it works | "Three steps, then a short daily review." | Diagram: numbered stops on one rule (a true sequence) | The three numbers | Heading, lede, three steps | Vertical rule with a connector between stops; it ends on step 3 |
@@ -69,11 +72,13 @@ Desktop, 1440 wide:
 +--------------------------------------------------------------------------+
 | LEM   How it works  Features  Safety  Pricing  FAQ    Log in [Start trial]| outlined
 +--------------------------------------------------------------------------+
-| H1 (39px, 3 lines)              | +-- Content Studio -------------------+ |
-| body (27 words)                 | | queue row  [Pending]  | suggestion  | |
-| [Start free trial]  See how...  | | queue row  [Approved] | you send it | |
-| 14-day free trial...            | | queue row  [Scheduled]|             | |
+| H1 (39px, 3 lines)              | +-- screenshot: Content Studio -------+ |
+| body (27 words)                 | | tabs, filters                       | |
+| [Start free trial]  See how...  | | post card          [PENDING]        | |
+| 14-day free trial...            | | post card          [APPROVED]       | |
+|                                 | | post card          [SCHEDULED]      | |
 |                                 | +-------------------------------------+ |
+|                                 | Example queue with sample posts         |
 +--------------------------------------------------------------------------+
 | Early access ...                                                          |
 | ---------------------------------------------------------------------    |
@@ -133,10 +138,9 @@ Phone, 390 wide:
   section already carry.
 - **Glass:** the nav's translucent blur is replaced by the solid surface.
 - **Numbered markers:** only on the three steps, which are a true sequence.
-- **Density:** the page carries 1,263 visible words over 8,339 px at 1440 wide (about 136 words
-  per desktop screen). Before the pass it was 1,368 words over 9,010 px (about 137). The page is
-  shorter, but the ratio is still over the default of about 80. Cutting further means removing
-  claims, which is copy work, not this pass.
+- **Density (round 1; superseded by Round 3 below):** the page carried 1,263 visible words over
+  8,339 px at 1440 wide (about 136 words per desktop screen). Before the pass it was 1,368 words
+  over 9,010 px (about 137). Round 3 brings it to 709 words over 7,129 px (89.5).
 
 ## Refine passes: what each changed
 
@@ -170,7 +174,9 @@ Phone, 390 wide:
    under Contrast in DESIGN.md. 0 elements without visible focus over 29 keyboard steps. 0
    console or page errors. The only failed requests are `/api/app-info`, `/api/flags` and
    `/api/faq`, which return 502 because no API runs behind the local dev server. The FAQ falls
-   back to its seeded entries, as designed. Image weight: 181 KB light, 39 KB dark.
+   back to its seeded entries, as designed. Image weight then: 181 KB light, 39 KB dark
+   (superseded: about 30 KB after round 2's wordmark resize, about 72 KB light at 1440 after
+   round 3's screenshot).
 7. **Adapt.** At 768 px the inline nav links now start at `lg`, and the menu button and sheet
    carry them below that (the overlap was pre-existing). On a phone the step rule is drawn
    between stops and ends on step 3. The plan diagram's stages stack. No horizontal scroll at
@@ -236,3 +242,68 @@ the repository.
 Round 2 checks: captures at 1440, 768 and 390, light and dark, complete and styled, no blocked
 hosts. No overflow. `no_visible_focus` empty over 29 steps. 0 console errors, page errors or
 failed requests. Only DESIGN.md colour tokens. Inter only. Longest line 68 characters at 1440.
+
+## Round 3 (2026-11-25): fixes from the second review
+
+Reviewer O failed round 2 on two items, the hero image and density. Both are fixed below. Captures
+for this round are in a new `after-r3` folder beside `after` and `after-r2`, outside the
+repository.
+
+- **Hero is a real app screenshot (O fix 1, option a).** The drawn hero panel is replaced by
+  screenshots of LEM's own Content Studio "Review & Edit" tab. They were rendered from this
+  repository at d1c21ed4 by the Vite dev server in headless Chromium. A loopback fixture API served
+  only synthetic sample data: three sample posts (pending, approved, scheduled) and a sample user at
+  example.com. Each image is one contiguous crop, from the tab row to the last post card, with
+  nothing composited or retouched. There are three files in `public/product/`. The first is
+  `content-studio-queue-1440.webp`: 1440x1312, 44,362 B, shown at 652 px at 1440 and 720 px at 768.
+  The second is `content-studio-queue-720.webp`: 720x656, 24,494 B, the srcset 1x candidate. The
+  third is `content-studio-queue-phone-780.webp`: 780x1600, 50,126 B, the app's own 390 px layout,
+  used below 600 px so the phone text stays legible (358 px displayed at 390). Each has an
+  `assets.json` entry with licence `owned`, source, sha256 and `max_display_px` (720, 720 and 568).
+  The visible caption "Example queue with sample posts" is kept. The figure is held to 720 px when
+  the hero stacks. The app has no dark theme yet, so the dark page shows the same light screenshot,
+  framed by the hairline border. The drawn hero variant, and the hero-only comment pane, are
+  removed from `ProductPanel.tsx`. The feature beats keep their captioned diagrams.
+- **Density (O fix 2, option 1: cuts, for the spec owner's sign-off).** At 1440 the page went from
+  1,185 words over 8,132 px (131 words per screen) to 709 words over 7,129 px. That is 89.5 words
+  per 900 px screen, against the 90 target. These are copy changes to copy owned by
+  `docs/marketing-page-ux-spec.md`, so its owner keeps or reverts them before merge:
+  - Features: one sentence per beat and no bullet lists. The section lede "Four beats, in the order
+    they run." is cut. The beat bodies now read: "A voice profile distilled from your own posts and
+    profile drives every draft." / "Slots land in your golden and peak hours, in your own timezone,
+    on the days you allow." / "LEM drafts comments, replies and follow-up DMs as suggestions; you
+    send the ones you want yourself." / "The numbers come from your own LinkedIn account, not a
+    vanity chart." Some cut bullets no longer appear anywhere on the page: the list of post formats,
+    slop lint, weekdays by default with weekends opt-in, golden-hour placement measured from the
+    real publish time, self-healing carousels and asset backfill, and the comment-targeting rules
+    (topics, keywords, authors, minimum reactions). Others are now stated elsewhere: the quality
+    contract (safety ledger) and appreciation DMs (folded into "follow-up DMs"). The milestone note
+    is shortened and keeps its "no API" disclosure.
+  - Comparison: 7 rows to 4. The DM row is folded into "Suggests comments, replies and DMs you send
+    yourself". "Plans a month across a buyer journey" is cut; step 3 and the content beat's panel
+    state it. "Shows how each published post performed" is cut; the measurement beat states it. The
+    lede is cut to "Doing it by hand works; it just costs an hour a day." The voice and approval
+    rows still concede to the alternatives.
+  - Pricing: the "Included in every plan" list is removed. Its six lines restated the beats, the
+    safety ledger and the comparison. Some of its items appear nowhere else on the page now:
+    per-day caps, targeting rules and human-paced timing, seed comments, comment outcomes and the
+    suppression tripwire. The tier-difference sentence stays. `INCLUDED_IN_EVERY_PLAN` stays in
+    `constants/plans.ts` (its test still pins it); the page no longer reads it.
+  - Safety ledger: each entry is one sentence. The section lede is cut. The limit now reads "no tool
+    can guarantee a LinkedIn account. You can edit any draft, approve nothing or send no
+    suggestion, and you remain responsible for your own account." Cut: "and anyone who tells you
+    otherwise is selling" and "per column" in the encryption entry. The three sentences pinned by
+    `Landing.test.tsx` are kept word for word.
+  - Problem: the four statements stand alone, with no line under each. The lede is now "The same
+    problem, twice a day, every weekday."
+  - How it works: the lede is cut, and step 1 has no line under it. Step 2 now reads "Tone, topics,
+    the authors worth engaging with, and your posting days." Step 3 now reads "A 30-day plan lands
+    for review, and approved posts publish at their slots."
+  - Final CTA body: "See your first plan before you decide anything."
+  - Captions: "Example week, for illustration", "Example plan, for illustration", "Example
+    suggestions, sample text" and "Example layout, without data".
+
+Round 3 checks: the after-r3 capture is complete and styled, with no blocked hosts. No overflow at
+390, 768 or 1440. `no_visible_focus` is empty over 29 steps. 0 console errors, page errors or
+failed requests. Only DESIGN.md colour tokens, and Inter only. Longest line 68 characters at 1440.
+Image weight: 74,052 B light and 56,716 B dark at 1440, 79,816 B light at 390.

@@ -2,28 +2,26 @@ import Section, { SectionHeading } from './Section'
 
 // The three-step section (issue #1300). Every strong page in this category has one and the old page
 // did not, so a visitor had to infer the setup cost from a feature grid.
-const STEPS = [
+// Design pass r3: step 1 has no line under it (it only restated the title), and the section has
+// no lede (it restated step 3).
+const STEPS: { title: string; body?: string }[] = [
   {
     title: 'Sign in with LinkedIn',
-    body: 'Connect with LinkedIn’s own sign-in.',
   },
   {
     title: 'Set voice, topics and cadence',
-    body: 'Tone and style, the topics and authors worth engaging with, how many posts a week, and which days.',
+    body: 'Tone, topics, the authors worth engaging with, and your posting days.',
   },
   {
     title: 'Approve posts, send the suggestions you like',
-    body: 'A 30-day plan lands for review. Approve what you like and edit what you do not; approved posts publish at their slots. Comment and reply suggestions wait for you to send them.',
+    body: 'A 30-day plan lands for review, and approved posts publish at their slots.',
   },
 ]
 
 export default function HowItWorks() {
   return (
     <Section id="how-it-works" analyticsName="how_it_works" tone="tinted">
-      <SectionHeading
-        title="Three steps, then a short daily review"
-        lede="Setup is a sitting; after that the recurring task is approving posts and choosing which suggestions to send."
-      />
+      <SectionHeading title="Three steps, then a short daily review" />
       {/* A true sequence, drawn as one: numbered stops on a single rule (horizontal from md,
           vertical on a phone), not three boxed cards (design pass 2026-11-24). */}
       <div className="relative">
@@ -48,7 +46,7 @@ export default function HowItWorks() {
                 <span className="sr-only">{`Step ${index + 1}: `}</span>
                 {step.title}
               </h3>
-              <p className="mt-2 leading-relaxed text-fg-muted">{step.body}</p>
+              {step.body && <p className="mt-2 leading-relaxed text-fg-muted">{step.body}</p>}
             </li>
           ))}
         </ol>

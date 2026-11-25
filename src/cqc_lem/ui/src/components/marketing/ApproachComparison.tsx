@@ -11,6 +11,10 @@ import Section, { SectionHeading } from './Section'
 // than this phone" (issue #894), and `mobileViewport.test.ts` greps this file for that import.
 // Below `sm` the same rows render as one block per capability instead: four columns at 390px only
 // fit by scrolling sideways, and the header row was cut mid-word with no cue that more existed.
+//
+// Design pass r3: four rows, not seven (density budget). The DM row is folded into the suggestions
+// row; the performance row and the month-plan row are dropped because the measurement beat, the
+// content beat and step 3 state them. The voice and approval rows still concede to the alternatives.
 
 type Cell = boolean | string
 
@@ -18,12 +22,9 @@ const COLUMNS = ['Doing it by hand', 'A general AI writer', 'LEM'] as const
 
 const ROWS: { capability: string; cells: [Cell, Cell, Cell] }[] = [
   { capability: 'Writes in your own voice', cells: [true, 'Generic unless you prompt it every time', true] },
-  { capability: 'Plans a month across a buyer journey', cells: [false, false, true] },
   { capability: 'Publishes at your golden hours', cells: ['If you are free at the time', false, true] },
-  { capability: 'Suggests comments and replies you send yourself', cells: ['You write each one', 'Only for posts you paste in', true] },
-  { capability: 'Suggests DM follow-ups', cells: ['If you remember', false, true] },
+  { capability: 'Suggests comments, replies and DMs you send yourself', cells: ['You write each one', 'Only for posts you paste in', true] },
   { capability: 'Approval before a post is published', cells: [true, true, true] },
-  { capability: 'Shows how each published post performed', cells: [false, false, true] },
 ]
 
 function CellValue({ value }: { value: Cell }) {
@@ -36,7 +37,7 @@ export default function ApproachComparison() {
     <Section id="comparison" analyticsName="comparison" tone="tinted">
       <SectionHeading
         title="LEM, doing it yourself, or a general AI writer"
-        lede="Doing it by hand works — it just costs an hour a day. A general writer solves the smaller half of the problem."
+        lede="Doing it by hand works; it just costs an hour a day."
       />
       <ul className="border-t border-hairline sm:hidden">
         {ROWS.map((row) => (

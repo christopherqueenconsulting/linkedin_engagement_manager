@@ -3,8 +3,8 @@ import Icon from './Icon'
 
 // The marketing page's product visuals (issue #1300).
 //
-// These are DOM-drawn diagrams of real LEM surfaces, not screenshots — no browser is reachable from
-// the agent worktree that built this page, and inventing a screenshot is not an option. They carry
+// These are DOM-drawn diagrams of real LEM surfaces. The hero is a real screenshot since design
+// pass r3 (see Hero.tsx); the feature beats keep these diagrams, each captioned as an example. They carry
 // the real vocabulary (post statuses, the approval step, suggestions you send yourself) and deliberately carry
 // NO numbers: an engagement count in a mock is a fabricated number whether or not anyone reads it
 // as one. The two figures that do appear are documented product defaults, labelled as defaults.
@@ -29,26 +29,23 @@ function Panel({
   label,
   caption,
   children,
-  fill = false,
 }: {
   label: string
   /** Visible text under the panel that says it is an example with sample content. */
   caption: string
   children: ReactNode
-  /** Stretch to the parent's height (the hero, where the frame runs to the trial line). */
-  fill?: boolean
 }) {
   return (
-    <figure className={fill ? 'flex h-full flex-col' : undefined}>
+    <figure>
       <div
         role="img"
         aria-label={label}
-        className={`rounded-panel border border-hairline bg-raised shadow-panel overflow-hidden${fill ? ' flex flex-1 flex-col' : ''}`}
+        className="rounded-panel border border-hairline bg-raised shadow-panel overflow-hidden"
       >
         <div aria-hidden="true" className="border-b border-hairline bg-page px-4 py-3">
           <span className="text-xs font-medium text-fg-muted">Content Studio</span>
         </div>
-        <div aria-hidden="true" className={fill ? 'flex flex-1 flex-col gap-6 p-4' : 'p-4 space-y-3'}>
+        <div aria-hidden="true" className="p-4 space-y-3">
           {children}
         </div>
       </div>
@@ -85,37 +82,6 @@ function Row({
         {status}
       </span>
     </div>
-  )
-}
-
-// A rendered row, not placeholder bars: grey bars read as a loading state, not as the product.
-// The comment and reply are illustrative sample text for the diagram, and claim nothing about LEM.
-function EngagementPane() {
-  return (
-    <>
-      <div className="rounded-lg border border-hairline px-3 py-3">
-        <div className="flex items-start justify-between gap-3">
-          <span className="text-sm font-medium text-fg">Founder, B2B agency</span>
-          <span className="shrink-0 rounded-full border border-hairline px-2 py-0.5 text-xs text-fg-muted">
-            Review
-          </span>
-        </div>
-        <p className="mt-1 text-xs text-fg-muted">How do you decide which ideas become a carousel?</p>
-        <div className="mt-3 rounded-lg border border-hairline bg-page p-3">
-          <div className="flex items-center gap-2 text-xs font-semibold text-accent">
-            <Icon name="chat" className="h-4 w-4" />
-            Suggested comment, in your voice
-          </div>
-          <p className="mt-2 text-sm text-fg">
-            When the idea has steps. A single point reads better as a short text post.
-          </p>
-        </div>
-      </div>
-      <div className="flex items-center gap-2 text-xs text-fg-muted">
-        <Icon name="check" className="h-4 w-4 text-accent" />
-        You review it and send it yourself
-      </div>
-    </>
   )
 }
 
@@ -186,14 +152,14 @@ function QueueRows() {
   )
 }
 
-export type PanelVariant = 'hero' | 'queue' | 'plan' | 'schedule' | 'engagement' | 'measure'
+export type PanelVariant = 'queue' | 'plan' | 'schedule' | 'engagement' | 'measure'
 
 export default function ProductPanel({ variant }: { variant: PanelVariant }) {
   if (variant === 'schedule') {
     return (
       <Panel
         label="Diagram of the LEM scheduling calendar: a week of posting days with a draft placed in each golden-hour slot."
-        caption="Example posting week, drawn for illustration"
+        caption="Example week, for illustration"
       >
         <div className="grid grid-cols-5 gap-2">
           {['Mon', 'Tue', 'Wed', 'Thu', 'Fri'].map((day, index) => (
@@ -211,33 +177,6 @@ export default function ProductPanel({ variant }: { variant: PanelVariant }) {
     )
   }
 
-  // The hero's one bold element: the approval queue and the suggestion you send yourself, side by
-  // side in one frame, so the product (not a card) carries the fold.
-  if (variant === 'hero') {
-    return (
-      <Panel
-        fill
-        label="Diagram of LEM: the approval queue with three drafts beside a suggested comment you edit and send yourself."
-        caption="Example queue with sample posts and a sample comment"
-      >
-        {/* Stretched to the trial line, the extra height goes between the cards (equal gaps), and
-            the right column's last line ends level with the left column's last card. */}
-        <div className="grid flex-1 gap-4 xl:grid-cols-[3fr_2fr]">
-          <div className="flex flex-col justify-between gap-3">
-            <QueueRows />
-          </div>
-          <div className="flex flex-col gap-3">
-            <EngagementPane />
-          </div>
-        </div>
-        <div className="flex items-center gap-2 rounded-lg bg-page px-3 py-2 text-xs text-fg">
-          <Icon name="shield" className="h-4 w-4 text-accent" />
-          Posts publish only after you approve them
-        </div>
-      </Panel>
-    )
-  }
-
   // The content beat's own visual (design pass 2026-11-24): it used to repeat the hero's queue row
   // for row. It draws the two facts the beat states, the buyer-journey stages and the 70/20/10
   // value / authority / promo mix, as a sequence and a share bar. No count of posts is drawn.
@@ -245,7 +184,7 @@ export default function ProductPanel({ variant }: { variant: PanelVariant }) {
     return (
       <Panel
         label="Diagram of a LEM 30-day plan: drafts placed across the awareness, consideration and decision stages, in a 70/20/10 value, authority and promo mix."
-        caption="Example plan layout, drawn for illustration"
+        caption="Example plan, for illustration"
       >
         <div className="text-xs font-semibold text-fg-muted">30-day plan, by buyer stage</div>
         {/* A row from sm; on a phone the stages stack, so "Consideration" never truncates. */}
@@ -294,7 +233,7 @@ export default function ProductPanel({ variant }: { variant: PanelVariant }) {
     return (
       <Panel
         label="Diagram of LEM engagement suggestions: a suggested reply to a comment on your post and a suggested follow-up DM, each waiting for you to send it."
-        caption="Example suggestions with sample text"
+        caption="Example suggestions, sample text"
       >
         <FollowUpPane />
       </Panel>
@@ -305,7 +244,7 @@ export default function ProductPanel({ variant }: { variant: PanelVariant }) {
     return (
       <Panel
         label="Diagram of the LEM measurement view: post and audience statistics, each waiting on real data."
-        caption="Example layout, shown without data"
+        caption="Example layout, without data"
       >
         {['Post statistics', 'Audience statistics'].map((row) => (
           <div
