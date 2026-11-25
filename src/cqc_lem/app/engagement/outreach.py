@@ -2951,7 +2951,14 @@ def _dm_send_landed(driver: WebDriver, message: str, user_id: int = None,
     head = " ".join((message or "").split())[:60]
     deadline = time.monotonic() + max(0.0, DM_SEND_CONFIRM_SECONDS)
     while True:
-        last = " ".join((read_last_message(driver) or "").split())
+        try:
+            last = " ".join((read_last_message(driver) or "").split())
+        except WebDriverException as e:
+            if not is_tab_crashed(e):
+                raise
+            # The click already landed; a dead tab cannot disprove it, so fall to the trust-the-click
+            # path below rather than recording FAILURE and inviting a duplicate send (issue #2828).
+            break
         if head and head in last:
             return True
         if time.monotonic() >= deadline:
