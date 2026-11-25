@@ -6,6 +6,7 @@ re-exports every name below, so existing importers and patch targets keep resolv
 """
 
 import os
+from datetime import datetime
 from typing import Optional
 
 import mysql.connector
@@ -57,6 +58,24 @@ def insert_new_log(user_id: int, action_type: LogActionType, result: LogResultTy
         success = False
 
     return success
+def get_session_window_audit_rows(user_id: int, start: datetime, end: datetime) -> Optional[list]:
+    """`(created_at UTC, action_type)` of the user's `logs` rows in `[start, end)`, or None on a fault.
+
+    The read half of the session-window audit (#2793). Read-only. None, never `[]`, on a DB error:
+    an unreadable table must not read as a clean night.
+    """
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT created_at, action_type FROM logs WHERE user_id = %s "
+                "AND created_at >= %s AND created_at < %s ORDER BY created_at",
+                (user_id, start.replace(tzinfo=None), end.replace(tzinfo=None)))
+            return [(row[0], row[1]) for row in cursor.fetchall()]
+    except mysql.connector.Error as err:
+        log_error("Could not read logs for the session window audit", exc=err, user_id=user_id)
+        return None
+
+
 def _read_own_comment_count(user_id: int, post_url: str) -> "int | None":
     """Our own successful top-level comments on `post_url`, or None when the read failed.
 

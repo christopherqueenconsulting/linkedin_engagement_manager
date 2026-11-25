@@ -3020,6 +3020,29 @@ def auto_weekly_cost_routing(self, days: int = COST_ROUTING_WINDOW_DAYS):
             f"(published={result['published']}, emailed={result['emailed']})")
 
 
+@shared_task.task(bind=True, base=QueueOnce, once={'graceful': True})
+def auto_weekly_session_window_audit(self):
+    """Weekly read-only session-window enforce-readiness verdict (issue #2793).
+
+    Runs the same audit as `scripts/session_window_audit.py` for every active user and logs one
+    fixed-format INFO line each. Only `enforce` + `FAIL` is a defect (`log_warning`); `off`,
+    `shadow` and `INSUFFICIENT` are expected states. Opens no browser session, writes nothing.
+    """
+    from cqc_lem.utilities.engagement_window import SESSION_WINDOW_ENFORCE
+    from cqc_lem.utilities.session_window_audit import VERDICT_FAIL, audit_user
+
+    users = get_active_user_ids() or []
+    failed = 0
+    for user_id in users:
+        report = audit_user(user_id)
+        log_info(report.summary_line(), user_id=user_id)
+        if report.mode == SESSION_WINDOW_ENFORCE and report.verdict == VERDICT_FAIL:
+            failed += 1
+            log_warning("Session window audit failed under enforce: night, weekend or "
+                        "over-ceiling activity found", user_id=user_id)
+    return lane_result(TaskOutcome.NO_OP, f"Session window audit: {len(users)} user(s), {failed} FAIL")
+
+
 @shared_task.task(bind=True, base=QueueOnce, once={'graceful': True}, queue='se_content',
                   reject_on_worker_lost=True)
 def auto_produce_feature_tutorial(self, flow_key: str = None):
