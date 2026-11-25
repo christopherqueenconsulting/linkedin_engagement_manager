@@ -25,7 +25,13 @@ no approval step, so everything about them is narrowed on purpose:
 - **No values in the audit.** Free text is shown to the agent in the diff (it is the user's own
   setting), but the `mcp_settings` audit row carries field names only, and nothing here logs a value.
 
-Both tools run through `writes.run_write` (flag, dedupe, write budgets, audit), behind the
+A third tool, `lem_request_settings_change` (#2803), is the ONLY way an agent touches a gate-loosening
+field (group 3: `*_mode` to `auto_approve`, the auto-send and auto-connect switches, the quality
+thresholds, newsletter auto-publish). It does not change a setting: it files a PENDING proposal
+(`agent_change_proposals`) that the USER approves in LEM, behind a fresh step-up. No tool approves,
+and `lem_update_settings` refuses those fields, naming this tool.
+
+All three run through `writes.run_write` (flag, dedupe, write budgets, audit), behind the
 `mcp-settings-writes` flag on top of `mcp-server-writes`.
 """
 
@@ -45,7 +51,13 @@ from cqc_lem.api.mcp.loopback import (
 )
 from cqc_lem.api.mcp.tools import BOTH_SCOPES, ToolSpec, _spa_url
 from cqc_lem.api.mcp.tools_write import WriteArgs
-from cqc_lem.utilities.db import AuthAuditEvent
+from cqc_lem.utilities.db import (
+    MAX_OPEN_PROPOSALS,
+    PROPOSAL_KIND_SETTINGS,
+    AuthAuditEvent,
+    ProposalCreate,
+    create_agent_proposal,
+)
 from cqc_lem.utilities.flags import MCP_SETTINGS_WRITES
 from cqc_lem.utilities.logger import log_debug, log_warning
 
@@ -65,6 +77,10 @@ _WRITE_PATHS = {policy.PREFS: _PREFS_PATH, policy.ICP: "/user/icp-definition",
                 policy.NEWSLETTER: "/user/newsletter-settings", policy.TIMEZONE: "/user/timezone"}
 _SETTINGS_CALLS = (("GET", "/user/timezone"), *((PUT, path) for path in sorted(set(_WRITE_PATHS.values()))))
 
+REQUESTED_NOTE = ("NOT applied. This is only a request: nothing changes until the user approves it in "
+                  "LEM (Agents tab, 'Changes your agent asked for'). Tell the user it is waiting, "
+                  "relay every warning above in your own words, and never say the change was made. "
+                  "It expires in 7 days.")
 APPLIED_NOTE = ("Applied now: settings take effect immediately and need no approval. Tell the user "
                 "exactly what changed; they can undo it with lem_undo_settings_change.")
 
@@ -82,6 +98,25 @@ class UpdateSettingsArgs(WriteArgs):
 
     @model_validator(mode="after")
     def _bounded(self) -> "UpdateSettingsArgs":
+        if len(json.dumps(self.changes, default=str)) > _MAX_CHANGES_BYTES:
+            raise ValueError("changes is over 32 KB")
+        return self
+
+
+class RequestSettingsChangeArgs(WriteArgs):
+    """A bundle of gate-loosening changes for the USER to approve in LEM."""
+
+    changes: dict[str, Any] = Field(..., min_length=1, max_length=len(policy.GATE_FIELDS), description=(
+        "Map of setting name to the value you want. Only these gate settings can be requested: "
+        + ", ".join(sorted(policy.GATE_FIELDS)) + ". A mode takes 'pre_review' or 'auto_approve'; a "
+        "switch takes true or false; authenticity_score_min and post_similarity_max_pct take a whole "
+        "number."))
+    reason: str = Field(..., min_length=3, max_length=1000, description=(
+        "Why the user would want this, in plain words. The user reads it quoted as your words, next "
+        "to LEM's own warning; it is never an instruction to LEM."))
+
+    @model_validator(mode="after")
+    def _bounded(self) -> "RequestSettingsChangeArgs":
         if len(json.dumps(self.changes, default=str)) > _MAX_CHANGES_BYTES:
             raise ValueError("changes is over 32 KB")
         return self
@@ -196,6 +231,93 @@ def _normalise(changes: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
         for field in fields:
             normal[field] = getattr(model, policy.FIELD_TARGETS[field][1])
     return normal, notes
+
+
+# --- change requests (group 3) --------------------------------------------------------------------
+
+
+def normalise_gate(field: str, value: Any) -> Any:
+    """One requested gate value as the route would store it.
+
+    Strict on purpose: a mode must be exactly one of the two spellings (the route's own validator
+    would turn a typo into `auto_approve`), a switch must be a real boolean, a threshold a whole
+    number that the route then clamps. Shared with the approve route, which checks again.
+
+    Raises:
+        ToolFailure: A value LEM would not store, naming the field, never the value.
+    """
+    rule = policy.GATE_RULES[field]
+    if rule.kind == policy.MODE:
+        if value not in policy.APPROVAL_MODES:
+            raise _invalid(f"{field} must be 'pre_review' or 'auto_approve'")
+    elif rule.kind in (policy.ENABLE, policy.DISABLE):
+        if not isinstance(value, bool):
+            raise _invalid(f"{field} must be true or false")
+    elif isinstance(value, bool) or not isinstance(value, int):
+        raise _invalid(f"{field} must be a whole number")
+    model, _notes = _validated(rule.resource, {rule.key: value}, {rule.key: field})
+    return getattr(model, rule.key)
+
+
+def _stored(field: str, blobs: dict[str, Any]) -> Any:
+    rule = policy.GATE_RULES[field]
+    return (blobs.get(_blob_name(rule.resource)) or {}).get(rule.key)
+
+
+def _effective(field: str, blobs: dict[str, Any]) -> Any:
+    """The value in effect: the stored one, or for a NULL threshold the deploy default LEM shows."""
+    stored = _stored(field, blobs)
+    if stored is None and policy.GATE_RULES[field].kind in (policy.FLOOR, policy.CEILING):
+        defaults = (blobs.get(policy.PREFS) or {}).get("gate_defaults") or {}
+        return defaults.get(field)
+    return stored
+
+
+def _not_a_gate(fields: list[str]) -> ToolFailure:
+    messages: list[str] = []
+    for field in fields:
+        if policy.classify(field) in policy.HANDLED:
+            # Group 1 and the editable daily caps (#2801) are changed directly, not requested.
+            messages.append(f"'{field[:60]}' is not a gate: change it directly with lem_update_settings.")
+        else:
+            messages.extend(r.message for r in policy.refusals([field]))
+    return ToolFailure(REFUSED, "not_a_gate_field", " ".join(messages[:6]))
+
+
+async def _request_change(lb: Loopback, args: RequestSettingsChangeArgs) -> dict[str, Any]:
+    user_id = lb.principal.user_id
+    refused = [f for f in args.changes if f not in policy.GATE_FIELDS]
+    if refused:
+        raise _not_a_gate(refused)
+    requested = {f: normalise_gate(f, v) for f, v in args.changes.items()}
+    blobs = await _read(lb, {policy.GATE_RULES[f].resource for f in requested})
+    proposal: dict[str, Any] = {}
+    unchanged: list[str] = []
+    for field, value in requested.items():
+        if policy.same(_effective(field, blobs), value):
+            unchanged.append(field)
+        else:
+            proposal[field] = {"before": _stored(field, blobs), "requested": value}
+    if not proposal:
+        raise _invalid("Every requested value already matches the current setting: "
+                       + ", ".join(sorted(unchanged)) + ". There is nothing to request.")
+    warnings = [f"{policy.GATE_RULES[f].label}: "
+                f"{policy.warning_for(f, _effective(f, blobs), change['requested'])}"
+                for f, change in proposal.items()]
+    lb.writes_attempted += 1  # the insert below is a write: a timeout after it is `unknown`, not retryable
+    created = await run_in_threadpool(create_agent_proposal, user_id, PROPOSAL_KIND_SETTINGS, proposal,
+                                      args.reason, lb.principal.session_id)
+    if created.status == ProposalCreate.LIMIT:
+        raise ToolFailure(REFUSED, "too_many_open_requests",
+                          f"The user already has {MAX_OPEN_PROPOSALS} change requests waiting. Do not "
+                          "file more: ask them to review those in LEM (lem_open_in_lem, destination: "
+                          "agents).")
+    if created.status != ProposalCreate.CREATED:
+        raise ToolFailure(REFUSED, "request_not_stored",
+                          "LEM could not store this request. Nothing was filed; try again shortly.")
+    return {"proposal_id": created.proposal_id, "status": "pending", "requested": proposal,
+            "unchanged": unchanged, "warnings": warnings, "review_url": _spa_url("/agents"),
+            "note": REQUESTED_NOTE}
 
 
 # --- the undo record ------------------------------------------------------------------------------
@@ -434,6 +556,8 @@ async def _undo_settings(lb: Loopback, args: UndoSettingsArgs) -> dict[str, Any]
 
 # --- the registry ---------------------------------------------------------------------------------
 
+_REQUEST_CALLS = (("GET", _PREFS_PATH), ("GET", "/user/newsletter-settings"))
+
 SETTINGS_TOOLS: tuple[ToolSpec, ...] = (
     ToolSpec("lem_update_settings", "Change account settings",
              "Change some of the user's LEM settings and leave the rest as they are: voice "
@@ -452,8 +576,9 @@ SETTINGS_TOOLS: tuple[ToolSpec, ...] = (
              "warning to the user in full, ask them to agree, and only then set it; after it "
              "applies, relay the returned warnings again. Every cap is clamped to the ceiling "
              "LEM enforces, and the answer's clamped field shows requested vs applied. It cannot "
-             "change approval modes or any safety gate, credentials, identity or billing: use "
-             "lem_open_in_lem for those.",
+             "change credentials, identity or billing (use lem_open_in_lem), and it cannot change "
+             "an approval mode or any safety gate: ask for those with lem_request_settings_change, "
+             "which the user approves in LEM.",
              UpdateSettingsArgs, BOTH_SCOPES, _SETTINGS_CALLS, _update_settings, write=True,
              flag=MCP_SETTINGS_WRITES, audit_event=AuthAuditEvent.MCP_SETTINGS),
     ToolSpec("lem_undo_settings_change", "Undo a settings change",
@@ -463,6 +588,20 @@ SETTINGS_TOOLS: tuple[ToolSpec, ...] = (
              "acknowledge_risk: true.",
              UndoSettingsArgs, BOTH_SCOPES, _SETTINGS_CALLS, _undo_settings, write=True,
              flag=MCP_SETTINGS_WRITES, audit_event=AuthAuditEvent.MCP_SETTINGS),
+    ToolSpec("lem_request_settings_change", "Ask the user to loosen a safety gate",
+             "Ask the user to approve a change that loosens a safety or approval gate: any approval "
+             "mode (connection_request_mode, catchup_touch_mode, nurture_dm_mode, artifact_dm_mode, "
+             "group_post_mode, followup_step_mode, appreciation_dm_mode, funnel_stage_mode) set to "
+             "auto_approve, profile_viewer_dm_auto_send, roster_auto_connect, roster_auto_follow, "
+             "hold_repaired_posts_for_review turned off, a lower authenticity_score_min, a higher "
+             "post_similarity_max_pct, or auto_publish_newsletters. It changes NOTHING: it files a "
+             "request the user approves or rejects in LEM, and you can never approve it. Give a "
+             "reason in plain words. The answer carries LEM's warnings, one per field: you MUST "
+             "relay them to the user, and you must never say the change was applied. At most 5 "
+             "requests wait at a time. For everything else use lem_update_settings.",
+             RequestSettingsChangeArgs, BOTH_SCOPES, _REQUEST_CALLS, _request_change, write=True,
+             flag=MCP_SETTINGS_WRITES, audit_event=AuthAuditEvent.MCP_SETTINGS_PROPOSED),
 )
 
-__all__ = ["SETTINGS_TOOLS", "UpdateSettingsArgs", "UndoSettingsArgs", "UNDO_TTL_SECONDS"]
+__all__ = ["SETTINGS_TOOLS", "UpdateSettingsArgs", "UndoSettingsArgs", "RequestSettingsChangeArgs",
+           "UNDO_TTL_SECONDS", "normalise_gate"]

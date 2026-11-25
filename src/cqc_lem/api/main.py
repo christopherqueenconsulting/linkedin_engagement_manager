@@ -5130,6 +5130,7 @@ from cqc_lem.api.routers import (  # noqa: E402
     mcp_tokens as _mcp_tokens_router,
     outreach as _outreach_router,
     review as _review_router,
+    settings_proposals as _settings_proposals_router,
     user as _user_router,
 )
 
@@ -5144,6 +5145,7 @@ app.include_router(_mcp_story_router.router)
 app.include_router(_mcp_tokens_router.router)
 app.include_router(_outreach_router.router)
 app.include_router(_review_router.router)
+app.include_router(_settings_proposals_router.router)
 app.include_router(_user_router.router)
 
 

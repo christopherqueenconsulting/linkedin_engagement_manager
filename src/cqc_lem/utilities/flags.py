@@ -352,10 +352,11 @@ FLAGS: Dict[str, FlagSpec] = {
             default=False,
             owner="platform",
             description=("The MCP settings tools `lem_update_settings` and "
-                         "`lem_undo_settings_change` (epic #2797, issue #2800). OFF by default; "
-                         "when off neither tool is listed and a call is refused. Group-1 settings "
-                         "only (voice, targeting, strategy, cadence, assets); caps and "
-                         "gate-loosening fields are never reachable through it."),
+                         "`lem_undo_settings_change` (epic #2797, issue #2800) and "
+                         "`lem_request_settings_change` (#2803). OFF by default; when off none is "
+                         "listed and a call is refused. Group-1 settings (voice, targeting, "
+                         "strategy, cadence, assets) apply directly; a gate-loosening field is only "
+                         "ever a request that the user approves in LEM."),
         ),
         FlagSpec(
             key=MCP_STORY_DRAFTS,

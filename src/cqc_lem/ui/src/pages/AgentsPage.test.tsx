@@ -136,6 +136,9 @@ beforeEach(() => {
     if (path.startsWith('/user/auth-factors')) {
       return Promise.resolve({ data: { detail: { has_strong_factor: strong } } })
     }
+    if (path.startsWith('/user/settings-proposals')) {
+      return Promise.resolve({ data: { detail: { proposals: [], count: 0 } } })
+    }
     if (path.startsWith('/user/mcp-token/activity')) {
       return Promise.resolve({ data: { detail: { events: activity } } })
     }

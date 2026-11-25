@@ -299,10 +299,14 @@ def _settings_server(scope: str = "mcp", listed: bool = True, restores: bool = T
         elif name == "lem_update_settings":
             if "max_comments_per_day" in args.get("changes", {}):
                 result = _error("cap_not_editable")
+            elif "connection_request_mode" in args.get("changes", {}):
+                result = _error("needs_change_request")
             else:
                 before, state["tone"] = state["tone"], args["changes"]["tone"]
                 result = {"structuredContent": {"changed": {"tone": {
                     "before": before, "after": state["tone"]}}, "undo_id": "abcdef0123456789"}}
+        elif name == "lem_request_settings_change":
+            result = _error("not_a_gate_field")
         elif name == "lem_undo_settings_change":
             if restores:
                 state["tone"] = "warm"
@@ -322,7 +326,19 @@ def test_the_settings_round_trip_passes_on_a_healthy_server() -> None:
     assert code == 0, text
     assert "[PASS] lem_update_settings changes tone and reports before/after" in text
     assert "[PASS] a daily cap is refused" in text
+    assert "[PASS] a gate change is refused toward lem_request_settings_change" in text
+    assert "[PASS] a non-gate field cannot be requested" in text
     assert "[PASS] tone is back to its old value" in text
+
+
+def test_the_smoke_never_files_a_change_request() -> None:
+    """No agent tool can approve one, so a request filed by the smoke would sit in the user's queue."""
+    client, seen = _settings_server()
+    _run(client, "--settings")
+    for body in seen:
+        params = body.get("params") or {}
+        if params.get("name") == "lem_request_settings_change":
+            assert set(params["arguments"]["changes"]) == {"tone"}, "only a refused, non-gate probe"
 
 
 def test_a_settings_undo_that_does_not_restore_fails() -> None:

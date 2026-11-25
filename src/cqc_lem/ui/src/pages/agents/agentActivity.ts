@@ -52,6 +52,17 @@ export function describe(e: McpActivityEvent): string {
     const text = label ? `${label.verb}: ${label.object}` : `Agent change: ${tool}`
     return withTarget(text, e.details?.target_id)
   }
+  if (e.event === 'mcp_settings_proposed' || e.event === 'mcp_settings_approved'
+      || e.event === 'mcp_settings_rejected') {
+    // A change REQUEST (#2803): who acted is in the verb; field names only, never a value or the reason.
+    const raw: unknown = e.details?.fields ?? e.details?.applied
+    const fields = Array.isArray(raw)
+      ? raw.filter((f: unknown): f is string => typeof f === 'string')
+      : []
+    const verb = e.event === 'mcp_settings_proposed' ? 'Asked you to approve a settings change'
+      : e.event === 'mcp_settings_approved' ? 'You approved a settings request' : 'You rejected a settings request'
+    return fields.length > 0 ? `${verb}: ${fields.join(', ')}` : verb
+  }
   if (e.event === 'mcp_settings') {
     // Field NAMES only: the audit row never carries a value (#2800).
     const raw: unknown = e.details?.fields
