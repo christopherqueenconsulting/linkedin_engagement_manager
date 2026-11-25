@@ -48,6 +48,7 @@ from typing import Callable, NamedTuple, Optional, Tuple
 
 from celery import Task
 from celery.exceptions import SoftTimeLimitExceeded
+from openai import APIConnectionError
 from selenium.common import (
     StaleElementReferenceException,
     WebDriverException,
@@ -2708,12 +2709,22 @@ def _engage_card(ctx: FeedRunContext, card, key: str, content: str, author: str,
     comment_blueprint = select_blueprint(
         "comment", recent_formats=ctx.used_comment_shapes,
         exclude_formats=None if ctx.has_sourced_facts else fact_anchored_formats("comment"))
-    with llm_attribution(user_id=user_id, feature=FEATURE_COMMENT):
-        comment_text = generate_ai_response(content, my_profile, None, prefs=prefs,
-                                            profile_synthesis=ctx.profile_synthesis,
-                                            blueprint=comment_blueprint,
-                                            recent_comments=ctx.recent_comments, user_id=user_id,
-                                            post_id=key)
+    try:
+        with llm_attribution(user_id=user_id, feature=FEATURE_COMMENT):
+            comment_text = generate_ai_response(content, my_profile, None, prefs=prefs,
+                                                profile_synthesis=ctx.profile_synthesis,
+                                                blueprint=comment_blueprint,
+                                                recent_comments=ctx.recent_comments, user_id=user_id,
+                                                post_id=key)
+    except APIConnectionError as e:
+        # The proxy dropped or never answered after the client's own connect retries (deploy or
+        # host reboot). `_call_llm` already warned where it happened, so a repeat still escalates
+        # there; letting it propagate crashed the whole walk into a second grouped $exception
+        # (issue #2829). Release the claim so a later run retries this post.
+        log_debug(f"Comment generation skipped — LLM proxy connection error: {type(e).__name__}",
+                  user_id=user_id, action_type="comment")
+        release_post_claim(user_id, key)
+        return False
     if comment_text and comment_blueprint.get("format"):
         ctx.used_comment_shapes.insert(0, comment_blueprint["format"])
         # And durably, so the next RUN starts where this one left off rather than at the top of the
