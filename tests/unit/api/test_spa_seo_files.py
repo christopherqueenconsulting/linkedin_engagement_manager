@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 from cqc_lem.api.spa_assets import (
     BASE_URL_PLACEHOLDER,
     PUBLIC_ROOT_FILES,
+    SPA_PUBLIC_DIRS,
     VITE_BASE_URL_PLACEHOLDER,
     public_base_url,
     register_spa_public_routes,
@@ -152,6 +153,20 @@ class TestServedFiles:
         response = _client(dist).get("/brand/og.png")
         assert response.status_code == 200
         assert response.headers["content-type"] == "image/png"
+
+    def test_the_landing_product_screenshot_is_served_as_an_image(self, dist):
+        # v0.226.0 shipped the landing hero from `public/product/` without a route, so the
+        # catch-all answered the .webp with index.html and the hero rendered as an empty box.
+        (dist / "product").mkdir()
+        (dist / "product" / "content-studio-queue-720.webp").write_bytes(b"RIFF\x00\x00\x00\x00WEBP")
+        response = _client(dist).get("/product/content-studio-queue-720.webp")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/webp"
+
+    def test_every_shipped_public_folder_is_mounted(self):
+        # Any folder in ui/public that is not mounted is served as HTML by the catch-all.
+        shipped = {p.name for p in UI_PUBLIC.iterdir() if p.is_dir() and p.name != "agents"}
+        assert shipped <= set(SPA_PUBLIC_DIRS)
 
     def test_favicon_is_served_as_an_icon_not_html(self, dist):
         # The brand package has no SVG (issue #1300), so the mark ships as an .ico.

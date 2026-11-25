@@ -19,7 +19,7 @@ import os
 import shutil
 import tempfile
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.requests import Request
@@ -56,6 +56,10 @@ PUBLIC_ROOT_FILES: Dict[str, str] = {
     # an `/api` one, so it never touches the MCP auth path or `_PUBLIC_API_PREFIXES`.
     "agents/install.md": "text/markdown; charset=utf-8",
 }
+
+# Public folders of the SPA build that are mounted whole, for the same reason: the catch-all would
+# otherwise answer their files with index.html. `product` holds the landing page's screenshots.
+SPA_PUBLIC_DIRS: Tuple[str, ...] = ("brand", "product")
 
 # Vite copies public/ VERBATIM — no env substitution reaches it — but a sitemap `<loc>` and a
 # robots.txt `Sitemap:` line are only valid as ABSOLUTE URLs. So those two files carry this token
@@ -116,13 +120,16 @@ def register_spa_public_routes(app: Any, dist_dir: str) -> None:
         app.get(f"/{file_name}", include_in_schema=False)(
             _make_public_file_route(dist_dir, file_name, media_type)
         )
-    brand_dir = os.path.join(dist_dir, "brand")
-    if os.path.isdir(brand_dir):
-        # The Open Graph image lives here. Static, public, and referenced by absolute URL from the
-        # shell, so it is mounted rather than routed file by file.
-        app.mount("/brand", StaticFiles(directory=brand_dir), name="spa-brand")
-    else:
-        log_debug("No SPA brand directory to serve", dist_dir=dist_dir)
+    # `brand/` holds the Open Graph image (static, public, referenced by absolute URL from the
+    # shell); `product/` holds the landing page's product screenshots. Each is mounted rather than
+    # routed file by file. A public folder missing from this list is answered by the catch-all
+    # with index.html, so its images arrive as HTML and never render.
+    for folder in SPA_PUBLIC_DIRS:
+        folder_dir = os.path.join(dist_dir, folder)
+        if os.path.isdir(folder_dir):
+            app.mount(f"/{folder}", StaticFiles(directory=folder_dir), name=f"spa-{folder}")
+        else:
+            log_debug("No SPA public directory to serve", dist_dir=dist_dir, folder=folder)
 
 
 def spa_index_headers() -> Dict[str, str]:
