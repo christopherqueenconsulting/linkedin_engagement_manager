@@ -27,6 +27,10 @@ export default function HowItWorks() {
       {/* A true sequence, drawn as one: numbered stops on a single rule (horizontal from md,
           vertical on a phone), not three boxed cards (design pass 2026-11-24). */}
       <div className="relative">
+        {/* Step connector rule. From md up the three steps sit in a 3-column grid with two 2rem
+            gaps (4rem in all). The rule starts at the first marker's centre (left-5) and stops at
+            the last marker's centre: one column width ((100% - 4rem) / 3) in from the right edge,
+            less the marker's 1.25rem half-width. */}
         <span
           aria-hidden="true"
           className="absolute left-5 top-5 hidden h-px bg-hairline md:block md:right-[calc((100%_-_4rem)/3_-_1.25rem)]"
