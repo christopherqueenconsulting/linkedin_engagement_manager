@@ -58,6 +58,8 @@ def insert_new_log(user_id: int, action_type: LogActionType, result: LogResultTy
         success = False
 
     return success
+
+
 def get_session_window_audit_rows(user_id: int, start: datetime, end: datetime) -> Optional[list]:
     """`(created_at UTC, action_type)` of the user's `logs` rows in `[start, end)`, or None on a fault.
 
