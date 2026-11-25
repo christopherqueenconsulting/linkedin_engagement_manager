@@ -432,6 +432,18 @@ export const STARTER_PROMPTS: { id: string; title: string; text: string }[] = [
     text: 'Use the lem server to explain how my recent posts performed and which one did best, with numbers.' },
 ]
 
+/**
+ * The "Align my account" starter (#2802). Separate from STARTER_PROMPTS because it is the one that
+ * can change settings, so its card says so; it names the server's `align_my_account` prompt and
+ * carries no token or connect command.
+ */
+export const ALIGN_ACCOUNT_PROMPT = {
+  id: 'align',
+  title: 'Align my account',
+  text: 'Use the lem server\'s align_my_account prompt: check my setup checklist, interview me about my ' +
+    'goals, customer, voice, topics, cadence and assets, and show me every change before you make it.',
+}
+
 /** A label the server will accept: the client's stem plus the device, both reduced to its charset. */
 export function defaultLabel(client: ClientId, userAgent: string): string {
   return sanitizeLabel(`${clientInfo(client).labelStem} - ${deviceName(userAgent)}`)

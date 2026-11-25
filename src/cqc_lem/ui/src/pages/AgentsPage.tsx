@@ -17,7 +17,7 @@ import AgentActivityCard from './agents/AgentActivityCard'
 import ConnectCommands from './agents/ConnectCommands'
 import ConnectedAgentsCard from './agents/ConnectedAgentsCard'
 import McpCredentialCard from './agents/McpCredentialCard'
-import { AgentPromptCard, StarterPromptsCard } from './agents/PromptCards'
+import { AgentPromptCard, AlignAccountCard, StarterPromptsCard } from './agents/PromptCards'
 import ShownTokenPanel from './agents/ShownTokenPanel'
 import type { ClientId } from './agents/clientSnippets'
 
@@ -285,6 +285,7 @@ function AgentsContent({ readOnly }: { readOnly: boolean }) {
 
       <AgentPromptCard />
       <StarterPromptsCard />
+      <AlignAccountCard />
 
       {info.data && (
         <ConnectedAgentsCard tokens={info.data.tokens} busyId={rowBusy} onRotate={onRotate} onRevoke={onRevoke} />

@@ -120,6 +120,10 @@ def test_a_healthy_server_passes_and_every_read_tool_is_called(scope: str) -> No
     assert set(called) == {s.name for s in tools_for_scope(scope) if not s.write}
     assert {"name": "lem_get_post", "arguments": {"post_id": 4}} in [
         b["params"] for b in seen if b["method"] == "tools/call"]
+    # The setup checklist (#2802) is a read: called once, with no arguments, and never a write.
+    assert called.count("lem_get_setup_checklist") == 1
+    assert not any(b["params"].get("name") == "lem_get_setup_checklist" and b["params"].get("arguments")
+                   for b in seen if b["method"] == "tools/call")
     if scope == "mcp_outreach":
         assert called.count("lem_list_outreach") == 6
     assert _TOKEN not in text

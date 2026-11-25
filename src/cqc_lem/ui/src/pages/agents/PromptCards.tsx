@@ -1,6 +1,6 @@
 import CopyBlock from '../../components/CopyBlock'
 import SettingsCard from '../../components/SettingsCard'
-import { AGENT_PROMPT, STARTER_PROMPTS } from './clientSnippets'
+import { AGENT_PROMPT, ALIGN_ACCOUNT_PROMPT, STARTER_PROMPTS } from './clientSnippets'
 
 /**
  * What to say to the agent once it is connected (plan §6 card 3). This is the block people paste
@@ -26,6 +26,22 @@ export function StarterPromptsCard() {
           <CopyBlock key={p.id} label={p.title} text={p.text} />
         ))}
       </div>
+    </SettingsCard>
+  )
+}
+
+/**
+ * Setup interview (#2802). Unlike the cards above it can change settings, so it says what stays with
+ * you: every change is shown first, can be undone, and anything that loosens a safety gate is a
+ * request you approve in LEM.
+ */
+export function AlignAccountCard() {
+  return (
+    <SettingsCard
+      title="Align my account"
+      subtitle="Your agent asks about your goals, customer and voice, then proposes settings. You see each change before it is made; gate-loosening changes wait for your approval in LEM."
+    >
+      <CopyBlock label={ALIGN_ACCOUNT_PROMPT.title} text={ALIGN_ACCOUNT_PROMPT.text} />
     </SettingsCard>
   )
 }

@@ -72,6 +72,7 @@ that needs a new path is therefore a reviewed edit to the scope table as well.
 | `lem_get_lead_funnel` | yes | yes | `/leads/funnel` | counts only |
 | `lem_get_engagement_settings` | yes | yes | `/user/engagement-preferences`, `/user/dm-templates` | the inbound-mail address and Gmail confirmation never returned |
 | `lem_list_engagement_targets` | no | yes | `/user/engagement-targets`, `/user/engagement-suggestions` | open-world; the roster is named people and the suggestions are AI drafts from strangers' posts, so both are outreach-only (P2 review); drafts fenced |
+| `lem_get_setup_checklist` | yes | yes | `/user/account-readiness`, `/user/engagement-preferences`, `/user/story-bank`, `/user/lead-magnet`, `/user/newsletter-settings`, `/user/timezone` (parallel fan-out) | items `{key, label, ok, why_it_matters, fix}`; `fix` is `{tool: "lem_update_settings", fields}` or `{open_in_lem}`; `ok` is `null` for an unreadable section (unknown is never missing); no user or third-party text is returned; the story bank counts only `verified` entries once the API reports that flag (#2804), otherwise all, with a note |
 | `lem_get_voice_kit` | yes | yes | story bank, lead magnet, groups, skills, profile | open-world; group names fenced; each story carries `verified` and `source` (#2804): `verified: false` is an agent draft LEM does not use yet |
 | `lem_get_newsletter` | yes | yes | settings, draft, `/user/newsletter-subscribers` | the latest subscriber COUNT only (O5) |
 | `lem_list_newsletter_subscribers` | no | yes | `/user/newsletter-subscribers` | the paged count history (see below) |
@@ -91,7 +92,11 @@ subscriber-identity table is ever added, its rows belong in that tool, outreach-
 and spends a tool call, like the tool.
 **Prompts**: `weekly_review`, `whats_wrong`, `explain_my_performance(post_id?)`, and (W2)
 `fill_my_content_plan(weeks=1)` and the outreach-only `prepare_outreach_batch` (neither listed nor
-served to an `mcp` token).
+served to an `mcp` token). `align_my_account` (#2802, both scopes) runs the setup interview: it calls
+`lem_get_setup_checklist`, asks rather than invents, proposes ONE batched `lem_update_settings` with
+the diff shown first, and names `lem_request_settings_change` / `lem_add_story_draft` only as
+"if ... is available" until those tools exist (a test asserts every unconditionally named tool is in
+the registry).
 
 ## The write tools (W2)
 
