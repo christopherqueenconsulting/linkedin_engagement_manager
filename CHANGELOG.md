@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.226.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.226.0...v0.226.1) (2026-11-25)
+
+
+### Bug Fixes
+
+* **api:** serve the SPA product/ folder so the landing hero image loads ([#2818](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2818)) ([659f1b0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/659f1b03c22d7f7b673b27a99159ac80c65a91cc))
+
 ## [0.226.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.225.0...v0.226.0) (2026-11-25)
 
 
