@@ -1,0 +1,30 @@
+{
+  "pr": 2792,
+  "profile": "product-content",
+  "round": 1,
+  "head": "1154509377f9b61bce699f0aace542c8ef303423",
+  "reviewer": "D",
+  "persona": "claims_auditor",
+  "verdict": "pass",
+  "reasons": [
+    "Head resolves. git ls-remote origin and refs/pull/2792/head both give 1154509377f9b61bce699f0aace542c8ef303423. PR is OPEN and draft at that head. Working tree clean.",
+    "Hero restored. H1 'Your LinkedIn content, written in your voice&nbsp;— published only when you approve it' is identical to round-1 commit 5be88f95. Body is identical text and counts 40 words. Landing.test.tsx regexes are back to /Your LinkedIn content/i.",
+    "Copy matches the pre-round-3 branch. git diff d1c21ed4..HEAD on marketing components shows source-string changes only in Hero (H1/body back to round 1), FeatureNarrative, ApproachComparison and PricingSection. ProblemSection, SafetySection, HowItWorks and FinalCta have no net change from d1c21ed4. SafetySection, HowItWorks and FinalCta also match 5be88f95. ProblemSection shows the round-2 one-sentence lines, which is the pre-round-3 text.",
+    "FeatureNarrative: the 'Four beats, in the order they run.' lede, full bodies, and the post-format, slop-lint, weekday/weekend, golden-hour-from-publish-time, self-healing carousel, targeting-rule, DM and statistics points are all in source. Points are a hairline ruled list in the DOM, so nothing is hidden. ApproachComparison has all 7 rows and the two-sentence lede. PricingSection renders INCLUDED_IN_EVERY_PLAN as two ruled columns.",
+    "No users, logos, testimonials or metrics are added. A grep of the marketing components finds no numeric claim, testimonial or logo copy. The only matches are the Icon name 'users', the 70/20/10 panel diagram, and ProofStrip's existing 'small first cohort' line. ProofStrip's comment records that the old 2,500+ users and 50K+ posts claims were removed.",
+    "Comparison concession per spec: the 'Writes in your own voice' row credits doing it by hand with a check, and the approval row is a check in all three columns. LEM is not shown winning those two rows. Spec says 'Concedes at least one row honestly', and the table is identical to the round-2 head that D passed.",
+    "Density override is in brand/lem/DESIGN.md under 'Density override (marketing landing)'. It states the owner decision of 2026-11-24, no hiding behind toggles, and that it covers this page only. summary.md marks the owner sign-off residual resolved and states that the restored copy has had no reviewer round.",
+    "PR body claims resolve. Capture manifest (version 4): complete=true, styled=true, blocked_hosts={}. layout.json gives 1198 words over 8297 px at 1440 (about 130 per 900 px) and 1236 words at 390. overflowing is empty in all 6 views. console.json has empty console_errors, page_errors and failed_requests in all 6 views. The 6 capture views and 29 focus steps are consistent with the files present. PR body wording keeps 'CI runs these again' for lint, tsc and tests.",
+    "Round-3 asset claims are unchanged by this head. Three webp files under public/product appear in the diff at 44362, 24494 and 50126 bytes, matching the PR body."
+  ],
+  "required_fixes": [],
+  "residuals": [
+    "NOT VERIFIED: local results 'eslint 0 errors, 2 warnings', 'tsc -b exit 0' and 'vitest 107 files, 1045 tests passed'. At review time CI on this head was still pending (UI Build, unit shards, integration). Docstring & Lint Gate, GitGuardian, Migration Versions and Pipeline Self-Modification Gate had passed. The PR body words these as local checks that CI repeats.",
+    "NOT VERIFIED: 'longest line 68 chars at 1440 and 55 at 390' and 'Inter only'. layout.json has no line-length or font field in the data read.",
+    "Wording gap in the PR body: Round 4 says each beat's full body and points are 'restored word for word'. Four round-2 point cuts remain cut: the 30-day plan and 70/20/10 points, the reply point, and the two-to-seven point. The body's Round 2 section still lists them as cut and does not mark them reverted. The plan file says the page carries round-2 copy elsewhere. A reader of Round 4 alone could assume they came back.",
+    "Existing claims 'a small first cohort' (ProofStrip) and the 'Most popular' pricing badge sit beside a one-user pre-launch beta. They are not changed by this PR and the PR body lists them as an owner decision. 'Most popular' has no artifact behind it. This is not a new claim.",
+    "The comparison concedes by parity (an equal check) and never by an alternative winning outright. It meets the spec wording but is a soft concession.",
+    "The 1198-word density figure (about 130 per screen) is consistent with layout.json. The brand-pack words-per-screen target of about 90 is exceeded by design, as recorded in the density override.",
+    "No reviewer other than this D round has run on head 1154509. O and the others have not re-run, and the PR says so."
+  ]
+}

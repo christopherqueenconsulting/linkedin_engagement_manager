@@ -1,0 +1,30 @@
+{
+  "pr": 2792,
+  "profile": "product-content",
+  "round": 2,
+  "head": "d1c21ed426a212a215651aa57e5ecfc17dea96df",
+  "reviewer": "D",
+  "persona": "claims_auditor",
+  "verdict": "pass",
+  "reasons": [
+    "Round 1 fix 1 resolved. PR body and plan now say the hero body was 49 words before the pass and 40 after round 1.",
+    "Round 1 fix 2 resolved. PR body and plan now say the old H1 was 13 words (14 with the em dash). The old '15' and '47' figures are gone from the plan.",
+    "New H1 'LinkedIn posts in your voice, published only after your approval' is 10 words. New hero body is 27 words (9+11+7). Both match Hero.tsx at d1c21ed4. The three pinned statements are kept: approval, suggestions the user sends, no password.",
+    "Head resolves. git rev-parse HEAD and refs/pull/2792/head both give d1c21ed426a212a215651aa57e5ecfc17dea96df. The PR is open and draft at that head.",
+    "Source diff HEAD~1..HEAD matches the declared round 2 copy changes. Four beat labels removed. The content beat loses the 30-day-plan and 70/20/10 points, and its panel still draws both. The engagement beat loses the reply point, and its panel now draws a suggested reply. The scheduling beat loses 'Two to seven posts a week; three by default', and the panel note now reads '2 to 7 posts a week, 3 by default'. Four problem bodies are trimmed to one sentence. No sentence was added.",
+    "New panel text is sample content and each panel has a visible 'Example...' caption. No user count, testimonial, metric, price or customer claim was added. The 'small first cohort' and 'Most popular' claims are unchanged and flagged in Open points.",
+    "The 390 px and 1440 px fold captures show the H1 on 3 lines at both widths and the hero body on 4 lines at 390 px, as the PR body says.",
+    "Capture numbers resolve from the after-r2 manifest, layout, console and focus JSON. complete and styled are true, blocked_hosts empty, overflowing empty and console, page and failed_request lists empty in all 6 views. Words 1185 over page_height 8132 gives 131 per 900 px. Focus is 29 steps with no_visible_focus empty. Image bytes are 17336 light, 12354 dark and 29690 total.",
+    "Wordmark claims resolve. Both files are 286x64 and 17,336 B and 12,354 B, against 145,054 B before for the light file. The sha256 of both files matches the new assets.json entries.",
+    "The PR-body CI claim is worded as 'CI runs these again', so it asserts nothing unresolved."
+  ],
+  "required_fixes": [],
+  "residuals": [
+    "NOT VERIFIED: 'npm test: 107 files and 1,045 tests passed', lint (0 errors, 2 warnings) and 'tsc -b: clean'. They come from a local run. At review time CI at this head was still running; UI Build, Docstring & Lint Gate and GitGuardian had passed.",
+    "NOT VERIFIED from the r2 capture JSON: 'Longest line 68 characters at 1440' and 'Only DESIGN.md colour tokens'. layout.json has no line-length field. Reviewer O should confirm.",
+    "NOT VERIFIED: the denylist-guard was not re-run, and last round it compared against empty denylists.",
+    "The hero copy changes (H1 and body) need the spec owner's sign-off. Scheduling, the month-long plan and follow-ups are now stated only in the feature beats, which still state each.",
+    "The plan says the light wordmark is an exact copy of the logo package file, resized. The source PNG under logo/ was not resolved in this worktree.",
+    "The round-2 art-director review had not happened at this point, as the PR body says."
+  ]
+}

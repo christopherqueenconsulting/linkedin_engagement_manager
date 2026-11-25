@@ -1,0 +1,32 @@
+{
+  "pr": 2792,
+  "profile": "product-content",
+  "round": 1,
+  "head": "5be88f95aad9fe3f27c6e1f3f5dbc636c8c7fb35",
+  "reviewer": "D",
+  "persona": "claims_auditor",
+  "verdict": "fail",
+  "reasons": [
+    "Two word counts in the PR body and the plan are wrong, counted from the committed source.",
+    "Hero body before: HEAD~1 Hero.tsx has 49 whitespace-separated words, not 47. After: 40, which matches 'about 40'. The PR body, the plan critique and the declared copy change all said 47.",
+    "H1 'Your LinkedIn content, written in your voice — published only when you approve it' is 13 words, or 14 if the em dash counts. It is not 15.",
+    "No copy change beyond the declared list was found. Removals match the declared list: hero API and sign-in clauses, the proof-strip bodies and meta line, step 1 password sentence, six eyebrows, safety icons. The four beat labels remain.",
+    "Each removed sentence is still stated elsewhere on the page. The API-publish and password statements are in the safety section; the AES-256-GCM and passkey or TOTP statement is there too. The hero keeps approval, suggestion and password.",
+    "No user count, testimonial, invented metric or pricing change was added. The new plan diagram restates the beat's own points: 30-day plan across awareness, consideration and decision, and the 70/20/10 value, authority and promo mix. The 70/20/10 bar widths match.",
+    "Nothing describes LEM beyond the existing one-user pre-launch framing. The existing 'small first cohort' and 'Most popular' claims are unchanged and already flagged in the PR's Open points.",
+    "Capture-derived claims resolve: both manifests complete and styled true, blocked_hosts empty; words 1368 over 9010 px before and 1263 over 8339 px after give about 137 and about 136 per 900 px; longest line 79 before and 68 after at 1440 wide; focus 29 steps with no_visible_focus empty in both; console and page errors 0 in all 6 views, only failed requests /api/app-info, /api/faq and /api/flags; overflowing empty in all 6 views; image weight 185539 B light and 40485 B dark; colours all DESIGN.md tokens; the before 768 fold capture shows 'How it works' wrapped to three lines.",
+    "PR 2792 is open, draft, head 5be88f95aad9fe3f27c6e1f3f5dbc636c8c7fb35, and the single commit matches the diff the PR lists."
+  ],
+  "required_fixes": [
+    "PR body: hero body 'from 47 to about 40 words' -> 'from 49 to about 40 words'. Evidence: HEAD~1 Hero.tsx paragraph has 49 words. Also fix the plan's critique line, its Distill line and the declared copy-change entry.",
+    "PR body and plan Open points: 'The hero heading is 15 words' -> '13 words'. Re-check the 10-word default comparison after the correction."
+  ],
+  "residuals": [
+    "NOT VERIFIED from CI: 'npm test: 107 files and 1,045 tests passed' and the lint and tsc results. They come from a local run. At review time the UI Build, Unit shard and Integration Tests checks were still pending.",
+    "Not verified: the denylist-guard CLEAN result. Every denylist on the host had 0 entries, so it compared nothing.",
+    "'Every claim ... unchanged' is a little broad next to the declared copy removals. Those removals are restated elsewhere on the page, so it did not fail.",
+    "The undeclared aria-label on the new plan panel restates the beat's own point. Keep it aligned with the beat.",
+    "Not verified: the art-director review. The PR body says it has not happened.",
+    "Not verified: that the reference images for the design pass exist on the reviewing host."
+  ]
+}

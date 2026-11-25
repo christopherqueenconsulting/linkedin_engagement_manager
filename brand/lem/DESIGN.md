@@ -46,6 +46,11 @@ targets: { min_px: 44 }
 - Status colours (proposed): the app needs to say "failed", "done" and "needs attention", and blue cannot carry all three. Each status colour is used as text, as a 10% tint behind its own text, and as a fill under white; action stays blue, so a green or amber button never stands in for the primary. Brand owner to confirm.
 - The one bold element on a LEM page: the product itself, in a real screenshot of the app (owned asset), not an illustration.
 
+## Density override (marketing landing)
+- The logged-out landing page (`src/cqc_lem/ui/src/pages/Landing.tsx`) deliberately carries the full feature story owned by `docs/marketing-page-ux-spec.md`, so it runs above the generic words-per-screen guide (about 90 words per desktop screen). Owner decision, 2026-11-24.
+- Copy owned by the spec is not cut to meet a density number. The density work is in the layout instead: ruled lists, tables and short groups that a reader can scan, with every line visible in the DOM. Nothing is hidden behind a toggle, tab or hover that a crawler or a screen reader cannot reach.
+- The override covers this page only. Other LEM pages keep the generic guide.
+
 ## Contrast (WCAG 2.2 AA; computed 2026-10-16)
 
 | Theme | Pair | Ratio |

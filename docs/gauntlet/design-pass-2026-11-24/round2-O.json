@@ -1,0 +1,38 @@
+{
+  "pr": 2792,
+  "profile": "product-content",
+  "round": 2,
+  "head": "d1c21ed426a212a215651aa57e5ecfc17dea96df",
+  "reviewer": "O",
+  "persona": "art_director",
+  "verdict": "fail",
+  "reasons": [
+    "Mode: refine. The after-r2 manifest is complete and styled, with no blocked hosts.",
+    "Round-1 fix verification: 6 of 8 fixes done, 2 not.",
+    "Fix 1, hero copy: DONE. The H1 is 10 words and runs 3 lines at 1440 and 390. The body is 27 words and runs 4 lines at 390.",
+    "Fix 2, density: NOT DONE. 1,185 words over 8,132 px at 1440 gives about 131 words per desktop screen. The target was 90 or less.",
+    "Fix 3, Engagement panel: DONE. The panel now shows a reply thread and a follow-up DM, each 'Waiting for you'. No panel content appears twice.",
+    "Fix 4, beat labels: DONE.",
+    "Fix 5, captions: DONE. Every drawn panel has a muted caption.",
+    "Fix 6, real screenshot hero: NOT DONE. The drawn panel stays, now captioned and without window dots. No owner ruling is recorded.",
+    "Fix 7, wordmarks: DONE. Both are 286x64 natural, 17,336 B and 12,354 B, with assets.json entries including max_display_px 143.",
+    "Fix 8, console: DONE. console.json is empty in all six views.",
+    "Brand, Type, Focus, Layout and browser finish, Generic patterns, Dark mode, Imagery, Visuals explain: PASS. Colours are all DESIGN.md tokens, Inter is the only family, one filled primary per fold, no overflow, no console errors, the Approved and Scheduled pills are outlined, and every synthetic panel has an example label.",
+    "Against references: FAIL. Imagery and restraint score 3. DESIGN.md says the bold element is a real app screenshot, and the hero is still a drawn HTML panel.",
+    "Density and repeats: FAIL. 1,185 words over 9.04 desktop screens is about 131 per screen, against about 80. No brand-pack override is cited. The Features section has four beats, each with a body and bullets, against a budget of 60 body words for the section."
+  ],
+  "required_fixes": [
+    "Hero 'Content Studio' panel: replace the drawn panel with owned light and dark screenshots of the Content Studio queue on sample data, each with an assets.json entry (licence owned, source, sha256, max_display_px) and the 'Example...' caption kept; or record a brand-owner ruling that the captioned diagram stays and amend DESIGN.md to cite it.",
+    "Whole page: bring density from about 131 to at most about 90 words per desktop screen. Option 1: cut, through the owner of docs/marketing-page-ux-spec.md. Hold Features to about 60 body words in total (one sentence per beat, no bullet lists), cut the comparison from 8 rows to 5, drop the 'Included in every plan' list, cut each safety entry to one sentence. Option 2: add a density override with a reason to DESIGN.md and cite it in the plan."
+  ],
+  "residuals": [
+    "The hero H1 and body changes are edits to copy owned by the spec. The plan routes them to the owner before merge.",
+    "The Measurement beat panel teaches only that the statistics come from the user's own account. Consider a small sample chart with an example label.",
+    "At 390, the hero's first queue item title wraps to short rows because the 'Pending review' pill takes half the row. Consider putting the pill under the title on a phone.",
+    "At 768, the outlined nav 'Start free trial' is close in size to the hero button.",
+    "The proof strip is acceptable as a ruled summary, but watch that it does not become an icon-row pattern.",
+    "'A small first cohort' and the 'Most popular' pricing badge in a one-user beta are claims for reviewer D.",
+    "The 1440 full-page PNG is shown at about 8x downscale. Section crops would let a later round verify the panels and the comparison cells.",
+    "The plan text still says the H1 was '15 words' in places, and 'Image weight: 181 KB light' in the round-1 audit. The round-2 section supersedes both."
+  ]
+}

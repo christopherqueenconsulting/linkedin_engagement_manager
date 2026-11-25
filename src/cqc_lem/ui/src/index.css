@@ -140,6 +140,24 @@
   }
 }
 
+/* Browser surfaces on the marketing tree, themed from the pack (design pass 2026-11-24): text
+   selection in the brand colour pair, and in the dark scheme a dark root scroller and overscroll
+   ground, so the page never flashes the app's light grey behind a dark marketing page. */
+.lem-marketing ::selection {
+  background-color: var(--lem-primary);
+  color: var(--lem-on-primary);
+}
+
+@media (prefers-color-scheme: dark) {
+  html:has(.lem-marketing:not([data-theme='light'])) {
+    color-scheme: dark;
+    scrollbar-color: #7b8894 #111a22;
+  }
+  body:has(.lem-marketing:not([data-theme='light'])) {
+    background-color: #111a22;
+  }
+}
+
 @theme inline {
   --color-page: var(--lem-bg);
   --color-raised: var(--lem-surface);

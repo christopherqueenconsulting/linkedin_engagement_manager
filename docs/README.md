@@ -160,6 +160,8 @@ index and the `CLAUDE.md` row that points at it, or the pointer becomes a dead e
 - [Launch & marketing plan](launch-and-marketing-plan.md) — the automated launch sequence
 - [Marketing front page — UX target spec](marketing-page-ux-spec.md) — what the public page should be
 - [Landing page update](LANDING_PAGE_UPDATE.md) — the landing-page copy revision
+- [Landing design plan, 2026-11-24](design/landing-design-plan-2026-11-24.md) — the visual-first refine pass on the public landing page: section plan, tokens, wireframes and what each pass changed
+- [Landing design pass review record, 2026-11-24](gauntlet/design-pass-2026-11-24/summary.md) — reviewer verdicts by round for the landing design pass
 - [Affiliate / ambassador program](affiliate-program.md) — the referral mechanic and its payout model
 - [Stripe billing setup guide](stripe-setup-guide.md) — provisioning products, prices and webhooks
 

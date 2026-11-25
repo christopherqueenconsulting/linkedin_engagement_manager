@@ -1,0 +1,25 @@
+{
+  "reviewer": "K",
+  "persona": "accessibility",
+  "round": 11,
+  "verdict": "pass",
+  "reasons": [
+    "Comparison section: below sm it is a ul with one li per capability, each holding a p and a dl whose dt/dd pairs carry the three approaches. From sm up it is a table with an sr-only caption, th scope=col for every column header and th scope=row for every capability. The TableScroll wrapper has role=region, an aria-label and tabIndex=0, and the 1440 focus run lists it as a stop.",
+    "Included and not-included marks are an aria-hidden SVG plus sr-only text, so meaning does not rest on colour or glyph.",
+    "Heading order: h1, then h2 per section, then h3 for beats, plans, 'Included in every plan', problem items and steps. No skipped levels. Feature lists, the two-column 'Included in every plan' list and the ruled lists are real ul/li elements.",
+    "Contrast, computed from the tokens in src/cqc_lem/ui/src/index.css: every text pair clears 4.5:1 in both themes (for example light muted #5b6670 on #ffffff about 5.9:1; dark muted #a3aeb8 on #111a22 about 7.5:1). Calculated from hex values, not measured on pixels.",
+    "Focus: 30 stops with a visible change and none without one; the order follows the DOM. The global :focus-visible rule uses a 2px currentColor outline. CTA aria-labels begin with the visible text.",
+    "Tap targets at 390: buttons and sheet links carry min-h-11 (44px); footer links pass the WCAG 2.5.8 spacing exception.",
+    "No horizontal overflow at 1440, 768 or 390 in either theme; the only clipped text is intentional sr-only content. No console errors or failed requests.",
+    "Reduced motion is honoured globally, and scrollToSection checks the media query.",
+    "The hero screenshot has descriptive alt text inside a figure with a visible figcaption, plus width and height attributes.",
+    "NOT VERIFIED: the downscaled full-page phone capture; findings come from the source, the JSON captures and the phone fold."
+  ],
+  "required_fixes": [],
+  "residuals": [
+    "The hero screenshot's inner text is image-only; the alt text and caption cover its purpose.",
+    "Confirm the phone comparison dt/dd announcement with VoiceOver on iOS.",
+    "The sr-only table caption and the region aria-label say nearly the same thing.",
+    "No axe or Lighthouse run and no real screen-reader pass; recommended follow-up, not a blocker."
+  ]
+}

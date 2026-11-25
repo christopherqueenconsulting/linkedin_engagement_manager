@@ -1,0 +1,25 @@
+{
+  "pr": 2792,
+  "profile": "product-content",
+  "round": 1,
+  "head": "5be88f95aad9fe3f27c6e1f3f5dbc636c8c7fb35",
+  "reviewer": "J",
+  "persona": "brand_editor",
+  "verdict": "pass",
+  "reasons": [
+    "Read Hero.tsx, ProofStrip.tsx, HowItWorks.tsx, SafetySection.tsx, ProblemSection.tsx, FeatureNarrative.tsx and the plan-variant labels in ProductPanel.tsx at head 5be88f9, plus the brand DESIGN.md and the plan. DESIGN.md has no voice section, so the standard applied was plain, specific prose with no filler, plus the repo's honesty rule (no unsourced claims).",
+    "Every declared copy change is a cut or a restatement of facts already on the page, and each reads cleaner for it. The hero body keeps approval, suggestions and the password promise and no longer says the same thing as the proof strip and safety section. The removed proof-strip meta sentence was page-talking-about-itself and is better gone.",
+    "Plan diagram labels match the beat's own points and add no new claim. No number is invented.",
+    "Removing the six decorative eyebrows leaves headings that carry the message. The kept beat labels name a true sequence. No filler openers or stacked hedges in the changed text.",
+    "NOT VERIFIED: the rendered captures. Copy was judged from source, and the focus here is wording, not layout."
+  ],
+  "required_fixes": [],
+  "residuals": [
+    "HowItWorks step 1: title 'Sign in with LinkedIn' and body 'Connect with LinkedIn's own sign-in.' say the same thing. Not blocking.",
+    "Term drift: ProofStrip says 'Credentials encrypted at rest'; SafetySection says 'Secrets encrypted at rest' and names 'sign-in tokens'. To a wary reader 'credentials' can read as stored passwords, which the hero says LEM never asks for. Consider 'Sign-in tokens encrypted at rest' in both places.",
+    "Existing claims the plan already flags for the owner: 'a small first cohort' and the 'Most popular' badge against a one-user pre-launch beta. The SafetySection lede 'Most tools in this category answer this with one sentence' is an unsourced comparison.",
+    "H1 length and em dash: unchanged by this PR and a copy decision for the owner.",
+    "Em dashes remain frequent in body copy. Pre-existing, outside this PR's declared changes.",
+    "SafetySection limit text 'anyone who tells you otherwise is selling' is a slightly sales-flavoured jab. Pre-existing and unchanged."
+  ]
+}

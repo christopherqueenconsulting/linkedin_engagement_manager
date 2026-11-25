@@ -1,0 +1,36 @@
+{
+  "pr": 2792,
+  "profile": "product-content",
+  "round": 3,
+  "head": "2b3c849e29f806cddb369b6c731ab17d69a06323",
+  "reviewer": "O",
+  "persona": "art_director",
+  "verdict": "pass",
+  "reasons": [
+    "Mode: refine. The after-r3 manifest is complete and styled, with no blocked hosts.",
+    "Round-2 fix verification: both fixes are done.",
+    "Fix 1, real screenshot hero: DONE, option (a). layout.json largest_images at 1440 lists content-studio-queue-1440.webp, 1440x1312 source shown at 652x594 CSS px (about 2.2x density), max_display_px 720. At 390, content-studio-queue-phone-780.webp is 780x1600 shown at 358x732 (about 2.2x), max_display_px 568. All three webp files have owned assets.json entries with source, sha256 and max_display_px. The 'Example queue with sample posts' caption is kept.",
+    "Fix 2, density: DONE, option 1. At 1440, 709 words over 7,129 px is 89.5 words per 900 px screen, against the target of 90 or less. The Features beats are one sentence each, with no bullets. The comparison has 4 rows, the 'Included in every plan' list is gone, and each safety entry is one sentence. The plan sends these copy cuts to the owner of docs/marketing-page-ux-spec.md.",
+    "Brand: PASS. Every colour in all six views is a DESIGN.md token. Inter is the only font family.",
+    "Type: PASS. Body is 16 px at 390 and 768 and 17 px at 1440. Longest paragraph estimate is 68 at 1440 and 768 and 55 at 390. The H1 runs 3 lines at 1440 and 390 and 2 lines at 768.",
+    "Focus: PASS. Each fold, light and dark, has one filled button: the hero's 'Start free trial'. The nav trial button is outlined and 'See how it works' is a text link. The small filled chips inside the product image do not compete with the CTA.",
+    "Layout and browser finish: PASS. scroll_width equals the viewport in every view, overflowing is empty, clipped_text holds only sr-only nodes, no_visible_focus is empty, and console.json has no console errors, page errors or failed requests in any of the six views.",
+    "Generic patterns: PASS. No eyebrows, purple, gradients, emoji, centred hero or icon-card row. The split hero puts copy on the left and the product on the right, and the feature beats alternate panel sides.",
+    "Dark mode: PASS. The dark theme is designed. Every pair in use is in the DESIGN.md AA contrast table. The wordmark has its own on-dark asset. The hero screenshot stays light because the app has no dark theme, which assets.json and the plan both state. A hairline border frames it.",
+    "Imagery: PASS. All 3 rendered images have owned licence entries and are shown at or below max_display_px, at about 2x density. Weight is 74,052 B in total at 1440 light and 79,816 B at 390.",
+    "Against references: PASS. All five axis scores are 4 or higher (type 5, colour 5, composition 4, imagery 4, restraint 4). Detail is kept in the private record.",
+    "Density and repeats: PASS. 89.5 words per desktop screen is within the agreed target and not far over the default of about 80. The hero is 10 words of heading and 27 of body. Each beat is one sentence.",
+    "Visuals explain: PASS. The hero screenshot shows the real approval queue with Pending, Approved and Scheduled states. Every synthetic beat panel has a visible example caption."
+  ],
+  "required_fixes": [],
+  "residuals": [
+    "Hero screenshot: the app's tab row is cut mid-word at 1440 and 390, which reads as an accidental crop. Consider re-shooting at a wider app viewport or cropping below the tab row, and cropping out the search help text, the Type/Date/Sort row and 'Select all' so the three queue items carry the image.",
+    "Dark theme: the light screenshot is a bright block on the dark ground. Honest while the app has no dark theme. When it gains one, add a dark screenshot with its own assets.json entry.",
+    "At 390, the hero screenshot is 732 px tall, and the fold shows mostly filter chrome rather than queue items. A tighter phone crop starting at the first post card would show the approval states sooner.",
+    "The Measurement beat panel ('Example layout, without data') still teaches only that the statistics come from the user's own account. A small sample chart with an example label would explain more.",
+    "The copy cuts in rounds 2 and 3 edit copy owned by docs/marketing-page-ux-spec.md. The plan routes them to that owner before merge. Some cut facts (per-day caps, targeting rules, post formats) now appear nowhere on the page, so the owner should confirm that loss is acceptable.",
+    "'A small first cohort' and the 'Most popular' pricing badge in a one-user beta are claims for reviewer D.",
+    "Full-page PNGs are downscaled about 7x at 1440 and 10x at 390, so sections below the fold were judged at low resolution. Section crops would let a later round check the panels and comparison cells.",
+    "The plan's round-1 audit lines (the '15 words' H1, '181 KB' image weight) are marked superseded. Consider trimming them."
+  ]
+}

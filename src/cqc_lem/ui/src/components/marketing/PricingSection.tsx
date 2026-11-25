@@ -25,7 +25,6 @@ export default function PricingSection() {
   return (
     <Section id="pricing" analyticsName="pricing" tone="white">
       <SectionHeading
-        eyebrow="Pricing"
         title="Every plan runs the whole loop"
         lede={`Start with a ${TRIAL_DAYS}-day free trial on any plan. No credit card required.`}
       />
@@ -79,11 +78,14 @@ export default function PricingSection() {
         ))}
       </div>
 
-      <div className="mt-10 rounded-panel border border-hairline bg-page p-6">
+      {/* The shared capability list, kept whole (owner decision 2026-11-24, the density override in
+          brand/lem/DESIGN.md). Two columns of hairline-ruled lines, matching the problem section and
+          the safety ledger, rather than a boxed card under the plan cards. */}
+      <div className="mt-10">
         <h3 className="text-title font-semibold text-fg">Included in every plan</h3>
-        <ul className="mt-4 grid gap-3 md:grid-cols-2">
+        <ul className="mt-4 grid gap-x-12 md:grid-cols-2">
           {INCLUDED_IN_EVERY_PLAN.map((item) => (
-            <li key={item} className="flex items-start gap-3">
+            <li key={item} className="flex items-start gap-3 border-t border-hairline py-3">
               <IncludedMark included />
               <span className="text-fg">{item}</span>
             </li>

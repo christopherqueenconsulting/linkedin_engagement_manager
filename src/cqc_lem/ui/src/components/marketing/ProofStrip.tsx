@@ -1,3 +1,4 @@
+import Icon from './Icon'
 import Section from './Section'
 
 // What replaced the fabricated stat strip (issue #1300).
@@ -7,40 +8,29 @@ import Section from './Section'
 // which caps the current launch phase at 25 users. Every line here is MECHANISM proof: a thing the
 // product does, verifiable by using it and traceable to a file. No counts, because we do not have
 // counts worth showing yet, and saying so is cheaper than being caught.
-const PROOF: { title: string; body: string }[] = [
-  {
-    title: 'Posts wait for your approval',
-    body: 'Each generated post is published through LinkedIn’s API only after you approve it.',
-  },
-  {
-    title: 'Engagement you send yourself',
-    body: 'Comments, replies and DMs arrive as suggestions. You decide which ones to send.',
-  },
-  {
-    title: 'LinkedIn sign-in only',
-    body: 'You connect with LinkedIn sign-in. LEM never asks for your LinkedIn password or a cookie.',
-  },
-  {
-    title: 'Credentials encrypted at rest',
-    body: 'AES-256-GCM per user and column, with passkey or TOTP step-up on the writes that matter.',
-  },
+//
+// Design pass 2026-11-24: the strip is the page's summary of the safety posture, so it carries the
+// four statements alone. Each one's detail is stated in full in the safety section below, and
+// repeating those sentences here put the same claim on the page twice.
+const PROOF: string[] = [
+  'Posts wait for your approval',
+  'Engagement you send yourself',
+  'LinkedIn sign-in only',
+  'Credentials encrypted at rest',
 ]
 
 export default function ProofStrip() {
   return (
-    <Section analyticsName="proof" tone="tinted" className="py-12 sm:py-14">
-      <p className="max-w-measure text-sm font-semibold text-fg-muted">
+    <Section analyticsName="proof" tone="tinted" className="py-10 sm:py-12">
+      <p className="text-sm font-semibold text-fg-muted">
         Early access — we are onboarding a small first cohort
       </p>
-      <p className="mt-2 max-w-2xl text-fg-muted">
-        No user-count banner here yet. What we can show you is what the product actually does.
-      </p>
-      {/* Plain statements on hairline rules, not a row of icon cards (design pass, 86e3rnp9a). */}
-      <ul className="mt-8 grid gap-x-12 sm:grid-cols-2">
-        {PROOF.map(({ title, body }) => (
-          <li key={title} className="border-t border-hairline py-5">
-            <span className="block font-semibold text-fg">{title}</span>
-            <span className="mt-1 block max-w-measure leading-relaxed text-fg-muted">{body}</span>
+      {/* One quiet row of plain statements with a drawn check, not a grid of cards. */}
+      <ul className="mt-5 grid gap-x-8 gap-y-3 border-t border-hairline pt-5 sm:grid-cols-2 lg:flex lg:justify-between">
+        {PROOF.map((title) => (
+          <li key={title} className="flex items-start gap-3 text-base font-semibold text-fg">
+            <Icon name="check" className="mt-0.5 h-5 w-5 shrink-0 text-accent" />
+            {title}
           </li>
         ))}
       </ul>

@@ -1,0 +1,24 @@
+{
+  "pr": 2792,
+  "profile": "product-content",
+  "round": 1,
+  "head": "5be88f95aad9fe3f27c6e1f3f5dbc636c8c7fb35",
+  "reviewer": "I",
+  "persona": "recipient",
+  "verdict": "pass",
+  "reasons": [
+    "Read the 1440 and 390 light folds as the prospect. The H1 says what I get, in my words: content in my voice, published only when I approve. The body gives the three things I worry about: approval, suggestions I send myself, and no LinkedIn password.",
+    "The ask is clear. One filled 'Start free trial' per fold, a quiet 'See how it works' link, and '14-day free trial. No credit card. Cancel any time.' under it. The outlined nav button no longer competes with the hero button. The phone fold has a full-width button above the panel.",
+    "The hero panel reads as a real product screen with status pills (Pending review, Approved, Scheduled). The footer line 'Posts publish only after you approve them' repeats the promise at the point of proof. It has no invented logos, testimonials or numbers.",
+    "The proof strip is now four short titles under an honest early-access line. Cutting the repeated sentences and the 'No user-count banner here yet' meta line is a gain.",
+    "The density and eyebrow removals do not remove anything needed to trust the page. The safety claims remain in the safety section.",
+    "NOT VERIFIED: the body text of the full-page captures could not be read. The 1440 full-page image is downscaled, so the content beat diagram, safety ledger, comparison table, pricing and FAQ were judged by layout only. The 768, dark and focus captures were not opened."
+  ],
+  "required_fixes": [],
+  "residuals": [
+    "Trust, existing copy: the pricing badge 'Most popular' and the early-access line 'a small first cohort' sit beside a one-user pre-launch beta. A wary prospect may read 'Most popular' as invented social proof. Owner decision, outside this pass.",
+    "Effort: about 136 words per desktop screen is above the 80 default, and the hero H1 and body are over the 10 and 30 defaults.",
+    "The H1 breaks into four ragged lines on desktop and phone. A shorter line would scan faster.",
+    "The sample content in the hero panel is illustrative. The panel has no 'example' label, so a careful visitor could take it for a real account. Consider a small 'Example' tag."
+  ]
+}

@@ -71,7 +71,7 @@ export function SectionHeading({
         </p>
       )}
       <h2
-        className="text-section sm:text-section-lg font-semibold text-fg"
+        className="text-section sm:text-section-lg font-semibold text-balance text-fg"
       >
         {title}
       </h2>

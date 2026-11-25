@@ -11,6 +11,10 @@ import Section, { SectionHeading } from './Section'
 // than this phone" (issue #894), and `mobileViewport.test.ts` greps this file for that import.
 // Below `sm` the same rows render as one block per capability instead: four columns at 390px only
 // fit by scrolling sideways, and the header row was cut mid-word with no cue that more existed.
+//
+// All seven rows stay (owner decision 2026-11-24, the density override in brand/lem/DESIGN.md): a
+// table is already the compact form for them. The voice and approval rows concede to the
+// alternatives.
 
 type Cell = boolean | string
 
@@ -35,7 +39,6 @@ export default function ApproachComparison() {
   return (
     <Section id="comparison" analyticsName="comparison" tone="tinted">
       <SectionHeading
-        eyebrow="Honest comparison"
         title="LEM, doing it yourself, or a general AI writer"
         lede="Doing it by hand works — it just costs an hour a day. A general writer solves the smaller half of the problem."
       />
@@ -71,7 +74,12 @@ export default function ApproachComparison() {
                 Capability
               </th>
               {COLUMNS.map((column) => (
-                <th key={column} scope="col" className="p-4 text-sm font-semibold text-fg">
+                <th
+                  key={column}
+                  scope="col"
+                  // LEM's column is the one the table argues for, so its header carries the accent.
+                  className={`p-4 text-sm font-semibold ${column === 'LEM' ? 'text-accent' : 'text-fg'}`}
+                >
                   {column}
                 </th>
               ))}
