@@ -345,6 +345,28 @@ class TestReplyCheckConfig:
         assert by_col["reply_sweeps_per_day"] == 12        # clamped to max
         assert by_col["reply_max_post_age_days"] == 1      # clamped to min
 
+    def test_dm_and_invite_caps_are_clamped_for_every_caller(self, fake_cursor):
+        # #2801: neither cap had a server-side ceiling; the upsert now holds both.
+        from cqc_lem.utilities import db as db_mod
+
+        conn, cursor = fake_cursor(rowcount=1)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            db_mod.update_engagement_preferences(3, {"max_dms_per_day": 5000,
+                                                     "max_invites_per_day": -4})
+        by_col = dict(zip(db_mod._ENGAGEMENT_COLS, cursor.execute.call_args[0][1][1:]))
+        assert by_col["max_dms_per_day"] == db_mod.DMS_PER_DAY_MAX == 100
+        assert by_col["max_invites_per_day"] == db_mod.INVITES_PER_DAY_MIN == 0
+
+    def test_a_garbage_dm_cap_falls_back_to_the_default(self, fake_cursor):
+        from cqc_lem.utilities import db as db_mod
+
+        conn, cursor = fake_cursor(rowcount=1)
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):
+            db_mod.update_engagement_preferences(3, {"max_dms_per_day": "lots",
+                                                     "max_invites_per_day": 30})
+        by_col = dict(zip(db_mod._ENGAGEMENT_COLS, cursor.execute.call_args[0][1][1:]))
+        assert by_col["max_dms_per_day"] == 20 and by_col["max_invites_per_day"] == 30
+
     def test_valid_mode_and_floor_preserved(self, fake_cursor):
         conn, cursor = fake_cursor(rowcount=1)
         with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn):

@@ -9,8 +9,10 @@ A field is in exactly one **group**, and the group decides what the tool does wi
 
 - **Group 1** (`GROUP1_*`, owner ruling 1): voice, targeting, strategy, cadence and assets. Applied
   directly, through the same routes and validators the SPA uses.
-- **Caps** (group 2, owner ruling 2): refused today, pointing at LEM. Issue #2801 turns `CAPS` into a
-  handled group (warning on a raise, `acknowledge_risk`) by moving it into `HANDLED` below.
+- **Caps** (group 2, owner ruling 2, #2801): `CAP_EDITABLE`, the eight daily caps. A lowering applies
+  like group 1; a raise (`is_raise`, toward more LinkedIn activity) needs `acknowledge_risk` and always
+  answers with a warning. Every cap is clamped to the ceiling the SPA's PUT route enforces
+  (`routers/user._cap_bounds`). Any other cap-shaped name (`CAP_FIELDS`) is still refused.
 - **Group 3** (owner ruling 3): anything that loosens a safety or approval gate. Refused, naming the
   change-request path. Issue #2803 routes these to a request the USER approves in LEM.
 - **Never** (owner ruling 5): credentials, identity, billing. Refused for good.
@@ -60,9 +62,87 @@ TIMEZONE_FIELDS: Mapping[str, str] = {"timezone": "timezone"}
 # The cadences the newsletter card offers; the route stores any string, so the tool holds the line.
 NEWSLETTER_CADENCES = ("weekly", "biweekly", "monthly")
 
+# --- group 2: the daily caps an agent may lower or raise (owner ruling 2, #2801) -----------------------
+
+# Direction of "more LinkedIn activity": +1 = a bigger number is the raise, -1 = a SMALLER one is.
+CAP_DIRECTION: Mapping[str, int] = {
+    "max_comments_per_day": 1, "max_dms_per_day": 1, "max_invites_per_day": 1,
+    "max_follows_per_day": 1, "max_company_page_invites_per_day": 1,
+    "max_catchup_touches_per_day": 1, "max_catchup_touches_per_contact_days": 1,
+    "min_catchup_contact_interval_days": -1,
+}
+CAP_EDITABLE = frozenset(CAP_DIRECTION)
+# A stored 0 that means "no limit" rather than "off": reading it as the smallest number would call
+# the jump to unlimited a LOWERING.
+_ZERO_IS_UNLIMITED = frozenset({"max_catchup_touches_per_contact_days"})
+
+# What each cap protects, in words an agent can read to the user.
+CAP_PROTECTS: Mapping[str, str] = {
+    "max_comments_per_day": "how many feed comments LEM posts for the user each day; comment volume "
+                            "is the signal LinkedIn's anti-automation systems watch most closely",
+    "max_dms_per_day": "how many direct messages LEM sends each day; bursts of unsolicited messages "
+                       "draw spam reports and restrictions",
+    "max_invites_per_day": "how many connection invitations LEM sends each day; LinkedIn enforces "
+                           "weekly invitation limits and restricts accounts that run into them",
+    "max_follows_per_day": "how many roster follows LEM makes each day; follows are the easiest "
+                           "action to over-run",
+    "max_company_page_invites_per_day": "how many company-page follow invitations LEM sends each day, "
+                                        "drawn from a monthly credit pool LinkedIn is shrinking",
+    "max_catchup_touches_per_day": "how many congratulation messages LEM sends each day",
+    "max_catchup_touches_per_contact_days": "how many catch-up messages one person can get in a "
+                                            "rolling month (0 means NO limit)",
+    "min_catchup_contact_interval_days": "the minimum days between two catch-up messages to the same "
+                                         "person; a shorter gap reads as spam to the recipient",
+}
+# The header the tool sets on its inner PUT when the user acknowledged a raise; the route re-checks it.
+ACK_HEADER = "X-LEM-MCP-Acknowledge-Risk"
+RAISE_RISK = ("More automated LinkedIn activity raises the chance of a 429 rate limit (which pauses "
+              "ALL of the account's automation) and of silent suppression of the account's reach, "
+              "and in the worst case of a restriction on the LinkedIn account itself.")
+
+
+def _activity(field: str, value: Any) -> float:
+    """One cap value on a scale where bigger always means more LinkedIn activity."""
+    number = int(value)
+    if number == 0 and field in _ZERO_IS_UNLIMITED:
+        return float("inf")
+    return float(number * CAP_DIRECTION[field])
+
+
+def is_raise(field: str, before: Any, after: Any) -> bool:
+    """Whether moving a cap from `before` to `after` means MORE LinkedIn activity.
+
+    Args:
+        field: A `CAP_EDITABLE` field.
+        before: The stored value; None or unreadable counts as a raise (fails closed).
+        after: The value that would be stored, already clamped to its ceiling.
+
+    Returns:
+        True for a raise. A bigger number is one, except `min_catchup_contact_interval_days`, where
+        a smaller number is; and 0 on a per-contact cap means "no limit", the biggest of all.
+    """
+    try:
+        return _activity(field, after) > _activity(field, before)
+    except (TypeError, ValueError):
+        return True
+
+
+def activity_limit(field: str, low: int, high: int) -> int:
+    """The bound that stops more activity: the ceiling, or the floor for a decreasing-is-more field."""
+    return high if CAP_DIRECTION[field] > 0 else low
+
+
+def raise_warning(field: str, before: Any, after: Any, low: int, high: int) -> str:
+    """The warning for one raised cap: what it protects, the move, the risk and the ceiling."""
+    limit = activity_limit(field, low, high)
+    word = "ceiling" if CAP_DIRECTION[field] > 0 else "lowest allowed value"
+    return (f"{field} goes from {before} to {after}. It controls {CAP_PROTECTS[field]}. "
+            f"{RAISE_RISK} The {word} is {limit}.")
+
+
 # What the server lets an MCP seat SEND on each PUT, by the route's own key. A body naming anything
 # else is a 403 (`routers/user._mcp_settings_guard`), whatever tool sent it.
-PREFS_EDITABLE = PREFS_FIELDS
+PREFS_EDITABLE = PREFS_FIELDS | CAP_EDITABLE
 NEWSLETTER_EDITABLE = frozenset(NEWSLETTER_FIELDS.values())
 LEAD_MAGNET_EDITABLE = frozenset(LEAD_MAGNET_FIELDS.values())
 ICP_EDITABLE = ICP_FIELDS
@@ -82,6 +162,10 @@ FIELD_TARGETS: Mapping[str, tuple[str, str]] = {
     **{name: (TIMEZONE, key) for name, key in TIMEZONE_FIELDS.items()},
 }
 GROUP1_FIELDS = frozenset(FIELD_TARGETS)
+# The caps live in the preferences row too, behind the same route.
+FIELD_TARGETS = {**FIELD_TARGETS, **{name: (PREFS, name) for name in CAP_EDITABLE}}
+# Every name the tool can apply: group 1 and the group-2 caps.
+TOOL_FIELDS = GROUP1_FIELDS | CAP_EDITABLE
 
 # --- everything that is NOT group 1 -------------------------------------------------------------------
 
@@ -112,10 +196,12 @@ NEVER_FIELDS = frozenset({
 
 KIND_ALLOWED, KIND_GROUP3, KIND_CAP, KIND_NEVER, KIND_UNKNOWN = (
     "allowed", "group3", "cap", "never", "unknown")
+# A group-2 cap the tool applies (a raise needs `acknowledge_risk`); KIND_CAP is every other cap name.
+KIND_CAP_EDITABLE = "cap_editable"
 
-# Kinds the tool applies. #2801 adds KIND_CAP here (with its own warning handling), and #2803 routes
-# KIND_GROUP3 to a change request: until then each is refused with its own code and message.
-HANDLED = frozenset({KIND_ALLOWED})
+# Kinds the tool applies. #2803 routes KIND_GROUP3 to a change request: until then it is refused with
+# its own code and message, like every kind not listed here.
+HANDLED = frozenset({KIND_ALLOWED, KIND_CAP_EDITABLE})
 
 
 @dataclass(frozen=True)
@@ -141,6 +227,8 @@ def classify(field: str) -> str:
     """
     if field in GROUP1_FIELDS:
         return KIND_ALLOWED
+    if field in CAP_EDITABLE:
+        return KIND_CAP_EDITABLE
     if field in GROUP3_FIELDS or _GROUP3_PATTERN.match(field):
         return KIND_GROUP3
     if field in CAP_FIELDS or _CAP_PATTERN.match(field):
@@ -156,7 +244,7 @@ _REFUSALS: Mapping[str, tuple[str, str]] = {
                   "needs a change request (coming) that the user approves in LEM. For now, tell "
                   "the user and open it with lem_open_in_lem (destination: account)."),
     KIND_CAP: ("cap_not_editable",
-               "'{field}' is a daily cap and is not editable through this tool. Tell the user and "
+               "'{field}' is a cap this tool does not change. Tell the user and "
                "open it with lem_open_in_lem (destination: account)."),
     KIND_NEVER: ("field_never_editable",
                  "'{field}' is never changed through MCP (credentials, identity and billing stay "
@@ -177,7 +265,7 @@ def refusals(fields: Any) -> list[Refusal]:
         One `Refusal` per field whose kind is not in `HANDLED`; empty when all may be applied.
     """
     out: list[Refusal] = []
-    allowed = ", ".join(sorted(GROUP1_FIELDS))
+    allowed = ", ".join(sorted(TOOL_FIELDS))
     for field in fields:
         kind = classify(str(field))
         if kind in HANDLED:
@@ -228,6 +316,12 @@ def canon(value: Any) -> Any:
 def same(a: Any, b: Any) -> bool:
     """Whether two settings values mean the same thing (`canon` equality)."""
     return canon(a) == canon(b)
+
+
+def audit_raised(payload: Mapping[str, Any]) -> list[str]:
+    """The cap field NAMES a tool answer raised (`[]` for none): the audit's `raised` marker."""
+    raised = payload.get("raised")
+    return sorted(str(f) for f in raised) if isinstance(raised, (list, tuple)) else []
 
 
 def audit_fields(payload: Mapping[str, Any]) -> list[str]:

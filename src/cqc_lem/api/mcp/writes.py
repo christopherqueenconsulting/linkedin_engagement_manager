@@ -46,7 +46,7 @@ from cqc_lem.api.mcp.loopback import (
     UPSTREAM_ERROR,
     ToolFailure,
 )
-from cqc_lem.api.mcp.settings_policy import audit_fields
+from cqc_lem.api.mcp.settings_policy import audit_fields, audit_raised
 from cqc_lem.utilities.db import (
     INTERNAL_ACCOUNT_KINDS,
     AuthAuditEvent,
@@ -156,6 +156,10 @@ def _audit_write(principal: Any, tool: str, target_id: Any, spec: Any = None,
     details: dict[str, Any] = {"tool": tool, "target_id": target_id, "scope": principal.scope}
     if event != AuthAuditEvent.MCP_WRITE:
         details = {"tool": tool, "fields": audit_fields(payload or {}), "scope": principal.scope}
+        raised = audit_raised(payload or {})
+        if raised:
+            # A cap moved toward more LinkedIn activity (#2801): names only, like `fields`.
+            details.update({"raised": True, "raised_fields": raised})
     try:
         record_auth_event(event, user_id=principal.user_id, session_id=principal.session_id,
                           details=details)

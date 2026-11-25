@@ -197,10 +197,9 @@ class TestTheAllowlist:
         ("authenticity_score_min", "needs_change_request", "needs a change request"),
         ("post_similarity_max_pct", "needs_change_request", "needs a change request"),
         ("auto_publish_newsletters", "needs_change_request", "needs a change request"),
-        ("max_comments_per_day", "cap_not_editable", "lem_open_in_lem"),
-        ("max_dms_per_day", "cap_not_editable", "lem_open_in_lem"),
-        ("max_invites_per_day", "cap_not_editable", "lem_open_in_lem"),
-        ("max_catchup_touches_per_day", "cap_not_editable", "lem_open_in_lem"),
+        ("max_queued_drafts", "cap_not_editable", "lem_open_in_lem"),
+        ("reply_sweeps_per_day", "cap_not_editable", "lem_open_in_lem"),
+        ("max_invites_per_run", "cap_not_editable", "lem_open_in_lem"),
         ("linkedin_password", "field_never_editable", "lem_open_in_lem"),
         ("linkedin_cookie", "field_never_editable", "lem_open_in_lem"),
         ("email", "field_never_editable", "lem_open_in_lem"),
@@ -220,13 +219,13 @@ class TestTheAllowlist:
 
     def test_one_refused_field_blocks_the_whole_call(self, api_client: Any, seat: Store) -> None:
         before = copy.deepcopy(seat.prefs)
-        error = _error(_update(api_client, {"tone": "direct", "max_comments_per_day": 99}))
+        error = _error(_update(api_client, {"tone": "direct", "max_queued_drafts": 99}))
         assert error["code"] == "cap_not_editable"
         assert seat.prefs == before and seat.prefs_writes == []
 
     def test_every_refusal_is_named_not_just_the_first(self, api_client: Any, seat: Store) -> None:
-        error = _error(_update(api_client, {"max_dms_per_day": 1, "roster_auto_follow": True}))
-        assert "max_dms_per_day" in error["message"] and "roster_auto_follow" in error["message"]
+        error = _error(_update(api_client, {"max_queued_drafts": 1, "roster_auto_follow": True}))
+        assert "max_queued_drafts" in error["message"] and "roster_auto_follow" in error["message"]
 
     def test_a_value_the_route_would_refuse_names_the_field_not_the_value(
             self, api_client: Any, seat: Store) -> None:
@@ -296,7 +295,7 @@ class TestTheDiffAndTheAudit:
 
     def test_a_refused_call_writes_no_audit_row(self, api_client: Any, seat: Store,
                                                 audit: MagicMock) -> None:
-        _update(api_client, {"max_dms_per_day": 1})
+        _update(api_client, {"max_queued_drafts": 1})
         audit.assert_not_called()
 
     def test_free_text_is_in_the_answer_but_nowhere_else(self, api_client: Any, seat: Store,
@@ -530,7 +529,7 @@ class TestTheRouteGuard:
         finally:
             main._request_session_scope.reset(reset)
 
-    @pytest.mark.parametrize("key", ["max_comments_per_day", "connection_request_mode",
+    @pytest.mark.parametrize("key", ["max_queued_drafts", "connection_request_mode",
                                      "roster_auto_follow", "authenticity_score_min", "icp_definition"])
     def test_an_mcp_seat_naming_a_forbidden_key_is_a_403(self, key: str) -> None:
         from cqc_lem.api import main

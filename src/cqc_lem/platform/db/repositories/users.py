@@ -2526,6 +2526,12 @@ def normalize_posting_days(value) -> list:
 # the #626 budget draw (40-100% of cap) keeps the realised average lower still. 0 turns the lane off.
 COMPANY_PAGE_INVITES_PER_DAY_DEFAULT = 5
 COMPANY_PAGE_INVITES_PER_DAY_MIN, COMPANY_PAGE_INVITES_PER_DAY_MAX = 0, 50
+# Hard server-side ceilings for the DM and connection-invite daily caps (#2801). Neither had one
+# before: only the SPA's presets (5-20 DMs, 5-10 invites) bounded them, so an API caller (an MCP
+# seat included) could save any number. Deliberately above every preset and the brand account's own
+# ceilings (`brand_account.BRAND_CAP_CEILINGS`); they bound a mistake, they are not a target.
+DMS_PER_DAY_MIN, DMS_PER_DAY_MAX = 0, 100
+INVITES_PER_DAY_MIN, INVITES_PER_DAY_MAX = 0, 30
 # Roster auto-follows per day (issue #962). Far smaller than any other lane on purpose: a follow is
 # the cheapest action to automate and the easiest to over-run, and LinkedIn's own follow limits are
 # what a bulk-follower trips first. 3/day is a catch-up rate — a 50-account roster reaches full
@@ -2841,6 +2847,13 @@ def update_engagement_preferences(user_id: int, prefs: dict) -> bool:
     # Hard server-side ceiling on comment volume for every user (#2647 P5), whatever a caller sent.
     from cqc_lem.utilities.comment_ramp import clamp_comments_per_day
     merged["max_comments_per_day"] = clamp_comments_per_day(merged.get("max_comments_per_day"))
+    for _cap_col, _cap_lo, _cap_hi, _cap_default in (
+            ("max_dms_per_day", DMS_PER_DAY_MIN, DMS_PER_DAY_MAX, 20),
+            ("max_invites_per_day", INVITES_PER_DAY_MIN, INVITES_PER_DAY_MAX, 10)):
+        try:
+            merged[_cap_col] = min(_cap_hi, max(_cap_lo, int(merged.get(_cap_col))))
+        except (TypeError, ValueError):
+            merged[_cap_col] = _cap_default
     _icp = merged.get("min_connection_icp_score")
     try:
         merged["min_connection_icp_score"] = (min(ICP_SCORE_MAX, max(ICP_SCORE_MIN, int(_icp)))
