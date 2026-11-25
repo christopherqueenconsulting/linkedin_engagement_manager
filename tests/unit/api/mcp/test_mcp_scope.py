@@ -32,6 +32,8 @@ EXPECTED_MCP_PATHS = frozenset({
     "/user/engagement-preferences", "/user/dm-templates", "/user/story-bank", "/user/lead-magnet",
     "/user/groups", "/user/linkedin-profile-skills", "/user/linkedin-profile",
     "/user/newsletter-settings", "/user/newsletter-draft",
+    # #2800: the account timezone, read for the before-value of a settings change.
+    "/user/timezone",
     # P3: counts only (LEM stores no subscriber identities), so `mcp` reads the latest count.
     "/user/newsletter-subscribers",
 })
@@ -48,8 +50,15 @@ EXPECTED_SPEND_POSTS = frozenset({
 # The reviewed WRITE grants (W2, plan §4): exactly one verb per write-tool call, written out. Two
 # outreach paths carry two verbs because `lem_approve_item` (owner ruling O1) PUTs the same path the
 # create POSTs; `PUT /dm` is that approval and nothing else. The W2b spend routes are `POST` on both.
+# #2800: `lem_update_settings` PUTs these five and nothing else under `/user/*`. Each handler holds an
+# MCP seat to the group-1 keys it sent (`test_mcp_settings_routes.py`), so the path is not the setting.
+EXPECTED_SETTINGS_PUTS = frozenset({
+    "/user/engagement-preferences", "/user/icp-definition", "/user/lead-magnet",
+    "/user/newsletter-settings", "/user/timezone",
+})
 EXPECTED_MCP_WRITES = {"/schedule_post": frozenset({"POST"}), "/update_post": frozenset({"POST"}),
-                       **{path: frozenset({"POST"}) for path in EXPECTED_SPEND_POSTS}}
+                       **{path: frozenset({"POST"}) for path in EXPECTED_SPEND_POSTS},
+                       **{path: frozenset({"PUT"}) for path in EXPECTED_SETTINGS_PUTS}}
 EXPECTED_OUTREACH_WRITES = {
     **EXPECTED_MCP_WRITES,
     "/schedule_dm": frozenset({"POST"}),
@@ -68,7 +77,12 @@ EXPECTED_READS = {"mcp": EXPECTED_MCP_PATHS,
 NEVER_REACHABLE = (
     ("POST", "/user/agent-token"), ("POST", "/user/mcp-token"), ("POST", "/user/mcp-token/rotate"),
     ("POST", "/user/sessions/revoke"), ("POST", "/user/linkedin-cookie"), ("DELETE", "/posts"),
-    ("PUT", "/user/engagement-preferences"), ("POST", "/admin/automation-pause"),
+    ("POST", "/user/engagement-preferences"), ("DELETE", "/user/engagement-preferences"),
+    ("POST", "/admin/automation-pause"),
+    # #2800: only the five settings PUTs are open; every other settings write stays closed.
+    ("PUT", "/user/story-bank"), ("PUT", "/user/dm-templates"), ("PUT", "/user/location"),
+    ("PUT", "/user/linkedin-display-name"), ("PUT", "/user/engagement-targets"),
+    ("PUT", "/user/settings"), ("GET", "/user/icp-definition"), ("POST", "/user/timezone"),
     ("POST", "/admin/mcp-kill"), ("GET", "/user/token_status"), ("GET", "/user/security"),
     ("GET", "/user/posthog-stats"), ("GET", "/user/affiliate"), ("GET", "/admin/automation-status"),
     ("GET", "/user/mcp-token/info"), ("GET", "/user/mcp-token/activity"), ("GET", "/review/queue"),

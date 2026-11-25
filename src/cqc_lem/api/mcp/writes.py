@@ -20,7 +20,9 @@ In order, before and around the tool's own inner call:
    the write may land after the answer, and the claim is kept so a blind retry is refused rather
    than doubled. A failure before the first write was sent changed nothing and releases the claim,
    and so does a refused write (4xx).
-6. **Audit**: one `mcp_write {tool, target_id, scope}` row per write that landed, never a body.
+6. **Audit**: one `mcp_write {tool, target_id, scope}` row per write that landed, never a body. A
+   spec with an `audit_event` (the settings tools, #2800) writes that event instead, carrying
+   `{tool, fields, scope}`: the NAMES of the settings it touched, never a value.
 
 Logging follows §7: a refusal here is the guard working, so it is DEBUG (flag off, budget, dedupe
 hit) or INFO (an approval refused on a standard account). Nothing here logs arguments or results.
@@ -44,6 +46,7 @@ from cqc_lem.api.mcp.loopback import (
     UPSTREAM_ERROR,
     ToolFailure,
 )
+from cqc_lem.api.mcp.settings_policy import audit_fields
 from cqc_lem.utilities.db import (
     INTERNAL_ACCOUNT_KINDS,
     AuthAuditEvent,
@@ -51,7 +54,7 @@ from cqc_lem.utilities.db import (
     record_auth_event,
 )
 from cqc_lem.utilities.flags import MCP_SERVER_WRITES, flag_enabled
-from cqc_lem.utilities.logger import log_debug, log_info
+from cqc_lem.utilities.logger import log_debug, log_info, log_warning
 
 DEDUPE_TTL_SECONDS = 600
 _PENDING, _DONE, _UNKNOWN = "pending", "done", "unknown"
@@ -147,13 +150,33 @@ def account_may_approve(user_id: int) -> bool:
     return get_user_account_kind(user_id) in INTERNAL_ACCOUNT_KINDS
 
 
-def _audit_write(principal: Any, tool: str, target_id: Any) -> None:
+def _audit_write(principal: Any, tool: str, target_id: Any, spec: Any = None,
+                 payload: Optional[dict[str, Any]] = None) -> None:
+    event = getattr(spec, "audit_event", None) or AuthAuditEvent.MCP_WRITE
+    details: dict[str, Any] = {"tool": tool, "target_id": target_id, "scope": principal.scope}
+    if event != AuthAuditEvent.MCP_WRITE:
+        details = {"tool": tool, "fields": audit_fields(payload or {}), "scope": principal.scope}
     try:
-        record_auth_event(AuthAuditEvent.MCP_WRITE, user_id=principal.user_id,
-                          session_id=principal.session_id,
-                          details={"tool": tool, "target_id": target_id, "scope": principal.scope})
+        record_auth_event(event, user_id=principal.user_id, session_id=principal.session_id,
+                          details=details)
     except Exception as exc:  # noqa: BLE001 — the write landed; a lost audit row must not undo it.
-        log_debug("MCP write audit row not written", error_type=type(exc).__name__)
+        log_warning("MCP write audit row not written", error_type=type(exc).__name__)
+
+
+def _audit_settings_failure(principal: Any, spec: Any, landed: list[str],
+                            unconfirmed: list[str]) -> None:
+    """One `mcp_settings` row for a settings call that failed after a PUT was sent: names only.
+
+    `fields` landed for certain; `unconfirmed` were sent and may or may not have landed (a timeout or
+    a 5xx). Best effort, like `_audit_write`.
+    """
+    details = {"tool": spec.name, "fields": sorted(set(landed)),
+               "unconfirmed": sorted(set(unconfirmed) - set(landed)), "scope": principal.scope}
+    try:
+        record_auth_event(spec.audit_event, user_id=principal.user_id,
+                          session_id=principal.session_id, details=details)
+    except Exception as exc:  # noqa: BLE001
+        log_warning("MCP settings audit row not written", error_type=type(exc).__name__)
 
 
 async def _check_preconditions(spec: Any, principal: Any) -> None:
@@ -162,6 +185,12 @@ async def _check_preconditions(spec: Any, principal: Any) -> None:
         log_debug("MCP write refused: writes flag off", user_id=user_id, tool=spec.name)
         raise ToolFailure(REFUSED, "writes_disabled",
                           "Writes are not enabled for this account. Ask the user to make the "
+                          "change in LEM (lem_open_in_lem).")
+    tool_flag = getattr(spec, "flag", None)
+    if tool_flag and not await run_in_threadpool(flag_enabled, tool_flag, user_id):
+        log_debug("MCP write refused: tool flag off", user_id=user_id, tool=spec.name)
+        raise ToolFailure(REFUSED, "tool_disabled",
+                          "This tool is not enabled for this account. Ask the user to make the "
                           "change in LEM (lem_open_in_lem).")
     if spec.approval and not await run_in_threadpool(account_may_approve, user_id):
         log_info("MCP approval refused: not an internal or sandbox account", user_id=user_id,
@@ -216,7 +245,9 @@ async def _spend_budget(key: Optional[str], principal: Any) -> None:
 
 async def run_write(spec: Any, args: BaseModel, principal: Any,
                     run: Callable[[], Awaitable[dict[str, Any]]], timeout: float,
-                    attempted: Optional[Callable[[], bool]] = None) -> dict[str, Any]:
+                    attempted: Optional[Callable[[], bool]] = None,
+                    ledger: Optional[Callable[[], tuple[list[str], list[str]]]] = None
+                    ) -> dict[str, Any]:
     """Run one write tool call through the flag, dedupe, budgets, time limit and audit.
 
     Args:
@@ -227,6 +258,9 @@ async def run_write(spec: Any, args: BaseModel, principal: Any,
         timeout: The tool time limit, in seconds.
         attempted: Whether the runner has SENT a write yet (`Loopback.writes_attempted`). A failure
             before that changed nothing, so it is never `unknown`. None means "assume it did".
+        ledger: For a spec with an `audit_event` (settings): `(landed, attempted)` field names so far.
+            A failure after a PUT landed or was sent writes ONE audit row with those names, and
+            settles the dedupe key instead of releasing it, so a retry never re-runs the first PUT.
 
     Returns:
         The tool's answer, or the first answer replayed for a duplicate.
@@ -248,6 +282,22 @@ async def run_write(spec: Any, args: BaseModel, principal: Any,
     def _sent() -> bool:
         return True if attempted is None else bool(attempted())
 
+    def _fields() -> tuple[list[str], list[str]]:
+        return ledger() if ledger is not None else ([], [])
+
+    async def _audit_failure(unconfirmed_too: bool) -> list[str]:
+        """Audit a settings call that failed part-way; returns the landed field names."""
+        if getattr(spec, "audit_event", None) is None:
+            return []
+        landed, tried = _fields()
+        if landed or (unconfirmed_too and tried):
+            await run_in_threadpool(_audit_settings_failure, principal, spec, landed,
+                                    tried if unconfirmed_too else [])
+        return landed
+
+    unknown_text = (UNKNOWN_MESSAGE if getattr(spec, "audit_event", None) is None else
+                    "LEM did not confirm this settings change, so it may or may not have happened. "
+                    "Do NOT retry it: read lem_get_engagement_settings first.")
     try:
         payload = await asyncio.wait_for(run(), timeout)
     except asyncio.TimeoutError:
@@ -257,22 +307,29 @@ async def run_write(spec: Any, args: BaseModel, principal: Any,
                               "LEM took too long before anything was written. Nothing changed; "
                               "try again.") from None
         await _settle(key, digest, _UNKNOWN)
-        raise ToolFailure(UNKNOWN, "outcome_unknown", UNKNOWN_MESSAGE) from None
+        await _audit_failure(True)
+        raise ToolFailure(UNKNOWN, "outcome_unknown", unknown_text) from None
     except ToolFailure as failure:
         if failure.outcome == UPSTREAM_ERROR and _sent():
             await _settle(key, digest, _UNKNOWN)
-            raise ToolFailure(UNKNOWN, failure.code, UNKNOWN_MESSAGE,
+            await _audit_failure(True)
+            raise ToolFailure(UNKNOWN, failure.code, unknown_text,
                               failure.inner_status) from None
-        await _release(key)
-        raise
-    except Exception:
-        if _sent():
+        if await _audit_failure(False):
+            # Part of it landed: a retry must not run the first PUT again.
             await _settle(key, digest, _UNKNOWN)
         else:
             await _release(key)
         raise
+    except Exception:
+        if _sent():
+            await _settle(key, digest, _UNKNOWN)
+            await _audit_failure(True)
+        else:
+            await _release(key)
+        raise
     await _settle(key, digest, _DONE, payload)
-    await run_in_threadpool(_audit_write, principal, spec.name, payload.get("id"))
+    await run_in_threadpool(_audit_write, principal, spec.name, payload.get("id"), spec, payload)
     return payload
 
 

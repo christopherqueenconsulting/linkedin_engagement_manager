@@ -36,6 +36,13 @@ import requests
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
 
+from cqc_lem.api.mcp.settings_policy import (
+    ICP_EDITABLE,
+    LEAD_MAGNET_EDITABLE,
+    NEWSLETTER_EDITABLE,
+    PREFS_EDITABLE,
+    TIMEZONE_EDITABLE,
+)
 from cqc_lem.api.models import (
     _LEN_DM_TEMPLATE,
     ResponseModel,
@@ -115,6 +122,7 @@ from cqc_lem.utilities.db import (
     ENGAGEMENT_TARGET_WEEKLY_MAX,
     MAX_CONTENT_BUFFER_DAYS,
     MAX_CONTENT_BUFFER_POSTS,
+    MCP_SESSION_SCOPES,
     POSTS_PER_WEEK_MAX,
     POSTS_PER_WEEK_MIN,
     ROSTER_FOLLOWS_PER_DAY_DEFAULT,
@@ -286,6 +294,43 @@ router = APIRouter(prefix="/api/user")
 # The scopes a person signs in with. None is no scope stamped at all: the resolver was bypassed,
 # which only a direct handler call does, since every real resolve stamps one (`_scope_checked`).
 _HUMAN_SESSION_SCOPES = frozenset({None, SESSION_SCOPE_FULL, SESSION_SCOPE_RECOVERY})
+
+
+def _mcp_settings_guard(user_id: int, sent: Any, editable: frozenset) -> bool:
+    """Is this an MCP seat's settings write, and if so, is it inside what `lem_update_settings` may send?
+
+    The one server-side half of the MCP settings allowlist (`api/mcp/settings_policy.py`): the tool
+    checks its own arguments, and this re-checks the request BODY, so a tool bug cannot widen what a
+    token changes. A seat is held to the keys it actually SENT (`model_fields_set`), never to the
+    Pydantic defaults that fill the rest, and the caller writes only those keys, so a partial change
+    leaves every other stored value alone.
+
+    Args:
+        user_id: The authenticated caller.
+        sent: The field names the request body carried.
+        editable: The keys an MCP seat may send on this route.
+
+    Returns:
+        True for an MCP seat inside its allowlist; False for any other scope (which this changes
+        nothing for).
+
+    Raises:
+        HTTPException: 403 when the `mcp-settings-writes` flag is off, or the body names a key
+            outside `editable`.
+    """
+    from cqc_lem.utilities.flags import MCP_SETTINGS_WRITES, flag_enabled
+    if _main._request_session_scope.get() not in MCP_SESSION_SCOPES:
+        return False
+    if not flag_enabled(MCP_SETTINGS_WRITES, user_id):
+        raise HTTPException(status_code=403, detail={
+            "code": "settings_writes_disabled",
+            "message": "Settings changes are not enabled for this token."})
+    outside = sorted(set(sent) - editable - {"session_token"})
+    if outside:
+        raise HTTPException(status_code=403, detail={
+            "code": "mcp_field_not_editable",
+            "message": "This token may not change: " + ", ".join(outside)})
+    return True
 
 
 def _release_enrollment_hold(user_id: int, session_token: Optional[str]) -> None:
@@ -2446,12 +2491,20 @@ def update_engagement_preferences_endpoint(request: EngagementPreferencesRequest
     # catchup_touch_mode (flipping either to auto_approve restores the passive approval bypass) and
     # the per-day caps that bound every outbound lane. A token that cannot approve one item must not
     # be able to configure the account into approving all of them.
-    if _main._agent_scoped():
+    # An MCP seat is the ONE queue-only scope allowed here, and only for the group-1 keys it sent
+    # (`mcp-settings-writes`, #2800); every other queue-only scope is still refused.
+    mcp_seat = _mcp_settings_guard(user_id, request.model_fields_set, PREFS_EDITABLE)
+    if _main._agent_scoped() and not mcp_seat:
         raise HTTPException(status_code=403, detail={
             "code": "agent_may_not_configure",
             "message": "This token can read engagement preferences but cannot change them.",
         })
     prefs = request.model_dump(exclude={"session_token"})
+    if mcp_seat:
+        # Merge, never replace: the model fills every unsent field with its default, and the upsert
+        # writes every column. Keep ONLY what the caller sent; `update_engagement_preferences` merges
+        # that over the saved row.
+        prefs = {k: v for k, v in prefs.items() if k in request.model_fields_set}
     # NULL is "never chosen" for the follow cap (issue #962), and the upsert writes every column
     # from this dict — so an omitted field is dropped here rather than merged as the code default,
     # which would overwrite a deliberate 0 and restart an outbound lane the user had switched off.
@@ -2548,8 +2601,18 @@ def update_newsletter_settings_endpoint(request: NewsletterSettingsRequest) -> R
     user_id = _main.get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
-    if not update_newsletter_settings(user_id, request.model_dump(exclude={"session_token"})):
+    mcp_seat = _mcp_settings_guard(user_id, request.model_fields_set, NEWSLETTER_EDITABLE)
+    settings = request.model_dump(exclude={"session_token"})
+    if mcp_seat:
+        # The route replaces the whole row, so an MCP seat's partial change is merged over what is
+        # stored here: auto-publish, covers, invites and the schedule are never touched.
+        settings = {**get_newsletter_settings(user_id),
+                    **{k: v for k, v in settings.items() if k in request.model_fields_set}}
+    if not update_newsletter_settings(user_id, settings):
         raise HTTPException(status_code=500, detail="Could not update newsletter settings")
+    if mcp_seat:
+        # No draft top-up on an agent's save: generation spend waits for the daily beat.
+        return ResponseModel(status_code=200, detail="Newsletter settings updated")
     # Top up the review queue now so a raised max_queued_drafts adds drafts immediately instead of
     # waiting for the daily beat. Idempotent: a full queue generates nothing.
     if request.enabled:
@@ -3855,7 +3918,12 @@ def update_lead_magnet_endpoint(request: LeadMagnetRequest) -> ResponseModel[str
             detail=(f"Keyword '{request.keyword.strip()}' collides with the engagement-bait filter "
                     "(words like YES, AGREE, BELOW, AMEN, ME). Choose a distinctive trigger word "
                     "such as AUDIT or GUIDE."))
-    if not update_lead_magnet_settings(user_id, request.model_dump(exclude={"session_token"})):
+    mcp_seat = _mcp_settings_guard(user_id, request.model_fields_set, LEAD_MAGNET_EDITABLE)
+    magnet = request.model_dump(exclude={"session_token"})
+    if mcp_seat:
+        magnet = {**get_lead_magnet_settings(user_id),
+                  **{k: v for k, v in magnet.items() if k in request.model_fields_set}}
+    if not update_lead_magnet_settings(user_id, magnet):
         raise HTTPException(status_code=500, detail="Could not update lead magnet")
     return ResponseModel(status_code=200, detail="Lead magnet updated")
 
@@ -3978,6 +4046,7 @@ def update_icp_definition_endpoint(request: IcpDefinitionRequest) -> ResponseMod
     user_id = _main.get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
+    _mcp_settings_guard(user_id, request.model_fields_set, ICP_EDITABLE)
     changes = request.model_dump(exclude={"session_token"}, exclude_none=True)
     if changes and not update_engagement_preferences(user_id, changes):
         raise HTTPException(status_code=500, detail="Could not update the ICP definition")
@@ -4438,6 +4507,7 @@ def update_user_timezone_endpoint(request: TimezoneRequest) -> ResponseModel[str
     user_id = _main.get_session_user_id(request.session_token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
+    _mcp_settings_guard(user_id, request.model_fields_set, TIMEZONE_EDITABLE)
     if request.timezone not in available_timezones():
         raise HTTPException(status_code=422, detail=f"Unknown timezone: {request.timezone!r}")
     saved = update_user_timezone(user_id, request.timezone)

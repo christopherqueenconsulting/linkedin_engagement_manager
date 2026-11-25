@@ -249,3 +249,88 @@ def test_write_needs_a_recipient_and_an_account_kind(extra: tuple) -> None:
     client, _ = _server("mcp_outreach")
     code, text = _run(client, *extra, mode="--write")
     assert code == 2 and "--write needs --recipient and --account-kind" in text
+
+
+# --- the optional settings round trip (#2800) ---------------------------------------------------------
+
+
+def _settings_server(scope: str = "mcp", listed: bool = True, restores: bool = True) -> tuple:
+    """A fake server whose tone really changes and (when `restores`) really comes back on undo."""
+    state = {"tone": "warm"}
+    names = [s.name for s in tools_for_scope(scope) if listed or not s.flag]
+    seen: list[dict] = []
+
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        if request.url.params.get("token"):
+            return httpx2.Response(400, json={"reason": "token_in_url_refused"})
+        if request.headers.get("authorization", "") != f"Bearer {_TOKEN}":
+            return httpx2.Response(401, json={"reason": "invalid_token"})
+        body = json.loads(request.content)
+        seen.append(body)
+        params = body.get("params") or {}
+        name, args = params.get("name"), params.get("arguments") or {}
+        result: Any = {"structuredContent": {}}
+        if body["method"] == "initialize":
+            result = {"serverInfo": {"name": "lem"}}
+        elif body["method"] == "tools/list":
+            result = {"tools": [{"name": n} for n in names]}
+        elif name == "lem_whoami":
+            result = {"structuredContent": {"scope": scope, "account_name": "jane"}}
+        elif name == "lem_list_posts":
+            result = {"structuredContent": {"posts": [{"post_id": 4}]}}
+        elif name == "lem_get_engagement_settings":
+            result = {"structuredContent": {"preferences": {"tone": state["tone"]}}}
+        elif name == "lem_update_settings":
+            if "max_comments_per_day" in args.get("changes", {}):
+                result = _error("cap_not_editable")
+            else:
+                before, state["tone"] = state["tone"], args["changes"]["tone"]
+                result = {"structuredContent": {"changed": {"tone": {
+                    "before": before, "after": state["tone"]}}, "undo_id": "abcdef0123456789"}}
+        elif name == "lem_undo_settings_change":
+            if restores:
+                state["tone"] = "warm"
+            result = {"structuredContent": {"restored": {"tone": {}}}}
+        return httpx2.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": result})
+
+    return httpx2.Client(transport=httpx2.MockTransport(handle)), seen
+
+
+def _settings_calls(seen: list) -> list:
+    return [b for b in seen if b.get("params", {}).get("name") == "lem_update_settings"]
+
+
+def test_the_settings_round_trip_passes_on_a_healthy_server() -> None:
+    client, _ = _settings_server()
+    code, text = _run(client, "--settings")
+    assert code == 0, text
+    assert "[PASS] lem_update_settings changes tone and reports before/after" in text
+    assert "[PASS] a daily cap is refused" in text
+    assert "[PASS] tone is back to its old value" in text
+
+
+def test_a_settings_undo_that_does_not_restore_fails() -> None:
+    client, _ = _settings_server(restores=False)
+    code, text = _run(client, "--settings")
+    assert code == 1 and "[FAIL] tone is back to its old value" in text
+
+
+def test_the_settings_round_trip_is_skipped_when_the_tools_are_not_listed() -> None:
+    client, seen = _settings_server(listed=False)
+    code, text = _run(client, "--settings")
+    assert code == 0, text
+    assert "[SKIP] settings checks" in text
+    assert _settings_calls(seen) == []
+
+
+def test_the_settings_round_trip_never_runs_without_the_flag_argument() -> None:
+    client, seen = _settings_server()
+    code, _text = _run(client)
+    assert code == 0
+    assert _settings_calls(seen) == []
+
+
+def test_a_tools_list_without_the_flagged_tools_matches_the_registry() -> None:
+    client, _ = _server("mcp", tools=[s.name for s in tools_for_scope("mcp") if not s.flag])
+    code, text = _run(client)
+    assert code == 0, text

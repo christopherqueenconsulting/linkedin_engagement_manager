@@ -111,13 +111,13 @@ class TestToolsList:
     @pytest.mark.parametrize("scope", ["mcp", "mcp_outreach"])
     def test_tools_list_is_exactly_the_registry_for_the_scope(
             self, api_client: Any, resolver: MagicMock, scope: str) -> None:
-        """On a standard account: the scope's tools, minus the internal/sandbox approval tool (O1)."""
+        """On a standard account: the scope's tools, minus the approval tool (O1) and flagged tools (#2800)."""
         with admitted(resolver, scope), \
                 patch("cqc_lem.api.mcp.writes.get_user_account_kind", return_value="standard"):
             resp = rpc(api_client, "tools/list")
         listed = resp.json()["result"]["tools"]
         assert [t["name"] for t in listed] == [s.name for s in registry.tools_for_scope(scope)
-                                               if not s.approval]
+                                               if not s.approval and not s.flag]
         for tool in listed:
             spec = registry.TOOLS_BY_NAME[tool["name"]]
             assert tool["inputSchema"]["additionalProperties"] is False

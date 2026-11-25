@@ -90,6 +90,7 @@ COMMENT_RAMP = "comment-ramp-enabled"
 PROFILE_AUDIT = "profile-audit-enabled"
 MCP_SERVER = "mcp-server-enabled"
 MCP_SERVER_WRITES = "mcp-server-writes"
+MCP_SETTINGS_WRITES = "mcp-settings-writes"
 COMMENT_CANDIDATE_DRAFTS = "comment-candidate-drafts-enabled"
 VOICE_EXEMPLARS = "voice-exemplars-enabled"
 COMMENT_MULTI_CANDIDATE = "comment-multi-candidate-enabled"
@@ -343,6 +344,17 @@ FLAGS: Dict[str, FlagSpec] = {
             description=("The MCP server's queue-only write tools (epic #2682, phase W2). OFF by "
                          "default; when off a write tool answers `isError` \"writes not "
                          "enabled\". Nothing it creates leaves LEM before a human approves it."),
+        ),
+        FlagSpec(
+            key=MCP_SETTINGS_WRITES,
+            env_var="MCP_SETTINGS_WRITES_ENABLED",
+            default=False,
+            owner="platform",
+            description=("The MCP settings tools `lem_update_settings` and "
+                         "`lem_undo_settings_change` (epic #2797, issue #2800). OFF by default; "
+                         "when off neither tool is listed and a call is refused. Group-1 settings "
+                         "only (voice, targeting, strategy, cadence, assets); caps and "
+                         "gate-loosening fields are never reachable through it."),
         ),
     )
 }

@@ -21,6 +21,9 @@ does, and exits non-zero on the first mismatch it reports (it keeps going to rep
    there is a REAL send), and the queued DM is then canceled (straight through the DB with
    `--mint-local-for`; otherwise the script prints the DM id to cancel in LEM).
 7. With `--mint-local-for`, the minted token is revoked at the end and the next call must be 401.
+8. With `--settings` (#2800, needs `mcp-settings-writes` on for the account): change `tone` to a
+   marker value, check the diff, check a daily cap is refused, undo, and check `tone` is back. It
+   writes the account's real setting and puts it back; skipped when the tools are not listed.
 
 Usage, against a deployed stack (token from the Agents tab, kept in the environment):
 
@@ -165,10 +168,14 @@ def run_read_checks(smoke: Smoke, token: str) -> Optional[str]:
         smoke.check(bool(names), "tools/list (registry not importable: non-empty only)")
     else:
         full = [spec.name for spec in specs]
-        # `lem_approve_item` is listed only on an internal or sandbox account (owner ruling O1).
-        standard = [spec.name for spec in specs if not spec.approval]
-        smoke.check(names in (full, standard), "tools/list equals the registry",
-                    "" if names in (full, standard) else f"got {sorted(set(names) ^ set(full))}")
+        # `lem_approve_item` is listed only on an internal or sandbox account (owner ruling O1), and a
+        # tool behind its own flag (the settings tools, #2800) only while that flag is on.
+        accepted = [full, [spec.name for spec in specs if not spec.approval],
+                    [spec.name for spec in specs if not getattr(spec, "flag", None)],
+                    [spec.name for spec in specs
+                     if not spec.approval and not getattr(spec, "flag", None)]]
+        smoke.check(names in accepted, "tools/list equals the registry",
+                    "" if names in accepted else f"got {sorted(set(names) ^ set(full))}")
 
     posts = smoke.tool(token, "lem_list_posts", _ARGS["lem_list_posts"]) or {}
     first = next((p.get("post_id") for p in posts.get("posts") or []), None)
@@ -238,6 +245,37 @@ def run_write_checks(smoke: Smoke, token: str, recipient: str, account_kind: str
         smoke.check(cancel_dm(int(dm_id)), "the smoke DM was canceled")
     else:
         smoke.out.write(f"[ACTION] cancel the smoke DM #{dm_id} in LEM -> Content -> DMs\n")
+
+
+def run_settings_checks(smoke: Smoke, token: str) -> None:
+    """Step 8 (#2800): change `tone`, see the diff, see a cap refused, undo, see `tone` restored."""
+    listed = smoke.result(token, "tools/list") or {}
+    names = {t.get("name") for t in listed.get("tools") or []}
+    if "lem_update_settings" not in names:
+        smoke.out.write("[SKIP] settings checks - lem_update_settings is not listed "
+                        "(mcp-settings-writes is off for this account)\n")
+        return
+    marker = "smoke-" + secrets.token_hex(3)
+    current = ((smoke.tool(token, "lem_get_engagement_settings") or {}).get("preferences") or {})
+    original = current.get("tone")
+    smoke.out.write(f"       settings round trip: original tone = {original!r}. If this run dies "
+                    "before the undo, set tone back to that value in LEM -> Account.\n")
+    changed = smoke.tool(token, "lem_update_settings",
+                         {"changes": {"tone": marker}, "client_request_id": "smoke-" + marker}) or {}
+    diff = (changed.get("changed") or {}).get("tone") or {}
+    smoke.check(diff.get("after") == marker and diff.get("before") == original,
+                "lem_update_settings changes tone and reports before/after")
+    capped = smoke.refusal(token, "lem_update_settings", {"changes": {"max_comments_per_day": 1}})
+    smoke.check(capped == "cap_not_editable", "a daily cap is refused", str(capped))
+    undo_id = changed.get("undo_id")
+    smoke.out.write(f"       undo_id = {undo_id} (lem_undo_settings_change restores tone)\n")
+    if not undo_id:
+        smoke.check(False, "lem_update_settings returns an undo_id")
+        return
+    restored = smoke.tool(token, "lem_undo_settings_change", {"undo_id": undo_id}) or {}
+    smoke.check("tone" in (restored.get("restored") or {}), "lem_undo_settings_change restores tone")
+    after = ((smoke.tool(token, "lem_get_engagement_settings") or {}).get("preferences") or {})
+    smoke.check((after.get("tone") or None) == (original or None), "tone is back to its old value")
 
 
 def run_refusal_checks(smoke: Smoke, throwaway: Optional[str],
@@ -315,6 +353,9 @@ def main(argv: Optional[Sequence[str]] = None, out: TextIO = sys.stdout,
                         help="Run the read checks only (the default).")
     parser.add_argument("--write", action="store_true",
                         help="Also run the W2 write checks (needs --recipient; queues ONE DM).")
+    parser.add_argument("--settings", action="store_true",
+                        help="Also run the settings round trip (changes tone, then undoes it; needs "
+                             "mcp-settings-writes on).")
     parser.add_argument("--recipient", metavar="URL",
                         help="The fixed test recipient's LinkedIn profile URL for --write.")
     parser.add_argument("--account-kind", choices=("standard", "internal", "sandbox"),
@@ -351,6 +392,8 @@ def main(argv: Optional[Sequence[str]] = None, out: TextIO = sys.stdout,
     if args.write:
         run_write_checks(smoke, token, args.recipient, args.account_kind,
                          minter.cancel_dm if minter else None)
+    if args.settings:
+        run_settings_checks(smoke, token)
     throwaway = minter.mint("mcp-smoke-exposed") if minter else None
     run_refusal_checks(smoke, throwaway, minter.live if minter else None)
     if minter:

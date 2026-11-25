@@ -25,6 +25,9 @@ Rules every tool keeps:
   the flag and spend the write budgets in their own runner, are audited by their route, and are not
   deduped. An `approval` spec is listed and run ONLY for an internal or sandbox account (owner ruling
   O1) and is always routed through `run_write` (asserted at import).
+- The two settings tools (`tools_settings.py`, #2800) are `write` + `flag="mcp-settings-writes"`: they
+  run through `run_write` like a queue write, are listed only while that flag is on, and audit
+  `mcp_settings` (field names only) instead of `mcp_write`.
 """
 
 import datetime as dt
@@ -39,7 +42,12 @@ from cqc_lem.api.mcp.lifespan import mcp_state
 from cqc_lem.api.mcp.loopback import FAN_OUT_CONCURRENCY, REFUSED, Loopback, ToolFailure
 from cqc_lem.api.mcp.redact import THIRD_PARTY_NOTE, fence_row, fence_rows
 from cqc_lem.api.mcp.tools_spend import SPEND_EXPLANATION, spend_tools
-from cqc_lem.utilities.db import SESSION_SCOPE_MCP, SESSION_SCOPE_MCP_OUTREACH, PostStatus
+from cqc_lem.utilities.db import (
+    SESSION_SCOPE_MCP,
+    SESSION_SCOPE_MCP_OUTREACH,
+    AuthAuditEvent,
+    PostStatus,
+)
 
 GET = "GET"
 BOTH_SCOPES = frozenset({SESSION_SCOPE_MCP, SESSION_SCOPE_MCP_OUTREACH})
@@ -191,6 +199,11 @@ class ToolSpec:
     # Listed in `tools/list` and run ONLY when the account is internal or sandbox (owner ruling O1);
     # refused with `agent_may_not_approve` everywhere else, by the tool AND by the route.
     approval: bool = False
+    # A second rollout flag the tool needs ON, beyond `mcp-server-writes` (#2800: the settings
+    # tools). Off: the tool is not listed and a call is refused as an unknown tool.
+    flag: Optional[str] = None
+    # The auth-audit event a landed call writes instead of `mcp_write` (settings changes).
+    audit_event: Optional[AuthAuditEvent] = None
 
 
 # --- helpers ---------------------------------------------------------------------------------------
@@ -650,7 +663,8 @@ EXPLANATIONS: dict[str, str] = {
         _WRITE_EXPLANATION,
         SPEND_EXPLANATION,
         "Apart from `lem_approve_item` on those internal and sandbox accounts, it cannot send, "
-        "publish, delete, run the browser automation or change settings: for those, use "
+        "publish, delete or run the browser automation, and it changes settings only through "
+        "`lem_update_settings` when that tool is listed: for everything else, use "
         "`lem_open_in_lem` and ask the user to act in LEM.")),
 }
 
@@ -777,9 +791,10 @@ READ_TOOLS: tuple[ToolSpec, ...] = (
 # exist by this line. Appending here keeps one registry, so `tools/list`, the drift guard and
 # `tools/call` read the same table. The AI/media spend tools (W2b) live in `tools_spend.py` and the
 # queue-only writes (W2) in `tools_write.py`.
+from cqc_lem.api.mcp.tools_settings import SETTINGS_TOOLS  # noqa: E402
 from cqc_lem.api.mcp.tools_write import WRITE_TOOLS  # noqa: E402
 
-TOOLS: tuple[ToolSpec, ...] = READ_TOOLS + spend_tools() + WRITE_TOOLS
+TOOLS: tuple[ToolSpec, ...] = READ_TOOLS + spend_tools() + WRITE_TOOLS + SETTINGS_TOOLS
 TOOLS_BY_NAME: dict[str, ToolSpec] = {spec.name: spec for spec in TOOLS}
 
 

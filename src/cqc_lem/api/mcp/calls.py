@@ -56,6 +56,7 @@ from cqc_lem.api.mcp.loopback import (
 )
 from cqc_lem.api.mcp.redact import finalize
 from cqc_lem.api.mcp.server import GUIDE_URI, POLICY_URI
+from cqc_lem.utilities.flags import flag_enabled
 from cqc_lem.utilities.logger import log_error, log_info
 from cqc_lem.utilities.observability import capture_mcp_analytics, track_mcp_tool_call
 
@@ -113,6 +114,11 @@ async def list_tools(request: Optional[Request]) -> ListToolsResult:
     specs = registry.tools_for_scope(scope)
     if any(spec.approval for spec in specs) and not await _approval_allowed(principal):
         specs = tuple(spec for spec in specs if not spec.approval)
+    user_id = getattr(principal, "user_id", None)
+    for flag in {spec.flag for spec in specs if spec.flag}:
+        # A tool behind its own rollout flag is not listed while the flag is off (#2800).
+        if user_id is None or not await run_in_threadpool(flag_enabled, flag, user_id):
+            specs = tuple(spec for spec in specs if spec.flag != flag)
     return ListToolsResult(tools=[mcp_tool(spec) for spec in specs])
 
 
@@ -184,6 +190,8 @@ async def call_tool(request: Optional[Request], name: str,
             raise ToolFailure(REFUSED, "not_authenticated", "This MCP request is not authenticated.")
         if spec is None:
             raise registry.refused_tool(str(name))
+        if spec.flag and not await run_in_threadpool(flag_enabled, spec.flag, principal.user_id):
+            raise registry.refused_tool(str(name))
         try:
             args = spec.args_model.model_validate(arguments or {})
         except ValidationError as exc:
@@ -193,7 +201,9 @@ async def call_tool(request: Optional[Request], name: str,
             bound = loopback
             payload = await writes.run_write(spec, args, principal,
                                              lambda: spec.run(bound, args), TOOL_TIMEOUT_SECONDS,
-                                             attempted=lambda: bound.writes_attempted > 0)
+                                             attempted=lambda: bound.writes_attempted > 0,
+                                             ledger=lambda: (list(bound.landed_fields),
+                                                             list(bound.attempted_fields)))
         else:
             payload = await asyncio.wait_for(spec.run(loopback, args), TOOL_TIMEOUT_SECONDS)
         shaped = finalize(payload)

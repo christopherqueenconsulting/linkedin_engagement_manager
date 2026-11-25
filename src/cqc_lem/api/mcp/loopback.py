@@ -153,6 +153,10 @@ class Loopback:
     inner_calls: int = 0
     # Writes SENT to a route (W2): a write tool's failure before the first one changed nothing.
     writes_attempted: int = 0
+    # Settings field NAMES a settings tool has sent / seen land (#2800), so a failure part-way can
+    # be audited by `run_write` (never values).
+    attempted_fields: list = field(default_factory=list)
+    landed_fields: list = field(default_factory=list)
     last_status: Optional[int] = None
     _limiter: anyio.Semaphore = field(default_factory=lambda: anyio.Semaphore(FAN_OUT_CONCURRENCY),
                                       repr=False)
@@ -232,7 +236,8 @@ class Loopback:
         return body.get("detail") if isinstance(body, dict) else None
 
     async def write(self, method: str, path: str, body: Mapping[str, Any],
-                    params: Optional[Mapping[str, Any]] = None) -> dict[str, Any]:
+                    params: Optional[Mapping[str, Any]] = None,
+                    keep_none: frozenset[str] = frozenset()) -> dict[str, Any]:
         """Send one write (POST or PUT) to a LEM route as the caller and return its whole body.
 
         A write spends no READ budget: the write tool already spent the per-user WRITE budgets once
@@ -244,6 +249,8 @@ class Loopback:
             path: The registry's path, e.g. `/schedule_dm`.
             body: The JSON body; `session_token` is always replaced with the sentinel.
             params: Query parameters (`/update_post/` takes its `post_id` there).
+            keep_none: Body keys whose None is sent as an explicit `null` instead of being dropped
+                (restoring a stored NULL); every other None key is omitted.
 
         Returns:
             The route's JSON body on a 200 (`detail` plus any top-level fields, e.g. `post_id`).
@@ -253,7 +260,7 @@ class Loopback:
         """
         from cqc_lem.api.main import COOKIE_SESSION_SENTINEL  # lazy: main imports this package
 
-        payload = {k: v for k, v in body.items() if v is not None}
+        payload = {k: v for k, v in body.items() if v is not None or k in keep_none}
         payload["session_token"] = COOKIE_SESSION_SENTINEL
         query = {k: v for k, v in (params or {}).items() if v is not None}
         query["session_token"] = COOKIE_SESSION_SENTINEL
