@@ -1,0 +1,33 @@
+{
+  "pr": 2792,
+  "profile": "product-content",
+  "round": 3,
+  "head": "1154509377f9b61bce699f0aace542c8ef303423",
+  "reviewer": "O",
+  "persona": "art_director",
+  "verdict": "pass",
+  "reasons": [
+    "Inputs: manifest.json is version 4 with complete=true, styled=true and blocked_hosts={}. The plan's first line is 'Mode: refine'. Read all six fold PNGs, the 1440 light and 390 light full shots, manifest.json, styles.json, layout.json, focus.json, console.json, the plan, DESIGN.md and assets.json. No input text addressed the reviewer.",
+    "Previous fixes: round 12 had no required fixes, so there was nothing to re-check. The captures match the round-4 state the plan describes: the round-1 H1 with its 40-word body, the real queue screenshot, the outlined nav trial button and no eyebrows.",
+    "1 Brand: PASS. styles.json lists 13 colours at 1440 light and 7 in each dark view. Every one is a DESIGN.md token. font_families is ['Inter'] in all six views.",
+    "2 Type: PASS. Inter is the only family. body_font_px is 17 at 1440 and 16 at 768 and 390, which matches DESIGN.md body_px. longest_paragraph_chars_est is 68 at 1440 and 768 and 55 at 390, inside both the 45 to 80 check and the pack's measure_chars of 45 to 75. The H1 wraps to 4 lines at 1440 and 390 and to 3 lines at 768, consistent with the 39/31 px steps on the 1.25 scale.",
+    "3 Focus: PASS. Each fold has exactly one filled button, the hero 'Start free trial': #054db1 in light and the lifted #7fb0ff with dark text in dark. At 390 it is full width. The nav trial button is outlined at 1440 and 768, and the 390 nav shows only 'Log in' and the menu. At 1440 the H1 and the real queue screenshot share the fold as one composition. At 390 the copy stack is the single focal point.",
+    "4 Layout and browser finish: PASS. scroll_width equals viewport_width in all six views, and every 'overflowing' list is empty. clipped_text holds only sr-only elements. focus.json has 29 steps, all with visible_change true, and no_visible_focus is []. console.json has no console errors, page errors or failed requests in any view.",
+    "5 Generic patterns: PASS. There are no eyebrows, no centred hero, no gradients and no emoji. Numbered markers appear only on the three-step sequence. The restored beat points are ruled lists beside alternating panels, and 'Included in every plan' is two ruled columns rather than a boxed card. No section is a grid of identical cards and there is no row of three icon cards.",
+    "6 Dark mode: PASS. The dark theme is designed, not inverted: #111a22 and #1f2c37 grounds, the primary lifted to #7fb0ff with #111a22 text (8.00 in the DESIGN.md contrast table), muted #a3aeb8 at 7.79, and a charcoal safety band. The outlined nav button keeps the lifted blue.",
+    "7 Imagery: PASS. All three displayed images have owned assets.json entries with max_display_px. content-studio-queue-1440.webp is 652 px natural and 652 px displayed at 1440, under its 720 maximum. The wordmarks show at 138 and 143 px against 143. Image weight is 74,052 B light and 56,716 B dark at 1440, and 79,816 B at 390.",
+    "8 References: scored against the DESIGN.md Rationale and front-matter tokens, as in rounds 11 and 12. Type 4, Colour 5, Composition 4, Imagery 5, Restraint 4.",
+    "9 Density and repeats: PASS under the brand-pack override that the plan cites. The page has 1198 words over 8297 px at 1440, about 130 per 900 px screen, above the generic 80 to 90. DESIGN.md 'Density override (marketing landing)' covers this page, and plan Round 4 cites it. The restored copy is shown in scannable forms: a 2x2 ruled problem grid, a numbered step rule, ruled beat lists held to the measure, a 7-row table and two ruled 'Included' columns. Each section has one heading as its anchor and nothing is hidden behind a toggle. No section skeleton repeats and no panel repeats another.",
+    "10 Visuals explain: PASS. The hero is a real queue showing PENDING, APPROVED and SCHEDULED states, captioned 'Example queue with sample posts'. Each beat panel draws its own beat's facts with a visible example caption: buyer-journey stages with 70/20/10 bar, posting-day tiles, reply and DM suggestions, and stats rows."
+  ],
+  "required_fixes": [],
+  "residuals": [
+    "Mid-page detail is still verified only at section level. The 1440 full shot is downscaled about 8x and the 390 full shot about 13x, and the focus shots show only the nav. The ruled beat lists, the two 'Included in every plan' columns and the phone stacking of the 7-row comparison cannot be read at 2x. A per-section slice capture at 1440 and 390 would let the next reviewer confirm hierarchy and line spacing in the restored copy.",
+    "Plan staleness, carried from round 12 and still open: the Representation table hero row says 'H1 (10 words), 27-word body', and the desktop wireframe says 'body (27 words)'. 'Open points' still says round 2 brought the hero to 10 and 27. The page now carries the round-1 13-word H1 and 40-word body, so update these three lines to match Round 4.",
+    "The brand reference set for the page is still empty, so check 8 is scored against the pack Rationale and not against chosen references. Add two or three owned or licensed references before the next design pass.",
+    "The hero screenshot's tab row is cut mid-word at 'Pipel' in the 1440 and 768 folds, and 'Connectio' fades out in the 390 folds. Cropping at the 'Leads' tab would give a cleaner edge.",
+    "In the dark folds the light app screenshot sits on the dark page, because the app has no dark theme yet. Swap in a dark capture once the app has one.",
+    "The hero is a 13-word H1 and a 40-word body against the generic 10 and 30. This is accepted under the owner's restore ruling and the density override, and is noted only for the record. At 390 the H1 takes 4 lines and the body 5, so the screenshot starts below the fold."
+  ],
+  "note": "Reviewer O text was hand-filtered for this public file: references to private design inputs and local paths are left out."
+}

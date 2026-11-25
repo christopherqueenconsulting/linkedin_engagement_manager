@@ -1,0 +1,27 @@
+{
+  "pr": 2792,
+  "profile": "product-content",
+  "round": 1,
+  "head": "1154509377f9b61bce699f0aace542c8ef303423",
+  "reviewer": "J",
+  "persona": "brand_editor",
+  "verdict": "pass",
+  "reasons": [
+    "Read all nine marketing components and brand/lem/DESIGN.md at head 1154509. Capture images and the design plan were not opened, so layout and rendering are NOT VERIFIED from this side. This verdict covers copy only.",
+    "Hero: the H1 and 40-word body state the product, the approval gate and the password posture in the first lines. The body is plain and specific, with no filler opener. The H1 reads in the product's own terms.",
+    "The density override is recorded in DESIGN.md ('Density override (marketing landing)') and limited to this page. The restored length is a settled owner ruling, so length was not failed. The copy is dense but concrete. Each beat, safety entry and table row names a mechanism or a number (2 to 7 posts, 70/20/10, AES-256-GCM, 14-day trial).",
+    "Consistency holds. 'Suggestions you send yourself' appears in the hero, the engagement beat, the safety ledger, the comparison table and the how-it-works step. 'Approve before publish' is stated the same way everywhere. The comparison table concedes voice and approval to the alternatives, which keeps the sales voice down.",
+    "No dead placeholders, no invented users, logos or testimonials, and no unsourced metrics. Panel captions state that content is sample or illustrative. Mechanics are clean."
+  ],
+  "required_fixes": [],
+  "residuals": [
+    "SafetySection lede, 'Most tools in this category answer this with one sentence', is a comparative claim about other products. It has no artifact in the repo. The D claims auditor should confirm it or soften it to 'Here is the whole list'.",
+    "FeatureNarrative beat 1 point, 'A quality contract and slop lint', uses two undefined jargon terms on a public page. Consider a plain gloss such as 'checks that block generic phrasing'. It is spec-owned copy, so this is an owner call.",
+    "Em dashes are still used in the Hero H1, beat 2 body and point 1, the milestone note, the comparison lede and the problem lede. They are individual clauses, not chains. A later polish could swap a few for a colon or a full stop.",
+    "SafetySection limit, 'anyone who tells you otherwise is selling', is a mild sales-voice jab. It works as plain talk but is the one line near an attack on competitors.",
+    "Self-reference mixes 'LEM' and 'we' (milestone note 'we would rather say so', safety 'hold us to'). Minor and acceptable for a one-person product.",
+    "Typographic apostrophes are mixed in source (literal and &apos;). They render the same, so this is cosmetic.",
+    "The hero text is back at round-1 length, but the round-2 removals of points the beat panels draw were kept. This is an owner call, as the brief notes.",
+    "D and O must re-run on this head before the PR leaves draft, as the PR body already says."
+  ]
+}

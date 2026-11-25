@@ -1,0 +1,26 @@
+{
+  "pr": 2792,
+  "profile": "product-content",
+  "round": 2,
+  "head": "1154509377f9b61bce699f0aace542c8ef303423",
+  "reviewer": "J",
+  "persona": "brand_editor",
+  "verdict": "pass",
+  "reasons": [
+    "Spot-checked at head 1154509: Hero H1 ('Your LinkedIn content, written in your voice — published only when you approve it'), FeatureNarrative lede 'Four beats, in the order they run.', PricingSection 'Included in every plan', SafetySection limit line, and the DESIGN.md 'Density override (marketing landing)' section. The copy matches the restored round-1 and spec-owned text, and the H1 now matches the Landing.test.tsx regexes.",
+    "DESIGN.md records the density override, limits it to this page, and says nothing hides behind a toggle, tab or hover. That matches the settled owner ruling, so length was not failed.",
+    "Copy stays concrete and consistent with what was passed in round 11. The restored text adds mechanisms and numbers, not filler. No placeholders, invented users, logos, testimonials or metrics found.",
+    "NOT VERIFIED: capture images and the design plan were not opened this round. Layout, ruled-list rendering and the phone fold are outside this copy-only verdict. Every restored component was not re-read line by line; the diff against round-2 head d1c21ed4, which the brief reports as identical, was not independently re-run."
+  ],
+  "required_fixes": [],
+  "residuals": [
+    "SafetySection lede 'Most tools in this category answer this with one sentence' is a comparative claim with no repo artifact. D should confirm it or soften it to 'Here is the whole list'.",
+    "FeatureNarrative beat 1 point uses 'quality contract' and 'slop lint' without a plain gloss. Spec-owned, so an owner call.",
+    "SafetySection limit 'anyone who tells you otherwise is selling' is a mild sales-voice jab at competitors.",
+    "Em dashes remain in the Hero H1, beat 2, the milestone note and the comparison and problem ledes. They are single clauses, not chains. Optional polish.",
+    "Self-reference mixes 'LEM' and 'we' (milestone note, safety 'hold us to'). Minor for a one-person product.",
+    "Typographic apostrophes are mixed in source (literal and &apos;). Renders the same.",
+    "Round-2 removals of points the beat panels draw were kept, so the hero is at round-1 length but not pre-pass. Owner call.",
+    "D claims and O must re-run on this head before the PR leaves draft, as the PR body states."
+  ]
+}

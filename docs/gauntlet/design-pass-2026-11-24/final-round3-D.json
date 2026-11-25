@@ -1,0 +1,29 @@
+{
+  "pr": 2792,
+  "profile": "product-content",
+  "round": 3,
+  "head": "1154509377f9b61bce699f0aace542c8ef303423",
+  "reviewer": "D",
+  "persona": "claims_auditor",
+  "verdict": "pass",
+  "reasons": [
+    "Head resolves. Local HEAD, git ls-remote refs/heads/design/landing-pass-2026-11-24 and refs/pull/2792/head all give 1154509377f9b61bce699f0aace542c8ef303423. PR 2792 is OPEN and draft at that head. Working tree clean.",
+    "Hero H1 'Your LinkedIn content, written in your voice&nbsp;— published only when you approve it' matches round-1 commit 5be88f95 (Hero.tsx line 21 vs line 22 there).",
+    "ProblemSection, SafetySection, HowItWorks and FinalCta show no diff between d1c21ed4 and HEAD, as the change list states. Diff d1c21ed4..HEAD touches only ApproachComparison, FeatureNarrative, Hero, PricingSection, ProductPanel and Landing.test.tsx.",
+    "Grep of components/marketing finds no testimonial, logo, customer-count or case-study claims. The only user-number mention is a source comment in ProofStrip.tsx about the 25-user launch cap, not page copy.",
+    "LEM is described only as early access, small first cohort. No claim beyond a one-user pre-launch beta is added in this PR.",
+    "Comparison keeps the concession: ApproachComparison.tsx header comment says the voice and approval rows concede to the alternatives, meeting spec line 84 'Concedes at least one row honestly to an alternative'.",
+    "Capture manifest complete=true, styled=true, blocked_hosts={}, version 4, matching the PR body.",
+    "CI at this head: UI Build, Integration Tests, Docstring & Lint Gate, Analyze (python and JS), CodeQL, CodeQL PR Quality Gate, Claude Code Review, Unit shard 1/2, GitGuardian, Migration Versions, Pipeline Self-Modification Gate and PR title validation succeed. Unit shard 2/2 is still in progress. The PR body words local lint/tsc/tests as local checks, so it does not overclaim."
+  ],
+  "required_fixes": [],
+  "residuals": [
+    "NOT VERIFIED: local results 'eslint 0 errors, 2 warnings', 'tsc -b exit 0', 'vitest 107 files, 1045 tests'. Unit shard 2/2 (run 45528489652) still in progress at this head.",
+    "NOT VERIFIED: 'longest line 68 chars at 1440 and 55 at 390', 'Inter only', and the word-density figures. Not read from a capture artifact.",
+    "PR body wording gap: Round 4 says beat bodies and points are restored word for word, but four round-2 point cuts (30-day plan and 70/20/10, the reply point, the two-to-seven point) stay cut and Round 2 does not mark them reverted.",
+    "Existing 'a small first cohort' (ProofStrip) and the 'Most popular' pricing badge sit beside a one-user pre-launch beta. Not changed by this PR. 'Most popular' has no artifact behind it.",
+    "Comparison concedes only by parity on the voice and approval rows, never by an alternative winning outright. Soft concession, but it meets the spec wording.",
+    "Density of about 130 words per screen exceeds the brand-pack target of about 90 by design, per the recorded density override.",
+    "No reviewer other than D has run on head 1154509. O and others have not re-run, and the PR says so."
+  ]
+}

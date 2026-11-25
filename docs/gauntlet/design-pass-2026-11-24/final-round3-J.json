@@ -1,0 +1,26 @@
+{
+  "pr": 2792,
+  "profile": "product-content",
+  "round": 3,
+  "head": "1154509377f9b61bce699f0aace542c8ef303423",
+  "reviewer": "J",
+  "persona": "brand_editor",
+  "verdict": "pass",
+  "reasons": [
+    "Re-checked at head 1154509 by grep: Hero.tsx H1 'Your LinkedIn content, written in your voice — published only when you approve it'; FeatureNarrative.tsx lede 'Four beats, in the order they run.'; PricingSection.tsx 'Included in every plan' heading; brand/lem/DESIGN.md 'Density override (marketing landing)' at line 49. All match the restored text the brief describes and what was passed in round 12.",
+    "Density is the settled owner ruling of 2026-11-24, recorded in DESIGN.md and limited to this page. Length was not failed.",
+    "Copy is concrete: it names mechanisms and numbers, with no filler openers, placeholders, invented users, logos, testimonials or metrics seen.",
+    "NOT VERIFIED: capture images and the design plan body were not opened. Layout, ruled-list rendering and the phone fold are outside this copy verdict. The source-string diff against d1c21ed4 was not independently re-run. Every restored component was not re-read line by line."
+  ],
+  "required_fixes": [],
+  "residuals": [
+    "SafetySection lede 'Most tools in this category answer this with one sentence' is a comparative claim with no repo artifact. D should confirm it or soften it to 'Here is the whole list'.",
+    "FeatureNarrative beat 1 uses 'quality contract' and 'slop lint' with no plain gloss. Spec-owned, so an owner call.",
+    "SafetySection limit 'anyone who tells you otherwise is selling' is a mild sales-voice jab.",
+    "Em dashes remain in the Hero H1, beat 2, the milestone note and the comparison and problem ledes. Single clauses, optional polish.",
+    "'LEM' and 'we' are mixed as self-reference (milestone note, safety 'hold us to'). Minor.",
+    "Apostrophes are mixed in source (literal and &apos;). They render the same.",
+    "Round-2 removals of points the beat panels draw were kept, so the hero is at round-1 length but not pre-pass. Owner call.",
+    "D claims and O must re-run on this head before the PR leaves draft, as the PR body states."
+  ]
+}
