@@ -3,10 +3,16 @@
 Unlike every queue write in `tools_write.py`, these change something that takes effect at once, with
 no approval step, so everything about them is narrowed on purpose:
 
-- **An allowlist, in code** (`settings_policy.py`). A field is group 1 (applied here) or it is
-  refused with `isError` naming it: group 3 (gate-loosening), a daily cap, a never-field or an
-  unknown name. The write routes re-check the same allowlist on the request body for an MCP seat
-  (`routers/user._mcp_settings_guard`), so this module cannot widen what a token may change.
+- **An allowlist, in code** (`settings_policy.py`). A field is group 1 or a group-2 daily cap
+  (applied here) or it is refused with `isError` naming it: group 3 (gate-loosening), any other cap,
+  a never-field or an unknown name. The write routes re-check the same allowlist on the request body
+  for an MCP seat (`routers/user._mcp_settings_guard`), so this module cannot widen what a token may
+  change.
+- **Caps (#2801).** Every cap is clamped to the ceiling the SPA's PUT enforces, and the answer shows
+  `requested` vs `applied` when that bites. A lowering applies like group 1. A RAISE (toward more
+  LinkedIn activity) is refused with `cap_raise_needs_acknowledgement` and the warning text unless
+  the call says `acknowledge_risk: true`; applied, it still answers with `warnings`. The route
+  re-checks the rule (`routers/user._mcp_cap_raise_check`): enforcement is not only here.
 - **Merge, never replace.** `PUT /user/engagement-preferences` fills every unsent field with a
   Pydantic default. The tool sends ONLY the keys that actually change, and the route (for an MCP
   seat) writes only the keys it was sent, over the saved row. So a one-field change leaves every
@@ -68,8 +74,11 @@ class UpdateSettingsArgs(WriteArgs):
 
     changes: dict[str, Any] = Field(..., min_length=1, max_length=40, description=(
         "Map of setting name to its new value; every setting you do not name keeps its value. "
-        "Allowed: " + ", ".join(sorted(policy.GROUP1_FIELDS)) + ". Send an empty value ('' or []) "
+        "Allowed: " + ", ".join(sorted(policy.TOOL_FIELDS)) + ". Send an empty value ('' or []) "
         "to clear one. Lists replace the stored list, they do not append."))
+    acknowledge_risk: bool = Field(False, description=(
+        "Set true ONLY after the user has read the warning for a daily-cap RAISE and agreed. A call "
+        "that raises a cap without it is refused with that warning and changes nothing."))
 
     @model_validator(mode="after")
     def _bounded(self) -> "UpdateSettingsArgs":
@@ -82,6 +91,9 @@ class UndoSettingsArgs(WriteArgs):
     """The `undo_id` a previous `lem_update_settings` answered with."""
 
     undo_id: str = Field(..., pattern=_UNDO_ID)
+    acknowledge_risk: bool = Field(False, description=(
+        "Set true ONLY after the user has read the warning and agreed, when restoring would RAISE a "
+        "daily cap (undoing a lowering does)."))
 
 
 # --- reading and validating -------------------------------------------------------------------------
@@ -240,7 +252,7 @@ def _drop_undo(user_id: int, undo_id: str) -> None:
 # --- writing --------------------------------------------------------------------------------------
 
 
-async def _apply(lb: Loopback, values: dict[str, Any]) -> list[str]:
+async def _apply(lb: Loopback, values: dict[str, Any], raised: Any = ()) -> list[str]:
     """PUT `values` (`{field: value}`) one resource at a time, sending only those keys.
 
     Returns:
@@ -252,13 +264,17 @@ async def _apply(lb: Loopback, values: dict[str, Any]) -> list[str]:
         ToolFailure: The first write failed: nothing changed.
     """
     done: list[str] = []
+    # The acknowledgement header goes out only when this call really raises a cap.
+    headers = {policy.ACK_HEADER: "true"} if raised else None
     for resource, fields in policy.by_resource(values).items():
         body = {policy.FIELD_TARGETS[f][1]: values[f] for f in fields}
         none_keys = frozenset(k for k, v in body.items() if v is None)
         lb.attempted_fields.extend(fields)
         try:
-            await lb.write(PUT, _WRITE_PATHS[resource], body, keep_none=none_keys)
+            await lb.write(PUT, _WRITE_PATHS[resource], body, keep_none=none_keys,
+                           headers=headers)
             lb.landed_fields.extend(fields)
+            lb.raised_fields.extend(f for f in fields if f in raised)
         except ToolFailure as failure:
             if done:
                 raise _Partial(failure, done) from None
@@ -276,6 +292,33 @@ class _Partial(Exception):
         self.applied = applied
 
 
+async def _bounds(user_id: int, fields: Any) -> dict[str, tuple[int, int]]:
+    """The `(low, high)` clamp of each cap in `fields`; empty when there are none (no plan read)."""
+    if not any(f in policy.CAP_EDITABLE for f in fields):
+        return {}
+    from cqc_lem.api.routers import user as routes  # lazy: the router imports the app
+
+    return await run_in_threadpool(routes._cap_bounds, user_id)
+
+
+def _gate_raises(values: dict[str, Any], before: dict[str, Any], bounds: dict[str, tuple[int, int]],
+                 acknowledged: bool) -> list[str]:
+    """The warnings for every cap in `values` that moves toward more activity; refuses without an ack.
+
+    Raises:
+        ToolFailure: `cap_raise_needs_acknowledgement`, carrying every warning, when a cap is raised
+            and `acknowledged` is False. Nothing has been written at this point.
+    """
+    warnings = [policy.raise_warning(f, before[f], v, *bounds[f]) for f, v in values.items()
+                if f in policy.CAP_EDITABLE and policy.is_raise(f, before[f], v)]
+    if warnings and not acknowledged:
+        raise ToolFailure(REFUSED, "cap_raise_needs_acknowledgement",
+                          "Nothing was changed. This raises a daily cap. SHOW THIS WARNING TO THE USER "
+                          "and call again with acknowledge_risk: true only if they agree. "
+                          + " ".join(warnings))
+    return warnings
+
+
 def _partial_failure(partial: _Partial, undo_id: Optional[str]) -> ToolFailure:
     tail = (f" Already applied before it failed: {', '.join(partial.applied)}."
             + (f" Undo them with undo_id {undo_id}." if undo_id else ""))
@@ -286,18 +329,34 @@ def _partial_failure(partial: _Partial, undo_id: Optional[str]) -> ToolFailure:
 async def _update_settings(lb: Loopback, args: UpdateSettingsArgs) -> dict[str, Any]:
     user_id = lb.principal.user_id
     normal, notes = _normalise(args.changes)
+    bounds = await _bounds(user_id, normal)
+    clamped: dict[str, Any] = {}
+    for field in [f for f in normal if f in policy.CAP_EDITABLE]:
+        low, high = bounds[field]
+        applied_value = min(high, max(low, int(normal[field])))
+        if applied_value != args.changes[field]:
+            clamped[field] = {"requested": args.changes[field], "applied": applied_value,
+                              "limit": policy.activity_limit(field, low, high)}
+        normal[field] = applied_value
     blobs = await _read(lb, {policy.FIELD_TARGETS[f][0] for f in normal})
     before = {f: _value(f, blobs) for f in normal}
+    moving = {f: v for f, v in normal.items() if not policy.same(before[f], v)}
+    warnings = _gate_raises(moving, before, bounds, args.acknowledge_risk)
+    raised = [f for f in moving if f in policy.CAP_EDITABLE and policy.is_raise(f, before[f], moving[f])]
+    if clamped:
+        notes = notes + [f"{f} was clamped to the limit LEM enforces: requested {c['requested']}, "
+                         f"applied {c['applied']}." for f, c in clamped.items()]
     to_write = {f: v for f, v in normal.items() if not policy.same(before[f], v)}
     unchanged = [f for f in normal if f not in to_write]
     if not to_write:
         return {"changed": {}, "unchanged": unchanged, "undo_id": None, "notes": notes,
+                "warnings": [], "clamped": clamped,
                 "note": "Nothing to change: every value already matches.",
                 "review_url": _spa_url("/account")}
     applied: list[str] = []
     partial: Optional[_Partial] = None
     try:
-        applied = await _apply(lb, to_write)
+        applied = await _apply(lb, to_write, raised=frozenset(raised))
     except _Partial as exc:
         partial, applied = exc, exc.applied
     after = {f: normal[f] for f in applied}
@@ -317,8 +376,10 @@ async def _update_settings(lb: Loopback, args: UpdateSettingsArgs) -> dict[str, 
             "before": {f: before[f] for f in changed}, "after": {f: after[f] for f in changed}})
     if partial is not None:
         raise _partial_failure(partial, undo_id)
+    landed_raised = sorted(f for f in raised if f in changed)
     answer: dict[str, Any] = {"changed": changed, "unchanged": unchanged, "undo_id": undo_id,
-                              "notes": notes, "note": APPLIED_NOTE,
+                              "notes": notes, "note": APPLIED_NOTE, "clamped": clamped,
+                              "warnings": warnings if landed_raised else [], "raised": landed_raised,
                               "review_url": _spa_url("/account")}
     if changed and undo_id is None:
         answer["undo_note"] = "Undo is unavailable for this change (its record could not be saved)."
@@ -348,14 +409,25 @@ async def _undo_settings(lb: Loopback, args: UndoSettingsArgs) -> dict[str, Any]
             skipped.append(field)
         else:
             values[field] = value
+    bounds = await _bounds(user_id, values)
+    for field in [f for f in values if f in policy.CAP_EDITABLE]:
+        low, high = bounds[field]
+        values[field] = min(high, max(low, int(values[field])))
+    current = {f: _value(f, blobs) for f in values}
+    warnings = _gate_raises({f: v for f, v in values.items() if not policy.same(current[f], v)},
+                            current, bounds, args.acknowledge_risk)
+    undo_raised = frozenset(f for f in values if f in policy.CAP_EDITABLE
+                            and policy.is_raise(f, current[f], values[f]))
     try:
-        restored = await _apply(lb, values) if values else []
+        restored = await _apply(lb, values, raised=undo_raised) if values else []
     except _Partial as exc:
         raise _partial_failure(exc, None) from None
     if len(restored) == len(fields):
         await run_in_threadpool(_drop_undo, user_id, args.undo_id)
     return {"restored": {f: {"from": after[f], "to": before.get(f)} for f in restored},
-            "skipped": skipped,
+            "skipped": skipped, "warnings": warnings,
+            "raised": sorted(f for f in restored if f in policy.CAP_EDITABLE
+                             and policy.is_raise(f, current[f], values[f])),
             "note": "Restored to the values before that change.",
             "review_url": _spa_url("/account")}
 
@@ -369,15 +441,26 @@ SETTINGS_TOOLS: tuple[ToolSpec, ...] = (
              "kit), targeting (topics, keywords, authors, focus topics, minimum reactions, post "
              "age), strategy (goals, buyer stage, audience mix, ICP), cadence (posts per week, "
              "posting days, session windows, timezone) and assets (lead magnet, newsletter topic "
-             "and cadence). It applies at once, with no approval, so confirm the values with the "
-             "user first and tell them what changed. Returns before and after for each field and "
-             "an undo_id. It cannot change daily caps, approval modes or any safety gate, "
-             "credentials, identity or billing: use lem_open_in_lem for those.",
+             "and cadence) and daily caps (max_comments_per_day, max_dms_per_day, max_invites_per_day, "
+             "max_follows_per_day, max_company_page_invites_per_day, max_catchup_touches_per_day, "
+             "min_catchup_contact_interval_days, max_catchup_touches_per_contact_days). It "
+             "applies at once, with no approval, so confirm the values with the user first and "
+             "tell them what changed. Returns before and after for each field and an undo_id. "
+             "LOWERING a cap just applies. RAISING one (more LinkedIn activity; for "
+             "min_catchup_contact_interval_days a DECREASE is the raise) is refused with a "
+             "warning until you call again with acknowledge_risk: true: you MUST show that "
+             "warning to the user in full, ask them to agree, and only then set it; after it "
+             "applies, relay the returned warnings again. Every cap is clamped to the ceiling "
+             "LEM enforces, and the answer's clamped field shows requested vs applied. It cannot "
+             "change approval modes or any safety gate, credentials, identity or billing: use "
+             "lem_open_in_lem for those.",
              UpdateSettingsArgs, BOTH_SCOPES, _SETTINGS_CALLS, _update_settings, write=True,
              flag=MCP_SETTINGS_WRITES, audit_event=AuthAuditEvent.MCP_SETTINGS),
     ToolSpec("lem_undo_settings_change", "Undo a settings change",
              "Put back the values a lem_update_settings call changed, using its undo_id (kept 7 "
-             "days). Refuses, naming the fields, if any of them was changed again since.",
+             "days). Refuses, naming the fields, if any of them was changed again since. Restoring a "
+             "lowered daily cap is a raise: it needs the warning shown to the user and "
+             "acknowledge_risk: true.",
              UndoSettingsArgs, BOTH_SCOPES, _SETTINGS_CALLS, _undo_settings, write=True,
              flag=MCP_SETTINGS_WRITES, audit_event=AuthAuditEvent.MCP_SETTINGS),
 )

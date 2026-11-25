@@ -159,7 +159,7 @@ flags" and "Approve selected" leave it out, and `POST /review/bulk` refuses it w
 lists the account's latest 50 `mcp_*` audit rows (mints, access, every `mcp_write` and
 `mcp_approval`) for the Agents tab; a failed read is 503, never an empty list.
 
-## The settings tools (epic #2797, #2800)
+## The settings tools (epic #2797, #2800, #2801)
 
 `lem_update_settings` and `lem_undo_settings_change` (`api/mcp/tools_settings.py`, allowlist in
 `api/mcp/settings_policy.py`) are the one place an agent changes a setting. Unlike a queue write they
@@ -182,12 +182,65 @@ Everything else is refused with `isError`, naming every offending field and poin
 `lem_open_in_lem`: **group 3** (any `*_mode`, `profile_viewer_dm_auto_send`, `roster_auto_connect`,
 `roster_auto_follow`, `hold_repaired_posts_for_review`, `authenticity_score_min`,
 `post_similarity_max_pct`, newsletter auto-publish) as `needs_change_request` ("needs a change
-request (coming)", #2803); **daily caps** as `cap_not_editable` (#2801 turns these into a handled
-group); **never-fields** (LinkedIn password and cookie, location, display name, company page, email,
+request (coming)", #2803); **any cap outside the eight below** (`max_queued_drafts`,
+`reply_sweeps_per_day`, `max_invites_per_run`, ...) as `cap_not_editable`; **never-fields** (LinkedIn password and cookie, location, display name, company page, email,
 tokens, sessions, billing) as `field_never_editable`; anything else as `field_not_allowed`. A new
 setting is opt-in: a name is allowed only if it is in `GROUP1_FIELDS`. One refused field refuses the
 whole call, so nothing is half applied. `HANDLED` in `settings_policy.py` is the single seam where a
 later group becomes applicable.
+
+**Daily caps, group 2** (owner ruling 2, #2801; `CAP_EDITABLE`). Eight fields, all stored in the
+preferences row: `max_comments_per_day`, `max_dms_per_day`, `max_invites_per_day`,
+`max_follows_per_day`, `max_company_page_invites_per_day`, `max_catchup_touches_per_day`,
+`min_catchup_contact_interval_days`, `max_catchup_touches_per_contact_days`.
+
+- **Lowering** applies like group 1.
+- **Raising** means moving toward more LinkedIn activity: a bigger number, except
+  `min_catchup_contact_interval_days`, where a SMALLER one is the raise; and `0` on
+  `max_catchup_touches_per_contact_days` means "no limit", so going to 0 is a raise. An unreadable
+  stored value counts as a raise. The comparison is made on the CLAMPED value, so a request that clamps
+  back to what is stored is not a raise.
+- A raise needs `acknowledge_risk: true`. Without it the call is refused as
+  `cap_raise_needs_acknowledgement`, nothing is written, and the message is the warning text: per
+  field, the move, what the cap protects, the 429 and silent-suppression risk, and the ceiling. With it
+  the change applies and the answer still carries `warnings: [...]` and `raised: [fields]`. The tool
+  description tells the agent to show the warning to the user in full BEFORE asking, and to relay the
+  returned warnings after. `lem_undo_settings_change` takes the same argument, because restoring a
+  lowered cap is a raise.
+- **Route re-check.** Enforcement is not only in the tool. The tool sends `X-LEM-MCP-Acknowledge-Risk:
+  true` on its inner PUT only when the call raises a cap AND `acknowledge_risk` was true.
+  `_mcp_settings_guard` (given the request body) re-reads the stored caps, clamps the body to the same
+  bounds, and refuses an MCP seat's un-acknowledged raise with 403 `cap_raise_needs_acknowledgement`
+  (503 `settings_unavailable` if the stored caps cannot be read: a raise cannot be ruled out). Other
+  scopes, the SPA included, are untouched by the rule.
+  This re-check guards against a tool bug. It does not stop a hostile agent from setting
+  `acknowledge_risk: true` itself: that case is bounded by the ceilings below, the write budgets (30 an
+  hour, 150 a day) and the audit `raised` marker.
+- **Audit.** The `mcp_settings` row gains `raised: true` and `raised_fields: [names]` when a cap was
+  raised, including a raise that landed before a later resource failed. Names only, never a value.
+- **If undo is unavailable** (Redis down or the 7 days passed), change the value back on the SPA
+  Account page.
+
+Ceilings (`routers/user._cap_bounds`, the one table the tool and the route read; the SPA's PUT enforces
+the same numbers through the request-model validators and the upsert):
+
+| Field | Floor | Ceiling | Where it is enforced |
+|---|---|---|---|
+| `max_comments_per_day` | 0 | 100 (`HARD_MAX_COMMENTS_PER_DAY`) | `comment_ramp.clamp_comments_per_day`, route validator and upsert |
+| `max_dms_per_day` | 0 | 100 (`DMS_PER_DAY_MAX`) | NEW in #2801: route validator and upsert (none before) |
+| `max_invites_per_day` | 0 | 30 (`INVITES_PER_DAY_MAX`) | NEW in #2801: route validator and upsert (none before) |
+| `max_follows_per_day` | 0 | 20 (`ROSTER_FOLLOWS_PER_DAY_MAX`) | route validator and upsert |
+| `max_company_page_invites_per_day` | 0 | 50 (`COMPANY_PAGE_INVITES_PER_DAY_MAX`) | route validator and upsert |
+| `max_catchup_touches_per_day` | 0 | 5, or 10 on an active professional/enterprise plan | route validator (absolute 10) and the plan clamp in the upsert |
+| `min_catchup_contact_interval_days` | 0 | 365 | route validator and upsert |
+| `max_catchup_touches_per_contact_days` | 0 | 365 | route validator and upsert |
+
+The DM and invite ceilings are new because nothing server-side bounded them before: only the SPA's
+presets did. They sit above every preset and the brand account's own ceilings (20 DMs, 10 invites), so
+they bound a mistake. A stored row already above 100 DMs or 30 invites is clamped down to the ceiling
+on its next write (any save of the preferences, SPA or MCP), so this is a behaviour change for such a
+row. When a clamp bites the answer carries
+`clamped: {field: {requested, applied, limit}}` plus a note, and `changed` shows the stored value.
 
 **Merge, never replace.** `PUT /user/engagement-preferences` replaces the whole record and Pydantic
 fills every unsent field with its default. The tool sends only the keys that really change, and the

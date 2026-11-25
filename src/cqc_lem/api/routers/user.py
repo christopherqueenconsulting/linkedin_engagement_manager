@@ -37,11 +37,15 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
 
 from cqc_lem.api.mcp.settings_policy import (
+    ACK_HEADER,
+    CAP_EDITABLE,
     ICP_EDITABLE,
     LEAD_MAGNET_EDITABLE,
     NEWSLETTER_EDITABLE,
     PREFS_EDITABLE,
     TIMEZONE_EDITABLE,
+    is_raise,
+    raise_warning,
 )
 from cqc_lem.api.models import (
     _LEN_DM_TEMPLATE,
@@ -116,10 +120,14 @@ from cqc_lem.utilities.db import (
     DEFAULT_CONTENT_BUFFER_MAX_POSTS,
     DEFAULT_POSTING_DAYS,
     DEFAULT_POSTS_PER_WEEK,
+    DMS_PER_DAY_MAX,
+    DMS_PER_DAY_MIN,
     ENGAGEMENT_TARGET_CATEGORIES,
     ENGAGEMENT_TARGET_SOURCES,
     ENGAGEMENT_TARGET_WEEKLY_DEFAULT,
     ENGAGEMENT_TARGET_WEEKLY_MAX,
+    INVITES_PER_DAY_MAX,
+    INVITES_PER_DAY_MIN,
     MAX_CONTENT_BUFFER_DAYS,
     MAX_CONTENT_BUFFER_POSTS,
     MCP_SESSION_SCOPES,
@@ -296,7 +304,84 @@ router = APIRouter(prefix="/api/user")
 _HUMAN_SESSION_SCOPES = frozenset({None, SESSION_SCOPE_FULL, SESSION_SCOPE_RECOVERY})
 
 
-def _mcp_settings_guard(user_id: int, sent: Any, editable: frozenset) -> bool:
+def _cap_bounds(user_id: int) -> dict[str, tuple[int, int]]:
+    """The `(low, high)` each daily cap is clamped to for this user: the SPA's own limits.
+
+    The ONE table the MCP raise rule and the tool's `requested`/`applied` report read, so they cannot
+    drift from what the PUT route and the upsert enforce. Plan-aware for the catch-up cap (10 a day on
+    an active premium plan, 5 otherwise).
+
+    Args:
+        user_id: Whose plan decides the catch-up ceiling. Blocking (one subscription read).
+
+    Returns:
+        `{field: (low, high)}` for every `CAP_EDITABLE` field.
+    """
+    from cqc_lem.utilities.comment_ramp import HARD_MAX_COMMENTS_PER_DAY
+    return {
+        "max_comments_per_day": (0, HARD_MAX_COMMENTS_PER_DAY),
+        "max_dms_per_day": (DMS_PER_DAY_MIN, DMS_PER_DAY_MAX),
+        "max_invites_per_day": (INVITES_PER_DAY_MIN, INVITES_PER_DAY_MAX),
+        "max_follows_per_day": (ROSTER_FOLLOWS_PER_DAY_MIN, ROSTER_FOLLOWS_PER_DAY_MAX),
+        "max_company_page_invites_per_day": (COMPANY_PAGE_INVITES_PER_DAY_MIN,
+                                             COMPANY_PAGE_INVITES_PER_DAY_MAX),
+        "max_catchup_touches_per_day": (CATCHUP_TOUCHES_MIN,
+                                        min(CATCHUP_TOUCHES_MAX, max_catchup_touches_allowed(user_id))),
+        "min_catchup_contact_interval_days": (CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MIN,
+                                              CATCHUP_MIN_CONTACT_INTERVAL_DAYS_MAX),
+        "max_catchup_touches_per_contact_days": (CATCHUP_MAX_PER_CONTACT_DAYS_MIN,
+                                                 CATCHUP_MAX_PER_CONTACT_DAYS_MAX),
+    }
+
+
+def _mcp_cap_raise_check(user_id: int, body: Any, sent: Any) -> None:
+    """Refuse an MCP seat's un-acknowledged raise of a daily cap: the server-side half of #2801.
+
+    The tool refuses first, but enforcement may not live only in the tool: this re-reads the stored
+    caps, clamps what the body carries to the same bounds the write will apply, and demands the
+    acknowledgement header the tool sets only when its `acknowledge_risk` argument was true.
+
+    Args:
+        user_id: The authenticated caller.
+        body: The request model (read for the cap values it carries).
+        sent: The field names the body carried.
+
+    Raises:
+        HTTPException: 403 `cap_raise_needs_acknowledgement` naming the raised fields and carrying
+            the warning text, or 503 when the stored caps cannot be read (a raise cannot be ruled out).
+    """
+    fields = sorted(set(sent) & CAP_EDITABLE)
+    if not fields:
+        return
+    request = _main._request_object.get()
+    if request is not None and (request.headers.get(ACK_HEADER) or "").lower() == "true":
+        return
+    try:
+        stored = get_engagement_preferences(user_id) or {}
+        bounds = _cap_bounds(user_id)
+    except Exception:  # noqa: BLE001 - unreadable means a raise cannot be ruled out: fail closed.
+        raise HTTPException(status_code=503, detail={
+            "code": "settings_unavailable",
+            "message": "Settings could not be read, so a cap change cannot be checked."}) from None
+    warnings = []
+    for field in fields:
+        low, high = bounds[field]
+        try:
+            value = min(high, max(low, int(getattr(body, field))))
+        except (TypeError, ValueError):
+            # Unparseable: a raise cannot be ruled out, so it needs the acknowledgement (fails closed).
+            warnings.append(f"{field} could not be read as a number, so it is treated as a raise. "
+                            + raise_warning(field, stored.get(field), "(unreadable)", low, high))
+            continue
+        if is_raise(field, stored.get(field), value):
+            warnings.append(raise_warning(field, stored.get(field), value, low, high))
+    if warnings:
+        raise HTTPException(status_code=403, detail={
+            "code": "cap_raise_needs_acknowledgement",
+            "message": " ".join(warnings)[:1500]})
+
+
+def _mcp_settings_guard(user_id: int, sent: Any, editable: frozenset, body: Any = None) -> bool:
     """Is this an MCP seat's settings write, and if so, is it inside what `lem_update_settings` may send?
 
     The one server-side half of the MCP settings allowlist (`api/mcp/settings_policy.py`): the tool
@@ -309,14 +394,16 @@ def _mcp_settings_guard(user_id: int, sent: Any, editable: frozenset) -> bool:
         user_id: The authenticated caller.
         sent: The field names the request body carried.
         editable: The keys an MCP seat may send on this route.
+        body: The request model, when the route carries daily caps (the preferences PUT): a RAISE of
+            one needs the acknowledgement header (`_mcp_cap_raise_check`).
 
     Returns:
         True for an MCP seat inside its allowlist; False for any other scope (which this changes
         nothing for).
 
     Raises:
-        HTTPException: 403 when the `mcp-settings-writes` flag is off, or the body names a key
-            outside `editable`.
+        HTTPException: 403 when the `mcp-settings-writes` flag is off, the body names a key
+            outside `editable`, or it raises a daily cap without the acknowledgement.
     """
     from cqc_lem.utilities.flags import MCP_SETTINGS_WRITES, flag_enabled
     if _main._request_session_scope.get() not in MCP_SESSION_SCOPES:
@@ -330,6 +417,8 @@ def _mcp_settings_guard(user_id: int, sent: Any, editable: frozenset) -> bool:
         raise HTTPException(status_code=403, detail={
             "code": "mcp_field_not_editable",
             "message": "This token may not change: " + ", ".join(outside)})
+    if body is not None:
+        _mcp_cap_raise_check(user_id, body, sent)
     return True
 
 
@@ -918,6 +1007,28 @@ class EngagementPreferencesRequest(BaseModel):
                        max(COMPANY_PAGE_INVITES_PER_DAY_MIN, int(v)))
         except (TypeError, ValueError):
             return COMPANY_PAGE_INVITES_PER_DAY_DEFAULT
+
+    @field_validator("max_comments_per_day")
+    @classmethod
+    def _clamp_comments(cls, v: int) -> int:
+        from cqc_lem.utilities.comment_ramp import clamp_comments_per_day
+        return clamp_comments_per_day(v)
+
+    @field_validator("max_dms_per_day")
+    @classmethod
+    def _clamp_dms(cls, v: int) -> int:
+        try:
+            return min(DMS_PER_DAY_MAX, max(DMS_PER_DAY_MIN, int(v)))
+        except (TypeError, ValueError):
+            return 20
+
+    @field_validator("max_invites_per_day")
+    @classmethod
+    def _clamp_invites(cls, v: int) -> int:
+        try:
+            return min(INVITES_PER_DAY_MAX, max(INVITES_PER_DAY_MIN, int(v)))
+        except (TypeError, ValueError):
+            return 10
 
     @field_validator("max_follows_per_day")
     @classmethod
@@ -2493,7 +2604,7 @@ def update_engagement_preferences_endpoint(request: EngagementPreferencesRequest
     # be able to configure the account into approving all of them.
     # An MCP seat is the ONE queue-only scope allowed here, and only for the group-1 keys it sent
     # (`mcp-settings-writes`, #2800); every other queue-only scope is still refused.
-    mcp_seat = _mcp_settings_guard(user_id, request.model_fields_set, PREFS_EDITABLE)
+    mcp_seat = _mcp_settings_guard(user_id, request.model_fields_set, PREFS_EDITABLE, request)
     if _main._agent_scoped() and not mcp_seat:
         raise HTTPException(status_code=403, detail={
             "code": "agent_may_not_configure",

@@ -157,6 +157,8 @@ class Loopback:
     # be audited by `run_write` (never values).
     attempted_fields: list = field(default_factory=list)
     landed_fields: list = field(default_factory=list)
+    # The cap names among `landed_fields` that moved toward more LinkedIn activity (#2801).
+    raised_fields: list = field(default_factory=list)
     last_status: Optional[int] = None
     _limiter: anyio.Semaphore = field(default_factory=lambda: anyio.Semaphore(FAN_OUT_CONCURRENCY),
                                       repr=False)
@@ -237,7 +239,8 @@ class Loopback:
 
     async def write(self, method: str, path: str, body: Mapping[str, Any],
                     params: Optional[Mapping[str, Any]] = None,
-                    keep_none: frozenset[str] = frozenset()) -> dict[str, Any]:
+                    keep_none: frozenset[str] = frozenset(),
+                    headers: Optional[Mapping[str, str]] = None) -> dict[str, Any]:
         """Send one write (POST or PUT) to a LEM route as the caller and return its whole body.
 
         A write spends no READ budget: the write tool already spent the per-user WRITE budgets once
@@ -251,6 +254,7 @@ class Loopback:
             params: Query parameters (`/update_post/` takes its `post_id` there).
             keep_none: Body keys whose None is sent as an explicit `null` instead of being dropped
                 (restoring a stored NULL); every other None key is omitted.
+            headers: Extra headers for this one request (the cap-raise acknowledgement, #2801).
 
         Returns:
             The route's JSON body on a 200 (`detail` plus any top-level fields, e.g. `post_id`).
@@ -269,7 +273,8 @@ class Loopback:
             self.writes_attempted += 1
             client = self._http()
             task = asyncio.create_task(client.request(method.upper(), route_path(path, method),
-                                                      params=query, json=payload))
+                                                      params=query, json=payload,
+                                                      headers=dict(headers) if headers else None))
             response = await task
         self._detail(response)
         data = response.json()

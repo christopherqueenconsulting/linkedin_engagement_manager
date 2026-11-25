@@ -203,7 +203,8 @@ async def call_tool(request: Optional[Request], name: str,
                                              lambda: spec.run(bound, args), TOOL_TIMEOUT_SECONDS,
                                              attempted=lambda: bound.writes_attempted > 0,
                                              ledger=lambda: (list(bound.landed_fields),
-                                                             list(bound.attempted_fields)))
+                                                             list(bound.attempted_fields),
+                                                             list(bound.raised_fields)))
         else:
             payload = await asyncio.wait_for(spec.run(loopback, args), TOOL_TIMEOUT_SECONDS)
         shaped = finalize(payload)
