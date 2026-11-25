@@ -159,7 +159,7 @@ export default function ProductPanel({ variant }: { variant: PanelVariant }) {
     return (
       <Panel
         label="Diagram of the LEM scheduling calendar: a week of posting days with a draft placed in each golden-hour slot."
-        caption="Example week, for illustration"
+        caption="Example posting week, drawn for illustration"
       >
         <div className="grid grid-cols-5 gap-2">
           {['Mon', 'Tue', 'Wed', 'Thu', 'Fri'].map((day, index) => (
@@ -184,7 +184,7 @@ export default function ProductPanel({ variant }: { variant: PanelVariant }) {
     return (
       <Panel
         label="Diagram of a LEM 30-day plan: drafts placed across the awareness, consideration and decision stages, in a 70/20/10 value, authority and promo mix."
-        caption="Example plan, for illustration"
+        caption="Example plan layout, drawn for illustration"
       >
         <div className="text-xs font-semibold text-fg-muted">30-day plan, by buyer stage</div>
         {/* A row from sm; on a phone the stages stack, so "Consideration" never truncates. */}
@@ -233,7 +233,7 @@ export default function ProductPanel({ variant }: { variant: PanelVariant }) {
     return (
       <Panel
         label="Diagram of LEM engagement suggestions: a suggested reply to a comment on your post and a suggested follow-up DM, each waiting for you to send it."
-        caption="Example suggestions, sample text"
+        caption="Example suggestions with sample text"
       >
         <FollowUpPane />
       </Panel>
@@ -244,7 +244,7 @@ export default function ProductPanel({ variant }: { variant: PanelVariant }) {
     return (
       <Panel
         label="Diagram of the LEM measurement view: post and audience statistics, each waiting on real data."
-        caption="Example layout, without data"
+        caption="Example layout, shown without data"
       >
         {['Post statistics', 'Audience statistics'].map((row) => (
           <div

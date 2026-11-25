@@ -14,23 +14,23 @@ import Section, { SectionHeading } from './Section'
 const CLAIMS: { title: string; body: string }[] = [
   {
     title: 'LinkedIn sign-in, never your password',
-    body: 'LEM never asks for your LinkedIn password or a session cookie.',
+    body: 'You connect with LinkedIn’s own sign-in. LEM never asks for your LinkedIn password or a session cookie.',
   },
   {
     title: 'No post goes out without your approval',
-    body: 'Each post waits; only after you approve it is it published, through LinkedIn’s API.',
+    body: 'Each generated post waits in your queue. Only after you approve it is it published, through LinkedIn’s API.',
   },
   {
     title: 'Engagement stays in your hands',
-    body: 'Comments, replies and DMs are suggestions; LEM does not send them for you.',
+    body: 'Comments, replies, follow-ups and DMs arrive as suggestions. You review them and send the ones you want yourself; LEM does not send them for you.',
   },
   {
     title: 'Quality gates before you see a draft',
-    body: 'A draft that fails the quality contract is held, with the reason shown.',
+    body: 'Every draft is checked against a quality contract and your recent posts. A draft that fails is held for review, with the reason shown.',
   },
   {
     title: 'Secrets encrypted at rest',
-    body: 'Sign-in tokens are AES-256-GCM encrypted per user, with passkey or TOTP step-up on the writes that touch them.',
+    body: 'Your LinkedIn sign-in tokens are AES-256-GCM encrypted per user and column, and passkey or TOTP step-up gates the writes that touch them.',
   },
 ]
 
@@ -43,7 +43,10 @@ export default function SafetySection() {
     <Section id="safety" analyticsName="safety" tone="dark">
       <div className="grid gap-y-10 lg:grid-cols-12 lg:grid-rows-[auto_1fr] lg:gap-x-14">
         <div className="min-w-0 lg:col-span-5">
-          <SectionHeading title="Nothing goes out under your name until you say so" />
+          <SectionHeading
+            title="Nothing goes out under your name until you say so"
+            lede="Most tools in this category answer this with one sentence. Here is the whole list, each one a thing you can hold us to."
+          />
         </div>
         <ul className="min-w-0 border-t border-hairline lg:col-span-7 lg:row-span-2">
           {CLAIMS.map(({ title, body }) => (
@@ -59,7 +62,8 @@ export default function SafetySection() {
           </span>
           <span>
             <strong className="font-semibold">And the limit:</strong> no tool can guarantee a LinkedIn
-            account. You can edit any draft, approve nothing or send no suggestion, and you remain
+            account, and anyone who tells you otherwise is selling. What you control here is the whole
+            surface — edit any draft, approve nothing, or send no suggestion at all. You remain
             responsible for your own account.
           </span>
         </p>

@@ -1,5 +1,6 @@
 import { useAuth } from '../../contexts/useAuth'
 import {
+  INCLUDED_IN_EVERY_PLAN,
   SHOWN_PLANS,
   TRIAL_DAYS,
   rememberPlanIntent,
@@ -7,6 +8,7 @@ import {
 } from '../../constants/plans'
 import { EVENTS, capture } from '../../utils/analytics'
 import CtaButton from './CtaButton'
+import { IncludedMark } from './Icon'
 import Section, { SectionHeading } from './Section'
 
 // Pricing (issue #1300). Two things changed beyond the styling, and both are honesty fixes:
@@ -76,13 +78,24 @@ export default function PricingSection() {
         ))}
       </div>
 
-      {/* Design pass r3: the "Included in every plan" list is gone (density budget). Its six lines
-          restated the feature beats, the safety ledger and the comparison above; the heading and
-          this sentence carry the one fact it added, that every plan runs the same product. */}
-      <p data-testid="tier-difference" className="mt-8 max-w-measure text-sm text-fg-muted">
-        Plans differ by price and one cap. {tierDifferenceSentence()} Everything else is the same on
-        every plan.
-      </p>
+      {/* The shared capability list, kept whole (owner decision 2026-11-24, the density override in
+          brand/lem/DESIGN.md). Two columns of hairline-ruled lines, matching the problem section and
+          the safety ledger, rather than a boxed card under the plan cards. */}
+      <div className="mt-10">
+        <h3 className="text-title font-semibold text-fg">Included in every plan</h3>
+        <ul className="mt-4 grid gap-x-12 md:grid-cols-2">
+          {INCLUDED_IN_EVERY_PLAN.map((item) => (
+            <li key={item} className="flex items-start gap-3 border-t border-hairline py-3">
+              <IncludedMark included />
+              <span className="text-fg">{item}</span>
+            </li>
+          ))}
+        </ul>
+        <p data-testid="tier-difference" className="mt-5 max-w-measure text-sm text-fg-muted">
+          Plans differ by price and one cap. {tierDifferenceSentence()} Everything else is the same on
+          every plan.
+        </p>
+      </div>
     </Section>
   )
 }

@@ -6,9 +6,10 @@ The logged-out front page (`src/cqc_lem/ui/src/pages/Landing.tsx` and
 `src/cqc_lem/ui/src/components/marketing/`). This pass changes how the page shows its content.
 It does not change what the page claims: every claim, link, analytics name, anchor and behaviour
 stays. The section order, the copy owned by `docs/marketing-page-ux-spec.md` and the honesty
-tests in `pages/Landing.test.tsx` are unchanged. Round 2 (below) changes the H1 wording and trims
-restated sentences, and Round 3 cuts copy to meet the density budget; both rounds list their copy
-changes for the sign-off of the owner of `docs/marketing-page-ux-spec.md`.
+tests in `pages/Landing.test.tsx` are unchanged. Rounds 2 and 3 (below) cut copy for density; the
+owner reverted those copy cuts on 2026-11-24 and recorded a density override instead (Round 4,
+below, and `brand/lem/DESIGN.md`). The page carries the round-1 hero and the round-2 copy
+elsewhere, word for word, in the pass's layout.
 
 - **Brand pack:** `brand/lem/DESIGN.md` and `brand/lem/assets.json`. LEM tokens only; no new
   token, colour or font. Round 3 adds three owned screenshot images, each with an `assets.json`
@@ -138,9 +139,10 @@ Phone, 390 wide:
   section already carry.
 - **Glass:** the nav's translucent blur is replaced by the solid surface.
 - **Numbered markers:** only on the three steps, which are a true sequence.
-- **Density (round 1; superseded by Round 3 below):** the page carried 1,263 visible words over
+- **Density (round 1; superseded by Round 4 below):** the page carried 1,263 visible words over
   8,339 px at 1440 wide (about 136 words per desktop screen). Before the pass it was 1,368 words
-  over 9,010 px (about 137). Round 3 brings it to 709 words over 7,129 px (89.5).
+  over 9,010 px (about 137). Round 3 brought it to 709 words over 7,129 px (89.5); Round 4 restores
+the copy under the density override, at 1,198 words over 8,297 px (about 130).
 
 ## Refine passes: what each changed
 
@@ -245,6 +247,9 @@ failed requests. Only DESIGN.md colour tokens. Inter only. Longest line 68 chara
 
 ## Round 3 (2026-11-25): fixes from the second review
 
+Superseded for copy by Round 4: the owner reverted every copy cut listed under "Density" below. The
+hero screenshot and the other non-copy changes stay.
+
 Reviewer O failed round 2 on two items, the hero image and density. Both are fixed below. Captures
 for this round are in a new `after-r3` folder beside `after` and `after-r2`, outside the
 repository.
@@ -307,3 +312,39 @@ Round 3 checks: the after-r3 capture is complete and styled, with no blocked hos
 390, 768 or 1440. `no_visible_focus` is empty over 29 steps. 0 console errors, page errors or
 failed requests. Only DESIGN.md colour tokens, and Inter only. Longest line 68 characters at 1440.
 Image weight: 74,052 B light and 56,716 B dark at 1440, 79,816 B light at 390.
+
+## Round 4 (2026-11-25): density override, copy restored
+
+Owner decision, 2026-11-24: revert the round 2 and round 3 copy cuts and record a density override
+instead. `brand/lem/DESIGN.md` now has a "Density override (marketing landing)" section: this page
+carries the full feature story owned by `docs/marketing-page-ux-spec.md` and runs above the generic
+words-per-screen guide. The override covers this page only.
+
+- **Copy restored word for word.** The hero is back to its round-1 text (the H1 and 40-word body
+  before round 2's rewrite). Everything round 3 cut or reworded is back as it stood at the round-2
+  head; round 2's removals of lines the beat panels already draw stay removed. Restored: the features lede and each beat's full body
+  and points (post formats, the quality contract and slop lint, weekdays by default with weekends
+  opt-in, golden-hour placement measured from the real publish time, self-healing carousels and
+  asset backfill, the comment-targeting rules, appreciation and follow-up DMs, post and audience
+  statistics); the milestone note's full sentence; all seven comparison rows and the two-sentence
+  lede; the "Included in every plan" list (per-day caps, targeting rules and human-paced timing,
+  seed comments, comment outcomes, the suppression tripwire); the safety lede, the five full safety
+  entries and the full limit; the problem lede and the line under each statement; the how-it-works
+  lede and all three step lines; the final CTA body; and the four panel captions.
+  `Landing.test.tsx` goes back to matching the restored H1.
+- **Kept from the pass.** The hero screenshot, the outlined nav button, the numbered step rule, the
+  ruled safety ledger, the beat panels, the removed eyebrows and beat labels, the token-only colours,
+  the wordmark resizes and every other layout change.
+- **How the restored copy is shown.** Nothing is hidden behind a toggle, tab or hover: every line is
+  visible and in the DOM, so a crawler or a screen reader reaches it. The beat points are a hairline
+  ruled list, one capability per line, held to the reading measure. The "Included in every plan"
+  list is two columns of ruled lines under the plan cards, not a boxed card. The comparison stays a
+  table (one block per capability on a phone).
+- **Captures.** A new `final` folder beside the round folders, outside the repository: landing at
+  1440, 768 and 390, light and dark.
+
+Round 4 checks: capture complete and styled, no blocked hosts. No overflow at 390, 768 or 1440.
+`no_visible_focus` empty over 29 steps. 0 console errors, page errors or failed requests. Only
+DESIGN.md colour tokens, and Inter only. Longest line 68 characters at 1440 and 55 at 390. 1,198
+words over 8,297 px at 1440 (about 130 per 900 px screen), 1,236 words at 390, within the override.
+Image weight: 72 KB light and 55 KB dark at 1440, 77 KB light at 390.

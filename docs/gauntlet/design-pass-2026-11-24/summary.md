@@ -28,7 +28,7 @@ O passes at the final reviewed head. D last passed at round 2, and I, J and K at
 
 - Not verified from CI: the local lint, `tsc -b` and `npm test` results in the PR body. CI runs them at the PR head.
 - This repo has no denylist file, so the denylist-guard check was skipped for the reviewer text. Reviewer O text was hand-filtered: references to private design inputs and local paths are left out of these public files.
-- Owner sign-off needed on the hero copy (round 2) and the density cuts (round 3) for `docs/marketing-page-ux-spec.md`. Some cut facts (per-day caps, targeting rules, post formats) now appear nowhere on the page.
+- Resolved after round 3 (owner decision, 2026-11-24): the hero copy and density cuts were reverted and a density override recorded in `brand/lem/DESIGN.md`. Every cut fact is back on the page. These verdicts predate that change; the restored copy has not had a reviewer round.
 - "a small first cohort" and the "Most popular" pricing badge sit beside a one-user pre-launch beta. Owner decision.
 - Hero screenshot: tab row cut mid-word at 1440 and 390, filter chrome visible, light only until the app has a dark theme.
 - Measurement beat panel teaches little. Full-page captures were judged at low resolution.

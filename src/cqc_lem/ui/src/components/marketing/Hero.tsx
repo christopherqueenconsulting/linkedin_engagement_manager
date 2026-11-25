@@ -18,15 +18,15 @@ export default function Hero() {
       <div className="grid items-start gap-12 lg:grid-cols-12">
         <div className="min-w-0 lg:col-span-5">
           <h1 className="text-section-lg font-semibold text-balance text-fg sm:text-hero">
-            LinkedIn posts in your voice, published only after your approval
+            Your LinkedIn content, written in your voice&nbsp;— published only when you approve it
           </h1>
-          {/* Held to the 30-word hero budget (design pass r2). Scheduling, the month-long plan and
-              follow-ups are stated in full in the feature beats; the three postures below are
-              pinned by Landing.test.tsx. 16px on a phone (the pack's phone body size), so the
-              paragraph stays at four lines at 390px. */}
+          {/* The spec-owned hero copy, kept whole (owner decision 2026-11-24: the density override in
+              brand/lem/DESIGN.md). It names content, engagement and the safety posture; the postures
+              are pinned by Landing.test.tsx. 16px on a phone (the pack's phone body size). */}
           <p className="mt-6 max-w-measure text-base leading-relaxed text-fg-muted sm:text-lg">
-            LEM publishes each post only after you approve it. It suggests comments and replies,
-            which you review and send yourself. LEM never asks for your LinkedIn password.
+            LEM writes and schedules a month of posts in your voice and publishes each one only after
+            you approve it. It also suggests comments, replies and follow-ups, which you review and
+            send yourself. LEM never asks for your LinkedIn password.
           </p>
           <div className="mt-8 flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:gap-6">
             <CtaButton

@@ -15,7 +15,8 @@ export default function FinalCta() {
         Start with a month of posts you can actually approve
       </h2>
       <p className="mx-auto mt-4 max-w-xl text-lg leading-relaxed text-fg-muted">
-        See your first plan before you decide anything.
+        Sign in with LinkedIn, set your voice and topics, and see the first plan before you decide
+        anything.
       </p>
       <div className="mt-8 flex justify-center">
         <CtaButton
