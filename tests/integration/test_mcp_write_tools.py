@@ -6,6 +6,7 @@ never lists or runs `lem_approve_item`, and a sandbox account approves through i
 `mcp_approval`. Nothing that touches identity, scope or the approval guards is patched.
 """
 
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterator
 
@@ -71,6 +72,7 @@ def _token(user_id: int) -> str:
     return token
 
 
+@asynccontextmanager
 async def _session(token: str) -> AsyncIterator[ClientSession]:
     from cqc_lem.api.main import app
 
@@ -94,7 +96,7 @@ def _audit(user_id: int, event: str) -> list[dict]:
 
 async def test_lem_queue_dm_writes_a_pending_mcp_row_with_its_audit_row(users: Any) -> None:
     user_id = users["standard"]
-    async for session in _session(_token(user_id)):
+    async with _session(_token(user_id)) as session:
         names = {tool.name for tool in (await session.list_tools()).tools}
         assert "lem_queue_dm" in names
         assert "lem_approve_item" not in names, "a standard account never lists the approval"
@@ -125,7 +127,7 @@ async def test_lem_queue_dm_writes_a_pending_mcp_row_with_its_audit_row(users: A
 
 async def test_a_sandbox_account_approves_through_lem_approve_item(users: Any) -> None:
     user_id = users["sandbox"]
-    async for session in _session(_token(user_id)):
+    async with _session(_token(user_id)) as session:
         names = {tool.name for tool in (await session.list_tools()).tools}
         assert "lem_approve_item" in names
 
