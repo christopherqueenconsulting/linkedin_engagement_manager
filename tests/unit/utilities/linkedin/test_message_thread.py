@@ -91,8 +91,9 @@ class FakeDriver:
         self.queries = []
         self.sender = None
         self.body = None
-        # What the composer's recipient container renders; None means there is no container at all.
+        # What the recipient chain reads, per source; None means the script found nothing at all.
         self.recipient = None
+        self.recipient_args = None
         # What the page-native editor signal reads; None means the script found nothing (#2463).
         self.editors = None
         self.window_handles = [ORIGIN]
@@ -134,6 +135,7 @@ class FakeDriver:
         if script is mt._LAST_MESSAGE_JS:
             return self.body
         if script is mt._RECIPIENT_PILL_JS:
+            self.recipient_args = args
             return self.recipient
         if script is mt._MESSAGE_EDITOR_JS:
             return self.editors
@@ -733,7 +735,7 @@ class TestEmptyComposePageIsNotAThread:
         # its proof is the recipient pill, not message history (issue #1030).
         d = FakeDriver(page_source=PAGE_MODEL)
         d.thread = {"events": 0, "composer": True, "overlay": False}
-        d.recipient = "Jane Doe"
+        d.recipient = _pill("Jane Doe")
         result = mt.open_addressed_composer(d, MagicMock(), PROFILE, timeout=0)
         assert result.addressed and result.recipient == "Jane Doe"
 
@@ -933,25 +935,103 @@ class TestComposeUrl:
         assert "recipient=ACoAAABCDEF" in mt.compose_url_for(URN)
 
 
+def _pill(*texts, source="container"):
+    """A recipient-chain reading where only `source` matched, rendering `texts`."""
+    return {source: list(texts)}
+
+
 class TestComposerRecipient:
     def test_the_pill_name_is_the_recipient(self):
         d = FakeDriver()
-        d.recipient = "Jay Bailey\nShow suggested recipients for your message"
-        assert mt.composer_recipient(d) == "Jay Bailey"
+        d.recipient = _pill("Jay Bailey\nShow suggested recipients for your message")
+        read = mt.composer_recipient(d)
+        assert (read.name, read.source) == ("Jay Bailey", "container")
 
     def test_the_empty_state_placeholder_is_not_a_recipient(self):
         # This is the whole hazard: 'Enter message recipients' is long enough to read as a name.
         d = FakeDriver()
-        d.recipient = "Enter message recipients"
-        assert mt.composer_recipient(d) == ""
+        d.recipient = _pill("Enter message recipients")
+        read = mt.composer_recipient(d)
+        assert read.name == "" and read.source is None
+        assert read.hits == {"container": 1, "pill": 0, "profile_link": 0}
 
     def test_no_recipient_container_at_all_is_empty(self):
-        assert mt.composer_recipient(FakeDriver()) == ""
+        read = mt.composer_recipient(FakeDriver())
+        assert read.name == ""
+        assert read.hits == {"container": 0, "pill": 0, "profile_link": 0}
 
     def test_a_js_failure_reads_as_unaddressed_rather_than_raising(self):
         d = FakeDriver()
         d.execute_script = MagicMock(side_effect=WebDriverException("boom"))
-        assert mt.composer_recipient(d) == ""
+        assert mt.composer_recipient(d).name == ""
+
+    def test_the_reader_is_scoped_to_the_target_slug_and_urn_id(self):
+        d = FakeDriver()
+        mt.composer_recipient(d, PROFILE, URN)
+        assert d.recipient_args == ("jane-doe-8a4b21", "ACoAAABCDEF")
+
+
+class TestRecipientChain:
+    """2026-11-25: the two container classes missed on a rendered composer and refused every DM.
+
+    The read is a chain now (#2020), and every later source must be safe ON ITS OWN — a wrong name
+    sends a stranger our message, a missing one only holds the DM.
+    """
+
+    def test_the_container_still_wins_when_it_names_somebody(self):
+        d = FakeDriver()
+        d.recipient = {"container": ["Jane Doe"], "pill": ["Jane D."], "profile_link": ["Jane Doe"]}
+        assert mt.composer_recipient(d).source == "container"
+
+    def test_a_pill_names_the_recipient_when_the_containers_miss(self):
+        d = FakeDriver()
+        d.recipient = {"container": [], "pill": ["Jane Doe"]}
+        read = mt.composer_recipient(d)
+        assert (read.name, read.source) == ("Jane Doe", "pill")
+
+    def test_a_chrome_only_container_falls_through_to_the_next_source(self):
+        d = FakeDriver()
+        d.recipient = {"container": ["Enter message recipients"], "profile_link": ["Jane Doe"]}
+        read = mt.composer_recipient(d)
+        assert (read.name, read.source) == ("Jane Doe", "profile_link")
+
+    @pytest.mark.parametrize("source", ["container", "pill"])
+    def test_two_names_from_a_class_matched_source_never_count(self, source):
+        # A class match cannot say WHOSE composer it read: two names is two composers, or a group.
+        d = FakeDriver()
+        d.recipient = _pill("Jane Doe", "Someone Else", source=source)
+        assert mt.composer_recipient(d).name == ""
+
+    def test_one_name_rendered_twice_is_still_one_recipient(self):
+        d = FakeDriver()
+        d.recipient = _pill("Jane Doe", "Jane Doe\nRemove")
+        assert mt.composer_recipient(d).name == "Jane Doe"
+
+    def test_target_links_are_attributed_so_any_of_them_names_the_target(self):
+        d = FakeDriver()
+        d.recipient = _pill("", "Jane Doe", "Jane Doe, MBA", source="profile_link")
+        read = mt.composer_recipient(d)
+        assert (read.name, read.source) == ("Jane Doe", "profile_link")
+
+    def test_the_chain_order_is_most_specific_first(self):
+        assert mt.RECIPIENT_SOURCES == ("container", "pill", "profile_link")
+
+    def test_a_profile_link_counts_only_for_the_targets_own_slug_or_urn_id(self):
+        body = mt._RECIPIENT_PILL_JS[len(mt._DEEP_ALL_JS):]
+        assert "s===slug" in body and "s===ident" in body
+        assert "a[href*='/in/']" in body
+
+    def test_nothing_inside_a_suggestion_list_is_ever_read(self):
+        # The unaddressed composer offers the target as a SUGGESTION before anybody is added.
+        body = mt._RECIPIENT_PILL_JS[len(mt._DEEP_ALL_JS):]
+        assert "[role='listbox']" in body and "[class*='suggest']" in body
+        assert body.count("!suggested(el)") == 2  # the pill AND the profile-link source
+
+    def test_a_pill_counts_only_inside_the_recipient_typeahead(self):
+        # A dismissible pill in the message form is an ATTACHMENT, and its file name is not a person.
+        body = mt._RECIPIENT_PILL_JS[len(mt._DEEP_ALL_JS):]
+        assert "el.closest(\"[class*='typeahead'], [class*='recipient']\")" in body
+        assert "form" not in body
 
 
 class TestOpenAddressedComposer:
@@ -960,7 +1040,7 @@ class TestOpenAddressedComposer:
     @staticmethod
     def _driver(recipient="Jane Doe", thread=None):
         d = FakeDriver(page_source=PAGE_MODEL)
-        d.recipient = recipient
+        d.recipient = _pill(recipient)
 
         def _get(url):
             d.urls.append(url)
@@ -983,6 +1063,21 @@ class TestOpenAddressedComposer:
         result = mt.open_addressed_composer(d, MagicMock(), PROFILE, user_id=1, timeout=0)
         assert not result.addressed
         assert result.reason == "unaddressed"
+
+    def test_a_refusal_stays_a_warning_and_says_which_sources_matched(self):
+        # Fail CLOSED, at WARNING: a held DM is recoverable, a DM to the wrong person is not.
+        d = self._driver(recipient="Enter message recipients")
+        with patch.object(mt, "log_warning") as warn:
+            mt.open_addressed_composer(d, MagicMock(), PROFILE, user_id=1, timeout=0)
+        warn.assert_called_once()
+        assert "(container=1, pill=0, profile_link=0)" in warn.call_args.args[0]
+
+    def test_the_winning_source_is_recorded(self):
+        d = self._driver()
+        d.recipient = _pill("Jane Doe", source="profile_link")
+        result = mt.open_addressed_composer(d, MagicMock(), PROFILE, user_id=1, timeout=0)
+        assert result.addressed and result.recipient_source == "profile_link"
+        assert d.recipient_args == ("jane-doe-8a4b21", "ACoAAABCDEF")
 
     def test_no_urn_never_guesses_a_recipient(self):
         d = self._driver()

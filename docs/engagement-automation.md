@@ -872,6 +872,12 @@ The ladder answers "can I read this thread". A send needs more, so `send_dm_now`
   is the one place that URL is built, for both paths.
 - `composer_recipient` is the proof, and `''` is never "probably fine" — no recipient means **do not
   send**. Refusing to congratulate someone is recoverable.
+- The recipient read is a **chain** (`RECIPIENT_SOURCES`, 2026-11-25): the two recipient-container
+  classes, then a dismissible pill inside the recipient typeahead, then a link whose href is the
+  TARGET's own slug or URN id. Each source must be safe on its own: nothing inside a suggestion list
+  counts, and two different names from a class-matched source never count. The winning source is
+  logged on success (`via <source>`); a refusal stays ONE WARNING with each source's hit count, so
+  chrome-only (hits, no name) and selector drift (no hits) read apart in the production log.
 - **Sent means the message LANDED**, not that Send accepted a click (`_dm_send_landed`): our text as
   the newest message confirms; text still sitting in the composer disproves; unreadable trusts the
   click and warns, because reporting a delivered message as failed invites a duplicate send.

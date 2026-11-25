@@ -156,10 +156,27 @@ _DEEP_ALL_JS = (
     "for(const el of all){if(el.shadowRoot)scan(el.shadowRoot,depth+1);}};"
     "scan(document,0);return out;};")
 
+# The recipient read is a CHAIN, exhausted before "names nobody" (#2020). The two container classes
+# were the only read from #1048 until a day of refusals (2026-11-25) showed they can miss on a
+# composer that rendered. Each later source is safe ON ITS OWN, because a wrong name sends a stranger
+# our DM: a dismissible pill counts only inside the recipient typeahead, and a profile link
+# counts only when its href is the TARGET's own slug or URN id. Nothing inside a suggestion list is
+# ever read — the unaddressed composer offers the target there before anybody is added.
+RECIPIENT_SOURCES = ("container", "pill", "profile_link")
 _RECIPIENT_PILL_JS = _DEEP_ALL_JS + (
-    "const box=deepAll("
-    "\"[class*='msg-connections-typeahead__added-recipients'], [class*='msg-compose__recipients']\")[0];"
-    "return box ? box.innerText : null;")
+    "const slug=String(arguments[0]||'').toLowerCase(),ident=String(arguments[1]||'').toLowerCase();"
+    "const text=(els)=>els.map(el=>el.innerText||'');"
+    "const suggested=(el)=>!!el.closest("
+    "\"[role='listbox'], [role='option'], [class*='suggest'], [class*='search-result']\");"
+    "const container=text(deepAll("
+    "\"[class*='msg-connections-typeahead__added-recipients'], [class*='msg-compose__recipients']\"));"
+    "const pill=text(deepAll(\"[class*='artdeco-pill--dismiss']\").filter(el=>!suggested(el)&&"
+    "el.closest(\"[class*='typeahead'], [class*='recipient']\")));"
+    "const own=(a)=>{const m=(a.getAttribute('href')||'').match(/\\/in\\/([^\\/?#]+)/i);"
+    "if(!m)return false;let s=m[1];try{s=decodeURIComponent(s);}catch(e){}s=s.toLowerCase();"
+    "return (!!slug&&s===slug)||(!!ident&&s===ident);};"
+    "const link=text(deepAll(\"a[href*='/in/']\").filter(el=>own(el)&&!suggested(el)));"
+    "return {container: container, pill: pill, profile_link: link};")
 
 _MORE_LOCATORS: list[tuple[str, str]] = [
     (By.CSS_SELECTOR, "main button[aria-label^='More actions']"),
@@ -383,23 +400,52 @@ def compose_url_for(urn: str) -> str:
             f"&screenContext={_COMPOSE_SCREEN_CONTEXT}")
 
 
-def composer_recipient(driver: WebDriver) -> str:
-    """The name the OPEN composer is addressed to — '' when it is addressed to nobody.
+@dataclass
+class RecipientRead:
+    """One read of the open composer's recipient, and which source in the chain named them."""
+    name: str = ""
+    source: Optional[str] = None
+    # Elements each source matched, named or not — a miss with hits is chrome-only, without is drift.
+    hits: dict[str, int] = field(default_factory=dict)
 
-    This is the send path's proof of delivery target. An empty string is never "probably fine": it is
-    the unaddressed compose screen, and typing into it sends to whoever a typeahead happens to
-    resolve, or to nobody at all.
-    """
-    try:
-        raw = driver.execute_script(_RECIPIENT_PILL_JS)
-    except Exception as e:
-        log_warning("Could not read the message composer's recipient", exc=e, action_type="dm")
-        return ""
-    for line in str(raw or "").splitlines():
+
+def _first_name_line(text: str) -> str:
+    """The first line of an element's text that is not composer chrome — '' when there is none."""
+    for line in str(text or "").splitlines():
         line = " ".join(line.split())
         if line and not _RECIPIENT_CHROME_RE.match(line):
             return line
     return ""
+
+
+def composer_recipient(driver: WebDriver, profile_url: str = "",
+                       urn: Optional[str] = None) -> RecipientRead:
+    """The name the OPEN composer is addressed to — an empty `name` when it is addressed to nobody.
+
+    This is the send path's proof of delivery target. An empty name is never "probably fine": it is
+    the unaddressed compose screen, and typing into it sends to whoever a typeahead happens to
+    resolve, or to nobody at all. The sources are walked in `RECIPIENT_SOURCES` order and the first
+    that names somebody wins. A class-matched source cannot say WHOSE composer it read, so two
+    different names there mean two composers and that source does not count; a profile link is
+    attributed by its href, so it never can name a stranger.
+    """
+    read = RecipientRead()
+    ident = (urn or "").split(":")[-1]
+    try:
+        raw = driver.execute_script(_RECIPIENT_PILL_JS, profile_slug(profile_url), ident)
+    except Exception as e:
+        log_warning("Could not read the message composer's recipient", exc=e, action_type="dm")
+        return read
+    raw = raw if isinstance(raw, dict) else {}
+    for source in RECIPIENT_SOURCES:
+        texts = raw.get(source) or []
+        read.hits[source] = len(texts)
+        if read.name:
+            continue
+        names = list(dict.fromkeys(n for n in map(_first_name_line, texts) if n))
+        if names and (source == "profile_link" or len(names) == 1):
+            read.name, read.source = names[0], source
+    return read
 
 
 @dataclass
@@ -410,6 +456,7 @@ class ComposerOpen:
     urn: Optional[str] = None
     surface: Optional[str] = None
     reason: Optional[str] = None
+    recipient_source: Optional[str] = None
 
     @property
     def addressed(self) -> bool:
@@ -484,15 +531,17 @@ def open_addressed_composer(driver: WebDriver, wait: WebDriverWait, profile_url:
         result.reason = "composer_missing"
         return result
 
-    result.recipient = composer_recipient(driver)
+    read = composer_recipient(driver, profile_url, urn)
+    result.recipient, result.recipient_source = read.name, read.source
     if not result.recipient:
-        log_warning(f"The message composer for {profile_url} names no recipient", user_id=user_id,
-                    action_type="dm")
+        hits = ", ".join(f"{k}={v}" for k, v in read.hits.items())
+        log_warning(f"The message composer for {profile_url} names no recipient ({hits})",
+                    user_id=user_id, action_type="dm")
         result.reason = "unaddressed"
         return result
 
-    log_info(f"Message composer addressed to '{result.recipient}' ({result.surface})",
-             user_id=user_id, action_type="dm")
+    log_info(f"Message composer addressed to '{result.recipient}' via {result.recipient_source} "
+             f"({result.surface})", user_id=user_id, action_type="dm")
     return result
 
 
