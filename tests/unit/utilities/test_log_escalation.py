@@ -255,6 +255,17 @@ def test_comment_quality_skips_never_escalate():
         assert _note(skip, [3]) is not None
 
 
+def test_exposed_mcp_token_revocation_never_escalates():
+    """A revoked URL token is a handled defence, not a defect (#2825)."""
+    from cqc_lem.api.mcp.gate import EXPOSED_TOKEN_LOG_PREFIX
+
+    assert EXPOSED_TOKEN_LOG_PREFIX in esc.BUILTIN_EXCLUDED_PREFIXES
+    assert _note(EXPOSED_TOKEN_LOG_PREFIX, [3]) is None
+    esc.reset_state()
+    with patch.object(esc, "BUILTIN_EXCLUDED_PREFIXES", ()):
+        assert _note(EXPOSED_TOKEN_LOG_PREFIX, [3]) is not None
+
+
 def test_env_exclusions_add_to_the_builtins(monkeypatch):
     """An override must not be able to drop the capture_exception re-entrancy guard."""
     monkeypatch.setenv("LOG_ESCALATE_EXCLUDE", "Custom noise")

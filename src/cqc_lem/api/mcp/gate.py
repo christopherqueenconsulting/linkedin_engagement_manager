@@ -94,6 +94,8 @@ Receive = Callable[[], Awaitable[Message]]
 Send = Callable[[Message], Awaitable[None]]
 
 QUERY_TOKEN_PARAMS = ("token", "session_token", "access_token")
+# Pinned in `log_escalation.BUILTIN_EXCLUDED_PREFIXES`: the revocation line stays a WARNING.
+EXPOSED_TOKEN_LOG_PREFIX = "MCP request refused: exposed token in query string was revoked"
 
 INVALID_TOKEN_DETAIL = ("LEM MCP token invalid, expired or revoked. "
                         "Create a new one in LEM → Agents.")
@@ -348,8 +350,9 @@ async def _query_token_refusal(scope: Scope) -> Optional[JSONResponse]:
         await run_in_threadpool(record_auth_failure, client_ip, None)
     if revoked:
         # WARNING, never the value: a live credential was sent in a URL, and its owner has to
-        # create a new one. Unlike a typo'd parameter, this is worth a grouped issue if it recurs.
-        log_warning("MCP request refused: exposed token in query string was revoked",
+        # create a new one. Handled in full (revoked, audited, emailed), so recurrence is a client
+        # habit, not a code defect: the prefix is excluded from escalation (#2825).
+        log_warning(EXPOSED_TOKEN_LOG_PREFIX,
                     params=params, revoked=len(revoked),
                     user_ids=sorted({r["user_id"] for r in revoked}),
                     scopes=sorted({r["scope"] for r in revoked}))
