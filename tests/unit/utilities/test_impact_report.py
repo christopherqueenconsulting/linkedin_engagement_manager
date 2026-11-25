@@ -220,15 +220,18 @@ class TestJob:
         assert [t for t, _ in job.due_releases(rels, self.NOW)] == ["v1.0.0"]
         assert job.due_releases(None, self.NOW) == []
 
+    KEY = "release-day:2026-11-09"
+
     def _run(self, flag=True, redis=None, email=True, releases=None, now=None, recipient="o@x.test"):
         redis = redis if redis is not None else MagicMock(**{"set.return_value": True})
-        releases = releases if releases is not None else [
-            {"tag_name": "v1.0.0", "published_at": "2026-11-09T10:00:00Z"}]
+        if releases is None:
+            releases = [{"tag_name": "v1.0.0", "published_at": "2026-11-09T10:00:00Z"}]
         comment = MagicMock(return_value=True)
+        gh = releases if callable(releases) else MagicMock(return_value=releases)
         with patch("cqc_lem.utilities.flags.flag_enabled", return_value=flag), \
              patch.object(job, "_recipient", return_value=recipient), \
              patch("cqc_lem.utilities.linkedin.rate_limit.shared_redis_client", return_value=redis), \
-             patch("cqc_lem.utilities.feedback.issue_service.github_request", return_value=releases), \
+             patch("cqc_lem.utilities.feedback.issue_service.github_request", gh), \
              patch("cqc_lem.utilities.feedback.issue_service.comment_on_issue", comment), \
              patch.object(job, "load_impact_report", return_value={
                  "change_at": "x", "windows": {"deploy_day": "d", "before_days": [], "after_days": []},
@@ -243,18 +246,87 @@ class TestJob:
 
     def test_sends_email_and_metric_free_note(self):
         result, send, comment, _ = self._run()
-        assert result["results"]["v1.0.0"] == "sent"
+        assert result["results"][self.KEY] == "sent"
         assert "up" in send.call_args[0][2]  # metrics live in the EMAIL
         comment.assert_called_once_with(2643, "Impact report ready for v1.0.0.")
 
+    def test_email_lists_excluded_outage_days_and_passes_them(self):
+        with patch.object(job, "load_impact_report") as load:
+            load.return_value = {
+                "change_at": "x", "windows": {"deploy_day": "d", "before_days": [], "after_days": []},
+                "metrics": {}, "not_measured": {}}
+            with patch("cqc_lem.utilities.email.send_impact_report_email", return_value=True) as send:
+                job._send(1, "k", "l", self.NOW, 14, "o@x.test",
+                          MagicMock(**{"set.return_value": True}), job.KNOWN_OUTAGE_DAYS)
+        assert load.call_args[0][3] == job.KNOWN_OUTAGE_DAYS
+        assert "2026-11-22" in send.call_args[0][2] and "2026-11-23" in send.call_args[0][2]
+
+    def test_sweep_passes_outage_days_to_every_report(self):
+        first = datetime(2026, 12, 1, 14, 30, tzinfo=timezone.utc)
+        rels = [{"tag_name": "v1.0.0", "published_at": "2026-11-16T10:00:00Z"}]
+        with patch.object(job, "_send", return_value="sent") as send, \
+             patch("cqc_lem.utilities.flags.flag_enabled", return_value=True), \
+             patch.object(job, "_recipient", return_value="o@x.test"), \
+             patch("cqc_lem.utilities.linkedin.rate_limit.shared_redis_client", return_value=object()), \
+             patch("cqc_lem.utilities.feedback.issue_service.github_request", return_value=rels), \
+             patch("cqc_lem.utilities.feedback.issue_service.comment_on_issue"):
+            job.run_impact_report_sweep(first)
+        assert send.call_count == 2
+        assert all(c[0][7] == job.KNOWN_OUTAGE_DAYS for c in send.call_args_list)
+
+    def test_due_release_on_page_two_is_found(self):
+        def rel(i, day):
+            return {"tag_name": f"v1.{i}.0", "published_at": f"{day}T10:00:00Z"}
+        pages = {1: [rel(i, "2026-11-24") for i in range(100)],
+                 2: [rel(i, "2026-11-09") for i in range(100, 140)]}
+        gh = MagicMock(side_effect=lambda m, path: pages[int(path.rsplit("=", 1)[1])])
+        result, send, comment, _ = self._run(releases=gh)
+        assert result["results"] == {self.KEY: "sent"}
+        assert gh.call_count == 2
+        comment.assert_called_once_with(2643, "Impact report ready for v1.139.0.")
+
+    def test_pagination_stops_once_past_the_due_window(self):
+        old = [{"tag_name": f"v0.{i}.0", "published_at": "2026-10-01T10:00:00Z"} for i in range(100)]
+        gh = MagicMock(return_value=old)
+        self._run(releases=gh)
+        assert gh.call_count == 1
+
+    def test_same_et_day_releases_send_one_report_naming_last_tag(self):
+        rels = [{"tag_name": f"v1.{i}.0", "published_at": f"2026-11-09T10:{i:02d}:00Z"}
+                for i in range(16)]
+        result, send, comment, _ = self._run(releases=rels)
+        assert result["results"] == {self.KEY: "sent"}
+        assert send.call_count == 1 and "v1.0.0..v1.15.0" in send.call_args[0][1]
+        comment.assert_called_once_with(2643, "Impact report ready for v1.15.0.")
+
+    def test_rerun_same_day_sends_nothing(self):
+        redis = MagicMock()
+        redis.set.side_effect = [True, None]
+        _, send1, _, _ = self._run(redis=redis)
+        _, send2, comment2, _ = self._run(redis=redis)
+        assert send1.call_count == 1 and not send2.called and not comment2.called
+
+    def test_none_releases_read_warns_and_sends_nothing(self):
+        with patch.object(job, "log_warning") as warn:
+            result, send, comment, _ = self._run(releases=MagicMock(return_value=None))
+        assert result["results"] == {} and warn.called
+        assert not send.called and not comment.called
+
+    def test_later_page_failure_keeps_earlier_pages(self):
+        page1 = [{"tag_name": "v1.0.0", "published_at": "2026-11-24T10:00:00Z"}] * 100
+        gh = MagicMock(side_effect=[page1, None])
+        with patch.object(job, "log_warning") as warn:
+            assert len(job.fetch_releases(gh, self.NOW)) == 100
+        assert warn.called
+
     def test_already_claimed_sends_nothing(self):
         result, send, comment, _ = self._run(redis=MagicMock(**{"set.return_value": None}))
-        assert result["results"]["v1.0.0"] == "already"
+        assert result["results"][self.KEY] == "already"
         assert not send.called and not comment.called
 
     def test_failed_email_releases_claim_and_posts_no_note(self):
         result, _, comment, redis = self._run(email=False)
-        assert result["results"]["v1.0.0"] == "email_failed"
+        assert result["results"][self.KEY] == "email_failed"
         redis.delete.assert_called_once()
         assert not comment.called
 
