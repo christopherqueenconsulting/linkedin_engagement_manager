@@ -273,13 +273,11 @@ def insert_scheduled_dm(user_id: int, recipient_profile_url: str, message: str,
     is what lets each mechanic carry its own daily draft cap while sharing the one-open-draft rule.
     """
     try:
-        with db_cursor(commit=True) as cursor:
-            cursor.execute(
-                "INSERT INTO scheduled_dms (user_id, recipient_profile_url, recipient_name, message, "
-                "source, scheduled_time, status) VALUES (%s,%s,%s,%s,%s,%s,%s)",
-                (user_id, recipient_profile_url, recipient_name, message,
-                 str(source) if source else None, to_naive_utc(scheduled_time), str(status)))
-            return cursor.lastrowid
+        return _execute_write_ids(
+            "INSERT INTO scheduled_dms (user_id, recipient_profile_url, recipient_name, message, "
+            "source, scheduled_time, status) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+            (user_id, recipient_profile_url, recipient_name, message,
+             str(source) if source else None, to_naive_utc(scheduled_time), str(status)))[1]
     except mysql.connector.Error as err:
         log_error("Could not insert scheduled DM", exc=err, user_id=user_id)
         return None
@@ -1953,24 +1951,29 @@ def release_catchup_send_attempt(user_id: int, profile_url: str, event_type: "Ca
 _DEADLOCK_ATTEMPTS = 3
 
 
-def _execute_write(sql: str, params: tuple) -> int:
-    """Run ONE committed write, retrying a deadlock victim; returns the rowcount.
+def _execute_write_ids(sql: str, params: tuple) -> tuple[int, int]:
+    """Run ONE committed write, retrying a deadlock victim; returns `(rowcount, lastrowid)`.
 
-    The `dm_followups` writers race other lanes on the same user's rows, and InnoDB resolves that
-    by killing one statement with 1213 — a retryable outcome that surfaced as a grouped
-    `$exception` (#2586). Any other error, or a deadlock surviving `_DEADLOCK_ATTEMPTS`,
-    propagates to the caller's own `except mysql.connector.Error`.
+    The `dm_followups` and `scheduled_dms` writers race other lanes on the same user's rows, and
+    InnoDB resolves that by killing one statement with 1213 — a retryable outcome that surfaced as
+    a grouped `$exception` (#2586, #2827). Any other error, or a deadlock surviving
+    `_DEADLOCK_ATTEMPTS`, propagates to the caller's own `except mysql.connector.Error`.
     """
     for attempt in range(1, _DEADLOCK_ATTEMPTS + 1):
         try:
             with db_cursor(commit=True) as cursor:
                 cursor.execute(sql, params)
-                return cursor.rowcount
+                return cursor.rowcount, cursor.lastrowid
         except mysql.connector.Error as err:
             if getattr(err, "errno", None) != errorcode.ER_LOCK_DEADLOCK or attempt == _DEADLOCK_ATTEMPTS:
                 raise
             time.sleep(0.05 * attempt)
-    return 0  # unreachable: the loop returns or raises
+    return 0, 0  # unreachable: the loop returns or raises
+
+
+def _execute_write(sql: str, params: tuple) -> int:
+    """Run ONE committed write with deadlock retry; returns the rowcount."""
+    return _execute_write_ids(sql, params)[0]
 
 
 def has_appreciation_touch(user_id: int, profile_url: str, event_type: str) -> bool:
@@ -1996,13 +1999,12 @@ def enqueue_followup(user_id: int, profile_url: str, first_name: str, event_type
     normalizes its `now` the same way, so reader and writer cannot drift onto different clocks.
     """
     try:
-        with db_cursor(commit=True) as cursor:
-            cursor.execute(
-                "INSERT INTO dm_followups (user_id, profile_url, first_name, event_type, next_step, due_at, status) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s)",
-                (user_id, profile_url, first_name, str(event_type), next_step, to_naive_utc(due_at),
-                 str(FollowupStatus.PENDING)))
-            return True
+        _execute_write(
+            "INSERT INTO dm_followups (user_id, profile_url, first_name, event_type, next_step, due_at, status) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+            (user_id, profile_url, first_name, str(event_type), next_step, to_naive_utc(due_at),
+             str(FollowupStatus.PENDING)))
+        return True
     except mysql.connector.Error as err:
         log_error("Could not enqueue followup", exc=err, user_id=user_id)
         return False
