@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.226.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.225.0...v0.226.0) (2026-11-25)
+
+
+### Features
+
+* **content:** C2PA signing readiness — cert generator, read-only cert mount, self-test (closes [#2794](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2794)) ([#2806](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2806)) ([baf9cc4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/baf9cc492193d34b76877b378e79d893cdb829f0))
+* **content:** C2PA signing readiness — cert generator, read-only cert mount, self-test (refs [#2724](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2724)) ([baf9cc4](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/baf9cc492193d34b76877b378e79d893cdb829f0))
+* **tts:** side-by-side tts-1 vs realtime sample script (refs [#2258](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2258)) ([#2809](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2809)) ([46a3c82](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/46a3c82c4cf7af625bbe9f5a67aa1e879a069bc4))
+* **ui:** agent install command and hosted install guide (closes [#2799](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2799)) ([#2807](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2807)) ([ea584d9](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/ea584d9868563ac2aec449b1a71e3f442d64a404))
+* **ui:** visual-first design pass on the landing page ([#2792](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2792)) ([4f8043d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4f8043db086ee00b2188210ad187303c785ac848))
+
+
+### Bug Fixes
+
+* **mcp:** discovery exempt from per-user inflight cap; busy tool calls answer 200 isError ([#2798](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2798)) ([#2805](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2805)) ([afc82b2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/afc82b2f410c022acc9bc80a799baab218173807))
+
 ## [0.225.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.224.0...v0.225.0) (2026-11-24)
 
 
