@@ -25,7 +25,10 @@ steps 1-6, with the kill switch split so every check that needs no I/O runs befo
    `invalid_token` (DEBUG); a live session of any other scope -> the same 401 (WARNING). The
    lookup writes nothing for a non-MCP session: its expiry and `last_seen_at` are left as they were.
 11. Rollout flag `mcp-server-enabled` off for the user -> 403 `mcp_disabled`.
-12. Concurrency: 2 in flight per user (Redis), 8 per worker (in process) -> 429 with `Retry-After`.
+12. Concurrency: 8 per worker (in process) for every request -> 429 with `Retry-After`. Only
+    budgeted requests (`tools/call`, data `resources/read`) take a per-user slot (2, Redis); a
+    refused `tools/call` is answered 200 with an `isError` result and `Retry-After: 1`, or a plain
+    429 for a mixed batch or an id-less call.
 13. Budget: each JSON-RPC `tools/call` spends the per-user tool-call budget -> 429 when exhausted.
      The inner-read budgets are spent by the loopback (P3), the write budgets by the write tools (W2).
 14. Principal: `McpPrincipal` into `scope["state"]["mcp_principal"]`.
