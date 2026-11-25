@@ -304,6 +304,27 @@ class TestDraftFunnelStage:
         assert got == "hi from template"
         assert b.call_args[0][1] == "funnel"  # event_type
 
+    def test_connect_note_has_no_em_dash(self):
+        from cqc_lem.app.engagement.outreach import _draft_funnel_stage
+        from cqc_lem.utilities.db import OutreachStage
+        with patch(f"{_OUT}.get_ai_message_refinement", return_value="Hi Jo — let's connect"):
+            got = _draft_funnel_stage(1, OutreachStage.CONNECT, _target())
+        assert "—" not in got and got == "Hi Jo, let's connect"
+
+    def test_connect_fallback_note_has_no_em_dash(self):
+        from cqc_lem.app.engagement.outreach import _draft_funnel_stage
+        from cqc_lem.utilities.db import OutreachStage
+        with patch(f"{_OUT}.get_ai_message_refinement", side_effect=RuntimeError("boom")):
+            got = _draft_funnel_stage(1, OutreachStage.CONNECT, _target())
+        assert "—" not in got and "--" not in got
+
+    def test_dm_has_no_em_dash(self):
+        from cqc_lem.app.engagement.outreach import _draft_funnel_stage
+        from cqc_lem.utilities.db import OutreachStage
+        with patch(f"{_OUT}.build_dm_from_template", return_value="Hi — quick note"):
+            got = _draft_funnel_stage(1, OutreachStage.DM, _target())
+        assert got == "Hi, quick note"
+
     def test_dm_empty_when_no_template(self):
         from cqc_lem.app.engagement.outreach import _draft_funnel_stage
         from cqc_lem.utilities.db import OutreachStage

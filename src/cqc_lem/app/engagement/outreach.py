@@ -90,6 +90,7 @@ from cqc_lem.utilities.ai.ai_helper import (
     summarize_recent_activity,
 )
 from cqc_lem.utilities.ai.content_alignment import (
+    cap_em_dashes,
     humanize_text,
 )
 from cqc_lem.utilities.ai.dm_nurture import (
@@ -3595,7 +3596,7 @@ def scan_connection_candidates(self, user_id: int, max_new: int = None):
 # connection_requests.source for the ledger row the funnel's connect stage writes once it lands.
 CONNECTION_REQUEST_SOURCE_OUTREACH_FUNNEL = "outreach_funnel"
 _FUNNEL_CONNECT_NOTE = ("Hi {first_name}, I've been enjoying your posts and the perspective you "
-                        "share — would love to connect and keep in touch.")
+                        "share, would love to connect and keep in touch.")
 
 
 @shared_task.task(name='cqc_lem.app.run_automation.scrape_held_icp_candidates',
@@ -3668,19 +3669,22 @@ def _draft_funnel_stage(user_id: int, stage: str, target: dict) -> str:
     """Draft the voice-aligned action text for the NEXT funnel stage. Connect notes are refined to
     the user's voice; the DM is rendered from the user's 'funnel' DM template (existing machinery).
     Returns '' when there's nothing to pre-draft — the operator can still edit before approving.
+
+    Every draft leaves with zero em dashes: the refiner and the humanizer both tolerate one, and
+    this text lands in the approval queue as-is.
     """
     first_name = _funnel_first_name(target)
     if stage == OutreachStage.CONNECT:
         base = _FUNNEL_CONNECT_NOTE.format(first_name=first_name)
         try:
-            return (get_ai_message_refinement(base, character_limit=300) or base).strip()
+            return cap_em_dashes((get_ai_message_refinement(base, character_limit=300) or base).strip(), 0)
         except Exception as e:
             log_warning("Funnel connect-note refinement failed", exc=e, user_id=user_id,
                         action_type="outreach_funnel")
             return base
     if stage == OutreachStage.DM:
         # my_profile is only used for the {headline} fallback; None is safe (see build_dm_from_template).
-        return (build_dm_from_template(user_id, "funnel", first_name, None) or "").strip()
+        return cap_em_dashes((build_dm_from_template(user_id, "funnel", first_name, None) or "").strip(), 0)
     return ""
 
 
