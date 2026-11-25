@@ -148,6 +148,69 @@ flags" and "Approve selected" leave it out, and `POST /review/bulk` refuses it w
 lists the account's latest 50 `mcp_*` audit rows (mints, access, every `mcp_write` and
 `mcp_approval`) for the Agents tab; a failed read is 503, never an empty list.
 
+## The settings tools (epic #2797, #2800)
+
+`lem_update_settings` and `lem_undo_settings_change` (`api/mcp/tools_settings.py`, allowlist in
+`api/mcp/settings_policy.py`) are the one place an agent changes a setting. Unlike a queue write they
+take effect AT ONCE with no approval step, so they are narrowed three ways: an allowlist frozen in
+code, a route guard that re-checks it on the request body, and a diff + undo the user can read.
+Both tools are on both scopes and are listed, and run, only while the `mcp-settings-writes` flag is
+on for the account (and `mcp-server-writes`, because they run through `writes.run_write`).
+
+**Group 1, applied directly** (owner ruling 1). Tool field names:
+
+| Area | Fields |
+|---|---|
+| Voice | `tone`, `comment_length`, `comment_style`, `use_emojis`, `use_hashtags`, `forbidden_claim_terms`, `brand_kit` |
+| Targeting | `include_topics`, `exclude_topics`, `include_keywords`, `exclude_keywords`, `include_authors`, `exclude_authors`, `focus_topics`, `min_reactions`, `max_post_age_hours` |
+| Strategy | `business_goals`, `personal_goals`, `default_buyer_stage`, `audience_mix`, `icp_definition`, `icp_builder_enabled` |
+| Cadence | `posts_per_week`, `posting_days`, `session_windows`, `session_timezone`, `timezone` (the account timezone) |
+| Assets | `lead_magnet_enabled`, `lead_magnet_keyword`, `lead_magnet_message`, `newsletter_topic`, `newsletter_cadence` |
+
+Everything else is refused with `isError`, naming every offending field and pointing at
+`lem_open_in_lem`: **group 3** (any `*_mode`, `profile_viewer_dm_auto_send`, `roster_auto_connect`,
+`roster_auto_follow`, `hold_repaired_posts_for_review`, `authenticity_score_min`,
+`post_similarity_max_pct`, newsletter auto-publish) as `needs_change_request` ("needs a change
+request (coming)", #2803); **daily caps** as `cap_not_editable` (#2801 turns these into a handled
+group); **never-fields** (LinkedIn password and cookie, location, display name, company page, email,
+tokens, sessions, billing) as `field_never_editable`; anything else as `field_not_allowed`. A new
+setting is opt-in: a name is allowed only if it is in `GROUP1_FIELDS`. One refused field refuses the
+whole call, so nothing is half applied. `HANDLED` in `settings_policy.py` is the single seam where a
+later group becomes applicable.
+
+**Merge, never replace.** `PUT /user/engagement-preferences` replaces the whole record and Pydantic
+fills every unsent field with its default. The tool sends only the keys that really change, and the
+route, for an MCP seat, writes only the keys it was SENT (`model_fields_set`), over the saved row. The
+newsletter and lead-magnet PUTs, which also replace a whole row, are merged server-side the same way.
+A test holds that a one-field change leaves every other stored field identical.
+
+**Routes opened for the `mcp` scopes** (PUT only, `_MCP_SETTINGS_PATHS` in `api/main.py`):
+`/user/engagement-preferences`, `/user/icp-definition`, `/user/lead-magnet`,
+`/user/newsletter-settings`, `/user/timezone`, plus `GET /user/timezone` for the before-value.
+Reaching a path is not reaching a setting: each handler calls `_mcp_settings_guard`, which refuses an
+MCP seat with 403 when the flag is off (`settings_writes_disabled`) or the body names a key outside
+the allowlist (`mcp_field_not_editable`), whichever tool sent it. `agent`, `operator` and `observer`
+are unchanged (the preferences PUT is still `agent_may_not_configure` for them). A newsletter save by
+an agent never tops up drafts (generation spend waits for the daily beat).
+
+**Validation is the SPA's.** Values are checked with the route's own request models before anything
+is written (a refusal names the field and the reason, never the value), and what the route STORED is
+read back for the diff, so a clamp shows as the `after` value.
+
+**Answer:** `{changed: {field: {before, after}}, unchanged: [...], undo_id, notes, note, review_url}`.
+Free text is in the diff (it is the user's own setting); nothing else carries it.
+
+**Audit.** One `mcp_settings {tool, fields, scope}` auth-audit row per landed call (an undo too),
+field NAMES only, instead of `mcp_write`. No setting value goes to PostHog or a log line.
+
+**Undo.** Each change that landed stores its before and after values in Redis,
+`mcp:settings-undo:{user}:{undo_id}`, for 7 days. `lem_undo_settings_change(undo_id)` restores them
+only if every field still holds the value the agent set; otherwise it refuses (`undo_conflict`),
+naming the fields, and restores nothing. A used, expired or another user's id is `undo_not_found`.
+
+**Limits and dedupe.** Both tools count against the write budgets (30 an hour, 150 a day) and dedupe on
+`client_request_id` through `run_write`, exactly like a queue write.
+
 ## What a result may carry (`api/mcp/redact.py`)
 
 - **Never returned**, at any depth: `stripe_customer_id`, `reply_inbound_address`,
@@ -349,7 +412,9 @@ NOT check for an earlier refund, so check before refunding:
 It calls `initialize`, compares `tools/list` with the registry for the token's scope
 (`lem_approve_item` may be absent on a standard account), calls every READ tool, checks a
 query-string token is refused (and, with a throwaway token, revoked) and a bad bearer is 401, and
-exits non-zero on any mismatch. `--write --recipient <profile URL> --account-kind KIND` (W2,
+exits non-zero on any mismatch. `--settings` (#2800) adds an optional round trip: it changes `tone` to a
+marker, checks the diff, checks a daily cap is refused, undoes it and checks `tone` is back (skipped
+when `lem_update_settings` is not listed). `--write --recipient <profile URL> --account-kind KIND` (W2,
 `mcp_outreach` token, a fixed test recipient) also queues ONE DM and checks it lands pending with
 `source='mcp'`, that a retry with the same `client_request_id` replays, and that a reused request
 id and an `action` on an edit tool are refused. `KIND` is the operator's statement of the
@@ -376,7 +441,8 @@ A local `uvicorn` writes its access log with query strings; production starts wi
 ## Flags
 
 `mcp-server-enabled` (`MCP_SERVER_ENABLED`) gates the gate, the mint and the Agents tab;
-`mcp-server-writes` (W2) gates the write tools. Both are provisioned at 0 % with hand-added
+`mcp-server-writes` (W2) gates the write tools; `mcp-settings-writes` (`MCP_SETTINGS_WRITES_ENABLED`,
+#2800) gates the two settings tools on top of it, and is OFF by default. They are provisioned at 0 % with hand-added
 distinct-id overrides for the internal and sandbox accounts. **Never run
 `scripts/posthog_flags.py --apply` while those overrides exist**: the script replaces a flag's
 `groups` wholesale and would delete them.

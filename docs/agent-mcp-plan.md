@@ -361,11 +361,17 @@ The SPA review rows show an "Agent-created" badge and the target URL. No bulk-ap
 
 **Queued for SPA approval:** everything the agent creates. Nothing leaves LEM until a human approves it and a beat task runs it.
 
+**Settings (epic #2797, #2800).** The group-1 settings (voice, targeting, strategy, cadence, the
+ICP, the lead magnet, newsletter topic and cadence, account timezone) are changed through
+`lem_update_settings` and undone with `lem_undo_settings_change`, behind `mcp-settings-writes`; see
+`docs/mcp-server.md`. Daily caps (#2801), gate-loosening requests (#2803) and story-bank drafts
+(#2804) are separate issues and stay refused until they land.
+
 **Not exposed in v1.** For these, the agent explains the change and returns `lem_open_in_lem`:
-- engagement preferences and modes, DM templates, targets, lead magnet, groups
-- newsletter settings, draft and covers
+- approval modes and caps, DM templates, targets, groups (the group-1 engagement preferences, the lead magnet, the newsletter topic and cadence and the timezone moved to the settings tools above)
+- newsletter auto-publish, draft and covers
 - the story bank, because entries are FACT (#620)
-- timezone and location, company page, display name, blog and sitemap URLs, affiliate consent
+- location, company page, display name, blog and sitemap URLs, affiliate consent
 - mark-posted, automation-resume, reject or delete a draft
 - all LLM and media spend
 - all Selenium actions

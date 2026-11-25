@@ -42,6 +42,15 @@ suite('describe', () => {
       .toBe('Approved (internal/sandbox account)')
     expect(describe(ev({ event: 'mcp_unknown_event' }))).toBe('mcp_unknown_event')
   })
+
+  it('reads a settings change as its field names, never a value', () => {
+    const row = { tool: 'lem_update_settings', fields: ['tone', 'include_topics'], scope: 'mcp' }
+    expect(describe(ev({ event: 'mcp_settings', details: row })))
+      .toBe('Changed settings: tone, include_topics')
+    expect(describe(ev({ event: 'mcp_settings', details: { ...row, tool: 'lem_undo_settings_change' } })))
+      .toBe('Undid a settings change: tone, include_topics')
+    expect(describe(ev({ event: 'mcp_settings', details: null }))).toBe('Changed settings')
+  })
 })
 
 suite('AgentActivityCard', () => {

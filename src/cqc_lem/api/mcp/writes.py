@@ -20,7 +20,9 @@ In order, before and around the tool's own inner call:
    the write may land after the answer, and the claim is kept so a blind retry is refused rather
    than doubled. A failure before the first write was sent changed nothing and releases the claim,
    and so does a refused write (4xx).
-6. **Audit**: one `mcp_write {tool, target_id, scope}` row per write that landed, never a body.
+6. **Audit**: one `mcp_write {tool, target_id, scope}` row per write that landed, never a body. A
+   spec with an `audit_event` (the settings tools, #2800) writes that event instead, carrying
+   `{tool, fields, scope}`: the NAMES of the settings it touched, never a value.
 
 Logging follows §7: a refusal here is the guard working, so it is DEBUG (flag off, budget, dedupe
 hit) or INFO (an approval refused on a standard account). Nothing here logs arguments or results.
@@ -44,6 +46,7 @@ from cqc_lem.api.mcp.loopback import (
     UPSTREAM_ERROR,
     ToolFailure,
 )
+from cqc_lem.api.mcp.settings_policy import audit_fields
 from cqc_lem.utilities.db import (
     INTERNAL_ACCOUNT_KINDS,
     AuthAuditEvent,
@@ -147,11 +150,15 @@ def account_may_approve(user_id: int) -> bool:
     return get_user_account_kind(user_id) in INTERNAL_ACCOUNT_KINDS
 
 
-def _audit_write(principal: Any, tool: str, target_id: Any) -> None:
+def _audit_write(principal: Any, tool: str, target_id: Any, spec: Any = None,
+                 payload: Optional[dict[str, Any]] = None) -> None:
+    event = getattr(spec, "audit_event", None) or AuthAuditEvent.MCP_WRITE
+    details: dict[str, Any] = {"tool": tool, "target_id": target_id, "scope": principal.scope}
+    if event != AuthAuditEvent.MCP_WRITE:
+        details = {"tool": tool, "fields": audit_fields(payload or {}), "scope": principal.scope}
     try:
-        record_auth_event(AuthAuditEvent.MCP_WRITE, user_id=principal.user_id,
-                          session_id=principal.session_id,
-                          details={"tool": tool, "target_id": target_id, "scope": principal.scope})
+        record_auth_event(event, user_id=principal.user_id, session_id=principal.session_id,
+                          details=details)
     except Exception as exc:  # noqa: BLE001 — the write landed; a lost audit row must not undo it.
         log_debug("MCP write audit row not written", error_type=type(exc).__name__)
 
@@ -162,6 +169,12 @@ async def _check_preconditions(spec: Any, principal: Any) -> None:
         log_debug("MCP write refused: writes flag off", user_id=user_id, tool=spec.name)
         raise ToolFailure(REFUSED, "writes_disabled",
                           "Writes are not enabled for this account. Ask the user to make the "
+                          "change in LEM (lem_open_in_lem).")
+    tool_flag = getattr(spec, "flag", None)
+    if tool_flag and not await run_in_threadpool(flag_enabled, tool_flag, user_id):
+        log_debug("MCP write refused: tool flag off", user_id=user_id, tool=spec.name)
+        raise ToolFailure(REFUSED, "tool_disabled",
+                          "This tool is not enabled for this account. Ask the user to make the "
                           "change in LEM (lem_open_in_lem).")
     if spec.approval and not await run_in_threadpool(account_may_approve, user_id):
         log_info("MCP approval refused: not an internal or sandbox account", user_id=user_id,
@@ -272,7 +285,7 @@ async def run_write(spec: Any, args: BaseModel, principal: Any,
             await _release(key)
         raise
     await _settle(key, digest, _DONE, payload)
-    await run_in_threadpool(_audit_write, principal, spec.name, payload.get("id"))
+    await run_in_threadpool(_audit_write, principal, spec.name, payload.get("id"), spec, payload)
     return payload
 
 

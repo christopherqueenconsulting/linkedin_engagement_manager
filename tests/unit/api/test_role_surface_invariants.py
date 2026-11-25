@@ -86,7 +86,7 @@ FORBIDDEN_ROLE_ROUTES: tuple[Forbidden, ...] = (
 # handler turns this red even though no path moved.
 HANDLER_GUARDED_ROUTES: dict[str, tuple[tuple[str, ...], str]] = {
     "update_engagement_preferences_endpoint": (
-        ("_agent_scoped()",),
+        ("_agent_scoped()", "_mcp_settings_guard("),
         "PUT sets connection_request_mode (auto_approve) and every per-day cap — configuring the "
         "account into approving everything"),
     "schedule_dm_endpoint": (
@@ -184,7 +184,11 @@ _AGENT_CLASSIFIED = frozenset({
     "update_connection_request_endpoint", "update_outreach_target_endpoint",
     "update_lead_signal_endpoint", "act_on_curated_source", "update_lead_endpoint",
 })
-_MCP_CLASSIFIED = frozenset({"schedule_post", "update_post"})
+# `update_engagement_preferences_endpoint` joined in #2800: an MCP seat may PUT it, but only for the
+# group-1 keys it sent (`_mcp_settings_guard`); every other queue-only scope is still refused by
+# `_agent_scoped()` in the same handler (both strings are pinned in HANDLER_GUARDED_ROUTES).
+_MCP_CLASSIFIED = frozenset({"schedule_post", "update_post",
+                             "update_engagement_preferences_endpoint"})
 CLASSIFIED_REACH: dict[str, frozenset] = {
     "agent": _AGENT_CLASSIFIED,
     "operator": _AGENT_CLASSIFIED,

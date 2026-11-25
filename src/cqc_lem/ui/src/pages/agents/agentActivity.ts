@@ -51,5 +51,14 @@ export function describe(e: McpActivityEvent): string {
     const text = label ? `${label.verb}: ${label.object}` : `Agent change: ${tool}`
     return withTarget(text, e.details?.target_id)
   }
+  if (e.event === 'mcp_settings') {
+    // Field NAMES only: the audit row never carries a value (#2800).
+    const raw: unknown = e.details?.fields
+    const fields = Array.isArray(raw)
+      ? raw.filter((f: unknown): f is string => typeof f === 'string')
+      : []
+    const verb = e.details?.tool === 'lem_undo_settings_change' ? 'Undid a settings change' : 'Changed settings'
+    return fields.length > 0 ? `${verb}: ${fields.join(', ')}` : verb
+  }
   return EVENT_LABELS[e.event] ?? e.event
 }

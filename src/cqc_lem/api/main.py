@@ -760,6 +760,8 @@ _MCP_READ_PATHS = frozenset({
     # latest count is what `lem_get_newsletter` returns, and the paged count history is the
     # outreach-only `lem_list_newsletter_subscribers` (MCP P3).
     "/user/newsletter-settings", "/user/newsletter-draft", "/user/newsletter-subscribers",
+    # the account timezone: `lem_update_settings` reads it for the before-value of a change (#2800)
+    "/user/timezone",
 })
 # `mcp` plus the lists that hold OTHER people's data: who LEM messages, invites, scores and replies
 # to. Opted into at mint (owner ruling O11). Row fields are cut to `_OBSERVER_ROW_FIELDS`.
@@ -787,9 +789,21 @@ _MCP_SPEND_PATHS = frozenset({"/user/mcp-spend/post", "/user/mcp-spend/post-imag
 # all hold for these scopes, because they are queue-only (`_QUEUE_ONLY_SCOPES`).
 #   /schedule_post, /update_post   lem_draft_post / lem_revise_post_draft: text-only PENDING drafts
 #   /user/mcp-spend/*              the W2b spend tools; POST only, listed above
+#   /user/engagement-preferences, /user/icp-definition, /user/lead-magnet,
+#   /user/newsletter-settings, /user/timezone
+#                                  `lem_update_settings` / `lem_undo_settings_change` (#2800), PUT
+#                                  only, behind `mcp-settings-writes`. Each handler holds an MCP seat to
+#                                  the group-1 keys it sent (`_mcp_settings_guard`), so reaching the
+#                                  path is not reaching the setting: caps, `*_mode` and every gate
+#                                  field are a 403 there. Nothing else on `/user/*` is opened.
+_MCP_SETTINGS_PATHS = frozenset({
+    "/user/engagement-preferences", "/user/icp-definition", "/user/lead-magnet",
+    "/user/newsletter-settings", "/user/timezone",
+})
 _MCP_WRITE_METHODS: Dict[str, frozenset[str]] = {
     "/schedule_post": _POST_ONLY, "/update_post": _POST_ONLY,
     **{path: _POST_ONLY for path in _MCP_SPEND_PATHS},
+    **{path: _PUT_ONLY for path in _MCP_SETTINGS_PATHS},
 }
 # `mcp_outreach` adds the outreach writes. Two paths carry TWO verbs: the create (POST) and the
 # internal/sandbox-only approval `lem_approve_item` sends (PUT, owner ruling O1). `PUT /dm` is that

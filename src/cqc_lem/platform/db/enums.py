@@ -389,6 +389,9 @@ class AuthAuditEvent(StrEnum):
     MCP_ACCESS = "mcp_access"
     # One per queue-only write an MCP tool made (W2): the tool and the target id, never a body.
     MCP_WRITE = "mcp_write"
+    # One per `lem_update_settings` / `lem_undo_settings_change` call (#2800): the tool and the
+    # FIELD NAMES it touched, never a value.
+    MCP_SETTINGS = "mcp_settings"
     # One per approval `lem_approve_item` made on an internal or sandbox account (owner ruling O1),
     # the MCP counterpart of `operator_approval`.
     MCP_APPROVAL = "mcp_approval"
