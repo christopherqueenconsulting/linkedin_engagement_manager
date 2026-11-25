@@ -3,14 +3,16 @@ import Section, { SectionHeading } from './Section'
 // The named-problem section (issue #1300) — the most consistent section in this category and the
 // one the old page had no version of. It goes between the proof strip and how-it-works: a visitor
 // who does not recognise their own problem has no reason to read a feature list.
+// One short line under each statement (design pass r2): the cut sentences restated the heading's
+// "daily job" and the comparison's "an hour a day", or the safety section's answer.
 const PROBLEMS: { title: string; body: string }[] = [
   {
     title: 'You post in bursts, then vanish',
-    body: 'Three posts in a good week, nothing for a month. The feed rewards the people who never stop, and stopping costs more than starting did.',
+    body: 'Three posts in a good week, nothing for a month.',
   },
   {
     title: 'Publishing is the easy half',
-    body: 'The reach comes from commenting, replying and following up — an hour a day of it, at times you are usually in a meeting.',
+    body: 'The reach comes from commenting, replying and following up.',
   },
   {
     title: 'Generic AI sounds like generic AI',
@@ -18,7 +20,7 @@ const PROBLEMS: { title: string; body: string }[] = [
   },
   {
     title: 'And automation makes you nervous',
-    body: 'Reasonably. Rate limits, restrictions and blunt bots are real. Any tool worth using has to answer that before you connect it.',
+    body: 'Rate limits, restrictions and blunt bots are real.',
   },
 ]
 

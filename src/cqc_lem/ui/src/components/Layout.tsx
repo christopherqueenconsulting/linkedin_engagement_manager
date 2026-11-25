@@ -81,14 +81,14 @@ export default function Layout() {
       </a>
       <nav aria-label="Main" className="bg-raised border-b border-hairline sticky top-0 z-10">
         <div className="box-content max-w-6xl mx-auto px-4 flex items-center gap-4 sm:gap-8 h-16">
-          {/* -ml-[5px]: the artwork has 50 of 1340 px transparent on its left, about 5px here, so
+          {/* -ml-[5px]: the artwork has about 11 of 286 px transparent on its left, about 5px here, so
               the visible mark starts on the page's left edge (same as the marketing nav). */}
           <NavLink to="/" className="shrink-0" aria-label="LinkedIn Engagement Manager, home">
             <img
               src="/brand/lem-wordmark.png"
               alt=""
-              width={1340}
-              height={300}
+              width={286}
+              height={64}
               className="-ml-[5px] h-7 w-auto"
             />
           </NavLink>

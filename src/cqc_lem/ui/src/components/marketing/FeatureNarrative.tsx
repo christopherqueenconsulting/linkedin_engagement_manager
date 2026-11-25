@@ -8,9 +8,12 @@ import Section, { SectionHeading } from './Section'
 // Every line below names something shipped. The four beats are the actual order of the loop:
 // write it, schedule it, engage with it, then measure what it earned. Since #2366 the engagement
 // beat describes suggestions the user sends, never actions LEM takes on their behalf.
+//
+// Design pass r2: no small label above each beat (the section heading already names the four), and
+// a point that the beat's own panel draws is not listed again beside it (the 30-day plan and the
+// 70/20/10 mix, the two-to-seven weekly range, the reply suggestions).
 const BEATS: {
   key: string
-  eyebrow: string
   title: string
   body: string
   points: string[]
@@ -18,24 +21,19 @@ const BEATS: {
 }[] = [
   {
     key: 'content',
-    eyebrow: 'Content',
     title: 'Content that sounds like you, not like a content tool',
     body: 'A voice profile distilled from your own posts and profile drives every draft, and the plan is built around a buyer journey rather than a topic list.',
     points: [
-      'A 30-day plan across awareness, consideration and decision stages',
       'Thought leadership, industry commentary, personal story, carousels, native video and newsletters',
-      'A 70/20/10 value / authority / promo mix, so the feed is not a pitch',
       'A quality contract and slop lint that block the tells before you ever see the draft',
     ],
     panel: 'plan',
   },
   {
     key: 'scheduling',
-    eyebrow: 'Scheduling',
     title: 'Published when your audience is actually there',
     body: 'Slots are placed against your golden and peak hours in your own timezone, on the days you allow — not whenever the job happened to run.',
     points: [
-      'Two to seven posts a week; three by default',
       'Posting days you choose — weekdays out of the box, weekends opt in',
       'Golden-hour placement measured from real publish time, never the time it was scheduled for',
       'Self-healing carousels and asset backfill, so a broken draft does not become a silent day',
@@ -44,19 +42,16 @@ const BEATS: {
   },
   {
     key: 'engagement',
-    eyebrow: 'Engagement',
     title: 'The daily hour, cut down to a review',
     body: 'The half that actually earns reach: commenting on the right posts, answering the people who answer you, and following up. LEM drafts these as suggestions; you review them and send the ones you want yourself.',
     points: [
       'Comment suggestions for posts that match your topics, keywords, authors and minimum-reaction rules',
-      'Suggested replies to comments on your own posts',
       'Suggested appreciation and follow-up DMs',
     ],
     panel: 'engagement',
   },
   {
     key: 'measurement',
-    eyebrow: 'Measurement',
     title: 'You approve; then it shows what each post earned',
     body: 'Nothing here is a vanity chart: the numbers come from your own LinkedIn account.',
     points: [
@@ -84,10 +79,7 @@ export default function FeatureNarrative() {
                 the panel column's min-content width becomes the page's, and a phone lays the whole
                 front page out wider than the screen and zooms out to fit. */}
             <div className={`min-w-0 ${index % 2 === 1 ? 'lg:order-2' : ''}`.trim()}>
-              <p className="text-sm font-semibold text-fg-muted">
-                {beat.eyebrow}
-              </p>
-              <h3 className="mt-3 text-section font-semibold text-fg">{beat.title}</h3>
+              <h3 className="text-section font-semibold text-fg">{beat.title}</h3>
               <p className="mt-4 leading-relaxed text-fg-muted">{beat.body}</p>
               <ul className="mt-6 space-y-3">
                 {beat.points.map((point) => (

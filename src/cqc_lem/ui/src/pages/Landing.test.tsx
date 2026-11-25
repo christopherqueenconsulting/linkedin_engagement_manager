@@ -426,7 +426,7 @@ describe('the session round-trip (issue #1300)', () => {
     auth.user = { userId: 1, email: 'owner@example.com' }
     renderApp()
     expect(await screen.findByTestId('dashboard')).toBeTruthy()
-    expect(screen.queryByRole('heading', { level: 1, name: /Your LinkedIn content/i })).toBeNull()
+    expect(screen.queryByRole('heading', { level: 1, name: /LinkedIn posts in your voice/i })).toBeNull()
   })
 })
 
@@ -474,7 +474,7 @@ describe('the marketing chrome on the legal pages (issue #1300)', () => {
     })
 
     expect(window.location.pathname).toBe('/')
-    expect(screen.getByRole('heading', { level: 1, name: /Your LinkedIn content/i })).toBeTruthy()
+    expect(screen.getByRole('heading', { level: 1, name: /LinkedIn posts in your voice/i })).toBeTruthy()
     await waitFor(() => expect(scrollIntoView).toHaveBeenCalled())
   })
 

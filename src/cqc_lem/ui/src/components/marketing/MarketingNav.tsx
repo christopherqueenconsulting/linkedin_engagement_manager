@@ -24,15 +24,15 @@ export default function MarketingNav() {
           {/* The charcoal wordmark vanishes on the dark nav, so the dark scheme gets the on-dark cut:
               v2 is the official on-dark PNG with only "Manager" recoloured to the pack's dark primary
               (owner ruling 101), since brand blue on charcoal is under 2:1. */}
-          {/* -ml-[5px]: the artwork has 50 of 1340 px transparent on its left, about 5px at this
+          {/* -ml-[5px]: the artwork has about 11 of 286 px transparent on its left, about 5px at this
               height, so the visible mark starts on the page's one left edge. */}
           <picture>
             <source srcSet="/brand/lem-wordmark-on-dark-v2.png" media="(prefers-color-scheme: dark)" />
             <img
               src="/brand/lem-wordmark.png"
               alt="LinkedIn Engagement Manager"
-              width={1340}
-              height={300}
+              width={286}
+              height={64}
               className="-ml-[5px] h-7 w-auto sm:h-8"
               fetchPriority="high"
             />

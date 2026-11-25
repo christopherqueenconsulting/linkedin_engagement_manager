@@ -18,8 +18,8 @@ export default function MarketingFooter() {
             <img
               src="/brand/lem-wordmark-on-dark-v2.png"
               alt="LinkedIn Engagement Manager"
-              width={1340}
-              height={300}
+              width={286}
+              height={64}
               className="-ml-[5px] h-8 w-auto"
               decoding="async"
             />

@@ -12,40 +12,48 @@ import Icon from './Icon'
 // Everything here is decorative to a screen reader — the surrounding copy already says what the
 // panel shows — so the wrapper is labelled once and the innards are hidden.
 
-// Status reads from the pack's tokens only: settled states are filled primary, the one that waits on
-// you is an outline in muted text. No status hue outside DESIGN.md (design pass, 86e3rnp9a).
+// Status reads from the pack's tokens only: settled states are an outline in the primary, the one
+// that waits on you is an outline in muted text. No status hue outside DESIGN.md (design pass,
+// 86e3rnp9a). Outlined, not filled (design pass r2): the hero's trial button stays the only filled
+// blue shape in the fold.
 const STATUS_TONE: Record<string, string> = {
-  Approved: 'bg-accent text-on-accent',
+  Approved: 'border border-accent text-accent',
   'Pending review': 'border border-hairline text-fg-muted',
-  Scheduled: 'bg-accent text-on-accent',
+  Scheduled: 'border border-accent text-accent',
 }
 
+// Every panel is a drawn diagram with sample content, so each one carries a visible caption that
+// says so (design pass r2), in the muted token at the 13px step. The title bar names the LEM
+// surface; it no longer imitates a browser window with three dots.
 function Panel({
   label,
+  caption,
   children,
   fill = false,
 }: {
   label: string
+  /** Visible text under the panel that says it is an example with sample content. */
+  caption: string
   children: ReactNode
   /** Stretch to the parent's height (the hero, where the frame runs to the trial line). */
   fill?: boolean
 }) {
   return (
-    <div
-      role="img"
-      aria-label={label}
-      className={`rounded-panel border border-hairline bg-raised shadow-panel overflow-hidden${fill ? ' flex h-full flex-col' : ''}`}
-    >
-      <div aria-hidden="true" className="flex items-center gap-2 border-b border-hairline bg-page px-4 py-3">
-        <span className="h-2.5 w-2.5 rounded-full bg-hairline" />
-        <span className="h-2.5 w-2.5 rounded-full bg-hairline" />
-        <span className="h-2.5 w-2.5 rounded-full bg-hairline" />
-        <span className="ml-2 text-xs font-medium text-fg-muted">Content Studio</span>
+    <figure className={fill ? 'flex h-full flex-col' : undefined}>
+      <div
+        role="img"
+        aria-label={label}
+        className={`rounded-panel border border-hairline bg-raised shadow-panel overflow-hidden${fill ? ' flex flex-1 flex-col' : ''}`}
+      >
+        <div aria-hidden="true" className="border-b border-hairline bg-page px-4 py-3">
+          <span className="text-xs font-medium text-fg-muted">Content Studio</span>
+        </div>
+        <div aria-hidden="true" className={fill ? 'flex flex-1 flex-col gap-6 p-4' : 'p-4 space-y-3'}>
+          {children}
+        </div>
       </div>
-      <div aria-hidden="true" className={fill ? 'flex flex-1 flex-col gap-6 p-4' : 'p-4 space-y-3'}>
-        {children}
-      </div>
-    </div>
+      <figcaption className="mt-2 text-xs text-fg-muted">{caption}</figcaption>
+    </figure>
   )
 }
 
@@ -111,6 +119,63 @@ function EngagementPane() {
   )
 }
 
+// The engagement beat's own visual (design pass r2): it used to repeat the hero's comment card. It
+// draws the beat's other two suggestion kinds, a reply on your own post and a follow-up DM, each
+// waiting for you to send it. The quoted lines are sample text and claim nothing about LEM.
+function Suggestion({
+  icon,
+  context,
+  quote,
+  kind,
+  draft,
+}: {
+  icon: 'reply' | 'mail'
+  context: string
+  quote: string
+  kind: string
+  draft: string
+}) {
+  return (
+    <div className="rounded-lg border border-hairline px-3 py-3">
+      <div className="flex items-start justify-between gap-3">
+        <span className="text-xs font-medium text-fg-muted">{context}</span>
+        <span className="shrink-0 rounded-full border border-hairline px-2 py-0.5 text-xs text-fg-muted">
+          Waiting for you
+        </span>
+      </div>
+      <p className="mt-1 text-sm text-fg">{quote}</p>
+      <div className="mt-3 border-l-2 border-accent pl-3">
+        <div className="flex items-center gap-2 text-xs font-semibold text-accent">
+          <Icon name={icon} className="h-4 w-4" />
+          {kind}
+        </div>
+        <p className="mt-1 text-sm text-fg">{draft}</p>
+      </div>
+    </div>
+  )
+}
+
+function FollowUpPane() {
+  return (
+    <>
+      <Suggestion
+        icon="reply"
+        context="Comment on your post"
+        quote="Do you share the checklist from this post?"
+        kind="Suggested reply"
+        draft="Happy to. It is a one-pager; I will send it over."
+      />
+      <Suggestion
+        icon="mail"
+        context="Follow-up after that comment"
+        quote="Thanks, that would help."
+        kind="Suggested follow-up DM"
+        draft="Here is the checklist I mentioned. Thanks for reading."
+      />
+    </>
+  )
+}
+
 function QueueRows() {
   return (
     <>
@@ -126,7 +191,10 @@ export type PanelVariant = 'hero' | 'queue' | 'plan' | 'schedule' | 'engagement'
 export default function ProductPanel({ variant }: { variant: PanelVariant }) {
   if (variant === 'schedule') {
     return (
-      <Panel label="Diagram of the LEM scheduling calendar: a week of posting days with a draft placed in each golden-hour slot.">
+      <Panel
+        label="Diagram of the LEM scheduling calendar: a week of posting days with a draft placed in each golden-hour slot."
+        caption="Example posting week, drawn for illustration"
+      >
         <div className="grid grid-cols-5 gap-2">
           {['Mon', 'Tue', 'Wed', 'Thu', 'Fri'].map((day, index) => (
             <div key={day} className="rounded-lg border border-hairline p-2 text-center">
@@ -137,7 +205,7 @@ export default function ProductPanel({ variant }: { variant: PanelVariant }) {
         </div>
         <div className="flex items-center gap-2 rounded-lg bg-page px-3 py-2 text-xs text-fg">
           <Icon name="clock" className="h-4 w-4 text-accent" />
-          Golden hour, in your timezone · 3 posts a week by default
+          Golden hour, in your timezone · 2 to 7 posts a week, 3 by default
         </div>
       </Panel>
     )
@@ -150,6 +218,7 @@ export default function ProductPanel({ variant }: { variant: PanelVariant }) {
       <Panel
         fill
         label="Diagram of LEM: the approval queue with three drafts beside a suggested comment you edit and send yourself."
+        caption="Example queue with sample posts and a sample comment"
       >
         {/* Stretched to the trial line, the extra height goes between the cards (equal gaps), and
             the right column's last line ends level with the left column's last card. */}
@@ -174,7 +243,10 @@ export default function ProductPanel({ variant }: { variant: PanelVariant }) {
   // value / authority / promo mix, as a sequence and a share bar. No count of posts is drawn.
   if (variant === 'plan') {
     return (
-      <Panel label="Diagram of a LEM 30-day plan: drafts placed across the awareness, consideration and decision stages, in a 70/20/10 value, authority and promo mix.">
+      <Panel
+        label="Diagram of a LEM 30-day plan: drafts placed across the awareness, consideration and decision stages, in a 70/20/10 value, authority and promo mix."
+        caption="Example plan layout, drawn for illustration"
+      >
         <div className="text-xs font-semibold text-fg-muted">30-day plan, by buyer stage</div>
         {/* A row from sm; on a phone the stages stack, so "Consideration" never truncates. */}
         <div className="flex flex-col items-stretch gap-1 sm:flex-row sm:items-center sm:gap-2">
@@ -220,15 +292,21 @@ export default function ProductPanel({ variant }: { variant: PanelVariant }) {
 
   if (variant === 'engagement') {
     return (
-      <Panel label="Diagram of a LEM comment suggestion under a targeted post, for you to edit and send yourself.">
-        <EngagementPane />
+      <Panel
+        label="Diagram of LEM engagement suggestions: a suggested reply to a comment on your post and a suggested follow-up DM, each waiting for you to send it."
+        caption="Example suggestions with sample text"
+      >
+        <FollowUpPane />
       </Panel>
     )
   }
 
   if (variant === 'measure') {
     return (
-      <Panel label="Diagram of the LEM measurement view: post and audience statistics, each waiting on real data.">
+      <Panel
+        label="Diagram of the LEM measurement view: post and audience statistics, each waiting on real data."
+        caption="Example layout, shown without data"
+      >
         {['Post statistics', 'Audience statistics'].map((row) => (
           <div
             key={row}
@@ -243,7 +321,10 @@ export default function ProductPanel({ variant }: { variant: PanelVariant }) {
   }
 
   return (
-    <Panel label="Diagram of the LEM approval queue: three drafts, one approved, one waiting for review and one scheduled.">
+    <Panel
+      label="Diagram of the LEM approval queue: three drafts, one approved, one waiting for review and one scheduled."
+      caption="Example queue with sample posts"
+    >
       <QueueRows />
       <div className="flex items-center gap-2 rounded-lg bg-page px-3 py-2 text-xs text-fg">
         <Icon name="shield" className="h-4 w-4 text-accent" />
