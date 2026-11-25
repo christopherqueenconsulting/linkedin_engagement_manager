@@ -178,7 +178,8 @@ class TestFilingARequest:
 
 
 class TestWhatItRefuses:
-    @pytest.mark.parametrize("field", ["tone", "include_topics", "timezone", "newsletter_topic"])
+    @pytest.mark.parametrize("field", ["tone", "include_topics", "timezone", "newsletter_topic",
+                                       "max_comments_per_day"])
     def test_a_group_one_field_points_at_lem_update_settings(
             self, api_client: Any, seat: Store, proposals: Proposals, field: str) -> None:
         error = _error(_request(api_client, {field: "x"}))
@@ -186,7 +187,7 @@ class TestWhatItRefuses:
         assert field in error["message"] and "lem_update_settings" in error["message"]
         assert proposals.rows == []
 
-    @pytest.mark.parametrize("field", ["max_comments_per_day", "linkedin_password", "email",
+    @pytest.mark.parametrize("field", ["max_queued_drafts", "linkedin_password", "email",
                                        "connection_targeting_mode", "totally_unknown"])
     def test_caps_never_fields_and_unknown_names_are_refused(
             self, api_client: Any, seat: Store, proposals: Proposals, field: str) -> None:

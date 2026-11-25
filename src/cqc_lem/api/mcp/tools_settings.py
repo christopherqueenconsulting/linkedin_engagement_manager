@@ -276,7 +276,8 @@ def _effective(field: str, blobs: dict[str, Any]) -> Any:
 def _not_a_gate(fields: list[str]) -> ToolFailure:
     messages: list[str] = []
     for field in fields:
-        if policy.classify(field) == policy.KIND_ALLOWED:
+        if policy.classify(field) in policy.HANDLED:
+            # Group 1 and the editable daily caps (#2801) are changed directly, not requested.
             messages.append(f"'{field[:60]}' is not a gate: change it directly with lem_update_settings.")
         else:
             messages.extend(r.message for r in policy.refusals([field]))
