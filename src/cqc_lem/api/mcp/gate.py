@@ -401,6 +401,8 @@ _CLIENT_NAME_CHARS = re.compile(r"[^A-Za-z0-9 ._/()\-]")
 _TOOL_NAME_CHARS = re.compile(r"[^A-Za-z0-9_.\-]")
 _METHOD_CHARS = re.compile(r"[^A-Za-z0-9_./\-]")
 CLIENT_NAME_MAX = 40
+BUSY_MESSAGE = ("The LEM MCP server is busy with other calls from this account. "
+                "Retry this call shortly.")
 
 
 def _clean(value: Any, pattern: "re.Pattern[str]", length: int) -> Optional[str]:
@@ -418,6 +420,11 @@ class RpcSummary:
     first_tool: Optional[str] = None
     first_method: Optional[str] = None
     client_info_name: Optional[str] = None
+    # `(id, method)` of each message that spends the tool-call budget, and how many messages expect
+    # an answer at all: together they say whether EVERY request in the body can be answered with a
+    # JSON-RPC "busy" result (`_busy_response`).
+    budgeted: tuple[tuple[Any, str], ...] = ()
+    requests: int = 0
 
 
 def _rpc_summary(body: bytes) -> RpcSummary:
@@ -432,26 +439,33 @@ def _rpc_summary(body: bytes) -> RpcSummary:
         return RpcSummary()
     messages = parsed if isinstance(parsed, list) else [parsed]
     tool_calls, first_tool, first_method, client_name = 0, None, None, None
+    budgeted: list[tuple[Any, str]] = []
+    requests = 0
     for message in messages:
         if not isinstance(message, dict):
             continue
         method = message.get("method")
+        msg_id = message.get("id")
+        if isinstance(msg_id, (str, int)) and not isinstance(msg_id, bool):
+            requests += 1
         params = message.get("params") if isinstance(message.get("params"), dict) else {}
         if first_method is None and isinstance(method, str):
             first_method = _clean(method, _METHOD_CHARS, 64)
         if method == "tools/call":
             tool_calls += 1
+            budgeted.append((msg_id, "tools/call"))
             first_tool = first_tool or _clean(params.get("name"), _TOOL_NAME_CHARS, 64)
         elif method == "resources/read" and params.get("uri") not in FREE_RESOURCE_URIS:
             # A data resource runs the same tool a `tools/call` would (`calls.read_resource`), so it
             # spends the same budget. Only the two static text resources are free.
             tool_calls += 1
+            budgeted.append((msg_id, "resources/read"))
         elif method == "initialize":
             info = params.get("clientInfo")
             if isinstance(info, dict):
                 client_name = client_name or _clean(info.get("name"), _CLIENT_NAME_CHARS,
                                                     CLIENT_NAME_MAX)
-    return RpcSummary(tool_calls, first_tool, first_method, client_name)
+    return RpcSummary(tool_calls, first_tool, first_method, client_name, tuple(budgeted), requests)
 
 
 def _client_name(summary: RpcSummary, headers: Headers) -> Optional[str]:
@@ -574,6 +588,30 @@ async def _authenticate(scope: Scope, headers: Headers, token: str,
                         client_name=_client_name(summary, headers)), None
 
 
+def _busy_response(summary: RpcSummary) -> Optional[JSONResponse]:
+    """Answer a request refused by the per-user in-flight cap as JSON-RPC inside HTTP 200.
+
+    A client reads an HTTP 429 as a dead server, so a busy tool call is a normal `isError` tool
+    result the model can retry. Returns None, so the caller keeps the plain 429, unless EVERY request
+    in the body is a budgeted call with an id that can be answered.
+    """
+    if not summary.budgeted or len(summary.budgeted) != summary.requests:
+        return None
+    replies: list[dict[str, Any]] = []
+    for msg_id, method in summary.budgeted:
+        if method == "tools/call":
+            replies.append({"jsonrpc": "2.0", "id": msg_id, "result": {
+                "content": [{"type": "text", "text": BUSY_MESSAGE}], "isError": True}})
+        else:
+            replies.append({"jsonrpc": "2.0", "id": msg_id,
+                            "error": {"code": -32000, "message": BUSY_MESSAGE}})
+    response = JSONResponse(replies if len(replies) > 1 else replies[0], status_code=200,
+                            headers={"Retry-After": "1"})
+    response.mcp_event_reason = _EVENT_REASONS.get(  # type: ignore[attr-defined]
+        "concurrency_limited", "concurrency_limited")
+    return response
+
+
 async def _take_slots(admission: _Admission, summary: RpcSummary) -> Optional[JSONResponse]:
     """Steps 12-13: concurrency, then the tool-call budget. None when the request may proceed.
 
@@ -587,12 +625,15 @@ async def _take_slots(admission: _Admission, summary: RpcSummary) -> Optional[JS
         return _rate_limited("concurrency_limited", 1)
     admission.holds_worker_slot = True
     try:
-        with anyio.CancelScope(shield=True):
-            admission.holds_user_slot = await run_in_threadpool(acquire_user_slot, user_id)
-        if not admission.holds_user_slot:
-            log_debug("MCP request refused: user concurrency", user_id=user_id)
-            return _rate_limited("concurrency_limited", 1)
+        # Protocol and discovery requests (initialize, ping, */list, prompts/get, static resources)
+        # hold no per-user slot: SDK clients fire several at once and a 429 there marks the whole
+        # server failed. Only budgeted calls (tools/call, data resources) are bounded per user.
         if summary.tool_calls:
+            with anyio.CancelScope(shield=True):
+                admission.holds_user_slot = await run_in_threadpool(acquire_user_slot, user_id)
+            if not admission.holds_user_slot:
+                log_debug("MCP request refused: user concurrency", user_id=user_id)
+                return _busy_response(summary) or _rate_limited("concurrency_limited", 1)
             retry_after = await run_in_threadpool(
                 consume_budgets, user_id, [TOOL_CALLS_PER_MIN] * summary.tool_calls)
             if retry_after is not None:
