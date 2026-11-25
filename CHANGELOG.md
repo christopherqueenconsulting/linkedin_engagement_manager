@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.227.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.226.2...v0.227.0) (2026-11-25)
+
+
+### Features
+
+* **mcp:** daily cap changes in lem_update_settings (closes [#2801](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2801)) ([#2814](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2814)) ([542e3dd](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/542e3dd2e0a5a6a1a4feeff3e19e32752cd41438))
+* **mcp:** lem_add_story_draft lands unverified story-bank entries (closes [#2804](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2804)) ([#2812](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2812)) ([d9a8785](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/d9a87854eee3f09558795cec8a1023f763da5287))
+* **mcp:** lem_get_setup_checklist and align_my_account prompt ([#2802](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2802)) ([#2813](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2813)) ([763ce48](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/763ce48a6a75faa6fdafdd70f84fc52b8d9b5169))
+* **mcp:** lem_get_setup_checklist and the align_my_account prompt (closes [#2802](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2802)) ([763ce48](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/763ce48a6a75faa6fdafdd70f84fc52b8d9b5169))
+* **mcp:** lem_request_settings_change and user approval of agent change requests (closes [#2803](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2803)) ([#2815](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2815)) ([c8687fc](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/c8687fc05c25a985625be2d21d60c36f7f56473a))
+* **mcp:** lem_update_settings and lem_undo_settings_change (group 1, closes [#2800](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2800)) ([#2810](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2810)) ([26aa836](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/26aa836a6b11ad55a95e5577d870dcfe11087d25))
+
+
+### Bug Fixes
+
+* **dms:** read the composer recipient through a locator chain ([94f7c89](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/94f7c89b30f741c515de92e3f2a8b0ffc8b637bb))
+* **dms:** read the composer recipient through a locator chain (closes [#2838](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2838)) ([#2839](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2839)) ([94f7c89](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/94f7c89b30f741c515de92e3f2a8b0ffc8b637bb))
+
 ## [0.226.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.226.1...v0.226.2) (2026-11-25)
 
 
