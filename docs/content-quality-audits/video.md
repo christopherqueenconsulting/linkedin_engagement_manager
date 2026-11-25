@@ -160,6 +160,40 @@ the carousel slide PNGs when the cover art is AI. With `post_id` and `C2PA_ENABL
 re-reads it; `tests/unit/utilities/test_c2pa_iptc.py` holds the per-format fixture. The avatar
 renderer is untouched. Live validator check and flipping the mode remain Phase 3 (owner).
 
+### C2PA signing — owner runbook (#2724, tooling #2794)
+
+Prod ships with `C2PA_ENABLED=false`. Four things stood between that and a safe flip, and each now
+has a tool: `scripts/c2pa_make_cert.sh` makes a signer cert that meets the C2PA profile (leaf, not a
+CA, `digitalSignature`, an EKU; a bare `openssl req -x509` cert may be refused); `./secrets/c2pa` is
+mounted read-only at `/run/secrets/c2pa` in `web_api_blue`/`web_api_green` and every `celery_worker*`
+service (the callers `image_gen`, `carousel_creator`, `run_content_plan`, `generate_variants`,
+`ai_helper`, `avatar/samples` run in the workers; the API mount is cover for an API-side call);
+the chown step fixes the uid mismatch (`deploy` is 1001, the container user is normally 1000, and an
+unreadable key looks present to the `exists` check then warns on every asset); and
+`python -m cqc_lem.utilities.c2pa_selftest` proves signing before the flip. `/secrets/` is gitignored.
+
+1. **Generate** on the VPS, in the checkout `/opt/lem`:
+   `bash scripts/c2pa_make_cert.sh ./secrets/c2pa`. It refuses to overwrite and prints no key.
+2. **Chown.** Read the container uid:
+   `docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T celery_worker id -u`,
+   then `sudo chown <uid> secrets/c2pa/chain.pem secrets/c2pa/signer.key` (or re-run step 1 on a
+   fresh dir with `--owner-uid <uid>`).
+3. **Env.** In `/opt/lem/.env` set `C2PA_CERT_PATH=/run/secrets/c2pa/chain.pem` and
+   `C2PA_KEY_PATH=/run/secrets/c2pa/signer.key`. Leave `C2PA_ENABLED=false`.
+4. **Recreate** the services so they see the mount and env:
+   `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d` (works with an empty dir).
+5. **Self-test:**
+   `docker compose -f docker-compose.yml -f docker-compose.prod.yml exec -T celery_worker python -m cqc_lem.utilities.c2pa_selftest`.
+   Exit 0 and `RESULT: PASS` needed. `signingCredential.untrusted` is expected for a self-signed
+   chain. A failure names the cause (`key unreadable by uid N`, `cert fails the C2PA profile: …`).
+   It also prints the `posts.c2pa_signed` 1 / 0 / NULL count for the last 7 days (`--days N`).
+6. **Turn signing on:** `C2PA_ENABLED=true`, recreate. Wait for the next signed post and check
+   `posts.c2pa_signed = 1` in the self-test census. Confirm LinkedIn's policy and badge behaviour
+   live (owner step in #2724).
+7. **Flip the mode** only after step 6 holds: `AI_DISCLOSURE_METADATA_MODE=true`, recreate.
+8. **Rollback:** set `AI_DISCLOSURE_METADATA_MODE=false` first (the visible caption line returns on
+   every AI video), then `C2PA_ENABLED=false`, recreate. Cert files can stay; the mount is harmless.
+
 Pexels survives only behind `VIDEO_PEXELS_FALLBACK_ENABLED` (default off), and then only with a
 query from Stage 1's concrete visual anchors (`stock_query_from_concept`): an anchor carrying a
 `STOCK_HOMONYMS` word (retirement, model, pipeline, cloud…) or a person is dropped whole, and no

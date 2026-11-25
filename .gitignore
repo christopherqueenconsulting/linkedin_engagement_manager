@@ -170,6 +170,8 @@ cython_debug/
 
 
 # Exlude these folders and contents
+# Signing keys (C2PA, #2794) are mounted from here; a key under the checkout must never be committed.
+/secrets/
 tmp/*
 logs/*
 *selenium_profiles/

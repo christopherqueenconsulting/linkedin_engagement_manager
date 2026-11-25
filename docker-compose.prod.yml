@@ -63,6 +63,8 @@ services:
       # Shared, persistent generated-media store (served at /api/assets).
       - assets:/app/src/cqc_lem/assets
       - spa_asset_archive:/app/spa_asset_archive
+      # C2PA signing cert + key (#2794): read-only, on every service that runs c2pa_helper.
+      - ./secrets/c2pa:/run/secrets/c2pa:ro
     deploy:
       resources:
         limits:
@@ -106,6 +108,7 @@ services:
       - ~/.aws:/home/celeryworker/.aws:ro
       # Shared, persistent store so generated assets are visible to web_app.
       - assets:/app/src/cqc_lem/assets
+      - ./secrets/c2pa:/run/secrets/c2pa:ro
     deploy:
       resources:
         limits:
@@ -122,6 +125,7 @@ services:
       - ~/.aws:/home/celeryworker/.aws:ro
       # Shared, persistent store so generated assets are visible to web_app.
       - assets:/app/src/cqc_lem/assets
+      - ./secrets/c2pa:/run/secrets/c2pa:ro
     deploy:
       resources:
         limits:
@@ -140,6 +144,7 @@ services:
       - ~/.aws:/home/celeryworker/.aws:ro
       # Shared, persistent store so generated assets are visible to web_app.
       - assets:/app/src/cqc_lem/assets
+      - ./secrets/c2pa:/run/secrets/c2pa:ro
     deploy:
       resources:
         limits:
@@ -156,6 +161,7 @@ services:
       - ~/.aws:/home/celeryworker/.aws:ro
       # Shared, persistent store so generated assets are visible to web_app.
       - assets:/app/src/cqc_lem/assets
+      - ./secrets/c2pa:/run/secrets/c2pa:ro
     deploy:
       resources:
         limits:
@@ -172,6 +178,7 @@ services:
       - ~/.aws:/home/celeryworker/.aws:ro
       # Shared, persistent store so generated assets are visible to web_app.
       - assets:/app/src/cqc_lem/assets
+      - ./secrets/c2pa:/run/secrets/c2pa:ro
     deploy:
       resources:
         limits:

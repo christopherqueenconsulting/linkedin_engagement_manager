@@ -2318,6 +2318,28 @@ def set_post_c2pa_signed(post_id: Optional[int], signed: bool) -> bool:
         return False
 
 
+def count_posts_by_c2pa_signed(days: int = 7) -> Optional[dict]:
+    """Read-only census of ``posts.c2pa_signed`` over the last ``days``: signed / unsigned / unknown.
+
+    ``unknown`` is NULL (never attempted, or signing was off), kept apart from ``unsigned`` (0, an
+    attempt that failed). Returns None when the read itself failed, so an unreadable DB is never
+    reported as "no posts".
+    """
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT COALESCE(SUM(c2pa_signed = 1), 0), COALESCE(SUM(c2pa_signed = 0), 0), "
+                "COALESCE(SUM(c2pa_signed IS NULL), 0) FROM posts "
+                "WHERE created_at >= (NOW() - INTERVAL %s DAY)",
+                (int(days),),
+            )
+            row = cursor.fetchone()
+        return {"signed": int(row[0]), "unsigned": int(row[1]), "unknown": int(row[2])}
+    except (mysql.connector.Error, TypeError, ValueError, IndexError) as err:
+        log_error("Could not count c2pa_signed", exc=err)
+        return None
+
+
 def post_avatar_media_state(post_id: Optional[int]) -> Optional[bool]:
     """Three-valued `posts.avatar_media`: True / False / **None when it could not be read**.
 
