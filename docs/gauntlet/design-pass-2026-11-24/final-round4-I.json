@@ -1,0 +1,22 @@
+{
+  "reviewer": "I",
+  "persona": "recipient",
+  "round": 11,
+  "verdict": "pass",
+  "reasons": [
+    "The fold at 1440 and 390 says what I get (LinkedIn content in my voice) and my control (nothing publishes until I approve), and answers the password fear before the first scroll.",
+    "One filled 'Start free trial' button, a quiet 'See how it works' link, and '14-day free trial. No credit card. Cancel any time.' under it; on phone the button is full width above the fold.",
+    "The hero screenshot is labelled as an example queue with sample posts, so it does not read as scraped or faked.",
+    "The restored copy reads as reference material under plain-language headings: ruled lists, a table and numbered steps, in a clear order from problem to closing CTA.",
+    "Safety is findable from the nav, the hero line and the dark trust band; FAQ and pricing are in the nav.",
+    "Light and dark keep the same structure, and the CTA stays prominent.",
+    "NOT VERIFIED: line-by-line reading of the below-the-fold body copy and table cells, judged by headings and layout."
+  ],
+  "required_fixes": [],
+  "residuals": [
+    "The hero H1 breaks after 'published only'; a balanced wrap would read more cleanly.",
+    "The hero screenshot shows admin controls; a tighter crop or a highlight on the approval chips would show the approval step faster. The tab strip is cut at 'Pipel' at 1440.",
+    "The 'small first cohort' strip under the hero reads as mild urgency; keep it only if it is true and checkable.",
+    "The phone page is long with no sticky CTA; consider one if analytics show drop-off."
+  ]
+}

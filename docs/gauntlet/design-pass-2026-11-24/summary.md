@@ -52,3 +52,7 @@ At head `1154509377f9b61bce699f0aace542c8ef303423`: D pass, J pass, O pass, all 
 - Final re-check, plan: the design plan's hero row and wireframe still say 10-word H1 and 27-word body; the page carries the 13-word H1 and 40-word body.
 - Final re-check, O: mid-page detail was judged at section level only (a per-section slice capture would help), the hero screenshot tab row is cut at "Pipel" and "Connectio", the screenshot is light only on the dark page, and the brand reference set is empty.
 - Final re-check, J (owner calls): "quality contract" and "slop lint" lack a plain gloss, and em dashes remain in several single clauses.
+
+## Final re-check: I and K after the copy restore (2026-11-24)
+
+The restored feature copy changed the page layout, so I (recipient) and K (accessibility) re-ran on the final captures, with page code at 1154509. Both passed with no required fixes: see `final-round4-I.json` and `final-round4-K.json`. The residuals are in those files.
