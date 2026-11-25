@@ -7,6 +7,7 @@ the resolver rows, and follows an admitted request all the way to the SDK.
 import asyncio
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator
 from unittest.mock import MagicMock, patch
@@ -180,10 +181,42 @@ class TestConcurrencyAndBudgets:
     def _admitted(self, resolver: MagicMock, enabled: None) -> None:
         resolver.return_value = _row()
 
-    def test_a_user_at_two_in_flight_gets_429(self, api_client: Any, fake_redis: FakeRedis,
-                                              sdk: MagicMock) -> None:
+    def test_a_user_at_two_in_flight_gets_a_busy_tool_result_not_429(
+            self, api_client: Any, fake_redis: FakeRedis, sdk: MagicMock) -> None:
         fake_redis.store["mcp:inflight:42"] = 2
-        resp = _post(api_client)
+        resp = _post(api_client, _CALL)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["id"] == 2 and body["result"]["isError"] is True
+        assert "Retry" in body["result"]["content"][0]["text"]
+        assert "body" not in sdk.seen, "a busy call never reaches the SDK"
+        assert fake_redis.store["mcp:inflight:42"] == 2, "the refused slot is handed back"
+        assert "mcp:inflight:42" not in fake_redis.ttl_writes, "a refusal never touches the TTL"
+        assert limits.worker_slots.in_flight == 0
+
+    def test_a_busy_batch_with_a_non_call_keeps_the_429(
+            self, api_client: Any, fake_redis: FakeRedis, sdk: MagicMock) -> None:
+        fake_redis.store["mcp:inflight:42"] = 2
+        resp = _post(api_client, [_LIST, _CALL])
+        assert resp.status_code == 429 and _reason(resp) == "concurrency_limited"
+
+    def test_six_concurrent_discovery_requests_all_succeed_at_the_cap(
+            self, api_client: Any, fake_redis: FakeRedis, sdk: MagicMock) -> None:
+        fake_redis.store["mcp:inflight:42"] = 2
+        methods = ["initialize", "tools/list", "prompts/list", "resources/list",
+                   "resources/templates/list", "ping"]
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            codes = list(pool.map(
+                lambda m: _post(api_client, {"jsonrpc": "2.0", "id": 1, "method": m}).status_code,
+                methods))
+        assert codes == [200] * 6
+        assert fake_redis.store["mcp:inflight:42"] == 2, "discovery never touches the user slot"
+
+    def test_a_user_slot_still_bounds_tool_calls_with_429_when_not_answerable(
+            self, api_client: Any, fake_redis: FakeRedis, sdk: MagicMock) -> None:
+        fake_redis.store["mcp:inflight:42"] = 2
+        resp = _post(api_client, {"jsonrpc": "2.0", "method": "tools/call",
+                                  "params": {"name": "lem_whoami"}})
         assert resp.status_code == 429 and _reason(resp) == "concurrency_limited"
         assert resp.headers["retry-after"] == "1"
         assert fake_redis.store["mcp:inflight:42"] == 2, "the refused slot is handed back"
@@ -194,7 +227,7 @@ class TestConcurrencyAndBudgets:
             self, api_client: Any, fake_redis: FakeRedis, sdk: MagicMock,
             monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(limits.ENV_INFLIGHT_PER_WORKER, "0")
-        resp = _post(api_client)
+        resp = _post(api_client)  # discovery is exempt from the user slot, never the worker cap
         assert resp.status_code == 429 and _reason(resp) == "concurrency_limited"
         assert "mcp:inflight:42" not in fake_redis.store
 
@@ -225,7 +258,7 @@ class TestConcurrencyAndBudgets:
     def test_a_redis_fault_in_the_limits_is_503_and_releases_the_worker_slot(
             self, api_client: Any, fake_redis: FakeRedis, sdk: MagicMock) -> None:
         with patch.object(gate_mod, "acquire_user_slot", side_effect=limits.LimitsUnavailable()):
-            resp = _post(api_client)
+            resp = _post(api_client, _CALL)
         assert resp.status_code == 503 and _reason(resp) == "mcp_unavailable"
         assert limits.worker_slots.in_flight == 0
 
@@ -237,7 +270,7 @@ class TestConcurrencyAndBudgets:
         fake = MagicMock()
         fake.session_manager.handle_request = _boom
         with patch.object(gate_mod, "mcp_server", fake):
-            assert _post(api_client).status_code == 500
+            assert _post(api_client, _CALL).status_code == 500
         assert limits.worker_slots.in_flight == 0
         assert fake_redis.store["mcp:inflight:42"] == 0
 
@@ -481,7 +514,7 @@ class TestSlotsAreReturnedOnEveryExit:
                 await anyio.sleep_forever()
 
             async def _receive() -> dict:
-                return {"type": "http.request", "body": json.dumps(_LIST).encode()}
+                return {"type": "http.request", "body": json.dumps(_CALL).encode()}
 
             async def _send(message: dict) -> None:
                 return None
@@ -512,7 +545,7 @@ class TestSlotsAreReturnedOnEveryExit:
                 await asyncio.Event().wait()
 
             async def _receive() -> dict:
-                return {"type": "http.request", "body": json.dumps(_LIST).encode()}
+                return {"type": "http.request", "body": json.dumps(_CALL).encode()}
 
             async def _send(message: dict) -> None:
                 return None

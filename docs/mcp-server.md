@@ -212,9 +212,35 @@ refused on a standard account), never arguments or results.
 |---|---|---|
 | Tool calls | 60 / minute / user | the gate, per JSON-RPC `tools/call` and per `resources/read` of a data resource (the two static text resources are free) |
 | Inner reads | 240 / minute, 4000 / day / user | the loopback, per inner route call |
-| In flight | 2 per user, 8 per worker | the gate |
+| In flight | 2 per user, 8 per worker | the gate; the per-user slot is taken only by `tools/call` and data `resources/read` (see below) |
 | Writes | 30 / hour, 150 / day / user | the write tools, once per write, and each W2b spend tool call (`MCP_RATE_WRITES_PER_*`) |
 | Spend sub-cap | 10 text, 3 image, 1 video / UTC day / user (`MCP_SPEND_TEXT` / `_IMAGE` / `_VIDEO`) | W2b, server-side in `/api/user/mcp-spend/*` |
+
+**In-flight semantics (#2798).** SDK clients (T3 Code, Agent SDK) fire `initialize`, `tools/list`,
+`prompts/list`, `resources/list`, `resources/templates/list` and `ping` at once, so those protocol and
+discovery requests take **no per-user slot** (the per-worker cap still applies to every request). Only
+`tools/call` and a data `resources/read` hold a per-user slot. A call refused by the per-user cap is
+answered **HTTP 200** with a JSON-RPC `isError` tool result ("busy ... Retry this call shortly", with
+`Retry-After: 1`), never a 429, so a client does not mark the server failed. These busy answers are HTTP 200, so monitoring keyed on 429 will not see them; they are still counted
+under the `concurrency` refusal reason in `mcp_auth_refused`. A data `resources/read`
+gets a JSON-RPC error instead, and a batch that mixes a call with other messages keeps the plain 429.
+The per-worker cap, the fixed-window budgets and the auth-failure buckets still answer 429 as before.
+The default of 2 per user is unchanged: discovery no longer competes for it.
+
+**GUI-launched clients.** The config snippet stores `Authorization: Bearer ${LEM_MCP_TOKEN}`, expanded
+when the client loads its config. An app launched from the macOS Dock (for example the T3 Code desktop
+app) does not inherit shell `export`s, so the variable may be empty and the server then looks
+unauthenticated. Give the GUI session the token yourself. Run this in a terminal and paste the token at the hidden
+prompt, so it never lands on a command line or in shell history:
+
+```
+read -rs LEM_MCP_TOKEN && launchctl setenv LEM_MCP_TOKEN "$LEM_MCP_TOKEN" && unset LEM_MCP_TOKEN
+```
+
+Then quit and reopen the app. Undo it with `launchctl unsetenv LEM_MCP_TOKEN`. The value is visible to
+every GUI app in that login session until you reboot or run `unsetenv`. If the client still fails,
+check the LEM Agents tab activity and the `mcp_auth_refused` reason (for example `missing`, no token
+sent) to confirm the cause.
 
 ## AI/media spend tools (W2b, owner ruling O4)
 
