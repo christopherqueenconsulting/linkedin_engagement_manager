@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.226.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.226.1...v0.226.2) (2026-11-25)
+
+
+### Bug Fixes
+
+* **errors:** stop escalating handled MCP URL-token revocation (closes [#2825](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2825)) ([#2834](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2834)) ([7e88f5d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7e88f5ddd66c7b766b5651668c3095d652b97849))
+* **feed:** skip the post on an LLM proxy connection error (closes [#2829](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2829)) ([#2830](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2830)) ([fc9869d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/fc9869d8c1efbe2dd50731831f3b457bfe84ca6e))
+* **feed:** skip the post when comment generation hits an LLM proxy connection error (closes [#2829](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2829)) ([fc9869d](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/fc9869d8c1efbe2dd50731831f3b457bfe84ca6e))
+* **followups:** log composer-only ladder walk at DEBUG (closes [#2826](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2826)) ([#2833](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2833)) ([4619da8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4619da84e6738895fb09d9a47f9bdb2c6b6d1820))
+* **followups:** log composer-only ladder walk at DEBUG; the caller warns once per stop (closes [#2826](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2826)) ([4619da8](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/4619da84e6738895fb09d9a47f9bdb2c6b6d1820))
+* **outreach:** a crashed tab on the DM body read ends the follow-up run (closes [#2828](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2828)) ([#2831](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2831)) ([8443e00](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/8443e00670d8b239ad865aa5943c20afbb45c19a))
+* **outreach:** strip em dashes from funnel connect/DM drafts (closes [#2821](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2821)) ([2404e58](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2404e58a98423d3707c37fbc16d0c17e0c8f0faa))
+* **outreach:** strip em dashes from funnel drafts (closes [#2821](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2821)) ([#2822](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2822)) ([2404e58](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/2404e58a98423d3707c37fbc16d0c17e0c8f0faa))
+
 ## [0.226.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.226.0...v0.226.1) (2026-11-25)
 
 
