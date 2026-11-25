@@ -17,6 +17,9 @@ services:
       - ./src:/app/src
       - ./tests:/app/tests
       - ./logs:/app/logs
+      # C2PA signing cert + key (#2794), read-only. The celery workers get it through volumes_from.
+      # An empty host dir is fine: signing stays off until C2PA_ENABLED and the paths are set.
+      - ./secrets/c2pa:/run/secrets/c2pa:ro
     env_file:
       - .env
     environment:

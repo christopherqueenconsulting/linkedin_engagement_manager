@@ -139,25 +139,12 @@ def sign_ai_image(file_path: str, *, post_id: "int | None" = None) -> bool:
         return False
 
 
-def add_ai_content_credentials(file_path: str) -> bool:
-    """Sign ``file_path`` in place with an AI Content Credentials manifest.
+def sign_file_in_place(file_path: str, fmt: str, cert_path: str, key_path: str) -> None:
+    """Sign ``file_path`` in place with the AI Content Credentials manifest. Raises on any failure.
 
-    Returns True only when a signed manifest was written. No-ops (returns False)
-    when disabled, when cert/key/file are missing, or on any signing error.
+    The ONE signing implementation: ``add_ai_content_credentials`` wraps it fail-soft, and the
+    in-container self-test (``c2pa_selftest``) calls it directly so it sees the real error.
     """
-    if not C2PA_ENABLED:
-        return False
-    if not (C2PA_CERT_PATH and C2PA_KEY_PATH
-            and os.path.exists(C2PA_CERT_PATH) and os.path.exists(C2PA_KEY_PATH)
-            and os.path.exists(file_path)):
-        log_debug("C2PA signing skipped (missing cert/key/file)")
-        return False
-
-    fmt = _format_for(file_path)
-    if not fmt:
-        log_debug(f"C2PA signing skipped (unsupported format): {file_path}")
-        return False
-
     tmp_out = file_path + ".c2pa.tmp"
     try:
         import c2pa
@@ -165,9 +152,9 @@ def add_ai_content_credentials(file_path: str) -> bool:
         from cryptography.hazmat.primitives import hashes, serialization
         from cryptography.hazmat.primitives.asymmetric import ec
 
-        with open(C2PA_CERT_PATH, "rb") as f:
+        with open(cert_path, "rb") as f:
             certs = f.read()
-        with open(C2PA_KEY_PATH, "rb") as f:
+        with open(key_path, "rb") as f:
             key = f.read()
 
         def _sign(data: bytes) -> bytes:
@@ -190,13 +177,39 @@ def add_ai_content_credentials(file_path: str) -> bool:
             with c2pa.Builder(manifest) as builder:
                 builder.sign_file(file_path, tmp_out, signer)
         os.replace(tmp_out, file_path)
-        log_debug(f"C2PA credentials added: {os.path.basename(file_path)}")
-        return True
-    except Exception as e:
-        log_warning("C2PA signing failed; relying on caption disclosure", exc=e)
+    finally:
         try:
             if os.path.exists(tmp_out):
                 os.remove(tmp_out)
         except OSError:
             pass  # best-effort temp-file cleanup; ignore if it can't be removed
+
+
+def add_ai_content_credentials(file_path: str, *, require_enabled: bool = True) -> bool:
+    """Sign ``file_path`` in place with an AI Content Credentials manifest.
+
+    Returns True only when a signed manifest was written. No-ops (returns False)
+    when disabled, when cert/key/file are missing, or on any signing error.
+    ``require_enabled=False`` skips the ``C2PA_ENABLED`` check (the self-test proves signing
+    works BEFORE the flag is flipped); every other guard still applies.
+    """
+    if require_enabled and not C2PA_ENABLED:
+        return False
+    if not (C2PA_CERT_PATH and C2PA_KEY_PATH
+            and os.path.exists(C2PA_CERT_PATH) and os.path.exists(C2PA_KEY_PATH)
+            and os.path.exists(file_path)):
+        log_debug("C2PA signing skipped (missing cert/key/file)")
+        return False
+
+    fmt = _format_for(file_path)
+    if not fmt:
+        log_debug(f"C2PA signing skipped (unsupported format): {file_path}")
+        return False
+
+    try:
+        sign_file_in_place(file_path, fmt, C2PA_CERT_PATH, C2PA_KEY_PATH)
+        log_debug(f"C2PA credentials added: {os.path.basename(file_path)}")
+        return True
+    except Exception as e:
+        log_warning("C2PA signing failed; relying on caption disclosure", exc=e)
         return False
