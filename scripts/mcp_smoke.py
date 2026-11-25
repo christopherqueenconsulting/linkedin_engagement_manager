@@ -25,7 +25,11 @@ does, and exits non-zero on the first mismatch it reports (it keeps going to rep
 7. With `--mint-local-for`, the minted token is revoked at the end and the next call must be 401.
 8. With `--settings` (#2800, needs `mcp-settings-writes` on for the account): change `tone` to a
    marker value, check the diff, check a daily cap is refused, undo, and check `tone` is back. It
-   writes the account's real setting and puts it back; skipped when the tools are not listed.
+   writes the account's real setting and puts it back; skipped when the tools are not listed. It
+   also checks the change-request path WITHOUT filing one (#2803): a gate change through
+   `lem_update_settings` is refused naming `lem_request_settings_change`, and a non-gate field sent to
+   `lem_request_settings_change` is refused. No agent tool can approve, so a smoke-filed request would
+   sit in the user's queue; the smoke never files one.
 
 Usage, against a deployed stack (token from the Agents tab, kept in the environment):
 
@@ -269,6 +273,12 @@ def run_settings_checks(smoke: Smoke, token: str) -> None:
                 "lem_update_settings changes tone and reports before/after")
     capped = smoke.refusal(token, "lem_update_settings", {"changes": {"max_comments_per_day": 1}})
     smoke.check(capped == "cap_not_editable", "a daily cap is refused", str(capped))
+    gated = smoke.refusal(token, "lem_update_settings", {"changes": {"connection_request_mode": "auto_approve"}})
+    smoke.check(gated == "needs_change_request", "a gate change is refused toward lem_request_settings_change",
+                str(gated))
+    not_gate = smoke.refusal(token, "lem_request_settings_change",
+                             {"changes": {"tone": "x"}, "reason": "smoke check, never filed"})
+    smoke.check(not_gate == "not_a_gate_field", "a non-gate field cannot be requested", str(not_gate))
     undo_id = changed.get("undo_id")
     smoke.out.write(f"       undo_id = {undo_id} (lem_undo_settings_change restores tone)\n")
     if not undo_id:

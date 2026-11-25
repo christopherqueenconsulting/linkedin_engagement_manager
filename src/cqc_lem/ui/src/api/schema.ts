@@ -3806,6 +3806,73 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/user/settings-proposals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Settings Proposals
+         * @description The "Changes your agent asked for" card's read: open proposals, expired ones swept first.
+         *
+         *     A failed read is 503, never an empty list that reads as "your agent asked for nothing".
+         */
+        get: operations["list_settings_proposals_api_user_settings_proposals_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/user/settings-proposals/{proposal_id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve Settings Proposal
+         * @description Apply an agent's request, or the chosen fields of it, under a fresh step-up.
+         *
+         *     Order matters: step-up first (a refusal changes nothing), then the pending and expiry checks,
+         *     then every selected field's before-value is re-read and compared. The decision is CLAIMED in the
+         *     SQL (`status = 'pending' AND expires_at > now`) before any write, so a double click applies once.
+         *     A stale field is skipped and reported; the rest apply.
+         */
+        post: operations["approve_settings_proposal_api_user_settings_proposals__proposal_id__approve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/user/settings-proposals/{proposal_id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reject Settings Proposal
+         * @description Close an agent's request without applying any of it. Loosens nothing, so no step-up.
+         */
+        post: operations["reject_settings_proposal_api_user_settings_proposals__proposal_id__reject_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/user/shipped": {
         parameters: {
             query?: never;
@@ -4361,6 +4428,19 @@ export interface components {
              * @default 90
              */
             ttl_days: number;
+        };
+        /**
+         * ApproveProposalRequest
+         * @description Body of `POST /user/settings-proposals/{id}/approve`.
+         */
+        ApproveProposalRequest: {
+            /**
+             * Fields
+             * @description The fields to approve. Omit to approve every field of the proposal.
+             */
+            fields?: string[] | null;
+            /** Session Token */
+            session_token?: string | null;
         };
         /**
          * ArtifactCtaAttribution
@@ -7034,6 +7114,14 @@ export interface components {
             period_key: string;
             /** Score */
             score: number | null;
+        };
+        /**
+         * RejectProposalRequest
+         * @description Body of `POST /user/settings-proposals/{id}/reject`.
+         */
+        RejectProposalRequest: {
+            /** Session Token */
+            session_token?: string | null;
         };
         /** ResponseModel[DashboardStats] */
         ResponseModel_DashboardStats_: {
@@ -14673,6 +14761,189 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ResponseModel_str_"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_settings_proposals_api_user_settings_proposals_get: {
+        parameters: {
+            query?: {
+                session_token?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The caller's open change requests, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                };
+            };
+            /** @description Invalid or expired session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not a person's session */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description The requests could not be read */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    approve_settings_proposal_api_user_settings_proposals__proposal_id__approve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                proposal_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApproveProposalRequest"];
+            };
+        };
+        responses: {
+            /** @description Decided; says which fields were applied, stale or declined */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                };
+            };
+            /** @description Invalid or expired session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Step-up required, or not a person's session */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such change request on this account */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Already decided, or expired */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A field that is not in this request */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The current settings could not be read; nothing was changed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    reject_settings_proposal_api_user_settings_proposals__proposal_id__reject_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                proposal_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RejectProposalRequest"];
+            };
+        };
+        responses: {
+            /** @description Rejected; nothing changed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                };
+            };
+            /** @description Invalid or expired session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not a person's session */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such change request on this account */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Already decided, or expired */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

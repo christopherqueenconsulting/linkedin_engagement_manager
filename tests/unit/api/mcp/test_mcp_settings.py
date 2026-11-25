@@ -188,15 +188,15 @@ class TestMergeNeverReplace:
 class TestTheAllowlist:
     @pytest.mark.parametrize("field,code,needle", [
         ("totally_unknown", "field_not_allowed", "lem_open_in_lem"),
-        ("connection_request_mode", "needs_change_request", "needs a change request (coming)"),
-        ("nurture_dm_mode", "needs_change_request", "needs a change request (coming)"),
-        ("profile_viewer_dm_auto_send", "needs_change_request", "needs a change request (coming)"),
-        ("roster_auto_connect", "needs_change_request", "needs a change request (coming)"),
-        ("roster_auto_follow", "needs_change_request", "needs a change request (coming)"),
-        ("hold_repaired_posts_for_review", "needs_change_request", "needs a change request"),
-        ("authenticity_score_min", "needs_change_request", "needs a change request"),
-        ("post_similarity_max_pct", "needs_change_request", "needs a change request"),
-        ("auto_publish_newsletters", "needs_change_request", "needs a change request"),
+        ("connection_request_mode", "needs_change_request", "lem_request_settings_change"),
+        ("nurture_dm_mode", "needs_change_request", "lem_request_settings_change"),
+        ("profile_viewer_dm_auto_send", "needs_change_request", "lem_request_settings_change"),
+        ("roster_auto_connect", "needs_change_request", "lem_request_settings_change"),
+        ("roster_auto_follow", "needs_change_request", "lem_request_settings_change"),
+        ("hold_repaired_posts_for_review", "needs_change_request", "lem_request_settings_change"),
+        ("authenticity_score_min", "needs_change_request", "lem_request_settings_change"),
+        ("post_similarity_max_pct", "needs_change_request", "lem_request_settings_change"),
+        ("auto_publish_newsletters", "needs_change_request", "lem_request_settings_change"),
         ("max_queued_drafts", "cap_not_editable", "lem_open_in_lem"),
         ("reply_sweeps_per_day", "cap_not_editable", "lem_open_in_lem"),
         ("max_invites_per_run", "cap_not_editable", "lem_open_in_lem"),
@@ -213,9 +213,25 @@ class TestTheAllowlist:
         assert field in error["message"] and needle in error["message"]
         assert seat.prefs_writes == []
 
-    def test_group_three_points_at_lem_too(self, api_client: Any, seat: Store) -> None:
+    def test_group_three_points_at_the_request_tool_not_at_lem(self, api_client: Any, seat: Store) -> None:
         error = _error(_update(api_client, {"connection_request_mode": "auto_approve"}))
-        assert "lem_open_in_lem" in error["message"]
+        assert "lem_request_settings_change" in error["message"]
+
+    @pytest.mark.parametrize("field,value", [("connection_request_mode", "pre_review"),
+                                             ("roster_auto_follow", False),
+                                             ("authenticity_score_min", 99)])
+    def test_even_the_safe_direction_of_a_gate_is_not_applied_directly(
+            self, api_client: Any, seat: Store, field: str, value: Any) -> None:
+        before = copy.deepcopy(seat.prefs)
+        error = _error(_update(api_client, {field: value}))
+        assert error["code"] == "needs_change_request"
+        assert seat.prefs == before and seat.prefs_writes == []
+
+    def test_a_gate_nobody_can_request_is_not_pointed_at_the_request_tool(
+            self, api_client: Any, seat: Store) -> None:
+        error = _error(_update(api_client, {"connection_targeting_mode": "auto_queue"}))
+        assert error["code"] == "gate_not_requestable"
+        assert "lem_request_settings_change" not in error["message"]
 
     def test_one_refused_field_blocks_the_whole_call(self, api_client: Any, seat: Store) -> None:
         before = copy.deepcopy(seat.prefs)

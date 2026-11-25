@@ -395,6 +395,11 @@ class AuthAuditEvent(StrEnum):
     # One per `lem_add_story_draft` that landed (#2804): an UNVERIFIED story-bank entry. Its own
     # event, not `mcp_write`, so the user can see exactly which facts an agent put in their bank.
     MCP_STORY_DRAFT = "mcp_story_draft"
+    # The change-request flow (#2803): an agent FILED a gate-loosening request, and the USER approved
+    # or rejected it in LEM. Field names and the proposal id only, never a value or the agent's text.
+    MCP_SETTINGS_PROPOSED = "mcp_settings_proposed"
+    MCP_SETTINGS_APPROVED = "mcp_settings_approved"
+    MCP_SETTINGS_REJECTED = "mcp_settings_rejected"
     # One per approval `lem_approve_item` made on an internal or sandbox account (owner ruling O1),
     # the MCP counterpart of `operator_approval`.
     MCP_APPROVAL = "mcp_approval"

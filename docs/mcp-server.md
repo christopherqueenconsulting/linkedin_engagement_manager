@@ -179,10 +179,8 @@ on for the account (and `mcp-server-writes`, because they run through `writes.ru
 | Assets | `lead_magnet_enabled`, `lead_magnet_keyword`, `lead_magnet_message`, `newsletter_topic`, `newsletter_cadence` |
 
 Everything else is refused with `isError`, naming every offending field and pointing at
-`lem_open_in_lem`: **group 3** (any `*_mode`, `profile_viewer_dm_auto_send`, `roster_auto_connect`,
-`roster_auto_follow`, `hold_repaired_posts_for_review`, `authenticity_score_min`,
-`post_similarity_max_pct`, newsletter auto-publish) as `needs_change_request` ("needs a change
-request (coming)", #2803); **any cap outside the eight below** (`max_queued_drafts`,
+`lem_open_in_lem` (or, for group 3, at `lem_request_settings_change`): **group 3** (see "Change
+requests" below) as `needs_change_request`; **any cap outside the eight below** (`max_queued_drafts`,
 `reply_sweeps_per_day`, `max_invites_per_run`, ...) as `cap_not_editable`; **never-fields** (LinkedIn password and cookie, location, display name, company page, email,
 tokens, sessions, billing) as `field_never_editable`; anything else as `field_not_allowed`. A new
 setting is opt-in: a name is allowed only if it is in `GROUP1_FIELDS`. One refused field refuses the
@@ -292,6 +290,73 @@ row and every log line carry field names only. A failed audit or undo write is a
 
 **Limits and dedupe.** Both tools count against the write budgets (30 an hour, 150 a day) and dedupe on
 `client_request_id` through `run_write`, exactly like a queue write.
+
+## Change requests: gate-loosening settings the USER approves (epic #2797, #2803)
+
+An agent may ASK to loosen a safety or approval gate; it can never apply or approve one (owner ruling
+3). `lem_request_settings_change(changes, reason)` (`api/mcp/tools_settings.py`, both scopes, behind
+`mcp-server-writes` + `mcp-settings-writes`, through `run_write`) files a **pending proposal** and
+changes nothing. No MCP tool approves.
+
+**Requestable fields** (`GATE_RULES` in `settings_policy.py`, the one table): the eight approval modes
+(`connection_request_mode`, `catchup_touch_mode`, `nurture_dm_mode`, `artifact_dm_mode`,
+`group_post_mode`, `followup_step_mode`, `appreciation_dm_mode`, `funnel_stage_mode`; values
+`pre_review` / `auto_approve`), `profile_viewer_dm_auto_send`, `roster_auto_connect`,
+`roster_auto_follow`, `hold_repaired_posts_for_review` (turning it off), `authenticity_score_min`
+(lowering), `post_similarity_max_pct` (raising) and `auto_publish_newsletters`. Anything else is
+refused `not_a_gate_field` (a group-1 field is pointed at `lem_update_settings`). A mode must be
+exactly one of its two spellings (the route would turn a typo into `auto_approve`), a switch a real
+boolean, a threshold a whole number the route then clamps. A value already in force is dropped and
+named under `unchanged`; nothing left is `invalid_value`.
+
+**Safe direction is a request too.** A gate moved the safe way (a mode to `pre_review`, a higher
+`authenticity_score_min`) is NOT applied through `lem_update_settings` either: it is refused
+`needs_change_request`, naming the request tool. The alternative, applying it directly, would need the
+route guard to judge a direction against the stored value; sending every gate change through one
+request path keeps "an agent cannot change a gate" a single, checkable rule. Such a request's warning
+reads "Approving this makes LEM stricter: it loosens nothing."
+
+**Answer:** `{proposal_id, status: "pending", review_url, warnings, requested, unchanged, note}`, with one
+warning per field saying what approval loosens. The tool description and the `note` tell the agent to
+relay every warning and never to say the change was applied. **At most 5 open requests** per user
+(`too_many_open_requests`). Audit `mcp_settings_proposed {tool, fields, scope, proposal_id}`, names only;
+the agent's reason and every value stay out of the audit row and PostHog.
+
+**The table** `agent_change_proposals` (`platform/db/repositories/agent_proposals.py`, re-exported by
+`utilities/db.py`; the P7 table of #2691, scoped to settings): `user_id`, `kind`, `payload`
+`{field: {before, requested}}`, `reason` (the agent's text: untrusted, cut to 1000 characters),
+`status` (`pending` / `approved` / `rejected` / `expired`), `source_session_id`, `created_at`,
+`expires_at` (7 days), `decided_at`, `decided_by_session_id`, `outcome`. The state machine is in the
+SQL: a decision is `UPDATE ... WHERE status = 'pending' AND expires_at > now`, so an expired row can
+never be approved and a double click applies once. Needs `risk:migration` (the owner applies it); the
+migration is a single additive `CREATE TABLE`.
+
+**The user's routes** (`api/routers/settings_proposals.py`, session-cookie users only):
+
+| Route | Does |
+|---|---|
+| `GET /api/user/settings-proposals` | the caller's open proposals: each field's before and requested value, LEM's warning, the agent's reason as plain text. A failed read is 503 |
+| `POST /api/user/settings-proposals/{id}/approve` | all fields, or a `fields` subset. **Step-up first** (403 `step_up_required` when the account has strong auth). Then each field's before-value is re-read: a changed one is **skipped and reported** (`stale`), never overwritten. Applies only the approved keys over the stored row (the S2 merged-write semantics, not a full-record PUT). Answers `{applied, stale, declined, failed}` |
+| `POST /api/user/settings-proposals/{id}/reject` | closes it; loosens nothing, so no step-up |
+
+Audit `mcp_settings_approved {proposal_id, applied, stale, declined, failed}` and `mcp_settings_rejected
+{proposal_id, fields}` on the TARGET account. A request expires after 7 days (409 `proposal_expired`); an
+already-decided one is 409 `proposal_not_pending`. If every write of an approval fails the proposal is
+reopened (503), so it is not lost.
+
+**No agent scope reaches them.** The scope surfaces are allowlists, so `agent`, `operator`, `observer`,
+`mcp` and `mcp_outreach` cannot reach the path at all (`FORBIDDEN_ROLE_ROUTES` pins `GET
+/user/settings-proposals` and everything under it), each handler also refuses a machine session on its
+own (`proposal_decision_is_human_only`), and no tool's `calls` includes them. The router is mounted in
+`api/main.py` (an owned path).
+
+**The SPA** shows a "Changes your agent asked for" card on the Agents tab (nothing renders while there is
+nothing to decide): per field, before to after and the warning, a toggle per field, Approve all / Approve
+selected / Reject all, the agent's reason as a quote under "written by the agent, not by LEM" (a React
+text child, never HTML), and the usual step-up modal.
+
+**Not done yet:** a badge in the Settings nav, and a line about pending requests in the stale-approvals
+digest email (`notify_stale_approvals` is built around the review queue's lane counts).
 
 ## What a result may carry (`api/mcp/redact.py`)
 
@@ -568,7 +633,9 @@ It calls `initialize`, compares `tools/list` with the registry for the token's s
 query-string token is refused (and, with a throwaway token, revoked) and a bad bearer is 401, and
 exits non-zero on any mismatch. `--settings` (#2800) adds an optional round trip: it changes `tone` to a
 marker, checks the diff, checks a daily cap is refused, undoes it and checks `tone` is back (skipped
-when `lem_update_settings` is not listed). It prints the original tone and the `undo_id`; if the run
+when `lem_update_settings` is not listed). It also checks that a gate change through
+`lem_update_settings` is refused toward `lem_request_settings_change` and that a non-gate field cannot be
+requested; it never files a request (no agent tool can approve one, so it would sit in the user's queue). It prints the original tone and the `undo_id`; if the run
 dies between the change and the undo, call `lem_undo_settings_change` with that `undo_id`, or set
 tone back to the printed value in LEM. `--write --recipient <profile URL> --account-kind KIND` (W2,
 `mcp_outreach` token, a fixed test recipient) also queues ONE DM and checks it lands pending with
@@ -598,8 +665,9 @@ A local `uvicorn` writes its access log with query strings; production starts wi
 
 `mcp-server-enabled` (`MCP_SERVER_ENABLED`) gates the gate, the mint and the Agents tab;
 `mcp-server-writes` (W2) gates the write tools; `mcp-settings-writes` (`MCP_SETTINGS_WRITES_ENABLED`,
-#2800) gates the two settings tools on top of it, and `mcp-story-drafts` (`MCP_STORY_DRAFTS_ENABLED`,
-#2804) gates `lem_add_story_draft` on top of it; both are OFF by default. All are provisioned at 0 % with hand-added
+#2800, #2803) gates the three settings tools (update, undo, request a change) on top of it, and
+`mcp-story-drafts` (`MCP_STORY_DRAFTS_ENABLED`, #2804) gates `lem_add_story_draft` on top of it; both are
+OFF by default. All are provisioned at 0 % with hand-added
 distinct-id overrides for the internal and sandbox accounts. **Never run
 `scripts/posthog_flags.py --apply` while those overrides exist**: the script replaces a flag's
 `groups` wholesale and would delete them.

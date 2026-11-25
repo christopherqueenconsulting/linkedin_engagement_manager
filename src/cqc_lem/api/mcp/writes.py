@@ -151,9 +151,12 @@ def account_may_approve(user_id: int) -> bool:
     return get_user_account_kind(user_id) in INTERNAL_ACCOUNT_KINDS
 
 
+_SETTINGS_EVENTS = frozenset({AuthAuditEvent.MCP_SETTINGS, AuthAuditEvent.MCP_SETTINGS_PROPOSED})
+
+
 def _is_settings(spec: Any) -> bool:
-    """True for the settings tools (#2800), which audit field names and keep a ledger."""
-    return getattr(spec, "audit_event", None) == AuthAuditEvent.MCP_SETTINGS
+    """True for the settings tools (#2800, #2803), which audit field names and keep a ledger."""
+    return getattr(spec, "audit_event", None) in _SETTINGS_EVENTS
 
 
 def _audit_write(principal: Any, tool: str, target_id: Any, spec: Any = None,
@@ -166,6 +169,8 @@ def _audit_write(principal: Any, tool: str, target_id: Any, spec: Any = None,
         if raised:
             # A cap moved toward more LinkedIn activity (#2801): names only, like `fields`.
             details.update({"raised": True, "raised_fields": raised})
+        if (payload or {}).get("proposal_id"):
+            details["proposal_id"] = payload["proposal_id"]
     try:
         record_auth_event(event, user_id=principal.user_id, session_id=principal.session_id,
                           details=details)

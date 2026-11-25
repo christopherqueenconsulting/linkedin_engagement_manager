@@ -13,8 +13,12 @@ A field is in exactly one **group**, and the group decides what the tool does wi
   like group 1; a raise (`is_raise`, toward more LinkedIn activity) needs `acknowledge_risk` and always
   answers with a warning. Every cap is clamped to the ceiling the SPA's PUT route enforces
   (`routers/user._cap_bounds`). Any other cap-shaped name (`CAP_FIELDS`) is still refused.
-- **Group 3** (owner ruling 3): anything that loosens a safety or approval gate. Refused, naming the
-  change-request path. Issue #2803 routes these to a request the USER approves in LEM.
+- **Group 3** (owner ruling 3): anything that loosens a safety or approval gate. `lem_update_settings`
+  refuses it, naming `lem_request_settings_change` (#2803): the agent files a REQUEST, the USER
+  approves it in LEM, and nothing changes until then. `GATE_RULES` is the one table of the
+  requestable fields. A gate field moved the SAFE way (a mode to `pre_review`, a higher
+  `authenticity_score_min`) is not applied directly either: it goes through the same request, so
+  no route ever has to judge a direction and an agent cannot change a gate at all.
 - **Never** (owner ruling 5): credentials, identity, billing. Refused for good.
 - Anything else is unknown and refused: a new setting is opt-IN, never opt-out.
 
@@ -199,9 +203,106 @@ KIND_ALLOWED, KIND_GROUP3, KIND_CAP, KIND_NEVER, KIND_UNKNOWN = (
 # A group-2 cap the tool applies (a raise needs `acknowledge_risk`); KIND_CAP is every other cap name.
 KIND_CAP_EDITABLE = "cap_editable"
 
-# Kinds the tool applies. #2803 routes KIND_GROUP3 to a change request: until then it is refused with
-# its own code and message, like every kind not listed here.
+# Kinds the tool applies: group 1 and the editable caps (#2801, with their own warning handling).
+# KIND_GROUP3 is never applied by `lem_update_settings`: it is refused, naming the request tool (#2803).
 HANDLED = frozenset({KIND_ALLOWED, KIND_CAP_EDITABLE})
+
+# --- group 3: the fields an agent may REQUEST (owner ruling 3) -------------------------------------
+
+
+@dataclass(frozen=True)
+class GateRule:
+    """One requestable gate field: where it is stored, which way loosens it, and what to tell the user."""
+
+    resource: str
+    key: str
+    kind: str
+    label: str
+    warning: str
+
+
+# `loosens` kinds: a mode loosens at `auto_approve`; `enable` loosens when switched on; `disable`
+# loosens when switched off; `floor` loosens when lowered; `ceiling` loosens when raised.
+MODE, ENABLE, DISABLE, FLOOR, CEILING = "mode", "enable", "disable", "floor", "ceiling"
+APPROVAL_MODES = ("pre_review", "auto_approve")
+
+
+_MODE_LANES: Mapping[str, tuple[str, str]] = {
+    "connection_request_mode": ("Connection requests", "send connection requests"),
+    "catchup_touch_mode": ("Catch-up messages", "send catch-up messages to your contacts"),
+    "nurture_dm_mode": ("Nurture DMs", "send nurture DMs to people who replied to you"),
+    "artifact_dm_mode": ("Lead magnet and newsletter DMs",
+                         "send the DMs that deliver your lead magnet or newsletter"),
+    "group_post_mode": ("Weekly group post", "publish your weekly group post"),
+    "followup_step_mode": ("DM follow-up steps", "send the follow-up steps of your DM sequences"),
+    "appreciation_dm_mode": ("Thank-you DMs", "send thank-you DMs"),
+    "funnel_stage_mode": ("Funnel-stage messages", "send funnel-stage messages"),
+}
+
+GATE_RULES: Mapping[str, GateRule] = {
+    **{name: GateRule(PREFS, name, MODE, label,
+                      f"Approving this lets LEM {action} without waiting for your review.")
+       for name, (label, action) in _MODE_LANES.items()},
+    "profile_viewer_dm_auto_send": GateRule(
+        PREFS, "profile_viewer_dm_auto_send", ENABLE, "Auto-send to profile viewers",
+        "Approving this lets LEM message or invite people who viewed your profile straight away, "
+        "without your review."),
+    "roster_auto_connect": GateRule(
+        PREFS, "roster_auto_connect", ENABLE, "Auto-connect with roster targets",
+        "Approving this lets LEM send connection requests to your roster targets on its own."),
+    "roster_auto_follow": GateRule(
+        PREFS, "roster_auto_follow", ENABLE, "Auto-follow roster targets",
+        "Approving this lets LEM follow your roster targets on its own."),
+    "hold_repaired_posts_for_review": GateRule(
+        PREFS, "hold_repaired_posts_for_review", DISABLE, "Hold repaired posts for review",
+        "Approving this lets posts that the quality check had to rewrite be scheduled without being "
+        "held for your review."),
+    "authenticity_score_min": GateRule(
+        PREFS, "authenticity_score_min", FLOOR, "Authenticity bar",
+        "Approving this lowers the bar a draft must clear to count as authentic, so weaker drafts "
+        "can pass the quality check."),
+    "post_similarity_max_pct": GateRule(
+        PREFS, "post_similarity_max_pct", CEILING, "Repetition limit",
+        "Approving this lets posts that resemble your earlier posts more closely pass the "
+        "repetition check."),
+    "auto_publish_newsletters": GateRule(
+        NEWSLETTER, "auto_publish_newsletters", ENABLE, "Auto-publish newsletters",
+        "Approving this lets newsletter editions publish on their own without your approval."),
+}
+GATE_FIELDS = frozenset(GATE_RULES)
+SAFE_WARNING = "Approving this makes LEM stricter: it loosens nothing."
+
+
+def loosens(field: str, before: Any, requested: Any) -> bool:
+    """Whether moving `field` from `before` to `requested` loosens its gate.
+
+    Args:
+        field: A key of `GATE_RULES`.
+        before: The value in effect now (for a threshold stored NULL, the deploy default).
+        requested: The value asked for.
+
+    Returns:
+        True when the change loosens the gate. A value that cannot be compared (an unknown
+        `before` on a threshold) reads as loosening: the cautious answer.
+    """
+    kind = GATE_RULES[field].kind
+    if kind == MODE:
+        return requested == "auto_approve" and before != "auto_approve"
+    if kind == ENABLE:
+        return bool(requested) and not bool(before)
+    if kind == DISABLE:
+        return not bool(requested) and (True if before is None else bool(before))
+    try:
+        if kind == FLOOR:
+            return int(requested) < int(before)
+        return int(requested) > int(before)
+    except (TypeError, ValueError):
+        return True
+
+
+def warning_for(field: str, before: Any, requested: Any) -> str:
+    """The one plain sentence shown with a requested change: what approving it loosens."""
+    return GATE_RULES[field].warning if loosens(field, before, requested) else SAFE_WARNING
 
 
 @dataclass(frozen=True)
@@ -238,11 +339,14 @@ def classify(field: str) -> str:
     return KIND_UNKNOWN
 
 
+_REQUESTABLE_REFUSAL = ("needs_change_request",
+                        "'{field}' is a safety or approval gate, so an agent cannot change it "
+                        "directly. Ask for it with lem_request_settings_change: the user approves "
+                        "it in LEM, and nothing changes until they do.")
 _REFUSALS: Mapping[str, tuple[str, str]] = {
-    KIND_GROUP3: ("needs_change_request",
-                  "'{field}' loosens a safety or approval gate, so an agent cannot change it. It "
-                  "needs a change request (coming) that the user approves in LEM. For now, tell "
-                  "the user and open it with lem_open_in_lem (destination: account)."),
+    KIND_GROUP3: ("gate_not_requestable",
+                  "'{field}' is a safety or approval gate that an agent cannot change or request. "
+                  "Tell the user and open it with lem_open_in_lem (destination: account)."),
     KIND_CAP: ("cap_not_editable",
                "'{field}' is a cap this tool does not change. Tell the user and "
                "open it with lem_open_in_lem (destination: account)."),
@@ -270,7 +374,7 @@ def refusals(fields: Any) -> list[Refusal]:
         kind = classify(str(field))
         if kind in HANDLED:
             continue
-        code, template = _REFUSALS[kind]
+        code, template = (_REQUESTABLE_REFUSAL if str(field) in GATE_RULES else _REFUSALS[kind])
         out.append(Refusal(str(field), kind, code, template.format(field=str(field)[:60],
                                                                     allowed=allowed)))
     return out
@@ -326,7 +430,7 @@ def audit_raised(payload: Mapping[str, Any]) -> list[str]:
 
 def audit_fields(payload: Mapping[str, Any]) -> list[str]:
     """The field NAMES a tool answer changed or restored: all an audit row ever carries."""
-    for key in ("changed", "restored"):
+    for key in ("changed", "restored", "requested"):
         value = payload.get(key)
         if isinstance(value, Mapping):
             return sorted(str(k) for k in value)

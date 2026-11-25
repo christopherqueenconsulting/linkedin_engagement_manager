@@ -74,6 +74,11 @@ FORBIDDEN_ROLE_ROUTES: tuple[Forbidden, ...] = (
     # -- the MCP server's own stop ----------------------------------------------------------------
     Forbidden("/admin/mcp-kill", _ANY, "the MCP kill switch: a seat must never be able to turn off "
                                        "the stop that contains it"),
+    # -- the user's decision on an agent's gate-loosening request (#2803) -------------------------
+    Forbidden("/user/settings-proposals", _ANY, "lists the change requests an agent filed: only the "
+                                                "account owner decides them"),
+    Forbidden("/user/settings-proposals/*", _ANY, "approves or rejects an agent's request to loosen a "
+                                                  "safety gate: an agent may ask, never approve"),
     # -- caps and approval modes: the config that decides what runs without a human ---------------
     # The agent legitimately reaches this PATH (to read it), and refuses the write in the handler —
     # see HANDLER_GUARDED_ROUTES. So at the resolver it is forbidden only for the read-only role,

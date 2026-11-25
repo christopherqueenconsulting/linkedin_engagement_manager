@@ -167,6 +167,40 @@
         "title": "AgentTokenRequest",
         "type": "object"
       },
+      "ApproveProposalRequest": {
+        "description": "Body of `POST /user/settings-proposals/{id}/approve`.",
+        "properties": {
+          "fields": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The fields to approve. Omit to approve every field of the proposal.",
+            "title": "Fields"
+          },
+          "session_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Token"
+          }
+        },
+        "title": "ApproveProposalRequest",
+        "type": "object"
+      },
       "ArtifactCtaAttribution": {
         "description": "Owned-asset CTA deliveries in the window (#624) \u2014 what subscriber growth is read against.\n\n`newsletter_links` is None, not 0, when no subscribe URL is configured: there was nothing to\ncarry, which is a different fact from \"carried nothing\".",
         "properties": {
@@ -6735,6 +6769,24 @@
           "created_at"
         ],
         "title": "ProfileAuditTrendPoint",
+        "type": "object"
+      },
+      "RejectProposalRequest": {
+        "description": "Body of `POST /user/settings-proposals/{id}/reject`.",
+        "properties": {
+          "session_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Token"
+          }
+        },
+        "title": "RejectProposalRequest",
         "type": "object"
       },
       "ResponseModel_DashboardStats_": {
@@ -16924,6 +16976,182 @@
           }
         },
         "summary": "Update User Settings Endpoint"
+      }
+    },
+    "/api/user/settings-proposals": {
+      "get": {
+        "description": "The \"Changes your agent asked for\" card's read: open proposals, expired ones swept first.\n\nA failed read is 503, never an empty list that reads as \"your agent asked for nothing\".",
+        "operationId": "list_settings_proposals_api_user_settings_proposals_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "session_token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "The caller's open change requests, newest first"
+          },
+          "401": {
+            "description": "Invalid or expired session"
+          },
+          "403": {
+            "description": "Not a person's session"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "description": "The requests could not be read"
+          }
+        },
+        "summary": "List Settings Proposals"
+      }
+    },
+    "/api/user/settings-proposals/{proposal_id}/approve": {
+      "post": {
+        "description": "Apply an agent's request, or the chosen fields of it, under a fresh step-up.\n\nOrder matters: step-up first (a refusal changes nothing), then the pending and expiry checks,\nthen every selected field's before-value is re-read and compared. The decision is CLAIMED in the\nSQL (`status = 'pending' AND expires_at > now`) before any write, so a double click applies once.\nA stale field is skipped and reported; the rest apply.",
+        "operationId": "approve_settings_proposal_api_user_settings_proposals__proposal_id__approve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "title": "Proposal Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApproveProposalRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Decided; says which fields were applied, stale or declined"
+          },
+          "401": {
+            "description": "Invalid or expired session"
+          },
+          "403": {
+            "description": "Step-up required, or not a person's session"
+          },
+          "404": {
+            "description": "No such change request on this account"
+          },
+          "409": {
+            "description": "Already decided, or expired"
+          },
+          "422": {
+            "description": "A field that is not in this request"
+          },
+          "503": {
+            "description": "The current settings could not be read; nothing was changed"
+          }
+        },
+        "summary": "Approve Settings Proposal"
+      }
+    },
+    "/api/user/settings-proposals/{proposal_id}/reject": {
+      "post": {
+        "description": "Close an agent's request without applying any of it. Loosens nothing, so no step-up.",
+        "operationId": "reject_settings_proposal_api_user_settings_proposals__proposal_id__reject_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "title": "Proposal Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RejectProposalRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Rejected; nothing changed"
+          },
+          "401": {
+            "description": "Invalid or expired session"
+          },
+          "403": {
+            "description": "Not a person's session"
+          },
+          "404": {
+            "description": "No such change request on this account"
+          },
+          "409": {
+            "description": "Already decided, or expired"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reject Settings Proposal"
       }
     },
     "/api/user/shipped": {
