@@ -21,6 +21,7 @@ export default function MarketingFooter() {
               width={286}
               height={64}
               className="-ml-[5px] h-8 w-auto"
+              loading="lazy"
               decoding="async"
             />
             <p className="mt-4 text-sm leading-relaxed text-fg-muted">
