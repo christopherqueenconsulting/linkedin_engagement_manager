@@ -1,0 +1,34 @@
+{
+  "pr": 2792,
+  "profile": "product-content",
+  "round": 1,
+  "head": "5be88f95aad9fe3f27c6e1f3f5dbc636c8c7fb35",
+  "reviewer": "K",
+  "persona": "accessibility",
+  "verdict": "pass",
+  "reasons": [
+    "Structure: one h1 in Hero.tsx, then h2 per section and h3 inside beats, problems, steps and plans. The footer h2 'Site links' is sr-only. The removed eyebrows left no heading gaps.",
+    "Text alternatives: every Panel in ProductPanel.tsx is role=img with a specific aria-label, innards aria-hidden. Safety icons removed; remaining icons are aria-hidden. The wordmark img has alt 'LinkedIn Engagement Manager'.",
+    "Contrast, computed by hand from index.css tokens: light fg-muted #5b6670 on page #f9f9f9 is about 5.6:1; dark fg-muted #a3aeb8 on #1f2c37 and #111a22 is above 6:1; light accent #054db1 on white about 8:1; the dark accent pairs pass. Field #7a8590 on white is about 3.7:1 and #7b8894 on #1f2c37 about 3.9:1, which clears 3:1 for borders and swatches.",
+    "Colour and meaning: status pills carry text; comparison marks carry sr-only 'included' / 'not included'; the mobile comparison list uses dl. The table has caption, th scope=col and th scope=row.",
+    "Keyboard: focus.json shows 30 stops at 1440 light, all visible_change true, no_visible_focus empty, in DOM order. The skip link is first and appears on focus. :focus-visible is a 2px currentColor ring. FAQ buttons carry aria-expanded and aria-controls. The mobile menu button has aria-expanded, aria-controls and a state-aware label.",
+    "Label in Name (2.5.3): every CtaButton aria-label contains its visible text.",
+    "Target size: Hero, nav, FAQ and menu controls are min-h-11 or h-11 (44px). Footer links pass WCAG 2.2 2.5.8 spacing.",
+    "Overflow: layout.json shows overflowing empty and scroll_width equal to viewport_width at 1440, 768 and 390, both themes. Clipped text is sr-only nodes and the closed skip link only.",
+    "Reduced motion: index.css has a global prefers-reduced-motion block; scrollToSection also checks the media query.",
+    "Plain language: hero 17px at lg and 16px below, line measure about 68 characters (55 at 390)."
+  ],
+  "required_fixes": [],
+  "residuals": [
+    "NOT VERIFIED: the focus pass ran only at 1440x900 light. Dark and 390 focus were not captured.",
+    "NOT VERIFIED: tap-target sizes at 390 come from source classes only, not a measured dump.",
+    "NOT VERIFIED: reduced motion was not captured with the media feature emulated.",
+    "NOT VERIFIED: contrast was computed by hand, not by an automated checker run on the rendered pages.",
+    "Unconfirmed, WCAG 2.4.11 Focus Not Obscured: the nav is sticky top-0 (64px) and no scroll-padding-top or scroll-margin was found in the UI source. Confirm by tabbing backwards at 390 and 1440; if the bar hides the ring, add scroll-padding-top: 5rem on html.",
+    "Plan panel: the 70/20/10 bar tells segments apart by fill only; authority and promo fills are close in light mode. Text labels and aria-label carry the facts, so it passes.",
+    "The skip link focus state covers the wordmark in the sticky nav. Temporary and acceptable.",
+    "focus.json stops at 30 tab stops, so tab order past that is covered by source only.",
+    "The hero panel hides 'Posts publish only after you approve them' inside aria-hidden content; the hero body and safety section state it.",
+    "The Safety mechanism list uses spans, not headings, for the five titles. A screen-reader user cannot jump between them."
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "pr": 2792,
+  "profile": "product-content",
+  "round": 1,
+  "head": "5be88f95aad9fe3f27c6e1f3f5dbc636c8c7fb35",
+  "reviewer": "O",
+  "persona": "art_director",
+  "verdict": "fail",
+  "reasons": [
+    "Mode: refine. The capture manifest is complete, styled, script version 4, with no blocked hosts.",
+    "Brand: PASS. Every computed colour is a DESIGN.md token in all six views. The only font family is Inter.",
+    "Type: PASS. Body is 16 px at 390 and 768, 17 px at 1440. Longest paragraph estimate is 68 characters at 1440, inside 45 to 75. H1 is 39 px on desktop and 31 px on phone.",
+    "Focus: PASS. Each fold has one filled primary, the hero's 'Start free trial'. The nav trial button is outlined.",
+    "Layout and browser finish: FAIL. Layout is clean, but console.json has failed_requests in every view: /api/app-info, /api/flags and /api/faq return 502, because no API runs behind the dev server. The FAQ was judged on fallback data.",
+    "Generic patterns: FAIL. Four small beat labels sit over the beat headings in the Features section. The section heading already names that sequence. The density rule allows at most two eyebrows per page.",
+    "Dark mode: PASS. The dark theme is designed, not inverted. All pairs are in the DESIGN.md contrast table at AA. The wordmark has its own on-dark asset.",
+    "Imagery: FAIL. /brand/lem-wordmark.png has no assets.json entry. It is 145,054 bytes at 1340x300 natural, displayed at 138x32. The on-dark wordmark is 40,485 bytes at the same natural size.",
+    "Against references: FAIL. Imagery and restraint score 3. The hero is a drawn HTML panel with fake window dots, while DESIGN.md says the bold element is a real screenshot of the app (owned asset), not an illustration.",
+    "Density and repeats: FAIL. 1,263 words over 8,339 px at 1440 is about 136 words per desktop screen, against about 80. The hero heading is 15 words (budget 10) and the body about 40 (budget 30). The Engagement beat's panel repeats the hero's right column.",
+    "Visuals explain: FAIL. The hero panel and each beat panel are synthetic, with sample content, and none carries a visible 'example' label."
+  ],
+  "required_fixes": [
+    "Hero copy block at 1440 and 390: cut the H1 to at most 10 words and the body to at most 30 words, keeping the approval claim. Route through the owner of docs/marketing-page-ux-spec.md.",
+    "Whole page: bring density from about 136 to at most about 90 words per desktop screen. Cut beat bullet lists to two points each, Problem statements to one line each, comparison cells to at most 8 words.",
+    "Features > Engagement beat panel repeats the hero's right column. Replace it with a panel that shows something new, or drop the suggestion column from the hero.",
+    "Remove the four beat labels above the beat headings.",
+    "Add a visible muted caption (13 px) under each synthetic panel, for example 'Example queue with sample posts'.",
+    "Hero panel: replace the drawn panel with an owned Content Studio screenshot built from sample data, with an assets.json entry (licence, source, sha256, max_display_px). If the drawn panel stays, it needs the brand owner's recorded ruling.",
+    "Header and footer wordmark: add an assets.json entry for lem-wordmark.png. Ship it and the on-dark wordmark at about 2x display (about 290x64) or as SVG, each under about 20 KB.",
+    "console.json, all six views: recapture with the API running, or with /api/app-info, /api/flags and /api/faq answered by local fixtures. Check: failed_requests is empty in every view."
+  ],
+  "residuals": [
+    "Filled 'Approved' and 'Scheduled' status pills use the same primary fill as the CTA. Consider an outlined or tinted pill style.",
+    "The 1440 hero H1 breaks unevenly. Recheck once the heading is shortened.",
+    "The proof strip is a row of four identical check-icon statements, close to an icon-row pattern. Acceptable as a ruled summary.",
+    "assets.json has no max_display_px on any image entry. Add one wherever an image is shown.",
+    "Copy claims 'a small first cohort' and the 'Most popular' pricing badge in a one-user beta are for the claims reviewer (D).",
+    "The 1440 full-page PNG is shown at about 8x downscale. Section crops would let a later round verify the detail.",
+    "At 768 the outlined nav 'Start free trial' is close in size to the hero button. A smaller nav size would sharpen the hierarchy."
+  ]
+}
