@@ -199,10 +199,11 @@ class ToolSpec:
     # Listed in `tools/list` and run ONLY when the account is internal or sandbox (owner ruling O1);
     # refused with `agent_may_not_approve` everywhere else, by the tool AND by the route.
     approval: bool = False
-    # A second rollout flag the tool needs ON, beyond `mcp-server-writes` (#2800: the settings
-    # tools). Off: the tool is not listed and a call is refused as an unknown tool.
+    # A second rollout flag the tool needs ON, beyond `mcp-server-writes` (#2800 settings tools,
+    # #2804 story drafts). Off: the tool is not listed and a call is refused as an unknown tool.
     flag: Optional[str] = None
-    # The auth-audit event a landed call writes instead of `mcp_write` (settings changes).
+    # The auth-audit event a landed call writes instead of `mcp_write` (settings changes, story
+    # drafts). Only `mcp_settings` switches `run_write` to field-name auditing.
     audit_event: Optional[AuthAuditEvent] = None
 
 
@@ -764,7 +765,9 @@ READ_TOOLS: tuple[ToolSpec, ...] = (
              _engagement_roster, open_world=True),
     ToolSpec("lem_get_voice_kit", "Voice kit",
              "Your story bank, lead magnet, profile skills, LinkedIn profile and groups (group "
-             "names withheld unless `include_text`)." + DATA_NOT_INSTRUCTIONS,
+             "names withheld unless `include_text`). Each story has `verified`: false means an "
+             "agent added it and the user has not confirmed it yet, so LEM does not use it and "
+             "it does not count as a story the user has." + DATA_NOT_INSTRUCTIONS,
              TextArgs, BOTH_SCOPES,
              ((GET, "/user/story-bank"), (GET, "/user/lead-magnet"), (GET, "/user/groups"),
               (GET, "/user/linkedin-profile-skills"), (GET, "/user/linkedin-profile")),
@@ -792,9 +795,11 @@ READ_TOOLS: tuple[ToolSpec, ...] = (
 # `tools/call` read the same table. The AI/media spend tools (W2b) live in `tools_spend.py` and the
 # queue-only writes (W2) in `tools_write.py`.
 from cqc_lem.api.mcp.tools_settings import SETTINGS_TOOLS  # noqa: E402
+from cqc_lem.api.mcp.tools_story import STORY_TOOLS  # noqa: E402
 from cqc_lem.api.mcp.tools_write import WRITE_TOOLS  # noqa: E402
 
-TOOLS: tuple[ToolSpec, ...] = READ_TOOLS + spend_tools() + WRITE_TOOLS + SETTINGS_TOOLS
+TOOLS: tuple[ToolSpec, ...] = (READ_TOOLS + spend_tools() + WRITE_TOOLS + SETTINGS_TOOLS
+                               + STORY_TOOLS)
 TOOLS_BY_NAME: dict[str, ToolSpec] = {spec.name: spec for spec in TOOLS}
 
 

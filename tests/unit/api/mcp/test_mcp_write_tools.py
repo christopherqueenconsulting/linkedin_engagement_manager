@@ -41,7 +41,8 @@ _BODY_CANARY = "zz-body-canary-73"
 WRITE_NAMES = {"lem_draft_post", "lem_revise_post_draft", "lem_queue_dm",
                "lem_queue_connection_request", "lem_add_outreach_target",
                "lem_edit_lead_signal_draft", "lem_edit_catchup_draft", "lem_update_lead",
-               "lem_approve_item", "lem_update_settings", "lem_undo_settings_change"}
+               "lem_approve_item", "lem_update_settings", "lem_undo_settings_change",
+               "lem_add_story_draft"}
 
 
 @pytest.fixture(autouse=True)
@@ -103,7 +104,7 @@ class TestTheWriteRegistry:
         both = {s.name for s in registry.TOOLS
                 if s.name in WRITE_NAMES and s.scopes == registry.BOTH_SCOPES}
         assert both == {"lem_draft_post", "lem_revise_post_draft", "lem_update_settings",
-                        "lem_undo_settings_change"}
+                        "lem_undo_settings_change", "lem_add_story_draft"}
 
     def test_every_write_tool_takes_a_client_request_id(self) -> None:
         for spec in registry.TOOLS:

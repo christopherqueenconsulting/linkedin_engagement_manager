@@ -3901,6 +3901,48 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/user/story-bank/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirm Story Bank Endpoint
+         * @description Confirm an agent-added entry as the user's own fact so the content engine may use it (#2804).
+         *
+         *     No MCP scope is granted this path: only the signed-in user confirms a fact.
+         */
+        post: operations["confirm_story_bank_endpoint_api_user_story_bank_confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/user/story-bank/draft": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add Story Draft
+         * @description Add ONE unverified story-bank entry on behalf of an MCP agent.
+         */
+        post: operations["add_story_draft_api_user_story_bank_draft_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/user/survey": {
         parameters: {
             query?: never;
@@ -7283,6 +7325,16 @@ export interface components {
             session_token?: string | null;
         };
         /**
+         * StoryBankConfirmRequest
+         * @description Body of `POST /user/story-bank/confirm` (#2804): the user vouches for an agent-added entry.
+         */
+        StoryBankConfirmRequest: {
+            /** Entry Id */
+            entry_id: number;
+            /** Session Token */
+            session_token: string;
+        };
+        /**
          * StoryBankDeleteRequest
          * @description Body of `DELETE /user/story-bank`.
          */
@@ -7348,6 +7400,35 @@ export interface components {
             session_token: string;
         };
         /**
+         * StoryDraftRequest
+         * @description Body of `POST /user/story-bank/draft`: a `StoryBankItem` the agent may CREATE, never address.
+         *
+         *     `StoryBankItem` is the SPA's own validation (kind, title and body lengths), reused so an agent
+         *     draft obeys exactly what a user entry does. `id` and `active` come with it and are refused.
+         */
+        StoryDraftRequest: {
+            /**
+             * Active
+             * @default true
+             */
+            active: boolean;
+            /** Body */
+            body: string;
+            /** Happened At */
+            happened_at?: string | null;
+            /** Id */
+            id?: number | null;
+            /**
+             * Kind
+             * @default anecdote
+             */
+            kind: string;
+            /** Session Token */
+            session_token?: string | null;
+            /** Title */
+            title?: string | null;
+        };
+        /**
          * StoryEntry
          * @description One piece of the user's own raw material (#620), as the story bank reads it.
          *
@@ -7370,10 +7451,14 @@ export interface components {
             kind: "anecdote" | "number" | "opinion" | "client_win" | "mistake" | "artifact";
             /** Last Used At */
             last_used_at: string | null;
+            /** Source */
+            source: string | null;
             /** Title */
             title: string | null;
             /** Used Count */
             used_count: number;
+            /** Verified */
+            verified: boolean;
         };
         /**
          * SubscriptionSummary
@@ -14791,6 +14876,91 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
+            };
+        };
+    };
+    confirm_story_bank_endpoint_api_user_story_bank_confirm_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StoryBankConfirmRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_str_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_story_draft_api_user_story_bank_draft_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StoryDraftRequest"];
+            };
+        };
+        responses: {
+            /** @description The entry was added, unverified */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResponseModel_dict_str__Any__"];
+                };
+            };
+            /** @description Not an MCP seat, or the feature is off for this account */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Too many unconfirmed drafts already wait for the user */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid arguments */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The story bank could not be read or written */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

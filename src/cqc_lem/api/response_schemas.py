@@ -350,6 +350,10 @@ class StoryEntry(BaseModel):
     used_count: int
     last_used_at: Optional[datetime]
     active: bool
+    # #2804: False for an entry an AI agent added that the user has not confirmed. The content
+    # engine never uses it; `source` is 'mcp' for an agent's entry and null for the user's own.
+    verified: bool
+    source: Optional[str]
 
 
 class StoryBankDetail(BaseModel):

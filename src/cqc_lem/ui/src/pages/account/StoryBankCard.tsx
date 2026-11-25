@@ -60,6 +60,16 @@ export default function StoryBankCard() {
     if (entry?.id) removeMutation.mutate(entry.id)
   }
 
+  const confirmMutation = useMutation({
+    mutationFn: (entry_id: number) =>
+      api.post('/user/story-bank/confirm', { session_token: sessionToken, entry_id }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['story-bank'] }),
+    onError: () => {
+      setMsg({ ok: false, text: 'Could not confirm — try again.' })
+      setTimeout(() => setMsg(null), 5000)
+    },
+  })
+
   const saveMutation = useMutation({
     mutationFn: () =>
       api.put('/user/story-bank', {
@@ -97,7 +107,9 @@ export default function StoryBankCard() {
   if (!data) return null
 
   const target = data?.target_entries ?? 5
-  const filled = entries.filter((e) => e.body.trim() && e.active).length
+  // An entry an agent added and the user has not confirmed is not a fact LEM may use, so it is not
+  // one of "your entries" yet. `verified` is absent only on a row that was never saved.
+  const filled = entries.filter((e) => e.body.trim() && e.active && e.verified !== false).length
 
   return (
     <div className="bg-raised rounded-panel shadow-panel border border-hairline p-6 space-y-4"
@@ -147,6 +159,29 @@ export default function StoryBankCard() {
                 aria-label={`Remove ${e.title || 'entry'}`} title="Remove entry"
                 className="text-danger hover:text-danger">×</button>
             </div>
+            {e.id && e.verified === false && (
+              <div className="rounded-control border border-warning/25 bg-warning/5 px-3 py-2
+                              flex flex-wrap items-center gap-2"
+                   data-testid="story-unverified">
+                <span className="text-xs font-semibold text-warning">
+                  Added by your agent — not yet confirmed
+                </span>
+                <span className="text-xs text-fg-muted flex-1 min-w-40">
+                  LEM will not use it until you confirm it. Editing it and saving also confirms it.
+                </span>
+                <button type="button" onClick={() => confirmMutation.mutate(e.id!)}
+                  disabled={confirmMutation.isPending}
+                  className="px-3 py-1 rounded-control bg-accent text-white text-xs font-semibold
+                             disabled:opacity-50">
+                  Confirm
+                </button>
+                <button type="button" onClick={() => removeRow(idx)}
+                  className="px-3 py-1 rounded-control border border-danger/50 text-danger
+                             text-xs font-semibold">
+                  Discard
+                </button>
+              </div>
+            )}
             <textarea value={e.body} rows={3} maxLength={5000}
               onChange={(ev) => update(idx, { body: ev.target.value })}
               aria-label="What actually happened"

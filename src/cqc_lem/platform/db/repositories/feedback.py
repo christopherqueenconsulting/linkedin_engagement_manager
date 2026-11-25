@@ -39,13 +39,21 @@ from cqc_lem.utilities.logger import log_error
 # the FACT source, and generation may not invent specifics outside it (issue #416).
 STORY_BANK_KINDS = ("anecdote", "number", "opinion", "client_win", "mistake", "artifact")
 _LEN_STORY_TITLE = 255
+# #2804: an entry an AI agent added (`source='mcp'`) is UNVERIFIED until the user confirms it
+# (`verified_at`). A user's own row has `source IS NULL`, so every pre-existing row is verified with
+# no backfill. This is the ONE definition: every reader the content engine uses applies it, and it
+# is separate from `active`, the user's own on/off switch.
+STORY_SOURCE_MCP = "mcp"
+STORY_VERIFIED_SQL = "(source IS NULL OR verified_at IS NOT NULL)"
+# Unconfirmed agent drafts one account may hold at once: a flooded bank is a review chore, not help.
+MAX_UNVERIFIED_STORY_DRAFTS = 20
 def count_story_bank_entries(user_id: int, active_only: bool = True) -> int:
     """How many entries the user has seeded — what the onboarding nudge decides on."""
     try:
         with db_cursor() as cursor:
             sql = "SELECT COUNT(*) FROM story_bank WHERE user_id=%s"
             if active_only:
-                sql += " AND active=1 AND review_status='accepted'"
+                sql += f" AND active=1 AND review_status='accepted' AND {STORY_VERIFIED_SQL}"
             cursor.execute(sql, (user_id,))
             row = cursor.fetchone()
             return int(row[0]) if row else 0
@@ -82,13 +90,80 @@ def upsert_story_bank_entries(user_id: int, entries: list) -> bool:
                     "INSERT INTO story_bank (user_id, kind, title, body, happened_at, active) "
                     "VALUES (%s,%s,%s,%s,%s,%s)", inserts)
             if updates:
+                # An agent draft is confirmed by EDITING it and saving (#2804). `verified_at` is
+                # assigned FIRST: MySQL evaluates SET left to right, so it must compare against the
+                # stored text before the same statement overwrites it. A save that changes nothing
+                # (the SPA sends every row) and the `active` switch never confirm anything.
                 cursor.executemany(
-                    "UPDATE story_bank SET kind=%s, title=%s, body=%s, happened_at=%s, active=%s "
-                    "WHERE id=%s AND user_id=%s", updates)
+                    "UPDATE story_bank SET "
+                    "verified_at = IF(source IS NOT NULL AND verified_at IS NULL AND ("
+                    "kind <> %s OR CAST(title AS BINARY) <> CAST(%s AS BINARY) "
+                    "OR CAST(body AS BINARY) <> CAST(%s AS BINARY) "
+                    "OR NOT (happened_at <=> %s)), NOW(), verified_at), "
+                    "kind=%s, title=%s, body=%s, happened_at=%s, active=%s "
+                    "WHERE id=%s AND user_id=%s",
+                    [(k, t, b, h, k, t, b, h, a, i, u) for k, t, b, h, a, i, u in updates])
             return True
     except mysql.connector.Error as err:
         log_error("Could not upsert story bank entries", exc=err, user_id=user_id)
         return False
+def insert_story_draft(user_id: int, kind: str, title: str, body: str,
+                       happened_at: Optional[str]) -> Optional[int]:
+    """Add one agent-authored entry, UNVERIFIED (`source='mcp'`, `verified_at` NULL) (#2804).
+
+    Returns:
+        The new row's id, or None when the insert failed.
+    """
+    kind = kind if kind in STORY_BANK_KINDS else "anecdote"
+    body = str(body or "").strip()
+    title = str(title or "").strip()[:_LEN_STORY_TITLE] or body[:80]
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "INSERT INTO story_bank (user_id, kind, title, body, happened_at, active, source) "
+                "VALUES (%s,%s,%s,%s,%s,1,%s)",
+                (user_id, kind, title, body, happened_at or None, STORY_SOURCE_MCP))
+            return int(cursor.lastrowid)
+    except mysql.connector.Error as err:
+        log_error("Could not insert story bank draft", exc=err, user_id=user_id)
+        return None
+
+
+def count_unverified_story_drafts(user_id: int) -> Optional[int]:
+    """How many agent drafts still wait for the user. None when unreadable (callers fail closed)."""
+    try:
+        with db_cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) FROM story_bank WHERE user_id=%s AND NOT " + STORY_VERIFIED_SQL,
+                (user_id,))
+            row = cursor.fetchone()
+            return int(row[0]) if row else 0
+    except mysql.connector.Error as err:
+        log_error("Could not count story bank drafts", exc=err, user_id=user_id)
+        return None
+
+
+def confirm_story_bank_entry(user_id: int, entry_id: int) -> bool:
+    """Confirm an agent draft as the user's own fact. Idempotent; scoped to the owner's rows.
+
+    Returns:
+        True when the entry exists for this user (now verified), False when no such row.
+    """
+    try:
+        with db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE story_bank SET verified_at = COALESCE(verified_at, NOW()) "
+                "WHERE user_id=%s AND id=%s", (user_id, int(entry_id)))
+            if cursor.rowcount > 0:
+                return True
+            cursor.execute("SELECT 1 FROM story_bank WHERE user_id=%s AND id=%s",
+                           (user_id, int(entry_id)))
+            return cursor.fetchone() is not None
+    except mysql.connector.Error as err:
+        log_error("Could not confirm story bank entry", exc=err, user_id=user_id)
+        return False
+
+
 def delete_story_bank_entry(user_id: int, entry_id: int) -> bool:
     """Remove one story-bank entry, scoped to its owner so an id from another account matches nothing.
 
@@ -560,9 +635,13 @@ def get_latest_review_feedback_id(user_id: int) -> Optional[int]:
 
 
 _STORY_BANK_COLS = ("id", "kind", "title", "body", "happened_at", "used_count", "last_used_at",
-                    "active")
+                    "active", "source", "verified")
+# `verified` is computed, not stored: it is the one reader-side definition of STORY_VERIFIED_SQL.
+_STORY_BANK_SELECT = ", ".join(f"{STORY_VERIFIED_SQL} AS verified" if c == "verified" else c
+                               for c in _STORY_BANK_COLS)
 def _clean_story_row(row: dict) -> dict:
     row["active"] = bool(row.get("active"))
+    row["verified"] = bool(row.get("verified"))
     row["used_count"] = int(row.get("used_count") or 0)
     return row
 def get_story_bank_entries(user_id: int, active_only: bool = False) -> list:
@@ -571,10 +650,11 @@ def get_story_bank_entries(user_id: int, active_only: bool = False) -> list:
     """
     try:
         with db_cursor(dictionary=True) as cursor:
-            sql = f"SELECT {', '.join(_STORY_BANK_COLS)} FROM story_bank WHERE user_id=%s"
+            sql = f"SELECT {_STORY_BANK_SELECT} FROM story_bank WHERE user_id=%s"
             if active_only:
-                # The generation selectors read through here: only a reviewed fact is citable.
-                sql += " AND active=1 AND review_status='accepted'"
+                # The generation selectors read through here: only a reviewed AND user-verified
+                # fact is citable (#2804). The SPA list (active_only=False) sees every row.
+                sql += f" AND active=1 AND review_status='accepted' AND {STORY_VERIFIED_SQL}"
             sql += " ORDER BY used_count ASC, last_used_at IS NOT NULL, last_used_at ASC, id ASC"
             cursor.execute(sql, (user_id,))
             return [_clean_story_row(r) for r in (cursor.fetchall() or [])]
