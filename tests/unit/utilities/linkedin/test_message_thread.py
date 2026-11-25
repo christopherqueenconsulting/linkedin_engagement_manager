@@ -781,7 +781,7 @@ class TestExpectHistory:
         assert result.route == mt.ROUTE_DIRECT_URL and result.events == 3
         assert mt.ROUTE_TEXT_NODE in result.composer_only_routes
 
-    def test_every_route_composer_only_warns_exactly_once(self):
+    def test_every_route_composer_only_logs_debug_not_warning(self):
         d = FakeDriver(page_source=PAGE_MODEL)
         d.dom[(By.XPATH, mt._TEXT_NODE_LOCATORS[0][1])] = [
             FakeElement(text="Message", on_click=_opens(d, events=0, overlay=True))]
@@ -792,11 +792,12 @@ class TestExpectHistory:
             if "compose" in url:
                 d.thread = {"events": 0, "composer": True, "overlay": True}
         d.get = _get
-        with patch.object(mt, "log_warning") as warn:
+        with patch.object(mt, "log_warning") as warn, patch.object(mt, "log_debug") as dbg:
             result = mt.open_message_thread(d, MagicMock(), PROFILE, timeout=0,
                                             expect_history=True)
         assert not result.opened and result.composer_only_routes
-        warn.assert_called_once()
+        warn.assert_not_called()
+        assert any("empty composer" in c.args[0] for c in dbg.call_args_list)
 
     def test_nothing_rendered_is_not_composer_only_and_does_not_warn(self):
         d = FakeDriver()

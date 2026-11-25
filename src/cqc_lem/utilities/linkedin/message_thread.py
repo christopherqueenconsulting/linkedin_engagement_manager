@@ -1354,12 +1354,13 @@ def _walk_message_thread(driver: WebDriver, wait: WebDriverWait, profile_url: st
         return result
     if result.composer_only_routes:
         # The caller knows this thread has messages, yet every route that rendered anything showed a
-        # bare composer — the message list is not being read (#2622). That is the drift signal the
-        # old silent DEBUG hid. ONE warning per walk, however many routes saw it.
-        log_warning("Message-thread routes rendered only an empty composer for a thread that must "
-                    "have history — no route could verify it", user_id=user_id,
-                    action_type="followup", profile_url=profile_url,
-                    selectors=list(result.composer_only_routes))
+        # bare composer (#2622). The caller counts this per thread (`thread_unreadable`) and warns
+        # ONCE when it stops the row (`process_user_followups`), so a warning here would file a
+        # second defect for the same condition on every pass until that ceiling (#2826). DEBUG.
+        log_debug("Message-thread routes rendered only an empty composer for a thread that must "
+                  "have history - no route could verify it", user_id=user_id,
+                  action_type="followup", profile_url=profile_url,
+                  selectors=list(result.composer_only_routes))
         return result
     log_debug(f"No route opened a message thread for {profile_url}", user_id=user_id,
               action_type="followup", selectors=list(result.tried), profile_url=profile_url)
