@@ -7483,6 +7483,25 @@
         "title": "StepUpVerifyRequest",
         "type": "object"
       },
+      "StoryBankConfirmRequest": {
+        "description": "Body of `POST /user/story-bank/confirm` (#2804): the user vouches for an agent-added entry.",
+        "properties": {
+          "entry_id": {
+            "title": "Entry Id",
+            "type": "integer"
+          },
+          "session_token": {
+            "title": "Session Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_token",
+          "entry_id"
+        ],
+        "title": "StoryBankConfirmRequest",
+        "type": "object"
+      },
       "StoryBankDeleteRequest": {
         "description": "Body of `DELETE /user/story-bank`.",
         "properties": {
@@ -7613,6 +7632,78 @@
         "title": "StoryBankRequest",
         "type": "object"
       },
+      "StoryDraftRequest": {
+        "additionalProperties": false,
+        "description": "Body of `POST /user/story-bank/draft`: a `StoryBankItem` the agent may CREATE, never address.\n\n`StoryBankItem` is the SPA's own validation (kind, title and body lengths), reused so an agent\ndraft obeys exactly what a user entry does. `id` and `active` come with it and are refused.",
+        "properties": {
+          "active": {
+            "default": true,
+            "title": "Active",
+            "type": "boolean"
+          },
+          "body": {
+            "maxLength": 5000,
+            "minLength": 1,
+            "title": "Body",
+            "type": "string"
+          },
+          "happened_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Happened At"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "kind": {
+            "default": "anecdote",
+            "title": "Kind",
+            "type": "string"
+          },
+          "session_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Token"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "title": "StoryDraftRequest",
+        "type": "object"
+      },
       "StoryEntry": {
         "description": "One piece of the user's own raw material (#620), as the story bank reads it.\n\n`used_count` / `last_used_at` are the rotation counters generation writes; they are read-only\nhere, and the SELECT (`db._STORY_BANK_COLS`) is what this list is taken from.",
         "properties": {
@@ -7664,6 +7755,17 @@
             ],
             "title": "Last Used At"
           },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
           "title": {
             "anyOf": [
               {
@@ -7678,6 +7780,10 @@
           "used_count": {
             "title": "Used Count",
             "type": "integer"
+          },
+          "verified": {
+            "title": "Verified",
+            "type": "boolean"
           }
         },
         "required": [
@@ -7688,7 +7794,9 @@
           "happened_at",
           "used_count",
           "last_used_at",
-          "active"
+          "active",
+          "verified",
+          "source"
         ],
         "title": "StoryEntry",
         "type": "object"
@@ -17048,6 +17156,86 @@
           }
         },
         "summary": "Update Story Bank Endpoint"
+      }
+    },
+    "/api/user/story-bank/confirm": {
+      "post": {
+        "description": "Confirm an agent-added entry as the user's own fact so the content engine may use it (#2804).\n\nNo MCP scope is granted this path: only the signed-in user confirms a fact.",
+        "operationId": "confirm_story_bank_endpoint_api_user_story_bank_confirm_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StoryBankConfirmRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_str_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Confirm Story Bank Endpoint"
+      }
+    },
+    "/api/user/story-bank/draft": {
+      "post": {
+        "description": "Add ONE unverified story-bank entry on behalf of an MCP agent.",
+        "operationId": "add_story_draft_api_user_story_bank_draft_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StoryDraftRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResponseModel_dict_str__Any__"
+                }
+              }
+            },
+            "description": "The entry was added, unverified"
+          },
+          "403": {
+            "description": "Not an MCP seat, or the feature is off for this account"
+          },
+          "409": {
+            "description": "Too many unconfirmed drafts already wait for the user"
+          },
+          "422": {
+            "description": "Invalid arguments"
+          },
+          "503": {
+            "description": "The story bank could not be read or written"
+          }
+        },
+        "summary": "Add Story Draft"
       }
     },
     "/api/user/survey": {

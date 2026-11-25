@@ -125,6 +125,18 @@ def test_a_healthy_server_passes_and_every_read_tool_is_called(scope: str) -> No
     assert _TOKEN not in text
 
 
+@pytest.mark.parametrize("scope", ["mcp", "mcp_outreach"])
+def test_the_story_draft_tool_is_expected_listed_and_never_called_by_a_read_run(scope: str) -> None:
+    """#2804: a registry write on both scopes. A smoke run must not file an unconfirmed fact."""
+    assert "lem_add_story_draft" in {s.name for s in tools_for_scope(scope)}
+    assert "lem_add_story_draft" in smoke._write_tool_names()
+    client, seen = _server(scope)
+    code, text = _run(client)
+    assert code == 0, text
+    assert "lem_add_story_draft" not in [b["params"]["name"] for b in seen
+                                         if b["method"] == "tools/call"]
+
+
 def test_a_tools_list_that_drifts_from_the_registry_fails() -> None:
     client, _ = _server(tools=["lem_whoami", "lem_extra"])
     code, text = _run(client)

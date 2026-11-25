@@ -56,7 +56,11 @@ EXPECTED_SETTINGS_PUTS = frozenset({
     "/user/engagement-preferences", "/user/icp-definition", "/user/lead-magnet",
     "/user/newsletter-settings", "/user/timezone",
 })
+# #2804: `lem_add_story_draft` CREATES an unverified story-bank entry. `/user/story-bank` itself stays
+# GET-only for both scopes (asserted below), so an agent never edits, confirms or deletes an entry.
+EXPECTED_STORY_DRAFT = "/user/story-bank/draft"
 EXPECTED_MCP_WRITES = {"/schedule_post": frozenset({"POST"}), "/update_post": frozenset({"POST"}),
+                       EXPECTED_STORY_DRAFT: frozenset({"POST"}),
                        **{path: frozenset({"POST"}) for path in EXPECTED_SPEND_POSTS},
                        **{path: frozenset({"PUT"}) for path in EXPECTED_SETTINGS_PUTS}}
 EXPECTED_OUTREACH_WRITES = {

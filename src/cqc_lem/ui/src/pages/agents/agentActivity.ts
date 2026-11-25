@@ -17,6 +17,7 @@ export const MCP_ACTIVITY_KEY = 'mcp-activity'
 // so it is never rendered as the event's object.
 const EVENT_LABELS: Record<string, string> = {
   mcp_approval: 'Approved (internal/sandbox account)',
+  mcp_story_draft: 'Added a story-bank draft (waiting for your confirmation)',
   mcp_access: 'Connected',
   mcp_token_minted: 'Connection created',
   mcp_token_rotated: 'Connection rotated',

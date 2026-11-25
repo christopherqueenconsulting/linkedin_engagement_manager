@@ -91,6 +91,7 @@ PROFILE_AUDIT = "profile-audit-enabled"
 MCP_SERVER = "mcp-server-enabled"
 MCP_SERVER_WRITES = "mcp-server-writes"
 MCP_SETTINGS_WRITES = "mcp-settings-writes"
+MCP_STORY_DRAFTS = "mcp-story-drafts"
 COMMENT_CANDIDATE_DRAFTS = "comment-candidate-drafts-enabled"
 VOICE_EXEMPLARS = "voice-exemplars-enabled"
 COMMENT_MULTI_CANDIDATE = "comment-multi-candidate-enabled"
@@ -355,6 +356,16 @@ FLAGS: Dict[str, FlagSpec] = {
                          "when off neither tool is listed and a call is refused. Group-1 settings "
                          "only (voice, targeting, strategy, cadence, assets); caps and "
                          "gate-loosening fields are never reachable through it."),
+        ),
+        FlagSpec(
+            key=MCP_STORY_DRAFTS,
+            env_var="MCP_STORY_DRAFTS_ENABLED",
+            default=False,
+            owner="platform",
+            description=("`lem_add_story_draft` (issue #2804, epic #2797): an MCP agent may add a "
+                         "story-bank entry that lands UNVERIFIED and is never used by the content "
+                         "engine until the user confirms it in LEM. Checked IN ADDITION to "
+                         "`mcp-server-writes`. OFF by default."),
         ),
     )
 }

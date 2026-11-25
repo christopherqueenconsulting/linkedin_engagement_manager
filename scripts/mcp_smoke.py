@@ -5,7 +5,9 @@ does, and exits non-zero on the first mismatch it reports (it keeps going to rep
 
 1. `initialize`.
 2. `tools/list` equals the registry for the token's scope (read from `lem_whoami`); the
-   internal/sandbox-only `lem_approve_item` may be absent (owner ruling O1).
+   internal/sandbox-only `lem_approve_item` may be absent (owner ruling O1). `lem_add_story_draft`
+   (#2804) is in the registry for BOTH scopes, so it must be listed on either token; it is a write,
+   so step 3 never calls it (a smoke run must not leave an unconfirmed fact in a real story bank).
 3. Every READ tool is called with minimal valid arguments and must not come back `isError`
    (`lem_get_post` uses the first post `lem_list_posts` returns, and is skipped when there is none;
    `lem_list_outreach` is called once per queue on an `mcp_outreach` token).

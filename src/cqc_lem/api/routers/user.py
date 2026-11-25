@@ -156,6 +156,7 @@ from cqc_lem.utilities.db import (
     bulk_update_posts,
     change_user_email,
     clear_user_linkedin_password,
+    confirm_story_bank_entry,
     consume_auth_challenge,
     count_recovery_codes,
     create_auth_challenge,
@@ -1291,6 +1292,13 @@ class StoryBankRequest(BaseModel):
 
     session_token: str
     entries: List[StoryBankItem] = []
+
+
+class StoryBankConfirmRequest(BaseModel):
+    """Body of `POST /user/story-bank/confirm` (#2804): the user vouches for an agent-added entry."""
+
+    session_token: str
+    entry_id: int
 
 
 class StoryBankDeleteRequest(BaseModel):
@@ -4187,6 +4195,24 @@ def update_story_bank_endpoint(request: StoryBankRequest) -> ResponseModel[str]:
     if not upsert_story_bank_entries(user_id, [e.model_dump() for e in request.entries]):
         raise HTTPException(status_code=500, detail="Could not update story bank")
     return ResponseModel(status_code=200, detail="Story bank updated")
+
+
+@router.post("/story-bank/confirm")
+def confirm_story_bank_endpoint(request: StoryBankConfirmRequest) -> ResponseModel[str]:
+    """Confirm an agent-added entry as the user's own fact so the content engine may use it (#2804).
+
+    No MCP scope is granted this path: only the signed-in user confirms a fact.
+    """
+    user_id = _main.get_session_user_id(request.session_token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid or expired session")
+    # Defence in depth: the grant table already withholds this path from every machine scope.
+    if _main._request_session_scope.get() not in _HUMAN_SESSION_SCOPES:
+        raise HTTPException(status_code=403, detail={
+            "code": "human_only", "message": "Only the signed-in user confirms a story-bank entry."})
+    if not confirm_story_bank_entry(user_id, request.entry_id):
+        raise HTTPException(status_code=404, detail="Story bank entry not found")
+    return ResponseModel(status_code=200, detail="Story bank entry confirmed")
 
 
 @router.delete("/story-bank")

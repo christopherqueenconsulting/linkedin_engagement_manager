@@ -789,6 +789,9 @@ _MCP_SPEND_PATHS = frozenset({"/user/mcp-spend/post", "/user/mcp-spend/post-imag
 # all hold for these scopes, because they are queue-only (`_QUEUE_ONLY_SCOPES`).
 #   /schedule_post, /update_post   lem_draft_post / lem_revise_post_draft: text-only PENDING drafts
 #   /user/mcp-spend/*              the W2b spend tools; POST only, listed above
+#   /user/story-bank/draft         lem_add_story_draft (#2804): CREATE one UNVERIFIED story-bank
+#                                  entry. `/user/story-bank` stays GET-only for MCP, so an agent can
+#                                  never edit, confirm or delete an entry; only the user does that
 #   /user/engagement-preferences, /user/icp-definition, /user/lead-magnet,
 #   /user/newsletter-settings, /user/timezone
 #                                  `lem_update_settings` / `lem_undo_settings_change` (#2800), PUT
@@ -802,6 +805,7 @@ _MCP_SETTINGS_PATHS = frozenset({
 })
 _MCP_WRITE_METHODS: Dict[str, frozenset[str]] = {
     "/schedule_post": _POST_ONLY, "/update_post": _POST_ONLY,
+    "/user/story-bank/draft": _POST_ONLY,
     **{path: _POST_ONLY for path in _MCP_SPEND_PATHS},
     **{path: _PUT_ONLY for path in _MCP_SETTINGS_PATHS},
 }
@@ -5122,6 +5126,7 @@ from cqc_lem.api.routers import (  # noqa: E402
     billing as _billing_router,
     curated as _curated_router,
     mcp_spend as _mcp_spend_router,
+    mcp_story as _mcp_story_router,
     mcp_tokens as _mcp_tokens_router,
     outreach as _outreach_router,
     review as _review_router,
@@ -5135,6 +5140,7 @@ app.include_router(_avatar_router.router)
 app.include_router(_billing_router.router)
 app.include_router(_curated_router.router)
 app.include_router(_mcp_spend_router.router)
+app.include_router(_mcp_story_router.router)
 app.include_router(_mcp_tokens_router.router)
 app.include_router(_outreach_router.router)
 app.include_router(_review_router.router)

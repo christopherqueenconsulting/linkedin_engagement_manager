@@ -72,7 +72,7 @@ that needs a new path is therefore a reviewed edit to the scope table as well.
 | `lem_get_lead_funnel` | yes | yes | `/leads/funnel` | counts only |
 | `lem_get_engagement_settings` | yes | yes | `/user/engagement-preferences`, `/user/dm-templates` | the inbound-mail address and Gmail confirmation never returned |
 | `lem_list_engagement_targets` | no | yes | `/user/engagement-targets`, `/user/engagement-suggestions` | open-world; the roster is named people and the suggestions are AI drafts from strangers' posts, so both are outreach-only (P2 review); drafts fenced |
-| `lem_get_voice_kit` | yes | yes | story bank, lead magnet, groups, skills, profile | open-world; group names fenced |
+| `lem_get_voice_kit` | yes | yes | story bank, lead magnet, groups, skills, profile | open-world; group names fenced; each story carries `verified` and `source` (#2804): `verified: false` is an agent draft LEM does not use yet |
 | `lem_get_newsletter` | yes | yes | settings, draft, `/user/newsletter-subscribers` | the latest subscriber COUNT only (O5) |
 | `lem_list_newsletter_subscribers` | no | yes | `/user/newsletter-subscribers` | the paged count history (see below) |
 | `lem_explain_lem` | yes | yes | none | static |
@@ -387,6 +387,52 @@ every GUI app in that login session until you reboot or run `unsetenv`. If the c
 check the LEM Agents tab activity and the `mcp_auth_refused` reason (for example `missing`, no token
 sent) to confirm the cause.
 
+## Story-bank drafts (`lem_add_story_draft`, #2804, epic #2797 ruling 4)
+
+Story-bank entries are FACT (#620): the content engine states them as the author's own experience.
+The agent may therefore only **create** an entry, and it lands **unverified**. It is the one tool
+the agent must feed only with what the user actually told it; its description says so.
+
+- **Tool:** `lem_add_story_draft {kind, title?, body, happened_at?, client_request_id?}`, both
+  scopes, through `writes.run_write` (dedupe, the shared 30/hour and 150/day write budgets, the
+  `outcome=unknown` rule). It needs `mcp-server-writes` AND `mcp-story-drafts`
+  (`MCP_STORY_DRAFTS_ENABLED`, off by default). The spec's `flag` keeps the tool out of
+  `tools/list` while it is off and refuses a call as `unknown_tool` before a budget is spent, and
+  the route checks both flags again. Its audit row is `mcp_story_draft`
+  (`AuthAuditEvent.MCP_STORY_DRAFT`; `auth_audit_log.event` is a `VARCHAR(50)`, so no migration),
+  never a body. At most 20 unconfirmed drafts per account (409 `too_many_unverified_drafts`).
+- **State:** `story_bank.source` (`'mcp'` for an agent, NULL for the user) and
+  `story_bank.verified_at` (set when the user confirms). A row is **verified** when
+  `source IS NULL OR verified_at IS NOT NULL` (`feedback.STORY_VERIFIED_SQL`). Every pre-existing
+  row has `source` NULL, so it is verified with no backfill (the migration stays purely additive),
+  and an older app inserting mid-deploy cannot create an unverified row. `active` is the user's own
+  on/off switch and is never touched.
+- **Readers:** every content-engine read goes through `get_story_bank_entries(active_only=True)`
+  or `count_story_bank_entries`, which both apply the filter, so an unverified row never anchors a
+  post, comment or DM, and never counts as "has stories" for the onboarding nudge. The SPA list
+  (`GET /user/story-bank`) returns every row with `verified` and `source`. A unit test fails the
+  build if a caller outside the SPA endpoint reads without `active_only=True`.
+- **Create only, by the grant table:** an MCP seat holds `GET /user/story-bank` and
+  `POST /user/story-bank/draft` (`api/routers/mcp_story.py`, MCP seats only). It holds nothing on
+  `PUT`/`DELETE /user/story-bank` or `POST /user/story-bank/confirm`, so it cannot edit, confirm or
+  delete an entry.
+- **The user decides, in the SPA story-bank editor:** an unverified entry shows "Added by your agent
+  — not yet confirmed" with **Confirm** (`POST /user/story-bank/confirm`) and **Discard**
+  (`DELETE`). Editing the text and saving also confirms it (decided in SQL: a save that changes
+  nothing, or only the `active` switch, confirms nothing).
+
+**Rollback and operations (#2804).**
+- Before rolling back past this release, set `mcp-story-drafts` off (`MCP_STORY_DRAFTS_ENABLED=false`):
+  older readers do not filter unverified rows, so an agent draft would start anchoring posts.
+- Waiting drafts: `SELECT count(*) FROM story_bank WHERE source IS NOT NULL AND verified_at IS NULL`.
+  If you must roll back with drafts present, set them `active=0` first
+  (`UPDATE story_bank SET active=0 WHERE source IS NOT NULL AND verified_at IS NULL`).
+- An agent stuck at the 20-draft cap shows as the tool's 409 `too_many_unverified_drafts` reply
+  (visible to the agent and in its transcript); the drafts themselves are the `mcp_story_draft`
+  rows in the Agents tab activity / `auth_audit_log`. Clear it by confirming or discarding drafts.
+- The tool's `review_url` is `/account?section=content`, which opens the Story Bank card
+  (`SettingsHub` section `content`).
+
 ## AI/media spend tools (W2b, owner ruling O4)
 
 `lem_generate_post`, `lem_generate_post_image`, `lem_generate_post_video`, behind `mcp-server-writes`.
@@ -552,7 +598,8 @@ A local `uvicorn` writes its access log with query strings; production starts wi
 
 `mcp-server-enabled` (`MCP_SERVER_ENABLED`) gates the gate, the mint and the Agents tab;
 `mcp-server-writes` (W2) gates the write tools; `mcp-settings-writes` (`MCP_SETTINGS_WRITES_ENABLED`,
-#2800) gates the two settings tools on top of it, and is OFF by default. They are provisioned at 0 % with hand-added
+#2800) gates the two settings tools on top of it, and `mcp-story-drafts` (`MCP_STORY_DRAFTS_ENABLED`,
+#2804) gates `lem_add_story_draft` on top of it; both are OFF by default. All are provisioned at 0 % with hand-added
 distinct-id overrides for the internal and sandbox accounts. **Never run
 `scripts/posthog_flags.py --apply` while those overrides exist**: the script replaces a flag's
 `groups` wholesale and would delete them.

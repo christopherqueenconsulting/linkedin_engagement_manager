@@ -21,8 +21,9 @@ In order, before and around the tool's own inner call:
    than doubled. A failure before the first write was sent changed nothing and releases the claim,
    and so does a refused write (4xx).
 6. **Audit**: one `mcp_write {tool, target_id, scope}` row per write that landed, never a body. A
-   spec with an `audit_event` (the settings tools, #2800) writes that event instead, carrying
-   `{tool, fields, scope}`: the NAMES of the settings it touched, never a value.
+   spec may name its own `audit_event` (`mcp_story_draft`, #2804) with the same details. The
+   settings tools (`mcp_settings`, #2800) instead carry `{tool, fields, scope}`: the NAMES of the
+   settings they touched, never a value. A spec may also need its own rollout `flag`.
 
 Logging follows §7: a refusal here is the guard working, so it is DEBUG (flag off, budget, dedupe
 hit) or INFO (an approval refused on a standard account). Nothing here logs arguments or results.
@@ -150,11 +151,16 @@ def account_may_approve(user_id: int) -> bool:
     return get_user_account_kind(user_id) in INTERNAL_ACCOUNT_KINDS
 
 
+def _is_settings(spec: Any) -> bool:
+    """True for the settings tools (#2800), which audit field names and keep a ledger."""
+    return getattr(spec, "audit_event", None) == AuthAuditEvent.MCP_SETTINGS
+
+
 def _audit_write(principal: Any, tool: str, target_id: Any, spec: Any = None,
                  payload: Optional[dict[str, Any]] = None) -> None:
     event = getattr(spec, "audit_event", None) or AuthAuditEvent.MCP_WRITE
     details: dict[str, Any] = {"tool": tool, "target_id": target_id, "scope": principal.scope}
-    if event != AuthAuditEvent.MCP_WRITE:
+    if _is_settings(spec):
         details = {"tool": tool, "fields": audit_fields(payload or {}), "scope": principal.scope}
         raised = audit_raised(payload or {})
         if raised:
@@ -267,7 +273,7 @@ async def run_write(spec: Any, args: BaseModel, principal: Any,
         timeout: The tool time limit, in seconds.
         attempted: Whether the runner has SENT a write yet (`Loopback.writes_attempted`). A failure
             before that changed nothing, so it is never `unknown`. None means "assume it did".
-        ledger: For a spec with an `audit_event` (settings): `(landed, attempted)` field names so far.
+        ledger: For a settings spec (`mcp_settings`): `(landed, attempted)` field names so far.
             A failure after a PUT landed or was sent writes ONE audit row with those names, and
             settles the dedupe key instead of releasing it, so a retry never re-runs the first PUT.
 
@@ -299,7 +305,7 @@ async def run_write(spec: Any, args: BaseModel, principal: Any,
 
     async def _audit_failure(unconfirmed_too: bool) -> list[str]:
         """Audit a settings call that failed part-way; returns the landed field names."""
-        if getattr(spec, "audit_event", None) is None:
+        if not _is_settings(spec):
             return []
         landed, tried, raised = _fields()
         if landed or (unconfirmed_too and tried):
@@ -307,7 +313,7 @@ async def run_write(spec: Any, args: BaseModel, principal: Any,
                                     tried if unconfirmed_too else [], raised)
         return landed
 
-    unknown_text = (UNKNOWN_MESSAGE if getattr(spec, "audit_event", None) is None else
+    unknown_text = (UNKNOWN_MESSAGE if not _is_settings(spec) else
                     "LEM did not confirm this settings change, so it may or may not have happened. "
                     "Do NOT retry it: read lem_get_engagement_settings first.")
     try:
