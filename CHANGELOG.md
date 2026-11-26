@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.227.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.227.0...v0.227.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* **errors:** log unaddressed DM composer at DEBUG, not a warning (closes [#2841](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2841)) ([#2842](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2842)) ([8765332](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/87653327d67c7724e501efdcf8151bf538253ff8))
+
 ## [0.227.0](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.226.2...v0.227.0) (2026-11-25)
 
 
