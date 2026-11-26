@@ -6,6 +6,7 @@ never lists or runs `lem_approve_item`, and a sandbox account approves through i
 `mcp_approval`. Nothing that touches identity, scope or the approval guards is patched.
 """
 
+import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterator
@@ -101,8 +102,46 @@ def _audit(user_id: int, event: str) -> list[dict]:
 _FLAKY = pytest.mark.xfail(reason="intermittent MCP write-path DB fault, #2823", strict=False)
 
 
+class _ErrorCapture(logging.Handler):
+    """Collects every ERROR+ record (with its traceback) the app logs while a test runs."""
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.ERROR)
+        self.lines: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.lines.append(self.format(record))
+
+
+@pytest.fixture
+def app_errors() -> Any:
+    """The app-side exceptions behind a swallowed `upstream_error` (#2823).
+
+    The loopback runs the app with `raise_app_exceptions=False`, so a route that raises reaches the
+    test only as `upstream_error`. The app's own logger (`propagate=False`, so not caplog) already
+    wrote the cause; this surfaces it in the assertion message of the next CI flake.
+    """
+    from cqc_lem.utilities.logger import logger as app_logger
+
+    handler = _ErrorCapture()
+    handler.setFormatter(logging.Formatter("%(name)s %(levelname)s %(message)s"))
+    app_logger.addHandler(handler)
+    try:
+        yield handler
+    finally:
+        app_logger.removeHandler(handler)
+
+
+def _db_identity() -> dict:
+    """Which database and connection a read ran on, for an unexpectedly empty read (#2823)."""
+    rows = _exec("SELECT DATABASE() AS db, CONNECTION_ID() AS conn, @@transaction_isolation AS iso",
+                 fetch=True)
+    return rows[0] if rows else {}
+
+
 @_FLAKY
-async def test_lem_queue_dm_writes_a_pending_mcp_row_with_its_audit_row(users: Any) -> None:
+async def test_lem_queue_dm_writes_a_pending_mcp_row_with_its_audit_row(
+        users: Any, app_errors: _ErrorCapture) -> None:
     user_id = users["standard"]
     async with _session(_token(user_id)) as session:
         names = {tool.name for tool in (await session.list_tools()).tools}
@@ -125,7 +164,10 @@ async def test_lem_queue_dm_writes_a_pending_mcp_row_with_its_audit_row(users: A
 
     rows = _exec("SELECT id, status, source, recipient_profile_url FROM scheduled_dms "
                  "WHERE user_id=%s", (user_id,), fetch=True)
-    assert [(r["id"], r["status"], r["source"]) for r in rows] == [(dm_id, "pending", "mcp")]
+    assert [(r["id"], r["status"], r["source"]) for r in rows] == [(dm_id, "pending", "mcp")], (
+        f"empty/odd read; dm_id={dm_id} user_id={user_id} read_on={_db_identity()} "
+        f"by_id={_exec('SELECT id, user_id, status FROM scheduled_dms WHERE id=%s', (dm_id,), fetch=True)} "
+        f"app_errors={app_errors.lines}")
     writes = _audit(user_id, "mcp_write")
     assert len(writes) == 1
     assert '"lem_queue_dm"' in str(writes[0]["details"]) and str(dm_id) in str(writes[0]["details"])
@@ -134,7 +176,8 @@ async def test_lem_queue_dm_writes_a_pending_mcp_row_with_its_audit_row(users: A
 
 
 @_FLAKY
-async def test_a_sandbox_account_approves_through_lem_approve_item(users: Any) -> None:
+async def test_a_sandbox_account_approves_through_lem_approve_item(
+        users: Any, app_errors: _ErrorCapture) -> None:
     user_id = users["sandbox"]
     async with _session(_token(user_id)) as session:
         names = {tool.name for tool in (await session.list_tools()).tools}
@@ -154,7 +197,8 @@ async def test_a_sandbox_account_approves_through_lem_approve_item(users: Any) -
         again = await session.call_tool("lem_approve_item",
                                         {"kind": "connection_request", "id": request_id})
         assert again.is_error is True
-        assert again.structured_content["error"]["code"] == "edit_requires_pending"
+        assert again.structured_content["error"]["code"] == "edit_requires_pending", (
+            f"{again.structured_content} app_errors={app_errors.lines}")
 
         target = await session.call_tool("lem_add_outreach_target",
                                          {"target_profile_url": _URL, "draft_text": "Hi"})
