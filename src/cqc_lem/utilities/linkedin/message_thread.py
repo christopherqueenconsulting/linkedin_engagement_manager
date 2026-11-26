@@ -535,8 +535,13 @@ def open_addressed_composer(driver: WebDriver, wait: WebDriverWait, profile_url:
     result.recipient, result.recipient_source = read.name, read.source
     if not result.recipient:
         hits = ", ".join(f"{k}={v}" for k, v in read.hits.items())
-        log_warning(f"The message composer for {profile_url} names no recipient ({hits})",
-                    user_id=user_id, action_type="dm")
+        # DEBUG, not a warning: same reasoning as `composer_missing` above. A composer that opens
+        # but never adds the person is the expected outcome for someone we can't message directly
+        # (InMail-only, messaging restricted), and `send_dm_now` already refuses to send on
+        # `unaddressed` — the fail-closed refusal is the safety, a warning adds only a defect filed
+        # for working behavior (issue #2841).
+        log_debug(f"The message composer for {profile_url} names no recipient ({hits})",
+                  user_id=user_id, action_type="dm")
         result.reason = "unaddressed"
         return result
 

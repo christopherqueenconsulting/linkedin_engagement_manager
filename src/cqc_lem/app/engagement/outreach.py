@@ -3032,9 +3032,10 @@ def send_dm_now(user_id: int, profile_url: str, message: str, person_name: str =
         composer = open_addressed_composer(driver, wait, profile_url, person_name=person_name,
                                            user_id=user_id)
         if not composer.addressed:
-            # DEBUG, not a warning: `open_addressed_composer` already warned where it DETECTED the
-            # fault, and restating it here would file a second grouped defect for one lost DM (the
-            # #1038 wrapper rule). The FAILURE log row below is this lane's record.
+            # DEBUG, not a warning: an unaddressed composer is an expected no-op (someone we cannot
+            # message directly, issue #2841) and `open_addressed_composer` logs it at DEBUG too, so
+            # restating it here would only file a defect. The FAILURE log row below is this lane's
+            # record.
             log_debug(f"No composer addressed to {profile_url} ({composer.reason}); not sending",
                       user_id=user_id, action_type="dm")
         else:

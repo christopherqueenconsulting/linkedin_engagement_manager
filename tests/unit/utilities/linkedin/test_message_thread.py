@@ -1064,13 +1064,16 @@ class TestOpenAddressedComposer:
         assert not result.addressed
         assert result.reason == "unaddressed"
 
-    def test_a_refusal_stays_a_warning_and_says_which_sources_matched(self):
-        # Fail CLOSED, at WARNING: a held DM is recoverable, a DM to the wrong person is not.
+    def test_a_refusal_is_debug_not_a_warning_and_says_which_sources_matched(self):
+        # Still fails CLOSED (reason="unaddressed"), but an unmessageable person is an expected
+        # no-op, so it must not file a defect (issue #2841).
         d = self._driver(recipient="Enter message recipients")
-        with patch.object(mt, "log_warning") as warn:
-            mt.open_addressed_composer(d, MagicMock(), PROFILE, user_id=1, timeout=0)
-        warn.assert_called_once()
-        assert "(container=1, pill=0, profile_link=0)" in warn.call_args.args[0]
+        with patch.object(mt, "log_warning") as warn, patch.object(mt, "log_debug") as debug:
+            result = mt.open_addressed_composer(d, MagicMock(), PROFILE, user_id=1, timeout=0)
+        warn.assert_not_called()
+        assert result.reason == "unaddressed" and not result.addressed
+        debug.assert_called_once()
+        assert "(container=1, pill=0, profile_link=0)" in debug.call_args.args[0]
 
     def test_the_winning_source_is_recorded(self):
         d = self._driver()
