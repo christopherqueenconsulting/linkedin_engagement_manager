@@ -10,7 +10,12 @@ being accepted.
 from unittest.mock import MagicMock, patch
 
 import pytest
-from selenium.common import NoSuchElementException, StaleElementReferenceException, WebDriverException
+from selenium.common import (
+    NoSuchElementException,
+    StaleElementReferenceException,
+    TimeoutException,
+    WebDriverException,
+)
 
 from cqc_lem.utilities.db import LogResultType
 from cqc_lem.utilities.linkedin.message_thread import ComposerOpen
@@ -179,6 +184,30 @@ class TestTabCrashWarnsInsteadOfFilingAnError:
         assert result is False
         warned.assert_called_once()
         errored.assert_not_called()
+        assert logged.call_args.kwargs["result"] is LogResultType.FAILURE
+        quit_driver.assert_called_once()
+
+    def test_a_missing_send_button_warns_and_is_not_an_error(self):
+        """Issue #2850."""
+        from cqc_lem.app.engagement import outreach as ra
+        with patch(f"{_OUT}.get_user_password_pair_by_id", return_value=("e", "p")), \
+             patch(f"{_OUT}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
+             patch(f"{_OUT}.login_to_linkedin"), \
+             patch(f"{_OUT}.open_addressed_composer", return_value=ADDRESSED), \
+             patch(f"{_OUT}._type_dm_into_composer"), \
+             patch(f"{_OUT}.click_element_wait_retry",
+                   side_effect=TimeoutException("Finding Send Button")), \
+             patch(f"{_OUT}.time.sleep"), \
+             patch(f"{_OUT}.insert_new_log") as logged, \
+             patch(f"{_OUT}.record_action") as recorded, \
+             patch(f"{_OUT}.quit_gracefully") as quit_driver, \
+             patch(f"{_OUT}.log_error") as errored, \
+             patch(f"{_OUT}.log_warning") as warned:
+            result = ra.send_dm_now(1, "https://www.linkedin.com/in/jane", "Congrats Jane!")
+        assert result is False
+        warned.assert_called_once()
+        errored.assert_not_called()
+        recorded.assert_not_called()
         assert logged.call_args.kwargs["result"] is LogResultType.FAILURE
         quit_driver.assert_called_once()
 
