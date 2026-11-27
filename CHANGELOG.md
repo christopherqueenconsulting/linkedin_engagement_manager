@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.227.3](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.227.2...v0.227.3) (2026-11-27)
+
+
+### Bug Fixes
+
+* **errors:** treat a stale feed text box as no card (closes [#2852](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2852)) ([#2853](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2853)) ([083d8b7](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/083d8b76609e8b0a7664cc9b556a51542b19b4b0))
+
 ## [0.227.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.227.1...v0.227.2) (2026-11-27)
 
 
