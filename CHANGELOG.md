@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.227.2](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.227.1...v0.227.2) (2026-11-27)
+
+
+### Bug Fixes
+
+* **outreach:** chain the DM Send button locator ([7c39803](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7c398039868e191e6f067c3703c5adac0732b647))
+* **outreach:** chain the DM Send button locator (closes [#2847](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2847)) ([#2848](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/issues/2848)) ([7c39803](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/commit/7c398039868e191e6f067c3703c5adac0732b647))
+
 ## [0.227.1](https://github.com/christopherqueenconsulting/linkedin_engagement_manager/compare/v0.227.0...v0.227.1) (2026-11-26)
 
 
