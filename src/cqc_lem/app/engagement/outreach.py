@@ -296,9 +296,10 @@ from cqc_lem.utilities.observability import (
     track_outreach_funnel_scan,
 )
 from cqc_lem.utilities.selenium_util import (
-    click_element_wait_retry,
     click_first,
+    element_label,
     find_all_first,
+    find_deep_elements,
     get_driver_wait_pair,
     get_element_wait_retry,
     getText,
@@ -2983,6 +2984,57 @@ def _dm_send_landed(driver: WebDriver, message: str, user_id: int = None,
     return True
 
 
+# The Send control is a CHAIN (#2020), exhausted before "not found": the two class names, the composer
+# form's own submit, then a button labelled exactly "Send" inside a form that holds an editor. Exact,
+# never a substring — "Open send options" sits beside Send and opens a menu, and a feed card's "Send"
+# lives in no form. A single class XPath here timed out on a composer that had taken the typing.
+_DM_SEND_LOCATORS: list[tuple[str, str]] = [
+    (By.CSS_SELECTOR, "button.msg-form__send-button"),
+    (By.CSS_SELECTOR, "button.msg-form__send-btn"),
+    (By.CSS_SELECTOR, "form.msg-form button[type='submit']"),
+    (By.XPATH, "//form[.//*[@contenteditable='true']]"
+               "//button[normalize-space()='Send' or @aria-label='Send']"),
+]
+_DM_SEND_DEEP_CSS = "form button"
+_DM_SEND_LABEL = "send"
+
+
+def _deep_dm_send_buttons(driver: WebDriver) -> list:
+    """Visible form buttons labelled exactly "Send", shadow roots included — the light chain's blind spot."""
+    return [el for el in find_deep_elements(driver, _DM_SEND_DEEP_CSS, limit=40)
+            if element_label(el) == _DM_SEND_LABEL]
+
+
+def _click_dm_send(driver: WebDriver, wait, user_id: int = None) -> bool:
+    """Click Send on the typed composer. False when no link in the chain could be clicked.
+
+    A miss is ONE stable warning carrying each locator's hit count, never a raise: a raise lands in
+    the lane's generic `DM send failed` ERROR, which fingerprints on the Selenium stack and files a
+    fresh issue per rotation. Non-zero hits on a miss mean the button was there but not clickable.
+    """
+    if click_first(driver, wait, _DM_SEND_LOCATORS, "DM Send button", required=False,
+                   use_action_chain=True, max_try=1, warn_on_miss=False, user_id=user_id):
+        return True
+
+    for button in _deep_dm_send_buttons(driver):
+        try:
+            button.click()
+            return True
+        except WebDriverException:
+            continue
+
+    hits = {}
+    for find_by, value in _DM_SEND_LOCATORS:
+        try:
+            hits[value] = len(driver.find_elements(find_by, value))
+        except WebDriverException:
+            hits[value] = None
+    hits["deep:" + _DM_SEND_DEEP_CSS] = len(_deep_dm_send_buttons(driver))
+    log_warning("DM Send button not clickable on the typed composer; not sending",
+                user_id=user_id, action_type="dm", send_locator_hits=hits)
+    return False
+
+
 def send_dm_now(user_id: int, profile_url: str, message: str, person_name: str = None) -> bool:
     """Core DM send: open a composer addressed to this person, type + send a DM (must be a 1st-degree
     connection), log the result. Returns True on success. Shared by send_private_dm (trigger-driven),
@@ -3044,12 +3096,9 @@ def send_dm_now(user_id: int, profile_url: str, message: str, person_name: str =
             # Sleep so send button can become active
             time.sleep(2)
 
-            # Click the send button
-            click_element_wait_retry(driver, wait,
-                                     "//button[contains(@class,'msg-form__send-button')]",
-                                     "Finding Send Button", max_retry=1, use_action_chain=True)
-
-            dm_sent = _dm_send_landed(driver, message, user_id=user_id, profile_url=profile_url)
+            if _click_dm_send(driver, wait, user_id=user_id):
+                dm_sent = _dm_send_landed(driver, message, user_id=user_id,
+                                          profile_url=profile_url)
 
     except LinkedInRateLimited as e:
         # A known, self-clearing back-off (429 breaker, manual pause, or a per-account

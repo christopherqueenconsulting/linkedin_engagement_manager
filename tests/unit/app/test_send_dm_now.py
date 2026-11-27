@@ -23,24 +23,26 @@ ADDRESSED = ComposerOpen(opened=True, recipient="Jane Doe", urn="urn:li:fsd_prof
                          surface="page")
 
 
-def _send(composer=ADDRESSED, landed=True, **extra):
+def _send(composer=ADDRESSED, landed=True, clicked_send=True, **extra):
     """Run send_dm_now with every I/O boundary stubbed; returns (result, log_mock, composer_mock)."""
     from cqc_lem.app.engagement import outreach as ra
     with patch(f"{_OUT}.get_user_password_pair_by_id", return_value=("e", "p")), \
          patch(f"{_OUT}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())) as driver_pair, \
          patch(f"{_OUT}.login_to_linkedin"), \
          patch(f"{_OUT}.open_addressed_composer", return_value=composer) as opened, \
-         patch(f"{_OUT}.click_element_wait_retry") as clicked, \
+         patch(f"{_OUT}._click_dm_send", return_value=clicked_send) as clicked, \
          patch(f"{_OUT}.get_element_wait_retry", return_value=MagicMock()), \
-         patch(f"{_OUT}._dm_send_landed", return_value=landed), \
+         patch(f"{_OUT}._dm_send_landed", return_value=landed) as landed_check, \
          patch(f"{_OUT}.simulate_typing") as typed, \
+         patch(f"{_OUT}.log_error") as errored, \
          patch(f"{_OUT}.time.sleep"), \
          patch(f"{_OUT}.insert_new_log") as logged, \
          patch(f"{_OUT}.record_action"), \
          patch(f"{_OUT}.quit_gracefully") as quit_driver:
         result = ra.send_dm_now(1, "https://www.linkedin.com/in/jane", "Congrats Jane!", **extra)
     return result, {"log": logged, "opened": opened, "typed": typed, "clicked": clicked,
-                    "quit": quit_driver, "driver": driver_pair}
+                    "quit": quit_driver, "driver": driver_pair, "landed": landed_check,
+                    "errored": errored}
 
 
 class TestNeedsImagesExemption:
@@ -207,6 +209,83 @@ class TestOutcomeIsRecorded:
         for composer in (ADDRESSED, ComposerOpen(opened=False, reason="no_urn")):
             _, m = _send(composer=composer)
             m["quit"].assert_called_once()
+
+
+class TestSendButtonChain:
+    """The Send click is a locator CHAIN (#2020).
+
+    A single class XPath timed out on a composer that had already taken the typing, and the raise
+    filed a fresh ERROR issue for every lost DM.
+    """
+
+    @staticmethod
+    def _click(light=None, deep=(), counts=None):
+        from cqc_lem.app.engagement import outreach as ra
+        driver = MagicMock()
+        driver.find_elements.side_effect = lambda by, value: [MagicMock()] * (counts or {}).get(value, 0)
+        with patch(f"{_OUT}.click_first", return_value=light) as light_click, \
+             patch(f"{_OUT}.find_deep_elements", return_value=list(deep)), \
+             patch(f"{_OUT}.log_warning") as warned, \
+             patch(f"{_OUT}.log_error") as errored:
+            result = ra._click_dm_send(driver, MagicMock(), user_id=7)
+        return result, {"light": light_click, "warned": warned, "errored": errored}
+
+    @staticmethod
+    def _button(label, raises=None):
+        button = MagicMock()
+        button.get_attribute.side_effect = lambda name: label if name == "aria-label" else None
+        if raises:
+            button.click.side_effect = raises
+        return button
+
+    def test_a_light_dom_hit_clicks_and_never_warns(self):
+        result, m = self._click(light=MagicMock())
+        assert result is True
+        m["warned"].assert_not_called()
+        locators = m["light"].call_args[0][2]
+        assert len(locators) >= 3
+        assert m["light"].call_args.kwargs["required"] is False
+
+    def test_a_shadow_mounted_send_is_the_fallback(self):
+        send = self._button("Send")
+        result, m = self._click(deep=[send])
+        assert result is True
+        send.click.assert_called_once()
+        m["warned"].assert_not_called()
+
+    def test_open_send_options_is_never_clicked(self):
+        options = self._button("Open send options")
+        result, _ = self._click(deep=[options])
+        assert result is False
+        options.click.assert_not_called()
+
+    def test_an_unclickable_deep_send_is_a_miss_not_a_raise(self):
+        result, m = self._click(deep=[self._button("Send", raises=WebDriverException("intercepted"))])
+        assert result is False
+        m["errored"].assert_not_called()
+
+    def test_a_total_miss_is_one_warning_with_hit_counts(self):
+        from cqc_lem.app.engagement import outreach as ra
+        result, m = self._click(counts={"button.msg-form__send-button": 1})
+        assert result is False
+        m["warned"].assert_called_once()
+        m["errored"].assert_not_called()
+        hits = m["warned"].call_args.kwargs["send_locator_hits"]
+        assert hits["button.msg-form__send-button"] == 1
+        assert set(hits) >= {value for _, value in ra._DM_SEND_LOCATORS}
+
+    def test_no_locator_matches_send_as_a_substring(self):
+        # "Open send options" sits beside Send; a contains() on the label would reach it.
+        from cqc_lem.app.engagement import outreach as ra
+        assert not any("contains(" in value and "Send" in value
+                       for _, value in ra._DM_SEND_LOCATORS)
+
+    def test_a_send_that_could_not_be_clicked_is_a_failure_row_not_an_error(self):
+        result, m = _send(clicked_send=False)
+        assert result is False
+        m["landed"].assert_not_called()
+        m["errored"].assert_not_called()
+        assert m["log"].call_args.kwargs["result"] is LogResultType.FAILURE
 
 
 class TestSendLanded:
