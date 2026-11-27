@@ -297,7 +297,7 @@ class TestGovernorAccounting:
                  patch(f"{_OUT}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
                  patch(f"{_OUT}.login_to_linkedin"), \
                  patch(f"{_OUT}.open_addressed_composer", return_value=addressed), \
-                 patch(f"{_OUT}.click_element_wait_retry"), \
+                 patch(f"{_OUT}._click_dm_send", return_value=True), \
                  patch(f"{_OUT}.get_element_wait_retry",
                        return_value=MagicMock() if sent else None), \
                  patch(f"{_OUT}._dm_send_landed", return_value=True), \

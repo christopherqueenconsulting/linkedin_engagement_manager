@@ -878,6 +878,12 @@ The ladder answers "can I read this thread". A send needs more, so `send_dm_now`
   counts, and two different names from a class-matched source never count. The winning source is
   logged on success (`via <source>`); a refusal stays ONE WARNING with each source's hit count, so
   chrome-only (hits, no name) and selector drift (no hits) read apart in the production log.
+- The **Send click is a chain** too (`_DM_SEND_LOCATORS`, 2026-11-27): the
+  `msg-form__send-button` / `msg-form__send-btn` classes, the composer form's submit, then a button labelled exactly `Send`
+  inside a form that holds an editor, then the same exact label across shadow roots. Exact, never a
+  substring: `Open send options` sits beside Send. A miss is ONE WARNING with each locator's hit
+  count — hits on a miss mean the button was there but not clickable — and a FAILURE row, never the
+  lane's `DM send failed` ERROR.
 - **Sent means the message LANDED**, not that Send accepted a click (`_dm_send_landed`): our text as
   the newest message confirms; text still sitting in the composer disproves; unreadable trusts the
   click and warns, because reporting a delivered message as failed invites a duplicate send.
