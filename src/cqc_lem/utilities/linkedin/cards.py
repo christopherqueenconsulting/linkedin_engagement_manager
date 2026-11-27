@@ -25,6 +25,7 @@ finds one spelling, and the test patches that follow them are a pure module-path
 
 import re
 
+from selenium.common.exceptions import StaleElementReferenceException
 from selenium.webdriver.common.by import By
 
 # --- SDUI feed engine (LinkedIn's 2026 redesign) -----------------------------------------
@@ -101,7 +102,12 @@ def _card_for_textbox(driver, box):
     canonical and often keeps several alive at once, so keying on one is a single point of failure
     that fails SILENTLY — a null card is indistinguishable from an empty feed.
     """
-    return driver.execute_script(_CARD_FOR_TEXTBOX_JS, box)
+    try:
+        return driver.execute_script(_CARD_FOR_TEXTBOX_JS, box)
+    except StaleElementReferenceException:
+        # The feed re-rendered between the box read and this call: the box is gone, so there is no
+        # card to return. Every caller already skips a None card, and the next pass re-reads the box.
+        return None
 
 
 # Canonical LinkedIn post identity. The activity/ugcPost/share URN is stable across re-renders;
