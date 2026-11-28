@@ -38,3 +38,26 @@ class TestDebugRequiredReachesTheSessionRequest:
         call = _run()
         assert call.kwargs["debug_required"] is False
         assert call.kwargs["debug"] is False
+
+
+class TestLoginFormTimeoutLogsOnce:
+    def test_timeout_is_debug_not_a_second_warning(self):
+        # login_to_linkedin already warns with the page snippet (#1908); a repeat here escalated
+        # to a grouped $exception for the same event (#2857).
+        from selenium.common.exceptions import TimeoutException
+
+        from cqc_lem.utilities.linkedin.session import get_current_profile
+
+        with patch(f"{_MOD}.get_user_password_pair_by_id", return_value=("a@b.c", "pw")), \
+             patch(f"{_MOD}.get_driver_wait_pair", return_value=(MagicMock(), MagicMock())), \
+             patch(f"{_MOD}.login_to_linkedin",
+                   side_effect=TimeoutException("Finding Username Field")), \
+             patch(f"{_MOD}.quit_gracefully"), \
+             patch(f"{_MOD}.log_debug") as dbg, \
+             patch(f"{_MOD}.log_warning") as warn, \
+             patch(f"{_MOD}.log_error") as err:
+            with pytest.raises(TimeoutException):
+                get_current_profile(user_id=1)
+        dbg.assert_called_once()
+        warn.assert_not_called()
+        err.assert_not_called()
