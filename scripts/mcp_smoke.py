@@ -25,8 +25,10 @@ does, and exits non-zero on the first mismatch it reports (it keeps going to rep
    `--mint-local-for`; otherwise the script prints the DM id to cancel in LEM).
 7. With `--mint-local-for`, the minted token is revoked at the end and the next call must be 401.
 8. With `--settings` (#2800, needs `mcp-settings-writes` on for the account): change `tone` to a
-   marker value, check the diff, check a daily cap is refused, undo, and check `tone` is back. It
-   writes the account's real setting and puts it back; skipped when the tools are not listed. It
+   marker value, check the diff, check that a non-editable cap is refused and that raising a daily
+   cap without `acknowledge_risk` is refused (#2801), undo, and check `tone` is back. It writes the
+   account's real setting and puts it back; skipped when the tools are not listed. It never LOWERS a
+   cap: since #2801 a lowering is applied, so a lowering probe would change the account. It
    also checks the change-request path WITHOUT filing one (#2803): a gate change through
    `lem_update_settings` is refused naming `lem_request_settings_change`, and a non-gate field sent to
    `lem_request_settings_change` is refused. No agent tool can approve, so a smoke-filed request would
@@ -272,8 +274,9 @@ def run_settings_checks(smoke: Smoke, token: str) -> None:
     diff = (changed.get("changed") or {}).get("tone") or {}
     smoke.check(diff.get("after") == marker and diff.get("before") == original,
                 "lem_update_settings changes tone and reports before/after")
-    capped = smoke.refusal(token, "lem_update_settings", {"changes": {"max_comments_per_day": 1}})
-    smoke.check(capped == "cap_not_editable", "a daily cap is refused", str(capped))
+    capped = smoke.refusal(token, "lem_update_settings", {"changes": {"max_queued_drafts": 1}})
+    smoke.check(capped == "cap_not_editable", "a non-editable cap is refused", str(capped))
+    _check_cap_raise_refused(smoke, token, current.get("max_comments_per_day"))
     gated = smoke.refusal(token, "lem_update_settings", {"changes": {"connection_request_mode": "auto_approve"}})
     smoke.check(gated == "needs_change_request", "a gate change is refused toward lem_request_settings_change",
                 str(gated))
@@ -289,6 +292,27 @@ def run_settings_checks(smoke: Smoke, token: str) -> None:
     smoke.check("tone" in (restored.get("restored") or {}), "lem_undo_settings_change restores tone")
     after = ((smoke.tool(token, "lem_get_engagement_settings") or {}).get("preferences") or {})
     smoke.check((after.get("tone") or None) == (original or None), "tone is back to its old value")
+
+
+def _check_cap_raise_refused(smoke: Smoke, token: str, cap: Any) -> None:
+    """A daily-cap RAISE without `acknowledge_risk` must be refused before anything is written (#2801).
+
+    The probe is the current value plus one, never a lowering: a lowering is applied. If the server
+    applies the raise anyway, the check fails and the cap is set back to its old value.
+    """
+    if not isinstance(cap, int) or isinstance(cap, bool):
+        smoke.out.write(f"[SKIP] cap raise check - max_comments_per_day unreadable: {cap!r}\n")
+        return
+    result = smoke.result(token, "tools/call", {"name": "lem_update_settings", "arguments": {
+        "changes": {"max_comments_per_day": cap + 1}}}) or {}
+    code = (((result.get("structuredContent") or {}).get("error") or {}).get("code")
+            if result.get("isError") else None)
+    smoke.check(code == "cap_raise_needs_acknowledgement",
+                "a cap raise without acknowledge_risk is refused", str(code))
+    if result and not result.get("isError"):
+        smoke.tool(token, "lem_update_settings", {"changes": {"max_comments_per_day": cap}})
+        smoke.out.write(f"       the raise LANDED; max_comments_per_day set back to {cap}. Check it "
+                        "in LEM -> Account.\n")
 
 
 def run_refusal_checks(smoke: Smoke, throwaway: Optional[str],

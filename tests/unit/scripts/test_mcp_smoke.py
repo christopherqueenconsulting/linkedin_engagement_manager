@@ -270,9 +270,10 @@ def test_write_needs_a_recipient_and_an_account_kind(extra: tuple) -> None:
 # --- the optional settings round trip (#2800) ---------------------------------------------------------
 
 
-def _settings_server(scope: str = "mcp", listed: bool = True, restores: bool = True) -> tuple:
+def _settings_server(scope: str = "mcp", listed: bool = True, restores: bool = True,
+                     applies_raise: bool = False) -> tuple:
     """A fake server whose tone really changes and (when `restores`) really comes back on undo."""
-    state = {"tone": "warm"}
+    state: dict[str, Any] = {"tone": "warm", "max_comments_per_day": 10}
     names = [s.name for s in tools_for_scope(scope) if listed or not s.flag]
     seen: list[dict] = []
 
@@ -295,10 +296,17 @@ def _settings_server(scope: str = "mcp", listed: bool = True, restores: bool = T
         elif name == "lem_list_posts":
             result = {"structuredContent": {"posts": [{"post_id": 4}]}}
         elif name == "lem_get_engagement_settings":
-            result = {"structuredContent": {"preferences": {"tone": state["tone"]}}}
+            result = {"structuredContent": {"preferences": dict(state)}}
         elif name == "lem_update_settings":
-            if "max_comments_per_day" in args.get("changes", {}):
+            changes = args.get("changes", {})
+            if "max_queued_drafts" in changes:
                 result = _error("cap_not_editable")
+            elif "max_comments_per_day" in changes:
+                if changes["max_comments_per_day"] > state["max_comments_per_day"] and not (
+                        args.get("acknowledge_risk") or applies_raise):
+                    result = _error("cap_raise_needs_acknowledgement")
+                else:
+                    state["max_comments_per_day"] = changes["max_comments_per_day"]
             elif "connection_request_mode" in args.get("changes", {}):
                 result = _error("needs_change_request")
             else:
@@ -325,7 +333,8 @@ def test_the_settings_round_trip_passes_on_a_healthy_server() -> None:
     code, text = _run(client, "--settings")
     assert code == 0, text
     assert "[PASS] lem_update_settings changes tone and reports before/after" in text
-    assert "[PASS] a daily cap is refused" in text
+    assert "[PASS] a non-editable cap is refused" in text
+    assert "[PASS] a cap raise without acknowledge_risk is refused" in text
     assert "[PASS] a gate change is refused toward lem_request_settings_change" in text
     assert "[PASS] a non-gate field cannot be requested" in text
     assert "[PASS] tone is back to its old value" in text
@@ -339,6 +348,25 @@ def test_the_smoke_never_files_a_change_request() -> None:
         params = body.get("params") or {}
         if params.get("name") == "lem_request_settings_change":
             assert set(params["arguments"]["changes"]) == {"tone"}, "only a refused, non-gate probe"
+
+
+def test_the_cap_probe_never_lowers_a_cap_or_acknowledges_risk() -> None:
+    """Since #2801 a lowering is applied, so a lowering probe would change the account's real cap."""
+    client, seen = _settings_server()
+    _run(client, "--settings")
+    probes = [b["params"]["arguments"] for b in _settings_calls(seen)
+              if "max_comments_per_day" in b["params"]["arguments"]["changes"]]
+    assert probes == [{"changes": {"max_comments_per_day": 11}}]
+
+
+def test_a_cap_raise_that_lands_fails_and_is_set_back() -> None:
+    client, seen = _settings_server(applies_raise=True)
+    code, text = _run(client, "--settings")
+    assert code == 1
+    assert "[FAIL] a cap raise without acknowledge_risk is refused" in text
+    caps = [b["params"]["arguments"]["changes"] for b in _settings_calls(seen)
+            if "max_comments_per_day" in b["params"]["arguments"]["changes"]]
+    assert caps == [{"max_comments_per_day": 11}, {"max_comments_per_day": 10}]
 
 
 def test_a_settings_undo_that_does_not_restore_fails() -> None:
