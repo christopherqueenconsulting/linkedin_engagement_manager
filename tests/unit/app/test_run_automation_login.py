@@ -57,13 +57,16 @@ class TestAutomateCommentingLoginError:
     def test_returns_error_string_on_timeout_exception(self):
         """automate_commenting returns a failure string when username field is not found."""
         with patch(_FEED_GET_PROFILE, side_effect=_timeout_error()), \
-             patch(_FEED_LOG_ERROR) as mock_log:
+             patch(_FEED_LOG_ERROR) as mock_log, \
+             patch(f"{_FEED}.log_debug") as mock_debug:
             from cqc_lem.app.engagement.feed import automate_commenting
 
             result = automate_commenting.run(user_id=1)
 
         assert "Failed to start auto commenting" in result
-        mock_log.assert_called_once()
+        # Issue #2858: login-form timeout was already warned at the detection site.
+        mock_log.assert_not_called()
+        mock_debug.assert_called()
 
     def test_does_not_call_quit_gracefully_on_profile_failure(self):
         """When get_current_profile raises, the already-closed driver is not quit again."""
