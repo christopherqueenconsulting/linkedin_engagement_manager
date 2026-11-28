@@ -638,6 +638,14 @@ class TestInviteTask:
         quit_driver.assert_called_once()
         assert track.call_args[0][1]["status"] == INVITE_STATUS_FAILED
 
+    def test_a_non_login_timeout_is_still_an_error(self):
+        from selenium.common.exceptions import TimeoutException
+
+        from cqc_lem.utilities.linkedin.company_page_inviter import INVITE_STATUS_FAILED
+        _, _, _, err, _, track = self._run_raising(batch_exc=TimeoutException("Finding Password Field"))
+        err.assert_called_once()
+        assert track.call_args[0][1]["status"] == INVITE_STATUS_FAILED
+
     def test_any_other_batch_failure_is_still_an_error_and_failed(self):
         from cqc_lem.utilities.linkedin.company_page_inviter import INVITE_STATUS_FAILED
         _, _, _, err, warn, track = self._run_raising(batch_exc=RuntimeError("boom"))
