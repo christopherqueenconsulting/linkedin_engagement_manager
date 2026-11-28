@@ -101,6 +101,12 @@ BUILTIN_EXCLUDED_PREFIXES = (
     # whatever rate a client leaks credentials, so escalating it files a code defect against a
     # defence working as designed (#2825).
     "MCP request refused: exposed token in query string was revoked",
+    # `linkedin.helper.login_to_linkedin`'s login-form-timeout diagnostic. LinkedIn serving an
+    # unrecognized checkpoint page is an account-side condition the login path already handles
+    # (the TimeoutException propagates, every caller downgrades it to DEBUG and retries next
+    # cycle). The warning exists for its page snippet, and the beat that hits it re-dispatches
+    # every few minutes, so escalating it filed a defect against handled behaviour (#2856).
+    "Login form fields never appeared",
 )
 
 

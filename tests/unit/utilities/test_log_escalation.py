@@ -266,6 +266,16 @@ def test_exposed_mcp_token_revocation_never_escalates():
         assert _note(EXPOSED_TOKEN_LOG_PREFIX, [3]) is not None
 
 
+def test_login_form_timeout_warning_never_escalates():
+    """An unrecognized checkpoint page is handled login behaviour, not a defect (#2856)."""
+    msg = "Login form fields never appeared — unrecognized challenge/checkpoint page"
+
+    assert _note(msg, [3]) is None
+    esc.reset_state()
+    with patch.object(esc, "BUILTIN_EXCLUDED_PREFIXES", ()):
+        assert _note(msg, [3]) is not None
+
+
 def test_env_exclusions_add_to_the_builtins(monkeypatch):
     """An override must not be able to drop the capture_exception re-entrancy guard."""
     monkeypatch.setenv("LOG_ESCALATE_EXCLUDE", "Custom noise")
