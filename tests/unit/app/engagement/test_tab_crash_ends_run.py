@@ -403,6 +403,25 @@ class TestAppreciationDms:
         logs["debug"].assert_not_called()
         self.lane_error.assert_not_called()
 
+    def test_a_login_form_timeout_is_debug_not_an_error(self):
+        from selenium.common.exceptions import TimeoutException
+
+        with ExitStack() as es:
+            debug = es.enter_context(patch(f"{_OUT}.log_debug"))
+            result = self._run(es, login={"side_effect": TimeoutException("Finding Username Field")})
+        assert result["status"] == "error"
+        assert "login did not complete" in result["message"]
+        assert "login did not complete" in debug.call_args.args[0]
+        self.lane_error.assert_not_called()
+
+    def test_a_mid_scan_timeout_is_still_an_error(self):
+        from selenium.common.exceptions import TimeoutException
+
+        with ExitStack() as es:
+            _logs(es)
+            self._run(es, recs={"side_effect": TimeoutException("x")})
+        self.lane_error.assert_called_once()
+
     def test_a_non_crash_fault_is_still_an_error(self):
         with ExitStack() as es:
             logs = _logs(es)
