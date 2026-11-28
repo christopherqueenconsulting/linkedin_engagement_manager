@@ -2745,6 +2745,13 @@ def update_stale_profile(self, user_id: int, force_refresh: bool = False):
         log_warning("Profile refresh skipped — LinkedIn rate-limited or cooling down", exc=e,
                     user_id=user_id, task_name="update_stale_profile")
         return f"Skipped — rate limited: {e}"
+    except TimeoutException as e:
+        # Login selector miss (e.g. an unrecognized challenge page, #1908). `get_current_profile`
+        # already warns where it happens (#1919); re-reporting here would file the SAME event
+        # under a second fingerprint, so DEBUG (same as `process_user_followups`, #2863).
+        log_debug("Profile refresh could not start — login selector never resolved", exc=e,
+                  user_id=user_id, task_name="update_stale_profile")
+        return f"Failed to update profile: {e}"
     except Exception as e:
         log_error("Error while updating stale profile", exc=e, user_id=user_id, task_name="update_stale_profile")
         return f"Failed to update profile: {e}"

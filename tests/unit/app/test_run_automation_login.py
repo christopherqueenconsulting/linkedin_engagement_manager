@@ -240,16 +240,24 @@ class TestUpdateStaleProfileLoginError:
         mock_log.assert_called_once()
 
     def test_returns_error_string_on_timeout(self):
-        """update_stale_profile returns error string on TimeoutException."""
+        """A login TimeoutException returns the error string and files no ERROR (#2863).
+
+        `get_current_profile` already warns where the selector miss happens (#1919), so this
+        wrapper logs DEBUG rather than a second, ungrouped `$exception`.
+        """
         from selenium.common.exceptions import TimeoutException
         with patch(_POST_GET_PROFILE, side_effect=TimeoutException("Finding Username Field")), \
-             patch(_POST_LOG_ERROR) as mock_log:
+             patch(_POST_LOG_ERROR) as mock_log, \
+             patch(f"{_POST}.log_warning") as mock_warn, \
+             patch(f"{_POST}.log_debug") as mock_debug:
             from cqc_lem.app.engagement.posting import update_stale_profile
 
             result = update_stale_profile.run(user_id=1)
 
         assert "Failed to update profile" in result
-        mock_log.assert_called_once()
+        mock_log.assert_not_called()
+        mock_warn.assert_not_called()
+        mock_debug.assert_called_once()
 
     def test_quits_driver_on_success(self):
         """update_stale_profile calls quit_gracefully when get_current_profile succeeds."""
