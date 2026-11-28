@@ -1463,6 +1463,15 @@ def sweep_reply_comments(self, user_id: int, sweep_slot: int = 0, attempt: int =
         release_run_lock(lock_name, lock_token)
         retried = _retry_golden_hour_sweep(user_id, sweep_slot, attempt, "rate_limited")
         return "Skipped — rate limited" + (" (retry scheduled)" if retried else "")
+    except TimeoutException as e:
+        # DEBUG: the login form never rendered. `login_to_linkedin` already warned with the page it
+        # saw and `get_current_profile` warned again (issues #1908/#1919) — warn where you detect,
+        # not where you notice. An ERROR here filed a second ungrouped `$exception` (issue #2862).
+        log_debug(f"Reply sweep skipped — login form never appeared: {e}", user_id=user_id,
+                  task_name="sweep_reply_comments")
+        release_run_lock(lock_name, lock_token)
+        retried = _retry_golden_hour_sweep(user_id, sweep_slot, attempt, "session_failed")
+        return f"Failed to start reply sweep: {e}" + (" (retry scheduled)" if retried else "")
     except Exception as e:
         log_error("Error starting reply sweep", exc=e, user_id=user_id, task_name="sweep_reply_comments")
         release_run_lock(lock_name, lock_token)
