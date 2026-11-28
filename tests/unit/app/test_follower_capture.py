@@ -161,6 +161,18 @@ class TestCaptureFollowerStatsTask:
         with patch(f"{_POST}.get_current_profile", side_effect=Exception("429")):
             assert "Failed" in capture_follower_stats.run(user_id=1)
 
+    def test_login_timeout_logs_debug_not_error(self):
+        from selenium.common.exceptions import TimeoutException
+
+        from cqc_lem.app.engagement.posting import capture_follower_stats
+        with patch(f"{_POST}.get_current_profile",
+                   side_effect=TimeoutException("Finding Username Field")), \
+             patch(f"{_POST}.log_error") as err, patch(f"{_POST}.log_debug") as dbg:
+            result = capture_follower_stats.run(user_id=1)
+        assert "Failed" in result
+        err.assert_not_called()
+        dbg.assert_called_once()
+
     def test_capture_error_still_quits_the_driver(self):
         from cqc_lem.app.engagement.posting import capture_follower_stats
         with patch(f"{_POST}.get_current_profile",
