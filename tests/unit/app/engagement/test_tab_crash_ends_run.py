@@ -129,6 +129,18 @@ class TestSweepCommentFollowups:
         self.lane_error.assert_not_called()
         self.release.assert_called_once()
 
+    def test_a_login_form_timeout_is_debug_not_error(self):
+        """#2864: "Finding Username Field" — the session layer warned; the sweep must not file an ERROR."""
+        from selenium.common.exceptions import TimeoutException
+        with ExitStack() as es:
+            lane_debug = es.enter_context(patch(f"{_POST}.log_debug"))
+            out = self._run(es, session={"side_effect": TimeoutException("Finding Username Field")})
+        assert out.startswith("Failed to start follow-up sweep")
+        lane_debug.assert_called_once()
+        self.lane_warning.assert_not_called()
+        self.lane_error.assert_not_called()
+        self.release.assert_called_once()
+
     def test_a_non_crash_login_fault_is_still_an_error(self):
         with ExitStack() as es:
             logs = _logs(es)

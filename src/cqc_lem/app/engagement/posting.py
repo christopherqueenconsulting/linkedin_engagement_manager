@@ -40,6 +40,7 @@ from typing import Any, Optional, Tuple
 from urllib.parse import urlparse
 
 import pytz
+from selenium.common.exceptions import TimeoutException
 from selenium.webdriver import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webdriver import WebDriver
@@ -1772,6 +1773,11 @@ def _run_comment_followups_sweep(user_id: int) -> str:
             # The proxy could not open its tunnel (#2597): transient, nothing reached LinkedIn.
             log_warning("Follow-up sweep skipped — proxy tunnel failed", exc=e, user_id=user_id,
                         task_name="sweep_comment_followups")
+        elif isinstance(e, TimeoutException):
+            # Login form never rendered; `get_current_profile` already warned with the page
+            # snippet (#1908); a second warning would re-emit at ERROR. Next cycle retries (#2864).
+            log_debug("Follow-up sweep skipped — LinkedIn login did not complete", exc=e,
+                      user_id=user_id, task_name="sweep_comment_followups")
         elif not note_tab_crash(e, task_name="sweep_comment_followups", crash_logged_upstream=True,
                                 user_id=user_id):
             log_error("Error starting follow-up sweep", exc=e, user_id=user_id,
