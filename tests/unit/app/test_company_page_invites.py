@@ -624,6 +624,28 @@ class TestInviteTask:
         assert track.call_args[0][1]["status"] == INVITE_STATUS_RATE_LIMITED
         assert "(rate_limited)" in result
 
+    def test_a_login_form_timeout_is_not_filed_as_an_error(self):
+        """#2859: "Finding Username Field" — the session layer warned; the lane must not ERROR."""
+        from selenium.common.exceptions import TimeoutException
+
+        from cqc_lem.utilities.linkedin.company_page_inviter import INVITE_STATUS_FAILED
+        with patch(f"{_INV}.log_debug") as dbg:
+            _, quit_driver, _, err, warn, track = self._run_raising(
+                batch_exc=TimeoutException("Finding Username Field"))
+        err.assert_not_called()
+        warn.assert_not_called()
+        dbg.assert_called_once()
+        quit_driver.assert_called_once()
+        assert track.call_args[0][1]["status"] == INVITE_STATUS_FAILED
+
+    def test_a_non_login_timeout_is_still_an_error(self):
+        from selenium.common.exceptions import TimeoutException
+
+        from cqc_lem.utilities.linkedin.company_page_inviter import INVITE_STATUS_FAILED
+        _, _, _, err, _, track = self._run_raising(batch_exc=TimeoutException("Finding Password Field"))
+        err.assert_called_once()
+        assert track.call_args[0][1]["status"] == INVITE_STATUS_FAILED
+
     def test_any_other_batch_failure_is_still_an_error_and_failed(self):
         from cqc_lem.utilities.linkedin.company_page_inviter import INVITE_STATUS_FAILED
         _, _, _, err, warn, track = self._run_raising(batch_exc=RuntimeError("boom"))

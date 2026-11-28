@@ -2090,6 +2090,17 @@ def automate_invites_to_company_page_for_user(self, user_id: int):
                     user_id=user_id, task_name=task_name, action_type="company_invite")
         report = {"status": INVITE_STATUS_RATE_LIMITED, "cap": plan["cap"],
                   "sent_today": plan["sent_today"]}
+    except TimeoutException as e:
+        if "Finding Username Field" not in str(e):
+            # Only the login-form miss has already warned (helper.login_to_linkedin, #1908); any
+            # other timeout (password field, credits counter, invite modal) is unwarned, so it
+            # must still file an error.
+            log_error("Error while inviting to company page", exc=e, user_id=user_id,
+                      task_name=task_name, action_type="company_invite")
+        else:
+            log_debug("Company page invites skipped — LinkedIn login did not complete", exc=e,
+                      user_id=user_id, task_name=task_name, action_type="company_invite")
+        report = {"status": INVITE_STATUS_FAILED, "cap": plan["cap"], "sent_today": plan["sent_today"]}
     except Exception as e:
         log_error("Error while inviting to company page", exc=e, user_id=user_id,
                   task_name=task_name, action_type="company_invite")
