@@ -1039,6 +1039,24 @@ experiments are later phases.
   repeated warning. **Only `enforce` reads them** (`get_session_window_prefs`); `off` and `shadow`
   never touch the columns, so they stay byte-identical. The weekday-only rule, the night ban and the
   `user_started` exemption are not configurable. Volume blocks start at the user's own window starts.
+- **Mode line + enforce-readiness audit (#2793).** Each worker process logs `Session window mode:
+  off|shadow|enforce` once at INFO (`log_session_window_mode_once`, at worker start and on the first
+  session), so `/opt/lem/logs` shows when the mode changed. `utilities/session_window_audit.py` is
+  the read-only check that was a manual SQL query: for the last N (default 14) COMPLETE local days
+  in the zone enforce resolves (`valid_session_timezone(session_timezone)`, else `users.timezone`,
+  else America/New_York) it reports `logs` rows at night (19:00–07:00) or on a weekend, and browser
+  sessions per local weekday against `SESSION_DAILY_CEILING`. Sessions are counted from the
+  session-open line `get_docker_driver` writes to the persistent log (`cqc_lem_YYYY_MM_DD.log`, UTC
+  dated, plus `.log.N` backups): `<UTC stamp>Z Selenium session '<name>' egress=… | user_id=N`; many
+  sessions write no `logs` row. A line without `| user_id=` is ignored. A day whose log file is
+  missing is unreadable, which is INSUFFICIENT, never PASS. Verdict: `PASS`; `FAIL` (each offender
+  listed with time and name/action_type, so a human can rule out a user-started session, which the
+  gate exempts by design); `INSUFFICIENT` (mode is not `enforce`, retained logs do not show enforce
+  in force from the first audited day, or a day is unreadable). Run it with
+  `sudo docker exec -i celery_worker python - [--json] [--days 14] [--user-id 1] < scripts/session_window_audit.py`.
+  The Monday 13:00 UTC beat `auto_weekly_session_window_audit` (default queue, no browser) runs it
+  for every active user and logs `Session window audit: user_id=N mode=… days=… verdict=…` at INFO;
+  only `enforce` + `FAIL` calls `log_warning`. It writes nothing and changes no behaviour.
 - The host-cron SDUI drift probe is not a Celery beat and is not gated; it runs Mondays 16:00 UTC.
 - Owner action: run shadow for 7 days or more, then `SESSION_WINDOW_MODE=enforce`. Rollback:
   `off`.

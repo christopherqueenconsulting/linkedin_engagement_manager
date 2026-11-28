@@ -534,6 +534,23 @@ def session_window_mode() -> str:
     return raw if raw in (SESSION_WINDOW_SHADOW, SESSION_WINDOW_ENFORCE) else SESSION_WINDOW_OFF
 
 
+SESSION_WINDOW_MODE_LOG_PREFIX = "Session window mode: "
+_MODE_LOGGED: set[str] = set()
+
+
+def log_session_window_mode_once() -> str:
+    """Log the effective mode at INFO once per process and return it (issue #2793).
+
+    The audit reads this line back from the persistent log to say how long a mode has held, so
+    the format is a contract: `Session window mode: off|shadow|enforce`. Never a warning.
+    """
+    mode = session_window_mode()
+    if not _MODE_LOGGED:
+        _MODE_LOGGED.add(mode)
+        log_info(f"{SESSION_WINDOW_MODE_LOG_PREFIX}{mode}")
+    return mode
+
+
 def resolve_session_zone(tz_name: Optional[str]) -> ZoneInfo:
     """The user's zone, falling back to America/New_York (never UTC); warns once per bad value."""
     if tz_name:
@@ -772,7 +789,7 @@ def observe_session_window(user_id: Optional[int], lane: str, now: Optional[date
     Raises:
         SessionDeferred: In enforce mode, when a background session may not open now.
     """
-    mode = session_window_mode()
+    mode = log_session_window_mode_once()
     if user_id is None or mode == SESSION_WINDOW_OFF:
         return None
     try:

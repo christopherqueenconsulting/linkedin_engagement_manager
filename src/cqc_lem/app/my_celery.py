@@ -472,6 +472,12 @@ app.conf.update(
             # then only re-films a flow whose UI actually changed.
             'schedule': crontab(hour='20', minute='0', day_of_week='wednesday')
         },
+        'session-window-audit': {
+            'task': 'cqc_lem.app.run_scheduler.auto_weekly_session_window_audit',
+            # Mondays 13:00 UTC (issue #2793): read-only enforce-readiness verdict per user, on the
+            # default non-Selenium queue. Warns only for enforce + FAIL.
+            'schedule': crontab(hour='13', minute='0', day_of_week='monday')
+        },
         'youtube-token-check': {
             'task': 'cqc_lem.app.run_scheduler.auto_weekly_youtube_token_check',
             # Wednesdays 19:30 UTC — 30 min BEFORE the tutorial run, so a dead grant is alerted on
@@ -562,6 +568,13 @@ def configure_posthog_for_worker(**kwargs) -> None:
     # survive fork. Sync mode sends each capture immediately instead of queuing.
     import posthog as _posthog
     _posthog.sync_mode = True
+
+
+@worker_process_init.connect(weak=False)
+def log_session_window_mode(**kwargs) -> None:
+    """Record the effective SESSION_WINDOW_MODE once per worker process (issue #2793)."""
+    from cqc_lem.utilities.engagement_window import log_session_window_mode_once
+    log_session_window_mode_once()
 
 
 @task_prerun.connect(weak=False)

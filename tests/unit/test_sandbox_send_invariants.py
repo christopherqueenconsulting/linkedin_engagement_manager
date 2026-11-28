@@ -599,6 +599,8 @@ _NO_LINKEDIN_ACTION = {
     "auto_weekly_cost_routing": "internal analytics",
     "auto_produce_feature_tutorial": "renders our own SPA; DEMO_MODE-gated, no account",
     "auto_weekly_youtube_token_check": "YouTube token health check",
+    "auto_weekly_session_window_audit": "read-only report over stored logs and the persistent log "
+                                        "files; opens no browser, writes nothing",
     "auto_poll_calendly_bookings": "reads Calendly and labels leads; sends nothing",
     "ingest_call_transcript": "LLM extraction over an uploaded transcript; stores review candidates, sends nothing",
     "transcribe_call_audio": "Whisper transcription of an uploaded recording, then deletes the audio; no LinkedIn "
