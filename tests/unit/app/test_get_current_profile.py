@@ -90,7 +90,7 @@ class TestGetCurrentProfile:
         assert warn.call_args.kwargs.get("exc") is crash
         err.assert_not_called()
 
-    def test_login_timeout_logs_warning_not_error(self):
+    def test_login_timeout_logs_debug_not_error(self):
         # Issue #1919: PostHog grouped 22 occurrences/24h of `TimeoutException: Finding Username
         # Field` off this exact call site. `login_to_linkedin` already logs the unrecognized
         # challenge/checkpoint page at WARNING (#1908) before re-raising; this ONE place —
@@ -102,13 +102,16 @@ class TestGetCurrentProfile:
         timeout = TimeoutException("Finding Username Field")
         with p["get_user_password_pair_by_id"], p["get_driver_wait_pair"], p["quit_gracefully"], \
              patch(f"{_SESSION}.login_to_linkedin", side_effect=timeout), \
+             patch(f"{_SESSION}.log_debug") as dbg, \
              patch(f"{_SESSION}.log_warning") as warn, \
              patch(f"{_SESSION}.log_error") as err:
             from cqc_lem.utilities.linkedin.session import get_current_profile
             with pytest.raises(TimeoutException):
                 get_current_profile(user_id=1)
-        warn.assert_called_once()
-        assert warn.call_args.kwargs.get("exc") is timeout
+        # #2857: login_to_linkedin already warned where it detected the miss; no second warning here.
+        dbg.assert_called_once()
+        assert dbg.call_args.kwargs.get("exc") is timeout
+        warn.assert_not_called()
         err.assert_not_called()
 
     def test_rate_limited_login_logs_warning_not_error(self):
