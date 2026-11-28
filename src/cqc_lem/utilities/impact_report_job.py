@@ -1,6 +1,6 @@
 """The beat behind the impact report (issue #2643): email the owner, post a one-line GitHub note.
 
-Two reports, both emailed and never posted: one per release whose `published_at` is 14 days old, and
+Two reports, both emailed and never posted: one per ET publish day whose releases are due, and
 a baseline (trailing 30 days against the 30 before) on the first of each month. GitHub gets ONLY
 `impact_report.release_note(tag)` — no metric, name or URL — and only for a release report.
 
@@ -8,7 +8,7 @@ Each report is claimed in Redis BEFORE it is sent, so a re-run never sends twice
 releases its claim so the next beat retries. No Redis means no claim, which means nothing is sent.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
 from cqc_lem.utilities.env_constants import (
@@ -20,6 +20,7 @@ from cqc_lem.utilities.env_constants import (
 from cqc_lem.utilities.impact_report import (
     DEFAULT_DAYS,
     ImpactReadError,
+    et_day,
     load_impact_report,
     release_note,
     render_impact_text,
@@ -30,6 +31,11 @@ TASK_NAME = "auto_impact_report"
 # A beat that missed a day still catches a release this many days late.
 GRACE_DAYS = 3
 BASELINE_DAYS = 30
+RELEASES_PAGE_SIZE = 100
+RELEASES_MAX_PAGES = 10
+# ET days the account was down (#2643 section 2); dropped from both windows of every report.
+# Append a day here when an outage is recorded.
+KNOWN_OUTAGE_DAYS: tuple[date, ...] = (date(2026, 11, 22), date(2026, 11, 23))
 CLAIM_TTL_SECONDS = 90 * 24 * 3600
 _CLAIM_PREFIX = "impact_report:sent:"
 
@@ -60,6 +66,42 @@ def due_releases(releases: Any, now: datetime) -> list[tuple[str, datetime]]:
     return due
 
 
+def fetch_releases(github_request: Any, now: datetime) -> Optional[list]:
+    """Pages of releases, newest first, until one is older than the due window.
+
+    Returns None when the first page is unreadable. A later page that fails keeps what was read.
+    """
+    oldest_due = timedelta(days=DEFAULT_DAYS + 1 + GRACE_DAYS)
+    releases: list = []
+    for page in range(1, RELEASES_MAX_PAGES + 1):
+        batch = github_request("GET", f"releases?per_page={RELEASES_PAGE_SIZE}&page={page}")
+        if not isinstance(batch, list):
+            if page == 1:
+                return None
+            log_warning("Impact report releases page unreadable", task_name=TASK_NAME)
+            break
+        releases.extend(batch)
+        times = [t for t in (_parse_time(r.get("published_at")) for r in batch
+                             if isinstance(r, dict)) if t]
+        if len(batch) < RELEASES_PAGE_SIZE or (times and now - min(times) >= oldest_due):
+            break
+    return releases
+
+
+def due_release_days(releases: Any, now: datetime) -> list[tuple[str, str, datetime, str]]:
+    """(ET day, label, last published_at, last tag) per ET day with due releases, oldest first."""
+    by_day: dict[date, list[tuple[str, datetime]]] = {}
+    for tag, published in due_releases(releases, now):
+        by_day.setdefault(et_day(published), []).append((tag, published))
+    days = []
+    for day in sorted(by_day):
+        ordered = sorted(by_day[day], key=lambda item: item[1])
+        first, (last_tag, last_at) = ordered[0][0], ordered[-1]
+        label = last_tag if first == last_tag else f"{first}..{last_tag}"
+        days.append((day.isoformat(), label, last_at, last_tag))
+    return days
+
+
 def _recipient() -> str:
     return (IMPACT_REPORT_EMAIL or MARGIN_REPORT_EMAIL or "").strip()
 
@@ -80,13 +122,13 @@ def _unclaim(client: Any, key: str) -> None:
 
 
 def _send(user_id: int, key: str, label: str, change_at: datetime, days: int,
-          to_email: str, client: Any) -> str:
+          to_email: str, client: Any, exclude_days: tuple[date, ...] = ()) -> str:
     """Claim, build, email one report. Returns `sent`, `already`, `unread` or `email_failed`."""
     from cqc_lem.utilities.email import send_impact_report_email
     if not _claim(client, key):
         return "already"
     try:
-        report = load_impact_report(user_id, change_at, days)
+        report = load_impact_report(user_id, change_at, days, exclude_days)
     except ImpactReadError as exc:
         _unclaim(client, key)
         log_error("Impact report inputs unreadable", exc=exc, user_id=user_id, task_name=TASK_NAME)
@@ -95,8 +137,10 @@ def _send(user_id: int, key: str, label: str, change_at: datetime, days: int,
         _unclaim(client, key)  # an unexpected fault must not hold the claim for 90 days
         raise
     try:
-        delivered = send_impact_report_email(to_email, f"Impact report: {label}",
-                                             render_impact_text(report, label))
+        text = render_impact_text(report, label)
+        if exclude_days:
+            text += "\n\nExcluded outage days: " + ", ".join(d.isoformat() for d in exclude_days)
+        delivered = send_impact_report_email(to_email, f"Impact report: {label}", text)
     except Exception:
         _unclaim(client, key)
         raise
@@ -129,16 +173,22 @@ def run_impact_report_sweep(now: Optional[datetime] = None) -> dict[str, Any]:
         return {"action": "skipped", "reason": "no redis"}
 
     results: dict[str, str] = {}
-    for tag, published in due_releases(github_request("GET", "releases?per_page=30"), now):
-        outcome = _send(user_id, f"release:{tag}", tag, published, DEFAULT_DAYS, to_email, client)
-        results[tag] = outcome
-        note = release_note(tag)
+    releases = fetch_releases(github_request, now)
+    if releases is None:
+        log_warning("Impact report could not read GitHub releases", task_name=TASK_NAME)
+    for day, label, change_at, last_tag in due_release_days(releases, now):
+        key = f"release-day:{day}"
+        outcome = _send(user_id, key, label, change_at, DEFAULT_DAYS, to_email, client,
+                        KNOWN_OUTAGE_DAYS)
+        results[key] = outcome
+        note = release_note(last_tag)
         if outcome == "sent" and note:
             comment_on_issue(int(IMPACT_REPORT_ISSUE), note)
     if now.day == 1:
         key = f"baseline:{now:%Y-%m}"
         results[key] = _send(user_id, key, f"monthly baseline {now:%Y-%m}",
-                             now - timedelta(days=BASELINE_DAYS + 1), BASELINE_DAYS, to_email, client)
+                             now - timedelta(days=BASELINE_DAYS + 1), BASELINE_DAYS, to_email, client,
+                             KNOWN_OUTAGE_DAYS)
     log_info(f"Impact report beat finished: {len(results)} considered", user_id=user_id,
              task_name=TASK_NAME)
     return {"action": "ran", "results": results}
