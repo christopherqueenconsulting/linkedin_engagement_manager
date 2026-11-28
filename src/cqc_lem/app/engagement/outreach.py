@@ -3108,6 +3108,14 @@ def send_dm_now(user_id: int, profile_url: str, message: str, person_name: str =
         log_warning("DM send skipped — LinkedIn rate-limited or cooling down", exc=e,
                     user_id=user_id, action_type="dm")
 
+    except TimeoutException as e:
+        # The Send button never became findable/clickable after the text was typed (disabled, or the
+        # composer changed under us). Nothing was sent, the FAILURE row below is the durable record,
+        # and a later run retries — an expected best-effort miss, so one escalating warning rather than
+        # a `$exception` on every occurrence (issue #2850).
+        log_warning("DM send skipped — Send button not found", exc=e, user_id=user_id,
+                    action_type="dm")
+
     except Exception as e:
         # ERROR, not myprint: this lane failed silently for weeks because every send logged its
         # failure at INFO, which never reaches PostHog and so never escalated (issue #1030). A
