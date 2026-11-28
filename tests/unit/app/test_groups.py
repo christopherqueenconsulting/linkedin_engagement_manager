@@ -775,6 +775,24 @@ class TestCommentInGroups:
             auto_comment_in_groups.run(user_id=1)
         assert gcp.call_args.kwargs["needs_images"] is True
 
+    def test_login_timeout_is_a_noop_not_an_error(self):
+        """Issue #2861: `TimeoutException: Finding Username Field` already warned in the session.
+
+        The lane must not re-log it at ERROR (a second ungrouped $exception).
+        """
+        from selenium.common import TimeoutException
+
+        from cqc_lem.app.engagement.feed import auto_comment_in_groups
+        with patch(f"{_FEED}.get_enabled_group_ids", return_value=["1"]), \
+             patch(f"{_FEED}.get_current_profile",
+                   side_effect=TimeoutException("Finding Username Field")), \
+             patch(f"{_FEED}.log_error") as err, \
+             patch(f"{_FEED}.comment_on_feed_inline") as cfi:
+            result = auto_comment_in_groups.run(user_id=1)
+        err.assert_not_called()
+        cfi.assert_not_called()
+        assert "login did not complete" in str(result)
+
     def test_a_group_page_that_never_rendered_is_skipped_not_counted_as_an_empty_feed(self):
         """Issue #1777: a group page can render NO `<main>` at all — a login wall, an interstitial.
 

@@ -51,6 +51,7 @@ from celery.exceptions import SoftTimeLimitExceeded
 from openai import APIConnectionError
 from selenium.common import (
     StaleElementReferenceException,
+    TimeoutException,
     WebDriverException,
 )
 from selenium.webdriver import ActionChains, Keys
@@ -4505,6 +4506,13 @@ def auto_comment_in_groups(self, user_id: int, max_per_group: int = 2):
         log_warning("Group commenting skipped — LinkedIn rate-limited or cooling down", exc=e,
                     user_id=user_id, task_name="auto_comment_in_groups")
         return lane_result(TaskOutcome.NO_OP, f"Skipped — rate limited: {e}")
+    except TimeoutException as e:
+        # The login form never rendered (unrecognized challenge/checkpoint page). `login_to_linkedin`
+        # and `get_current_profile` already warned where it was detected, and recurrence escalates
+        # that warning — re-logging at ERROR here filed a second, ungrouped $exception (#2861).
+        log_debug("Group commenting skipped — LinkedIn login did not complete", user_id=user_id,
+                  task_name="auto_comment_in_groups")
+        return lane_result(TaskOutcome.NO_OP, f"Skipped — login did not complete: {e}")
     except Exception as e:
         log_error("Error getting profile for group commenting", exc=e, user_id=user_id,
                   task_name="auto_comment_in_groups")
