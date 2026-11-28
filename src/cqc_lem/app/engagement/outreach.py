@@ -2057,9 +2057,11 @@ def automate_appreciation_dms_for_user(self, user_id: int, loop_for_duration: in
     driver, wait = get_driver_wait_pair(session_name='Appreciation DMs', user_id=user_id, needs_images=True)
     found = 0
     sent = 0
+    login_done = False
 
     try:
         login_to_linkedin(driver, wait, user_email, user_password)
+        login_done = True
 
         start_time = datetime.now()
 
@@ -2155,6 +2157,14 @@ def automate_appreciation_dms_for_user(self, user_id: int, loop_for_duration: in
         if note_tab_crash(e, task_name="automate_appreciation_dms_for_user", user_id=user_id,
                           action_type="dm"):
             message = "Appreciation DMs stopped — the browser tab crashed"
+        elif isinstance(e, TimeoutException) and not login_done:
+            # Login form never rendered; `login_to_linkedin` already warned with the page
+            # snippet (#1908). A second warning/error re-files the same event (#2860). The
+            # next cycle retries.
+            log_debug("Appreciation DMs skipped — LinkedIn login did not complete", exc=e,
+                      user_id=user_id, task_name="automate_appreciation_dms_for_user",
+                      action_type="dm")
+            message = f"Appreciation DMs skipped — login did not complete: {e}"
         else:
             log_error("Error while sending appreciation DMs", exc=e, user_id=user_id,
                       task_name="automate_appreciation_dms_for_user", action_type="dm")
