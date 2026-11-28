@@ -51,6 +51,7 @@ from celery.exceptions import SoftTimeLimitExceeded
 from openai import APIConnectionError
 from selenium.common import (
     StaleElementReferenceException,
+    TimeoutException,
     WebDriverException,
 )
 from selenium.webdriver import ActionChains, Keys
@@ -5151,6 +5152,14 @@ def automate_commenting(self, user_id: int, loop_for_duration: int = None, futur
                     user_id=user_id, task_name="automate_commenting")
         release_run_lock(lock_name, lock_token)
         return f"Skipped — rate limited: {e}"
+    except TimeoutException as e:
+        # DEBUG: the login form never rendered. `login_to_linkedin` and `get_current_profile`
+        # already warned — warn where you detect, not where you notice. An ERROR here filed a
+        # second ungrouped `$exception` (issue #2858).
+        log_debug(f"Auto commenting skipped — login form never appeared: {e}", user_id=user_id,
+                  task_name="automate_commenting")
+        release_run_lock(lock_name, lock_token)
+        return f"Failed to start auto commenting: {e}"
     except Exception as e:
         # A tab that crashed on the first login navigation was already warned about by
         # `get_current_profile`; this wrapper only notes it (#2402).
