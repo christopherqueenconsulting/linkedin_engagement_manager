@@ -40,6 +40,7 @@ from typing import Any, Optional, Tuple
 from urllib.parse import urlparse
 
 import pytz
+from selenium.common.exceptions import TimeoutException
 from selenium.webdriver import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webdriver import WebDriver
@@ -806,8 +807,14 @@ def capture_follower_stats(self, user_id: int):
                                                                   session_name="Audience Stats",
                                                                   measurement_only=True)
     except Exception as e:
-        log_error("Error getting profile for audience capture", exc=e, user_id=user_id,
-                  task_name="capture_follower_stats")
+        if isinstance(e, TimeoutException):
+            # Login form never rendered; `get_current_profile` already warned where it happened
+            # (#1908/#1919). Re-reporting here would file the same event twice — DEBUG (#2865).
+            log_debug("Audience capture could not start — login selector never resolved",
+                      exc=e, user_id=user_id, task_name="capture_follower_stats")
+        else:
+            log_error("Error getting profile for audience capture", exc=e, user_id=user_id,
+                      task_name="capture_follower_stats")
         return f"Failed: {e}"
     try:
         profile_url = get_linkedin_profile_url_by_user_id(user_id)
