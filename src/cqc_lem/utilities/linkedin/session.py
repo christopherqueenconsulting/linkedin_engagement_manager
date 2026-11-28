@@ -28,7 +28,7 @@ from cqc_lem.utilities.db import get_user_password_pair_by_id
 from cqc_lem.utilities.linkedin.helper import get_my_profile, load_profile_for_user, login_to_linkedin
 from cqc_lem.utilities.linkedin.profile import LinkedInProfile
 from cqc_lem.utilities.linkedin.rate_limit import LinkedInEgressUnreachable, LinkedInRateLimited
-from cqc_lem.utilities.logger import log_error, log_info, log_warning
+from cqc_lem.utilities.logger import log_debug, log_error, log_info, log_warning
 from cqc_lem.utilities.selenium_util import get_driver_wait_pair, is_tab_crashed, quit_gracefully
 
 
@@ -120,7 +120,10 @@ def get_current_profile(user_id: int, session_name: str = "Get Current Profile",
             # found the exact same TimeoutException still filing an immediate, ungrouped
             # `$exception` here 22x/day even after a caller-level downgrade, because this branch
             # ran and logged ERROR before the exception ever reached the caller's `except`.
-            log_warning("LinkedIn login failed — form fields never appeared", exc=e, user_id=user_id)
+            # DEBUG, not a second warning: `login_to_linkedin` already warned with the page snippet
+            # where it detected the miss, and a repeat here re-emitted at ERROR as a grouped
+            # `$exception` for the same event (#2857). Warn where you detect, not where you notice.
+            log_debug("LinkedIn login failed — form fields never appeared", exc=e, user_id=user_id)
         else:
             log_error("LinkedIn login failed", exc=e, user_id=user_id)
         quit_gracefully(driver)
