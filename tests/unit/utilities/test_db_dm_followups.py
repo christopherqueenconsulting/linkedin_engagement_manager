@@ -41,6 +41,37 @@ class TestFollowupDeadlockRetry:
             assert reset_unreadable_reads(5) is False
         assert cursor.execute.call_count == 1
 
+    def test_enqueue_followup_retries_deadlock(self, fake_cursor):
+        """Issue #2827: the INSERT path was the one writer #2586 left unretried."""
+        import datetime
+        conn, cursor = fake_cursor(rowcount=1, execute_error=[_deadlock(), None])
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
+                patch("cqc_lem.platform.db.repositories.outreach.time.sleep"):
+            from cqc_lem.utilities.db import enqueue_followup
+            assert enqueue_followup(1, "https://x/in/jane", "Jane", "connection_accepted", 1,
+                                    datetime.datetime(2026, 7, 4, 8, 0)) is True
+        assert cursor.execute.call_count == 2
+
+    def test_insert_scheduled_dm_retries_deadlock(self, fake_cursor):
+        import datetime
+        conn, cursor = fake_cursor(rowcount=1, execute_error=[_deadlock(), None])
+        cursor.lastrowid = 42
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
+                patch("cqc_lem.platform.db.repositories.outreach.time.sleep"):
+            from cqc_lem.utilities.db import insert_scheduled_dm
+            assert insert_scheduled_dm(1, "https://x/in/jane", "hi",
+                                       datetime.datetime(2026, 7, 4, 8, 0)) == 42
+        assert cursor.execute.call_count == 2
+
+    def test_insert_scheduled_dm_persistent_deadlock_returns_none(self, fake_cursor):
+        import datetime
+        conn, cursor = fake_cursor(execute_error=_deadlock())
+        with patch("cqc_lem.platform.db.connection.get_db_connection", return_value=conn), \
+                patch("cqc_lem.platform.db.repositories.outreach.time.sleep"):
+            from cqc_lem.utilities.db import insert_scheduled_dm
+            assert insert_scheduled_dm(1, "u", "hi", datetime.datetime(2026, 7, 4, 8, 0)) is None
+        assert cursor.execute.call_count == 3
+
 
 class TestFollowupQueue:
     def test_enqueue_inserts_pending(self, fake_cursor):
