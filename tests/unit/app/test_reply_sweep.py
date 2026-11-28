@@ -71,6 +71,27 @@ class TestSweepReplyComments:
         debug.assert_called_once()
         warn.assert_not_called()
 
+    def test_login_form_timeout_is_not_an_error(self):
+        """A login-form timeout never files an ERROR from the sweep (issue #2862).
+
+        It was already warned about twice upstream (#1908/#1919).
+        """
+        from selenium.common.exceptions import TimeoutException
+
+        from cqc_lem.app.engagement.posting import sweep_reply_comments
+        with patch(f"{_POST}.get_engagement_preferences", return_value={}), \
+             patch(f"{_POST}.get_recent_posted_post_ids", return_value=[10]), \
+             patch(f"{_POST}.get_current_profile",
+                   side_effect=TimeoutException("Message: Finding Username Field")), \
+             patch(f"{_POST}._retry_golden_hour_sweep", return_value=True) as retry, \
+             patch(f"{_POST}.log_debug") as debug, \
+             patch(f"{_POST}.log_error") as err:
+            result = sweep_reply_comments.run(user_id=1, sweep_slot=2, attempt=0)
+        err.assert_not_called()
+        debug.assert_called_once()
+        retry.assert_called_once_with(1, 2, 0, "session_failed")
+        assert "retry scheduled" in result
+
     def test_rate_limited_golden_hour_sweep_retries_inside_the_window(self):
         """#401's amplifier lost the whole hour to one transient 429 — the sweep now asks for one
         more attempt while the window is still open (#622).
